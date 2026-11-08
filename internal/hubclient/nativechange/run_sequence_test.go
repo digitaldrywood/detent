@@ -1,0 +1,131 @@
+package nativechange
+
+import (
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestNativePublicationRetainsSourceAfterRunProgress(t *testing.T) {
+	for _, progress := range []bool{false, true} {
+		t.Run(map[bool]string{false: "gate passed", true: "progress after final diff"}[progress], func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Publish validated source")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			head := nativeChangeFixtureHead("c")
+			e.SetDiffSource(nativeChangeDiff(head, "README.md"))
+			e.SetRepository(nativeChangeRepository)
+			if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.RecordSourceValidation(t.Context(), gate.CommandResult{Command: "go test ./internal/example", HeadSHA: head, TreeSHA: strings.Repeat("b", 40), DurationNS: 1, StartedAt: time.Now().UTC().Add(-time.Second), FinishedAt: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			original := fixtureClient(h.native.Transport()).requests.Load()
+			fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if progress && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") {
+					for range 2 {
+						if err := e.append(request.Context(), "run.observed", "", nil, true); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				return original.RoundTrip(request)
+			}))
+			if err := e.PrepareFinish(t.Context(), "succeeded", "", nil); err != nil {
+				t.Fatal(err)
+			}
+			change := e.NativeChange()
+			if change == nil || change.VersionID == "" || change.VersionError != "" {
+				t.Fatalf("gate-passed source was not published: %+v", change)
+			}
+			detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+			if err != nil || len(detail.Versions) != 1 || detail.Versions[0].HeadSHA != head || detail.Versions[0].Validation == nil {
+				t.Fatalf("published source = %+v, error = %v", detail.Versions, err)
+			}
+		})
+	}
+}
+
+func TestDeferredNativePublisherDoesNotReuseIdentity(t *testing.T) {
+	for _, reason := range []string{"dispatch_deferred", "provider_capacity_unavailable"} {
+		t.Run(reason, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Resume Change publication")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			identity := tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}
+			if err := e.Start(t.Context(), identity); err != nil {
+				t.Fatal(err)
+			}
+			e.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
+			e.SetRepository(nativeChangeRepository)
+			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", ExternalEffect: "none", EffectState: "none"}
+			if err := e.Checkpoint(t.Context(), checkpoint); err != nil {
+				t.Fatal(err)
+			}
+			original := fixtureClient(h.native.Transport()).requests.Load()
+			fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") {
+					return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"run_sequence_conflict","message":"run sequence conflict"}`)), Request: request}, nil
+				}
+				return original.RoundTrip(request)
+			}))
+			if err := e.Finish(t.Context(), "succeeded"); err != nil {
+				t.Fatal(err)
+			}
+			change := e.NativeChange()
+			if change == nil || change.ChangeID == "" || change.VersionID != "" || e.data.Outcome != "failed" {
+				t.Fatalf("publication refusal lost source: %+v", change)
+			}
+			changeID := change.ChangeID
+			fixtureClient(h.native.Transport()).requests.Store(original)
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
+				t.Fatal(err)
+			}
+			h.claim(t, issue.ID)
+			e = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := e.Start(t.Context(), identity); err != nil {
+				t.Fatal(err)
+			}
+			attempt := e.data.AttemptID
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, reason); err != nil {
+				t.Fatal(err)
+			}
+			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || len(recovery.Attempts) != 2 || recovery.Attempts[1].Status != "cancelled" || recovery.Attempts[1].ClaimReleasedAt == nil {
+				t.Fatalf("deferred identity retained: %+v, %v", recovery.Attempts, err)
+			}
+			h.claim(t, issue.ID)
+			e = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			identity.ReasoningEffort = "high"
+			if err := e.Start(t.Context(), identity); err != nil {
+				t.Fatalf("retry could not select its identity: %v", err)
+			}
+			if e.data.AttemptID == attempt {
+				t.Fatal("retry reused a deferred attempt")
+			}
+			e.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
+			e.SetRepository(nativeChangeRepository)
+			if err := e.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", ExternalEffect: "none", EffectState: "none"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.PrepareFinish(t.Context(), "succeeded", "", nil); err != nil {
+				t.Fatal(err)
+			}
+			if change := e.NativeChange(); change == nil || change.ChangeID != changeID || change.VersionID == "" || change.VersionError != "" {
+				t.Fatalf("retry did not publish: %+v", change)
+			}
+		})
+	}
+}

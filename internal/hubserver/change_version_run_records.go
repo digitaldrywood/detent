@@ -73,7 +73,7 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope
 			if err != nil {
 				return err
 			}
-			if diff.OrganizationID != scope.organization || diff.AttemptID != request.AttemptID || diff.WorkItemID != change.WorkItemID || diff.IssueID != prepared.workItem.ID || diff.BaseSHA != request.BaseSHA || diff.HeadSHA != request.HeadSHA || (diff.Generation.Seq < prepared.attempt.Sequence || diff.Generation.Seq > prepared.attempt.Sequence+1) || diff.Producer.ID != request.AttemptID || diff.Producer.RunnerID != scope.credential.Runner.RunnerID || diff.Producer.LeaseID != request.LeaseID || diff.Producer.FencingToken != request.FencingToken {
+			if diff.OrganizationID != scope.organization || diff.AttemptID != request.AttemptID || diff.WorkItemID != change.WorkItemID || diff.IssueID != prepared.workItem.ID || diff.BaseSHA != request.BaseSHA || diff.HeadSHA != request.HeadSHA || diff.Producer.ID != request.AttemptID || diff.Producer.RunnerID != scope.credential.Runner.RunnerID || diff.Producer.LeaseID != request.LeaseID || diff.Producer.FencingToken != request.FencingToken {
 				return nativeExecutionConflict("Version source must match the publishing attempt's persisted final diff")
 			}
 			prepared.diff = &diff

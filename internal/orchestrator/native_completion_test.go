@@ -594,6 +594,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "unreadable review conversation state retries as an instance failure", change: accepted, states: rework, sourceState: "Rework", reviewed: &yes, recovery: refusedVersion("version_1"), runErr: fmt.Errorf("%w: bad gateway", runpkg.ErrReviewConversationsUnavailable), turnStarted: true, wantSameState: true, wantContinue: true},
 		{name: "Rework that published a new version after the refusal lands", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_0"), wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "refused completed Rework landing retains completion ownership", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", updateErr: errors.New("stale fencing token"), wantState: "Merging", wantDeferred: true, roundTrip: true},
+		{name: "gate passed Change survives failed version publication", sourceState: "In Progress", states: unfinishedWorkflow, humanReview: &no, turnStarted: true, runErr: errors.New("version publication failed"), change: &runpkg.NativeChange{Changed: true, ChangeID: "change_pending", BaseSHA: strings.Repeat("a", 40), HeadSHA: head, VersionError: "run_sequence_conflict"}, wantState: "Rework", wantContinue: true},
 		{name: "publication outage retries current publisher", reviewed: &yes, republish: true, change: &runpkg.NativeChange{Error: "hub unavailable"}, states: landing, wantDeferred: true},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
 		{name: "a workflow without the review lane is handed off, never ended", change: waiting, states: hosted, wantDeferred: true},
@@ -874,7 +875,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Fatal("nil native result bypassed ordinary continuation ownership")
 			}
 			orch.handleRunResult(t.Context(), &state, event)
-			if change := event.Result.NativeChange; change != nil && change.VersionID != "" {
+			if change := event.Result.NativeChange; change != nil && (change.VersionID != "" || change.ChangeID != "" && change.Changed && change.HeadSHA != "") {
 				if native, ok := tracker.(*nativeWorkflowConnector); ok {
 					for _, reason := range native.reasonCodes {
 						if reason == terminalAttemptWithoutWorkProductReason {
@@ -1646,6 +1647,54 @@ func TestNativeCompletionComment(t *testing.T) {
 			for _, want := range test.want {
 				if !strings.Contains(got, want) {
 					t.Fatalf("comment %q does not contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestNativePublicationRetryRetainsRecordedWorkProduct(t *testing.T) {
+	for _, test := range []struct {
+		name, currentChange, sourceState, wantState string
+	}{
+		{"pending Change", "change_pending", "In Progress", "Rework"},
+		{"pending Change in Rework", "change_pending", "Rework", "Rework"},
+		{"unrelated Change", "change_other", "In Progress", "Todo"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := connector.Issue{ID: "issue", State: test.sourceState}
+			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			native := &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: []connector.WorkflowState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Rework"}},
+				{Name: "Rework", Dispatchable: true, Transitions: []string{"Todo"}},
+				{Name: "Todo", Dispatchable: true},
+			}}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}})
+			cfg.AutoPromote.HumanReview = new(false)
+			attempts := &recordingWorkAttemptStore{}
+			scheduling := &nativeCompletionScheduling{hubSchedulingSource: &hubSchedulingSource{}}
+			orch := &Orchestrator{cfg: cfg, connector: native, workAttempts: attempts, scheduling: scheduling}
+			state := newState(cfg)
+			running := Running{Issue: issue, Mode: RunModeImplement, Attempt: 1, WorkAttemptID: 42, Generation: 7}
+			state.Running[issue.ID], state.Claimed[issue.ID] = running, Claimed{Issue: issue}
+			execution := &nativeLandingJourneyExecution{recovery: tracker.NativeRecovery{
+				ChangeDetail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: test.currentChange}},
+				Attempts: []tracker.NativeAttempt{{Status: "failed", NativeRunData: tracker.NativeRunData{Finalization: &tracker.NativeFinalization{
+					Changed: true, ChangeID: "change_pending", BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), VersionCode: "run_sequence_conflict",
+				}}}},
+			}}
+			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Err: errors.New("native execution identity changed during an attempt"), Request: runpkg.RunRequest{Execution: execution}}
+			if !orch.completeNativeChangeRun(t.Context(), &state, event, running, runpkg.FinalStateFailed) {
+				t.Fatal("failed retry lost completion ownership")
+			}
+			if retry := state.Retry[issue.ID]; retry.Issue.State != test.wantState || len(attempts.completions) != 1 || len(state.Completed) != 0 {
+				t.Fatalf("retry state=%s want=%s receipts=%d completed=%d", retry.Issue.State, test.wantState, len(attempts.completions), len(state.Completed))
+			}
+			if test.currentChange == "change_pending" {
+				for _, reason := range native.reasonCodes {
+					if reason == terminalAttemptWithoutWorkProductReason {
+						t.Fatal("recorded Change was classified as without work product")
+					}
 				}
 			}
 		})
