@@ -404,6 +404,10 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 	}
 	revision.ApprovedBy = actor
 	revision.ApprovedAt = now
+	review, err := s.prepareDefaultReviewPolicy(ctx, scope, canonical)
+	if err != nil {
+		return policy.Approval{}, err
+	}
 	result := policy.Approval{Policy: canonical, ApprovedBy: actor, ApprovedAt: formatHubTime(now)}
 	var receipt eventstore.Receipt
 	if command != nil {
@@ -465,6 +469,9 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 			return policyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 		}
 		if currentID == resolved.ID {
+			if err := applyDefaultReviewPolicy(ctx, writer, review, actor, now); err != nil {
+				return err
+			}
 			if command != nil {
 				return corestore.ErrRevisionConflict
 			}
@@ -495,6 +502,9 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 			return err
 		}
 		if err := writer.ApproveProjectPolicy(ctx, revision, change.ExpectedID); err != nil {
+			return err
+		}
+		if err := applyDefaultReviewPolicy(ctx, writer, review, actor, now); err != nil {
 			return err
 		}
 		if currentID != resolved.ID && (resolved.Workflow != nil || previous.Policy.SameAuthoredInputs(resolved)) {
@@ -532,6 +542,10 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 }
 
 func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope nativeScope, approval policy.Approval, planned policystore.Revision, command *tenantPolicyCommandReceipt) (policy.Approval, error) {
+	review, err := s.prepareDefaultReviewPolicy(ctx, scope, approval.Policy)
+	if err != nil {
+		return policy.Approval{}, err
+	}
 	var receipt eventstore.Receipt
 	if command != nil {
 		raw, err := json.Marshal(approval)
@@ -548,7 +562,7 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope nativ
 	}
 	replayed := false
 	var replayReceipt eventstore.Receipt
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, writer, scope, true); err != nil {
 			return err
 		}
@@ -581,6 +595,9 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope nativ
 			return err
 		}
 		if err := reconcileTenantWorkflowPolicy(ctx, writer, project, approval.Policy); err != nil {
+			return err
+		}
+		if err := applyDefaultReviewPolicy(ctx, writer, review, approval.ApprovedBy, s.config.now().UTC()); err != nil {
 			return err
 		}
 		if command != nil {
@@ -703,6 +720,10 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 			PayloadContentBytes: receipt.PayloadContentBytes,
 		}
 	}
+	review, err := s.prepareDefaultReviewPolicy(ctx, scope, canonical)
+	if err != nil {
+		return err
+	}
 	now := s.config.now().UTC()
 	record := policystore.Observation{
 		OrganizationID: scope.organization,
@@ -759,7 +780,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 		if !accepted || !apply {
 			return nil
 		}
-		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, now)
+		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, review, now)
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, writeObservation)
 	if !errors.Is(err, projectstore.ErrStateInUse) {
@@ -838,7 +859,7 @@ func sameTenantProjectPolicyRevisionContent(left, right policystore.Revision) bo
 	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyID == right.PolicyID && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
 }
 
-func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope nativeScope, project projectstore.Record, reporter string, observation policy.Observation, canonical policy.Descriptor, previous policy.Approval, previousRevision, observedRevision policystore.Revision, now time.Time) error {
+func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope nativeScope, project projectstore.Record, reporter string, observation policy.Observation, canonical policy.Descriptor, previous policy.Approval, previousRevision, observedRevision policystore.Revision, review preparedDefaultReviewPolicy, now time.Time) error {
 	descriptor := observation.Descriptor
 	current, err := writer.ProjectPolicy(ctx, scope.project)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -881,7 +902,10 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 		}
 	}
 	if current.PolicyID == descriptor.ID {
-		return reconcileTenantWorkflowPolicy(ctx, writer, project, previous.Policy)
+		if err := reconcileTenantWorkflowPolicy(ctx, writer, project, previous.Policy); err != nil {
+			return err
+		}
+		return applyDefaultReviewPolicy(ctx, writer, review, previous.ApprovedBy, now)
 	}
 	actor := "repository-default-branch"
 	if carryover && previous.ApprovedBy != "" {
@@ -896,6 +920,9 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 	approved.ApprovedBy = actor
 	approved.ApprovedAt = now
 	if err := writer.ApproveProjectPolicy(ctx, approved, current.PolicyID); err != nil {
+		return err
+	}
+	if err := applyDefaultReviewPolicy(ctx, writer, review, actor, now); err != nil {
 		return err
 	}
 	if descriptor.Workflow == nil && !carryover {
@@ -1159,6 +1186,84 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	return result, nil
 }
 
+type preparedDefaultReviewPolicy struct {
+	current eventstore.ReviewPolicy
+	next    eventstore.ReviewPolicy
+}
+
+func defaultFollowingReviewPolicy(current tracker.ChangeReviewPolicy, descriptor policy.Descriptor) (tracker.ChangeReviewPolicy, bool) {
+	rules := defaultChangeReviewPolicy(descriptor)
+	if current.ID != "" && (current.ID == rules.ID || !followsRepositoryGate(current)) {
+		return rules, false
+	}
+	return rules, changerequest.ValidatePolicy(rules, descriptor) == nil
+}
+
+func (s *Service) prepareDefaultReviewPolicy(ctx context.Context, scope nativeScope, descriptor policy.Descriptor) (preparedDefaultReviewPolicy, error) {
+	var current eventstore.ReviewPolicy
+	var native bool
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		native = project.Profile == "native"
+		if !native {
+			return nil
+		}
+		current, err = r.ReviewPolicy(ctx, scope.project)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		return err
+	})
+	if err != nil || !native {
+		return preparedDefaultReviewPolicy{}, err
+	}
+	var rules tracker.ChangeReviewPolicy
+	content := eventstore.NewContent(s.runDetailStore())
+	if current.ReviewPolicyID != "" {
+		if current.OrganizationID != scope.organization || current.ProjectID != scope.project {
+			return preparedDefaultReviewPolicy{}, corestore.ErrTenantMismatch
+		}
+		rules, err = content.ReviewPolicy(ctx, current)
+		if err != nil {
+			return preparedDefaultReviewPolicy{}, err
+		}
+	}
+	nextRules, follow := defaultFollowingReviewPolicy(rules, descriptor)
+	if !follow {
+		return preparedDefaultReviewPolicy{}, nil
+	}
+	next, err := content.PrepareReviewPolicy(ctx, eventstore.ReviewPolicy{OrganizationID: scope.organization, ProjectID: scope.project, PolicyRevisionID: descriptor.ID, Revision: current.Revision + 1}, nextRules)
+	if err != nil {
+		return preparedDefaultReviewPolicy{}, err
+	}
+	return preparedDefaultReviewPolicy{current: current, next: next}, nil
+}
+
+func applyDefaultReviewPolicy(ctx context.Context, w tenantstore.Writer, prepared preparedDefaultReviewPolicy, actor string, now time.Time) error {
+	if prepared.next.ReviewPolicyID == "" {
+		return nil
+	}
+	current, err := w.ReviewPolicy(ctx, prepared.next.ProjectID)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	if err == nil && (current.OrganizationID != prepared.next.OrganizationID || current.ProjectID != prepared.next.ProjectID) {
+		return corestore.ErrTenantMismatch
+	}
+	if err == nil && current.ReviewPolicyID == prepared.next.ReviewPolicyID && current.PolicyRevisionID == prepared.next.PolicyRevisionID {
+		return nil
+	}
+	if current.ReviewPolicyID != prepared.current.ReviewPolicyID || current.PolicyRevisionID != prepared.current.PolicyRevisionID || current.Revision != prepared.current.Revision {
+		return policyMismatch("Change review policy changed; read the current policy and retry")
+	}
+	next := prepared.next
+	next.UpdatedBy, next.UpdatedAt = actor, now
+	return w.SetReviewPolicy(ctx, next, prepared.current.ReviewPolicyID)
+}
+
 func defaultChangeReviewPolicy(descriptor policy.Descriptor) tracker.ChangeReviewPolicy {
 	rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: descriptor.Gates.HumanReview, RequiredChecks: []tracker.ChangeCheckSpec{}}
 	rules.ID = changerequest.PolicyID(rules)
@@ -1189,11 +1294,8 @@ func followDefaultChangeReviewPolicy(ctx context.Context, tx *sql.Tx, scope stri
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	rules := defaultChangeReviewPolicy(descriptor)
-	if err == nil && (current.ID == rules.ID || !followsRepositoryGate(current)) {
-		return false, nil
-	}
-	if changerequest.ValidatePolicy(rules, descriptor) != nil {
+	rules, follow := defaultFollowingReviewPolicy(current, descriptor)
+	if !follow {
 		return false, nil
 	}
 	raw, err := json.Marshal(rules)

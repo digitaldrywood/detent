@@ -845,8 +845,10 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				})
 			}},
 		} {
-			if err := check.read(); !errors.Is(err, corestore.ErrTenantMismatch) {
-				t.Fatalf("%s: stale %s policy accepted: %v", org, check.name, err)
+			err := check.read()
+			var mismatch *nativeError
+			if !errors.As(err, &mismatch) || mismatch.Code != "policy_mismatch" || mismatch.status != http.StatusConflict {
+				t.Fatalf("%s: stale %s policy refusal=%v, want policy_mismatch", org, check.name, err)
 			}
 		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
