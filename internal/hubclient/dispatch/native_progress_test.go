@@ -8,11 +8,55 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestProgressReadmissionRecordsCancellationCause(t *testing.T) {
+	for _, mode := range []string{runner.RunModeImplement, runner.RunModeMerge} {
+		t.Run(mode, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Resume after progress review")
+			h.claim(t, issue.ID)
+			previous := h.scheduler.nativeClaims[issue.ID].lease
+			execution := h.scheduler.RunExecution(issue.ID)
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Backend: "example", Model: "example-model", Role: "rework"}); err != nil {
+				t.Fatal(err)
+			}
+			next, _, err := h.scheduler.ReadmitRetryProgress(t.Context(), runner.RunRequest{Issue: issue, Execution: execution, Mode: mode}, nil)
+			if err != nil || next == nil {
+				t.Fatalf("readmit the implementation step: %v", err)
+			}
+			recovery, err := h.native.Recovery(t.Context(), previous.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var finished *tracker.NativeAttempt
+			for i := range recovery.Attempts {
+				if recovery.Attempts[i].LeaseID == previous.ID {
+					finished = &recovery.Attempts[i]
+				}
+			}
+			if finished == nil || finished.Outcome != "cancelled" || finished.ClaimReleasedAt == nil || finished.TerminalFailure == nil {
+				t.Fatalf("progress attempt was not settled with a cause: %+v", finished)
+			}
+			failure := finished.TerminalFailure
+			if failure.ErrorClass != "lease_released" || failure.Stage != "lease_release" || !strings.Contains(failure.Error, "progress check completed") || failure.ObservedAt.IsZero() {
+				t.Fatalf("progress readmission silently cancelled: %+v", failure)
+			}
+			if _, err := h.scheduler.AdoptClaim(t.Context(), issue, time.Now()); err != nil {
+				t.Fatalf("successor claim is unusable: %v", err)
+			}
+			if err := next.Start(t.Context(), tracker.NativeExecutionIdentity{Backend: "example", Model: "example-model", Role: mode}); err != nil {
+				t.Fatalf("successor cannot start: %v", err)
+			}
+		})
+	}
+}
 
 func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 	t.Parallel()

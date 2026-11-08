@@ -58,6 +58,17 @@ func (s *Scheduler) ReadmitRetryProgress(ctx context.Context, run runner.RunRequ
 		request.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: requirement}}
 		request.Capabilities = append(request.Capabilities, tracker.NativeProviderCapacityCapability)
 	}
+	completion, ok := claim.execution.(runner.CompletionExecution)
+	if !ok {
+		return nil, nil, errors.New("progress execution cannot record its completion cause")
+	}
+	failure := tracker.NativeTerminalFailure{
+		Error: "progress check completed; lease released for next step admission", ErrorClass: "lease_released", Stage: "lease_release", ObservedAt: s.now().UTC(),
+		Decision: &tracker.FailureAttribution{Outcome: "instance", Reason: "Progress check completed; the next step requires execution admission"},
+	}
+	if err := completion.PrepareFinish(ctx, "cancelled", "", &failure); err != nil {
+		return nil, nil, err
+	}
 	if err := claim.execution.Finish(ctx, "cancelled"); err != nil {
 		return nil, nil, err
 	}
