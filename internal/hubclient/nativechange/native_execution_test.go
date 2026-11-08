@@ -28,6 +28,42 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		head      string
+		effect    string
+		wantError bool
+	}{
+		{name: "confirmed source", head: "published-head", effect: "confirmed"},
+		{name: "moved final head", head: "changed-head", effect: "confirmed", wantError: true},
+		{name: "ambiguous effect", head: "published-head", effect: "ambiguous", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			publication := &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
+			checkpoint := &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: test.effect, EffectID: publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
+			execution := &nativeExecution{
+				scheduler: &executionAuthority{now: time.Now},
+				role:      runner.RoleCode, settled: true, storedSeq: 2,
+				data:          tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleCode}, Handoff: checkpoint},
+				change:        &runner.NativeChange{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"},
+				publication:   publication,
+				lastDiff:      &tracker.AttemptDiffRequest{HeadSHA: "published-head"},
+				worktreeState: "clean", worktreeHead: "published-head",
+				diffSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
+					return tracker.AttemptDiffRequest{HeadSHA: test.head}, true
+				},
+			}
+			if err := execution.prepareFinish(t.Context(), "succeeded"); (err != nil) != test.wantError {
+				t.Fatalf("prepared publication completion error = %v, want refusal %t", err, test.wantError)
+			}
+			if execution.data.Outcome != "" || execution.data.Finalization != nil {
+				t.Fatal("completion validation published a terminal outcome")
+			}
+		})
+	}
+}
+
 func TestRecordSourceValidationInitialRuntimeUsesValidationPhase(t *testing.T) {
 	fallback := time.Now().UTC()
 	for _, test := range []struct {
@@ -1734,8 +1770,12 @@ func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 }
 
 func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
-	for _, status := range []int{502, 503, 0} {
-		t.Run(strconv.Itoa(status), func(t *testing.T) {
+	for _, test := range []struct {
+		status    int
+		published bool
+	}{{502, false}, {503, false}, {0, false}, {502, true}, {503, true}, {0, true}} {
+		t.Run(fmt.Sprintf("%d/published=%t", test.status, test.published), func(t *testing.T) {
+			status := test.status
 			start := time.Now()
 			descriptor := clientTestPolicy()
 			offline := true
@@ -1788,10 +1828,20 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 			execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
 			execution.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: start.Add(-11 * time.Minute)}
 			execution.preparedOutcome = "succeeded"
+			if test.published {
+				execution.publication = &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
+				execution.change = &runner.NativeChange{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
+				execution.lastDiff = &tracker.AttemptDiffRequest{HeadSHA: "published-head"}
+				execution.storedSeq = execution.data.Sequence + 1
+				execution.data.Handoff = &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: "confirmed", EffectID: execution.publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
+			}
 			if err := scheduler.ReleaseClaim(t.Context(), "wi_test", "completed"); !nativeTransportUnavailable(err) {
 				t.Fatalf("outage = %v", err)
 			}
 			deadline := execution.completionOutageDeadline
+			if deadline.IsZero() {
+				t.Fatal("completion outage did not retain its deadline")
+			}
 			fixtureSetNow(scheduler, start.Add(2*time.Minute))
 			if err := scheduler.ReleaseClaim(t.Context(), "wi_test", "completed"); !nativeTransportUnavailable(err) {
 				t.Fatalf("retry outage = %v", err)

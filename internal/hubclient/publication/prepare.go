@@ -37,6 +37,20 @@ type State struct {
 	Publish         func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
 }
 
+func ValidateReceipt(change *runner.NativeChange, receipt *tracker.NativePRPublication, diff *tracker.AttemptDiffRequest, checkpoint *tracker.NativeCheckpoint) error {
+	if receipt == nil {
+		return nil
+	}
+	if change == nil || diff == nil || receipt.ChangeID != change.ChangeID || receipt.VersionID != change.VersionID || receipt.HeadSHA != change.HeadSHA || receipt.HeadSHA != diff.HeadSHA {
+		return errors.New("PR publication differs from the final source; reconcile publication before reporting success")
+	}
+	source := tracker.NativeChangeReference{ChangeID: receipt.ChangeID, VersionID: receipt.VersionID, HeadSHA: receipt.HeadSHA}
+	if checkpoint == nil || checkpoint.HeadSHA != receipt.HeadSHA || checkpoint.ExternalEffect != "pr_create" || checkpoint.EffectState != "confirmed" || checkpoint.EffectID != receipt.EffectID("pr_create") || checkpoint.Change == nil || *checkpoint.Change != source {
+		return errors.New("PR publication lacks its exact confirmed checkpoint; reconcile publication before reporting success")
+	}
+	return nil
+}
+
 func Prepare(ctx context.Context, host Authority, executionState State, change *runner.NativeChange) (Result, error) {
 	detail, err := executionState.Client.RuntimeChange(ctx, executionState.Lease.WorkItemID, change.ChangeID)
 	if err != nil {
@@ -94,7 +108,7 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 			return Result{}, err
 		}
 		if executionState.Publication != nil && executionState.Publication.Matches(change.ChangeID, version) {
-			return Result{}, nil
+			return Result{}, ValidateReceipt(change, executionState.Publication, executionState.Diff(), executionState.Data.Handoff)
 		}
 		if executionState.Publish == nil {
 			return Result{}, errors.New("required GitHub PR preparation is unavailable; retain the current Change source and resume on its authorized publication runner")

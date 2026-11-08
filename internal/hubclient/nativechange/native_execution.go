@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
 	"github.com/digitaldrywood/detent/internal/hubclient/planner"
+	"github.com/digitaldrywood/detent/internal/hubclient/publication"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -547,6 +548,19 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 				e.settled = true
 			}
 		}
+		if e.publication != nil {
+			diff := e.lastDiff
+			if e.diffSource != nil {
+				captured, ok := e.diffSource(ctx)
+				if !ok {
+					return errors.New("the final publication source is unavailable")
+				}
+				diff = &captured
+			}
+			if err := publication.ValidateReceipt(e.change, e.publication, diff, e.data.Handoff); err != nil {
+				return err
+			}
+		}
 		return api.MutationEffectError(ctx)
 	}
 	return nil
@@ -589,6 +603,9 @@ func (e *nativeExecution) finish(ctx context.Context, outcome string) (err error
 		return preparationErr
 	}
 	if errors.Is(preparationErr, runner.ErrExecutionAuthorityUnavailable) {
+		return preparationErr
+	}
+	if outcome == "succeeded" && preparationErr != nil && e.publication != nil {
 		return preparationErr
 	}
 	if outcome == "succeeded" && e.change != nil && e.change.Error != "" {
