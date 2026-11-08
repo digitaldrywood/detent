@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -22,6 +21,18 @@ func (s *checkpointAttemptStore) WorkAttempt(context.Context, int64) (store.Work
 	return s.attempt, s.err
 }
 
+func (s *checkpointAttemptStore) RecordWorkAttemptHeartbeat(ctx context.Context, heartbeat store.WorkAttemptHeartbeat) error {
+	if s.attempt.ID != heartbeat.AttemptID {
+		return store.ErrNotFound
+	}
+	if err := s.recordingWorkAttemptStore.RecordWorkAttemptHeartbeat(ctx, heartbeat); err != nil {
+		return err
+	}
+	s.attempt.HeartbeatAt = heartbeat.HeartbeatAt
+	s.attempt.LeaseExpiresAt = heartbeat.LeaseExpiresAt
+	return nil
+}
+
 type checkpointLaneConnector struct {
 	backendCapacityTestConnector
 	read func() ([]connector.Issue, error)
@@ -38,7 +49,7 @@ func TestCheckpointValidator(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 			issue := connector.Issue{ID: "checkpoint", State: "In Progress"}
-			attempts := &checkpointAttemptStore{attempt: store.WorkAttempt{IssueID: issue.ID, Status: store.WorkAttemptStatusActive, LeaseExpiresAt: now.Add(time.Minute)}}
+			attempts := &checkpointAttemptStore{attempt: store.WorkAttempt{ID: 23, IssueID: issue.ID, Status: store.WorkAttemptStatusActive, LeaseExpiresAt: now.Add(time.Minute)}}
 			orch := &Orchestrator{workAttempts: attempts, now: func() time.Time { return now }}
 			running := Running{Issue: issue, WorkAttemptID: 23, Generation: 5, Mode: runner.RunModeImplement}
 			ctx, cancel := context.WithCancel(t.Context())
@@ -96,29 +107,17 @@ func TestCheckpointValidator(t *testing.T) {
 }
 
 func TestCheckpointRenewsExpiredLease(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	for _, scenario := range []string{"owned", "with progress", "wrong generation", "lane changed"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
-			now := time.Now().UTC().Truncate(time.Second)
-			db, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "attempts.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := db.Close(); err != nil {
-					t.Error(err)
-				}
-			})
+			now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 			issue := connector.Issue{ID: "checkpoint", State: "In Progress"}
 			expired := now.Add(-3 * time.Minute)
-			id, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "test", IssueID: issue.ID, WorkerType: "implement", StartedAt: now.Add(-13 * time.Minute), LeaseExpiresAt: expired})
-			if err != nil {
-				t.Fatal(err)
-			}
+			const id int64 = 1
+			db := &checkpointAttemptStore{attempt: store.WorkAttempt{
+				ID: id, ProjectID: "test", IssueID: issue.ID, WorkerType: "implement",
+				Status: store.WorkAttemptStatusActive, StartedAt: now.Add(-13 * time.Minute), LeaseExpiresAt: expired,
+			}}
 			o := &Orchestrator{workAttempts: db, now: func() time.Time { return now }}
 			running := Running{Issue: issue, WorkAttemptID: id, Generation: 5, Mode: runner.RunModeImplement}
 			if scenario == "with progress" {
@@ -134,7 +133,7 @@ func TestCheckpointRenewsExpiredLease(t *testing.T) {
 				}
 				return []connector.Issue{issue}, nil
 			}}
-			err = o.checkpointValidator(issue.ID, id, 5)(t.Context())
+			err := o.checkpointValidator(issue.ID, id, 5)(t.Context())
 			wantOK := scenario == "owned" || scenario == "with progress"
 			if (err == nil) != wantOK {
 				t.Fatalf("checkpoint: %v", err)

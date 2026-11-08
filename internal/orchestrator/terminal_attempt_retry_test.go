@@ -1730,11 +1730,7 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 			issue.PullRequest = &connector.PullRequest{Number: 1, HeadSHA: "head"}
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, MaxRetryBackoff: time.Minute, FailureRetryBaseDelay: time.Second})
-			metrics, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "retry.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = metrics.Close() })
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
 			scheduling := &hubSchedulingSource{}
 			o := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, scheduling: scheduling}
 			state := newState(cfg)

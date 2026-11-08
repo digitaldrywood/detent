@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -166,12 +165,7 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				runUpdates:         make(chan runUpdate, 1),
 				logger:             slog.New(slog.NewTextHandler(&logs, nil)),
 			}
-			db, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "retry.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = db.Close() })
-			orch.workflowMetrics = db
+			orch.workflowMetrics = &autoPromoteWorkflowMetricsRecorder{}
 			state := newState(cfg)
 
 			if !orch.dispatchIssue(t.Context(), &state, issue, 3, startedAt, "") {

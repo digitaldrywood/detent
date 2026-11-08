@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -251,10 +250,6 @@ func TestRecordedBlockerPredicateRegistry(t *testing.T) {
 }
 
 func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name              string
@@ -309,7 +304,7 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 			state := newState(orch.cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: now.Add(-time.Hour), Source: BlockedSourceProjectStatus}
 			if tt.priorReworkLimit {
-				orch.workflowMetrics = openWorkAttemptRecoveryStore(t, t.Context())
+				orch.workflowMetrics = &autoPromoteWorkflowMetricsRecorder{}
 				prior := cloneIssue(issue)
 				prior.State = "Rework"
 				prior.PullRequest = &connector.PullRequest{Number: 24, HeadSHA: "unchanged-head"}
@@ -347,10 +342,6 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 }
 
 func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	now := time.Date(2026, 9, 24, 3, 0, 0, 0, time.UTC)
 	parkedAt := now.Add(-time.Hour).Add(500 * time.Millisecond)
 	const source = "digitaldrywood/detent#685"
@@ -434,13 +425,9 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 				blocked := state.Blocked[issue.ID]
 				blocked.Recovery = nil
 				state.Blocked[issue.ID] = blocked
-				backend, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = backend.Close() })
+				backend := &autoPromoteWorkflowMetricsRecorder{}
 				orch.workflowMetrics = backend
-				_, err = backend.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+				_, err := backend.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
 					ProjectID: orch.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier,
 					PhaseType: store.WorkflowPhaseTypeLane, PhaseName: blockedStatusState, PreviousPhaseName: tt.legacyLane,
 					Reason: string(AutoPromoteReasonWorkpadBlocker), Status: "entered", StartedAt: parkedAt, MetadataJSON: `{"human_action":"Approve requested scope","tracker_mutation_at":"` + parkedAt.Format(time.RFC3339Nano) + `"}`,
@@ -451,7 +438,7 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 			}
 
 			if tt.parkCause != "" {
-				orch.workflowMetrics = openValidatorMemoStore(t)
+				orch.workflowMetrics = &autoPromoteWorkflowMetricsRecorder{}
 				prior := cloneIssue(issue)
 				prior.State = "In Progress"
 				metadata := workflowLaneMetadata{BlockedRecovery: state.Blocked[issue.ID].Recovery}
