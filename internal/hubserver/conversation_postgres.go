@@ -330,6 +330,16 @@ func (s *Service) commandLinkConversationPG(ctx context.Context, scope nativeSco
 		return nil, err
 	}
 	defer release()
+	preview, err = s.readPGConversation(ctx, scope, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeConversationScopePG(ctx, scope, preview.OwnerPrincipalID != scope.credential.ID); err != nil {
+		return nil, err
+	}
+	if preview.SubjectWorkItemID != "" {
+		return nil, nativePublicInvalid("Issue questions cannot be linked or shared")
+	}
 	now := s.config.now()
 	link := &conversationLinkMutation{service: s, scope: scope, original: preview, request: request, now: now}
 	issueRequest := conversationLinkedIssueRequest(preview, request, next)
