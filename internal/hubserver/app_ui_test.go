@@ -587,7 +587,8 @@ func TestAppUpdates(t *testing.T) {
 		{account: "viewer", status: http.StatusNotFound},
 	} {
 		t.Run("denied "+test.account, func(t *testing.T) {
-			browserHostedStatus(t, f.appRequest(t, test.account, http.MethodGet, "/app/updates"), test.status)
+			response := f.appRequest(t, test.account, http.MethodGet, "/app/updates")
+			browserHostedStatus(t, response, test.status)
 		})
 	}
 	browserHostedStatus(t, f.appRequest(t, "owner", http.MethodGet, "/app/updates"), http.StatusOK)
@@ -610,11 +611,21 @@ func TestAppUpdates(t *testing.T) {
 	revoked := enrollAppRunner(t, f, "Delhi", "v0.110.0")
 	up := enrollAppRunner(t, f, "Dublin", "v0.117.60")
 	ahead := enrollAppRunner(t, f, "Essen", "v0.118.0")
-	stale := formatHubTime(f.service.config.now().Add(-2 * runnerauth.HeartbeatTimeout))
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", stale, offline.RunnerID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = (SELECT token_id FROM runner_identities WHERE id = ?)", formatHubTime(f.service.config.now()), revoked.RunnerID); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(writer tenantstore.Writer) error {
+		identity, err := writer.RunnerIdentity(t.Context(), string(offline.RunnerID))
+		if err != nil {
+			return err
+		}
+		identity.LastHeartbeatAt = f.service.config.now().Add(-2 * runnerauth.HeartbeatTimeout)
+		if err := writer.UpdateRunnerIdentity(t.Context(), identity); err != nil {
+			return err
+		}
+		identity, err = writer.RunnerIdentity(t.Context(), string(revoked.RunnerID))
+		if err != nil {
+			return err
+		}
+		return writer.RevokeAccessCredential(t.Context(), identity.TokenID, f.service.config.now())
+	}); err != nil {
 		t.Fatal(err)
 	}
 

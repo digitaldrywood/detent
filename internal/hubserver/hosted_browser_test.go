@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -258,6 +259,30 @@ type browserHostedFixture struct {
 // POST /__preview/stop, not this timer.
 const browserHostedPreviewLifetime = 20 * time.Minute
 
+func browserHostedSession(t *testing.T, service *Service, identity auth.Identity) (string, auth.Session) {
+	t.Helper()
+	if identity.Hosted.OrganizationID == service.config.Hosted.WorkOSOrganizationID {
+		token, session, err := service.hostedSessions.CreateIdentitySession(t.Context(), identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token, session
+	}
+	token, err := apikey.GenerateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosted := identity.Hosted
+	session := auth.Session{Email: identity.Email, Identity: hosted, ExpiresAt: hosted.ExpiresAt}
+	organization := service.accessOrganization()
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		return writer.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: organization, Hash: apikey.HashToken(token), Email: identity.Email, Subject: hosted.Subject, ProviderOrganizationID: hosted.OrganizationID, SessionID: hosted.SessionID, IdentityCreatedAt: hosted.CreatedAt, IdentityExpiresAt: hosted.ExpiresAt, SupportActor: hosted.SupportActor, SupportReason: hosted.SupportReason, CreatedAt: service.config.now(), ExpiresAt: session.ExpiresAt})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return token, session
+}
+
 func newBrowserHostedFixture(t *testing.T, allocated bool) *browserHostedFixture {
 	t.Helper()
 	return newBrowserHostedOrganizationFixture(t, allocated, "org_browser_preview")
@@ -343,13 +368,12 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 				t.Fatal(err)
 			}
 		}
-		sessionIdentity := identity
-		sessionHosted := *identity.Hosted
-		sessionHosted.OrganizationID = service.config.Hosted.WorkOSOrganizationID
-		sessionIdentity.Hosted = &sessionHosted
-		token, session, err := service.hostedSessions.CreateIdentitySession(t.Context(), sessionIdentity)
-		if err != nil {
-			t.Fatal(err)
+		token, session := browserHostedSession(t, service, identity)
+		if account.name == "wrong-organization" {
+			verified, err := service.hostedSessions.Authenticate(t.Context(), token)
+			if err != nil || verified.Identity == nil || verified.Identity.OrganizationID != organization {
+				t.Fatalf("foreign organization session identity=%+v error=%v", verified.Identity, err)
+			}
 		}
 		fixture.cookies[account.name] = &http.Cookie{Name: hostedCookie, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: session.ExpiresAt}
 		if account.name == "revoked" {
