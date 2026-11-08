@@ -3,30 +3,173 @@ package web_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"database/sql"
+	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pressly/goose/v3"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
+var nativeFormsTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+	roles, err := os.ReadFile("../hubserver/postgres/roles.sql")
+	if err != nil {
+		return err
 	}
+	if _, err := db.ExecContext(ctx, string(roles)); err != nil {
+		return err
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "SET ROLE "+postgres.MigrationRoleName); err != nil {
+		return err
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../hubserver/postgres/migrations")), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	if err != nil {
+		return err
+	}
+	_, err = provider.Up(ctx)
+	return err
+})
 
+type nativeFormsProvider struct{ auth.HostedProvider }
+
+func (nativeFormsProvider) Memberships(_ context.Context, user, organization string) ([]auth.Membership, error) {
+	membership := auth.Membership{ID: "membership_" + organization, UserID: user, OrganizationID: organization, Status: "active"}
+	membership.Role.Slug = "owner"
+	return []auth.Membership{membership}, nil
+}
+
+type nativeFormsDetails struct{ content entryauthority.ContentHandler }
+
+func (d nativeFormsDetails) StoreDetail(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(content))
+	if err != nil {
+		return ref, err
+	}
+	_, err = d.content(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Write: true, Data: content})
+	return ref, err
+}
+
+func (d nativeFormsDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	return d.content(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref})
+}
+
+func nativeFormsPostgresConfig(t *testing.T) hubserver.Config {
+	t.Helper()
+	admin := nativeFormsTemplate.Database(t)
+	name, password := "example_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)+" IN ROLE "+postgres.RuntimeRoleName); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		deadline, _ := t.Deadline()
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		if _, err := admin.ExecContext(ctx, "DROP ROLE "+quoted); err != nil {
+			t.Error(err)
+		}
+	})
+	poolConfig := nativeFormsTemplate.NativeConfig(t, admin, name, password)
+	poolConfig.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolLimits := postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1}
+	repository, err := postgres.NewRepository(t.Context(), pool, poolLimits)
+	if err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	keys, err := hubsecrets.FromEnvironment(func(name string) string {
+		switch name {
+		case "DETENT_HUB_SECRET_KEYS":
+			return `{"1":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)) + `"}`
+		case "DETENT_HUB_SECRET_KEY_VERSION":
+			return "1"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []tracker.OrganizationID{"org_forms", "org_other"} {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			now := time.Now().UTC()
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org), AllocationGeneration: 1}); err != nil {
+				return err
+			}
+			membership := "membership_provider_" + string(org)
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "forms_operator", Hash: apikey.HashToken("integration-operator"), Name: "Forms operator", Scope: "operator", NativeOnly: true, Kind: "personal", UserID: "user_forms", MembershipID: membership, KeyScope: "write", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: "user_forms", Email: "forms@example.test", MembershipID: membership, Role: "owner", Active: true, PrincipalID: "forms_operator", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "prj_forms", Name: "Native forms", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Transitions: []string{"In Progress"}}, {Name: "In Progress"}}}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: "forms_operator", ProjectID: "prj_forms"}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: "user_forms", ProjectID: "prj_forms", CanWrite: true}); err != nil {
+				return err
+			}
+			cursor := bytes.Repeat([]byte{2}, 32)
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: "hub_" + strings.ReplaceAll(uuid.NewString(), "-", ""), CursorKey: cursor}); err != nil {
+				return err
+			}
+			envelope, err := keys.Seal(cursor, accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
+			if err != nil {
+				return err
+			}
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repository.Close(); err != nil {
+		t.Fatal(err)
+	}
+	content := newContentStore()
+	return hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &postgres.Config{Connection: nativeFormsTemplate.Connection(t, admin, name, password), Pool: poolLimits}, Content: content, RunDetails: nativeFormsDetails{content: content}, SecretKeys: keys, Hosted: &hubserver.HostedConfig{OrganizationID: "org_forms", WorkOSOrganizationID: "provider_org_forms", PublicURL: "https://hub.example.test", Provider: nativeFormsProvider{}}}
+}
+
+func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
 	t.Parallel()
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte("integration-admin"), Content: newContentStore()})
+	service, err := hubserver.Open(t.Context(), nativeFormsPostgresConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,54 +178,25 @@ func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	bootstrap := func(method, path string, body, result any) {
-		t.Helper()
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req := httptest.NewRequest(method, path, bytes.NewReader(encoded))
-		req.Header.Set("Authorization", "Bearer integration-admin")
-		req.Header.Set("Content-Type", "application/json")
-		res := httptest.NewRecorder()
-		service.Handler().ServeHTTP(res, req)
-		if res.Code >= 300 {
-			t.Fatalf("bootstrap %s: %d %s", path, res.Code, res.Body)
-		}
-		if result != nil {
-			if err := json.Unmarshal(res.Body.Bytes(), result); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	var organizations tracker.Page[struct {
-		ID tracker.OrganizationID `json:"organization_id"`
-	}]
-	bootstrap(http.MethodGet, "/api/v2/organizations", nil, &organizations)
-	org := organizations.Items[0].ID
-	var project tracker.NativeProject
-	bootstrap(http.MethodPost, "/api/v2/organizations/"+string(org)+"/projects", map[string]any{"name": "native forms", "idempotency_key": "project", "states": []tracker.NativeState{{Name: "Todo", Transitions: []string{"In Progress"}}, {Name: "In Progress"}}}, &project)
-	var token struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
-	}
-	bootstrap(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "form-operator", "scope": "operator"}, &token)
-	bootstrap(http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", map[string]any{"organization_id": org, "project_id": project.ID}, nil)
+	org := tracker.OrganizationID("org_forms")
 	hubHTTP := httptest.NewServer(service.Handler())
 	t.Cleanup(hubHTTP.Close)
-	client, err := hubclient.New(hubclient.Config{URL: hubHTTP.URL, TokenSource: func() string { return token.Token }, HTTPClient: hubHTTP.Client()})
+	client, err := hubclient.New(hubclient.Config{URL: hubHTTP.URL, TokenSource: func() string { return "integration-operator" }, HTTPClient: hubHTTP.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := client.Native(org, project.ID)
+	native, err := client.Native(org, "prj_forms")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := native.Project(t.Context()); err != nil {
+		t.Fatalf("read PostgreSQL form project: %v", err)
 	}
 	server := nativeWebServerWithClient(t, native, &nativeWebFixture{})
 	const contractSections = "\n## Acceptance criteria\nCreate and edit native work through forms.\n## Must not break\nComment and Change operations.\n## How we know it worked\nThe native form integration test passes."
 	const createdBody = "Full native body" + contractSections
 	const editedBody = "Edited body" + contractSections
-	const dependencyBody = "## Acceptance criteria\nResolve the prerequisite storage migration before dispatching dependent tasks.\n## Must not break\nPreserve database records, schema compatibility and tenant isolation.\n## How we know it worked\nVerify successful upgrades against populated SQLite fixtures."
+	const dependencyBody = "## Acceptance criteria\nResolve the prerequisite storage migration before dispatching dependent tasks.\n## Must not break\nPreserve database records, schema compatibility and tenant isolation.\n## How we know it worked\nVerify successful upgrades against populated PostgreSQL fixtures."
 	submit := func(path string, form url.Values, want int) string {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))

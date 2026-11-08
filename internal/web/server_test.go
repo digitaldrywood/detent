@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
+	"fmt"
 	"html"
 	"io"
 	"io/fs"
@@ -65,7 +67,20 @@ func TestMain(m *testing.M) {
 	if err := os.Unsetenv("DETENT_API_TOKEN"); err != nil {
 		panic("clear DETENT_API_TOKEN: " + err.Error())
 	}
-	os.Exit(m.Run())
+	flag.Parse()
+	timeout, err := time.ParseDuration(flag.Lookup("test.timeout").Value.String())
+	if err != nil || timeout <= 0 {
+		fmt.Fprintln(os.Stderr, "web tests require a process deadline")
+		os.Exit(1)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	code := m.Run()
+	if err := nativeFormsTemplate.Close(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
+	cancel()
+	os.Exit(code)
 }
 
 func TestNewServerValidatesDependencies(t *testing.T) {
