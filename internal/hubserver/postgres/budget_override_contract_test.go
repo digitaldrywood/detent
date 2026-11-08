@@ -37,10 +37,20 @@ func TestBudgetOverrideContractScopesCapsExpiryAndOriginalLifetime(t *testing.T)
 			scopedPolicy.ProjectID = id
 			if err := repository.WriteBudgetOverrides(t.Context(), org, corestore.Serving, func(w postgres.BudgetOverrideWriter) error {
 				row, err := w.SetBudgetOverride(t.Context(), postgres.BudgetOverride{OrganizationID: org, ProjectID: id, PerDayMaxUSD: new(float64(150 + 50*index)), PerIssueMaxUSD: new(20.0), ExpiresAt: now.Add(48 * time.Hour), Reason: "example"}, scopedPolicy)
-				if err == nil && (row.Revision != 1 || !row.CreatedAt.Equal(now)) {
+				if err != nil {
+					return err
+				}
+				if row.Revision != 1 || !row.CreatedAt.Equal(now) || row.ProjectID != id || row.OrganizationID != org || row.Reason != "example" {
 					t.Fatalf("override=%+v", row)
 				}
-				return err
+				active, err := w.ActiveBudgetOverride(t.Context(), id, now.Add(time.Hour))
+				if err != nil {
+					return err
+				}
+				if active.ProjectID != id || !active.ExpiresAt.Equal(now.Add(48*time.Hour)) {
+					t.Fatalf("active override=%+v", active)
+				}
+				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}
