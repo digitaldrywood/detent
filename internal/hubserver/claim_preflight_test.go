@@ -1,15 +1,18 @@
 package hubserver
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -148,46 +151,83 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 
 func TestClaimRetryAfterCommittedDecisionUsesFreshEventIDs(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "claim-retry-event-ids")
-	worker := f.worker(t, "retry-worker")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "retry-machine", "hostname": "isolated", "capacity": 1, "version": "test"}), http.StatusOK)
-	credential, _, err := f.service.authenticateAPIToken(t.Context(), worker, "", "")
+	runner := prepareRunner(t, f, runnerauth.Claim)
+	runner.enroll(t)
+	org := f.project.OrganizationID
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.UpdateRunnerCapacityConfig(t.Context(), runner.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), org, apikey.HashToken(runner.redemption.Credential), "", "")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("runner authentication status=%d error=%v", status, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-	decision := func(issue tracker.NativeIssue) preparedClaimDecision {
-		t.Helper()
-		var id tracker.WorkItemID
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id=?", issue.WorkItemID).Scan(&id); err != nil {
+	scope := nativeScope{organization: org, project: f.project.ID, credential: credential}
+	first, second, selected := f.create(t, "first decision"), f.create(t, "second decision"), f.create(t, "selected candidate")
+	requestFor := func(issue tracker.NativeIssue) tracker.NativeClaim {
+		return tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "retry-" + string(issue.WorkItemID), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+	}
+	var firstLeaseID string
+	for pass, issues := range [][]tracker.NativeIssue{{first}, {first, second}} {
+		for _, issue := range issues {
+			request := requestFor(issue)
+			lease, err := f.service.claimNativeIssueTenant(t.Context(), scope, request, 5*time.Minute)
+			if err != nil {
+				t.Fatalf("pass %d claim: %v", pass, err)
+			}
+			if issue.WorkItemID == first.WorkItemID {
+				if pass == 0 {
+					firstLeaseID = lease.LeaseID
+				} else if lease.LeaseID != firstLeaseID {
+					t.Fatalf("replayed lease = %s, want %s", lease.LeaseID, firstLeaseID)
+				}
+			}
+		}
+		request := requestFor(selected)
+		now := f.service.config.now()
+		stale, err := f.service.readNativeClaimPlan(t.Context(), scope, request, now)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return preparedClaimDecision{scope: scope, id: id, item: string(issue.WorkItemID), data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: credential.Runner.RunnerID, Source: "native_claim", Outcome: "skipped", Reason: "capacity", WorkItemRevision: issue.Revision}}}
-	}
-	first, second, selected := decision(f.create(t, "first decision")), decision(f.create(t, "second decision")), decision(f.create(t, "selected candidate"))
-	prepared := &claimPreparation{}
-	ctx := context.WithValue(f.service.runDetailContext(t.Context()), claimPreparationKey{}, prepared)
-	contentMutation(ctx, true)
-	defer contentMutation(ctx, false)
-	request := tracker.ClaimRequest{MachineID: "retry-machine", SessionID: "retry-session", TTL: time.Minute}
-	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project)}
-	stale := claimMode{hint: &claimSelected{id: selected.id, revision: -1}}
-	for pass, decisions := range [][]preparedClaimDecision{{first}, {first, second}} {
-		prepared.decisions = decisions
-		if err := prepareClaimDecisionPayloads(ctx, prepared); err != nil {
-			t.Fatal(err)
-		}
-		contentWriting(ctx, true)
-		_, err := f.service.database.claimNextOn(ctx, f.service.database.db, nil, stale, request, query, time.Minute)
-		contentWriting(ctx, false)
-		if !errors.Is(err, errClaimHintStale) {
-			t.Fatalf("pass %d: %v, want committed stale hint", pass, err)
+		stale.candidate.Revision = -1
+		if _, err := f.service.claimNativeIssueTenantWithPlan(t.Context(), scope, request, 5*time.Minute, now, stale, nil); !errors.Is(err, ErrNoClaimableWork) {
+			t.Fatalf("pass %d: %v, want committed decisions before stale plan refusal", pass, err)
 		}
 	}
-	var events, ids int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*),count(DISTINCT id) FROM collaboration_events WHERE type='scheduler.decision' AND work_item_id IN (?,?)", first.item, second.item).Scan(&events, &ids); err != nil {
+	events := 0
+	ids := map[string]bool{}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+		for _, issue := range []tracker.NativeIssue{first, second, selected} {
+			rows, err := r.Events(t.Context(), f.project.ID, issue.WorkItemID, 0, 100)
+			if err != nil {
+				return err
+			}
+			itemEvents := 0
+			for _, row := range rows {
+				if row.Type != "scheduler.decision" {
+					continue
+				}
+				if issue.WorkItemID == selected.WorkItemID {
+					t.Error("stale candidate committed a scheduling decision")
+				}
+				events++
+				itemEvents++
+				ids[row.ID] = true
+			}
+			want := 1
+			if issue.WorkItemID == selected.WorkItemID {
+				want = 0
+			}
+			if itemEvents != want {
+				t.Errorf("item %s decisions = %d, want %d", issue.WorkItemID, itemEvents, want)
+			}
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if events != 2 || ids != 2 {
-		t.Fatalf("scheduler decisions=%d distinct ids=%d, want 2 committed events with distinct ids", events, ids)
+	if events != 2 || len(ids) != 2 {
+		t.Fatalf("scheduler decisions=%d distinct ids=%d, want 2 committed events with distinct ids", events, len(ids))
 	}
 }
