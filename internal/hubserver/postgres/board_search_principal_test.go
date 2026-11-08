@@ -70,8 +70,10 @@ func TestBoardSearchPrincipalAdmission(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for iteration := range 3 {
 			t.Run(fmt.Sprintf("%s/%d", org, iteration), func(t *testing.T) {
-				if _, err := f.admin.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("board-search:%q:%q", org, "example")); err != nil {
-					t.Fatal(err)
+				for _, tenant := range []tracker.OrganizationID{"org_first", "org_second"} {
+					if _, err := f.admin.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("board-search:%q:%q", tenant, "example")); err != nil {
+						t.Fatal(err)
+					}
 				}
 				gate := &principalSearchGate{ready: make(chan struct{}), release: make(chan struct{})}
 				finished := make(chan struct{})

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -22,53 +23,82 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type boardSearchDeadline struct{ observed, deadline time.Time }
+
+type boardSearchSessionTrace struct {
+	conn      *pgx.Conn
+	deadlines []boardSearchDeadline
+}
+
+func (p *boardSearchSessionTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	p.conn = conn
+	if deadline, ok := ctx.Deadline(); ok {
+		p.deadlines = append(p.deadlines, boardSearchDeadline{time.Now(), deadline})
+	}
+	return ctx
+}
+func (*boardSearchSessionTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (p *boardSearchSessionTrace) TraceBatchStart(ctx context.Context, conn *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return p.TraceQueryStart(ctx, conn, pgx.TraceQueryStartData{})
+}
+func (*boardSearchSessionTrace) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {
+}
+func (*boardSearchSessionTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
 func newBoardSearchFixture(t *testing.T) searchFixture {
 	t.Helper()
 	admin := template.Database(t)
 	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	objects := newHistoryObjects()
 	f := searchFixture{repository: repository, pool: pool, admin: admin, objects: objects, content: searchstore.NewContent(objects)}
-	ctx := t.Context()
 
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, org)
-		if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
-			_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "prj_first", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
-			if err != nil {
-				return err
-			}
-			for index, id := range []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"} {
-				if _, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: org, ProjectID: "prj_first", NativeID: id, Number: int64(index + 1), Title: "Example", ActorKind: new("human"), ActorPrincipalID: new("example"), WorkflowStateName: new("Todo")}); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		for index, id := range []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"} {
-			f.put(t, searchIssue(org, string(id)), searchstore.Text{Title: "Example", Body: "abcabcabcabcabc"}, 0)
-			ref, err := f.objects.StoreDetail(ctx, string(org), []byte(`{}`))
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
-				issue := &tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: id, Revision: 1, Number: index + 1}, Title: "Example", State: "Todo", CreatedAt: historyAt(), UpdatedAt: historyAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}}
-				row := viewstore.BoardRecord{OrganizationID: org, ProjectID: "prj_first", WorkItemID: id, SourceRevision: 1, ActorPrincipalID: "example", Position: viewstore.BoardPosition{State: "Todo", Identifier: string(id)}, CreatedAt: historyAt(), UpdatedAt: historyAt(), Payload: ref, PageIssue: issue, ListIssue: issue, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Actor: issue.Actor}}
-				if err := w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: "prj_first", WorkItemID: id, ExpectedRevision: 1, Current: &row}); err != nil {
-					return err
-				}
-				full := *issue
-				full.Body = "abcabcabcabcabc"
-				return publishSearchBody(ctx, f, w, full)
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-		f.drain(t, org)
+		seedBoardSearchProject(t, f, org, "prj_first", "example", []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"})
 	}
 	return f
+}
+
+func seedBoardSearchProject(t *testing.T, f searchFixture, org tracker.OrganizationID, project tracker.ProjectID, principal string, ids []tracker.NativeWorkItemID) {
+	t.Helper()
+	ctx := t.Context()
+	if err := f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
+		_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: "Example " + string(project), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
+		if err != nil {
+			return err
+		}
+		for index, id := range ids {
+			if _, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: org, ProjectID: project, NativeID: id, Number: int64(index + 1), Title: "Example", ActorKind: new("human"), ActorPrincipalID: new(principal), WorkflowStateName: new("Todo")}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index, id := range ids {
+		document := searchIssue(org, string(id))
+		document.ProjectID = project
+		f.put(t, document, searchstore.Text{Title: "Example", Body: "abcabcabcabcabc"}, 0)
+		ref, err := f.objects.StoreDetail(ctx, string(org), []byte(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
+			issue := &tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: id, Revision: 1, Number: index + 1}, Title: "Example", State: "Todo", CreatedAt: historyAt(), UpdatedAt: historyAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: principal}}
+			row := viewstore.BoardRecord{OrganizationID: org, ProjectID: project, WorkItemID: id, SourceRevision: 1, ActorPrincipalID: principal, Position: viewstore.BoardPosition{State: "Todo", Identifier: string(id)}, CreatedAt: historyAt(), UpdatedAt: historyAt(), Payload: ref, PageIssue: issue, ListIssue: issue, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Actor: issue.Actor}}
+			if err := w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: project, WorkItemID: id, ExpectedRevision: 1, Current: &row}); err != nil {
+				return err
+			}
+			full := *issue
+			full.Body = "abcabcabcabcabc"
+			return publishSearchBody(ctx, f, w, full)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.drain(t, org)
 }
 
 func publishSearchBody(ctx context.Context, f searchFixture, w tenantstore.Writer, issue tracker.NativeIssue) error {
@@ -82,6 +112,28 @@ func publishSearchBody(ctx context.Context, f searchFixture, w tenantstore.Write
 func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
+	trace := &boardSearchSessionTrace{}
+	f.pool = tracedFeaturePool(t, f.pool, trace)
+	counted, err := postgres.NewRepository(ctx, f.pool, smallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := counted.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	f.repository = counted
+	timedOut := func(err error) bool {
+		var pgErr *pgconn.PgError
+		return errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &pgErr) && pgErr.Code == "57014" && strings.Contains(pgErr.Message, "statement timeout"))
+	}
+	settleSearch := func(t *testing.T) {
+		t.Helper()
+		if _, err := f.admin.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('board-search:"org_first":"example"',0))`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "abc", Limit: 1, Reporter: true, ReporterPrincipalID: "example"}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -103,38 +155,82 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 		defer cancel()
 		hostile := selection
 		hostile.SearchText = "cabcab"
-		started := time.Now()
 		err := f.repository.ReadTenant(bounded, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 			_, err := r.BoardPage(bounded, hostile)
 			return err
 		})
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "57014" || !strings.Contains(pgErr.Message, "statement timeout") {
+		if !timedOut(err) {
 			t.Fatalf("hostile search escaped server budget: %v", err)
-		}
-		if elapsed := time.Since(started); elapsed > time.Second {
-			t.Fatalf("hostile search exceeded read budget: %v", elapsed)
 		}
 	})
 	t.Run("sequential searches share the first deadline", func(t *testing.T) {
+		settleSearch(t)
 		first, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		defer cancel()
-		started := time.Now()
+		firstDeadline, _ := first.Deadline()
 		err := f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+			trace.deadlines = nil
 			if _, err := r.BoardPage(first, selection); err != nil {
-				return err
+				t.Fatalf("initial search failed: %v", err)
 			}
 			hostile := selection
 			hostile.SearchText = "cabcab"
 			_, err := r.BoardPage(ctx, hostile)
+			for _, sample := range trace.deadlines {
+				if sample.deadline.After(firstDeadline) {
+					t.Fatalf("second search extended first deadline: %v > %v", sample.deadline, firstDeadline)
+				}
+			}
 			return err
 		})
-		if err == nil || time.Since(started) > 500*time.Millisecond {
+		if err == nil {
 			t.Fatalf("second search reset first read budget: %v", err)
 		}
 	})
 	for _, path := range []string{"page", "model", "lanes", "closed"} {
 		t.Run(path, func(t *testing.T) {
+			read := func(ctx context.Context, r tenantstore.Reader) error {
+				var err error
+				switch path {
+				case "page":
+					_, err = r.BoardPage(ctx, selection)
+				case "model":
+					_, err = r.(interface {
+						BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
+					}).BoardModelPages(ctx, selection, nil, accessstore.Authority{})
+				case "lanes":
+					_, err = r.BoardLanes(ctx, selection, historyAt())
+				case "closed":
+					_, err = r.BoardClosedWindows(ctx, selection, []time.Time{historyAt().Add(-time.Hour)}, historyAt())
+				}
+				return err
+			}
+			settleSearch(t)
+			if err := f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+				trace.deadlines = nil
+				if err := read(ctx, r); err != nil {
+					return fmt.Errorf("probe search: %w", err)
+				}
+				if len(trace.deadlines) == 0 {
+					t.Fatal("search omitted its client deadline")
+				}
+				sample := trace.deadlines[len(trace.deadlines)-1]
+				budget := sample.deadline.Sub(sample.observed)
+				if budget <= 0 || budget > 750*time.Millisecond {
+					t.Fatalf("search client budget=%v", budget)
+				}
+				var setting string
+				if err := trace.conn.QueryRow(ctx, "SHOW statement_timeout").Scan(&setting); err != nil {
+					return fmt.Errorf("probe server budget: %w", err)
+				}
+				serverBudget, err := time.ParseDuration(setting)
+				if err != nil || serverBudget <= 0 || serverBudget > 750*time.Millisecond {
+					t.Fatalf("search server budget=%q, %v", setting, err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 			blocker, err := f.admin.BeginTx(ctx, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -149,32 +245,15 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			}
 			bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
-			started := time.Now()
 			err = f.repository.ReadTenant(bounded, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
-				switch path {
-				case "page":
-					_, err = r.BoardPage(bounded, selection)
-				case "model":
-					_, err = r.(interface {
-						BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
-					}).BoardModelPages(bounded, selection, nil, accessstore.Authority{})
-				case "lanes":
-					_, err = r.BoardLanes(bounded, selection, historyAt())
-				case "closed":
-					_, err = r.BoardClosedWindows(bounded, selection, []time.Time{historyAt().Add(-time.Hour)}, historyAt())
-				}
-				return err
+				return read(bounded, r)
 			})
-			var pgErr *pgconn.PgError
-			if !errors.As(err, &pgErr) || pgErr.Code != "57014" || !strings.Contains(pgErr.Message, "statement timeout") {
+			if !timedOut(err) {
 				t.Fatalf("search did not enforce a server statement timeout: %v", err)
-			}
-			if elapsed := time.Since(started); elapsed > time.Second {
-				t.Fatalf("search exceeded read budget: %v", elapsed)
 			}
 		})
 	}
-	t.Run("tenant concurrency cap", func(t *testing.T) {
+	t.Run("principal concurrency cap", func(t *testing.T) {
 		held, err := f.admin.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -184,12 +263,12 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 				t.Error(err)
 			}
 		}()
-		if _, err := held.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('board-search:' || $1,0))`, "org_first"); err != nil {
+		if _, err := held.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `board-search:"org_first":"example"`); err != nil {
 			t.Fatal(err)
 		}
 		err = f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.BoardPage(ctx, selection); return err })
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("saturated tenant search error=%v", err)
+			t.Errorf("saturated principal search error=%v", err)
 		}
 		err = f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 			_, err := r.(interface {
@@ -198,7 +277,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			return err
 		})
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("saturated tenant model error=%v", err)
+			t.Errorf("saturated principal model error=%v", err)
 		}
 		err = f.repository.ReadTenant(ctx, "org_second", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.BoardPage(ctx, selection); return err })
 		if err != nil {
@@ -229,8 +308,8 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 		t.Fatalf("search timeout leaked into pooled session: %s", timeout)
 	}
 	var admitted bool
-	if err := f.admin.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('board-search:org_first',0))`).Scan(&admitted); err != nil || !admitted {
-		t.Fatalf("tenant cap was not released: admitted=%t error=%v", admitted, err)
+	if err := f.admin.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('board-search:"org_first":"example"',0))`).Scan(&admitted); err != nil || !admitted {
+		t.Fatalf("principal cap was not released: admitted=%t error=%v", admitted, err)
 	}
 
 }

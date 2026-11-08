@@ -34,7 +34,7 @@ func (c *boardQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, dat
 		c.lanes = query
 		c.laneArgs = append([]any(nil), data.Args...)
 	}
-	if strings.HasPrefix(query, "SELECT b.organization_id") {
+	if strings.HasPrefix(query, "SELECT b.organization_id") || strings.HasPrefix(query, "WITH search_candidates AS MATERIALIZED") {
 		c.page = query
 		c.args = append([]any(nil), data.Args...)
 	}
