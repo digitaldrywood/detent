@@ -99,6 +99,15 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	var reviewedPolicy currentChangePolicyRows
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		reviewedPolicy, err = readCurrentChangePolicyRows(ctx, r, scope)
+		return err
+	})
+	if err != nil {
+		return s.nativeAPIError(c, projectRecordError(err))
+	}
 	detail, err := s.selectedChangeDetail(ctx, scope, c.Param("item"), change.ID, now)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -289,7 +298,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 			if err != nil {
 				return err
 			}
-			if policyRows.Project.PolicyID != version.Policy.ID || policyRows.hasReview && policyRows.Review.ReviewPolicyID != version.ReviewPolicy.ID || !policyRows.hasReview && defaultChangeReviewPolicy(version.Policy).ID != version.ReviewPolicy.ID {
+			if !reflect.DeepEqual(policyRows, reviewedPolicy) {
 				return policyMismatch("Current approved policy changed; the reviewed version must be republished")
 			}
 			if scope.credential.Scope == apiScopeWorker {
