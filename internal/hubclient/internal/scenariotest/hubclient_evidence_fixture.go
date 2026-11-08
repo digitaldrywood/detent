@@ -21,5 +21,23 @@ func (h *nativeChangeHub) latestRuntimeEvidence(t *testing.T, item tracker.Nativ
 		return evidence, err
 	}
 	evidence.Change = recovery.ChangeDetail
+	history, err := h.admin.History(t.Context(), item, "")
+	if err != nil {
+		return evidence, err
+	}
+	for _, event := range history.Items {
+		switch event.Type {
+		case "workflow.transitioned":
+			if evidence.LatestTransition == nil || event.AggregateSequence > evidence.LatestTransition.AggregateSequence {
+				copy := event
+				evidence.LatestTransition = &copy
+			}
+		case "scheduler.decision":
+			if evidence.LatestDecision == nil || event.AggregateSequence > evidence.LatestDecision.AggregateSequence {
+				copy := event
+				evidence.LatestDecision = &copy
+			}
+		}
+	}
 	return evidence, nil
 }

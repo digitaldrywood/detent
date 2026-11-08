@@ -224,6 +224,33 @@ func fixtureConfigureScheduler(t testing.TB, h *nativeChangeHub, configure func(
 	}
 	config := value.(*schedulerFixture).config
 	configure(&config)
+	if config.Machine.Capacity != value.(*schedulerFixture).config.Machine.Capacity {
+		config.CapacityConfiguration = nil
+		file, err := runnerauth.Load(fixtureClient(h.scheduler.Transport()).config.IdentityFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fleet, err := NewFleetClient(h.admin.Transport(), h.organization, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current, err := fleet.Fleet(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range current.Runners {
+			if entry.RunnerID != file.Identity.RunnerID {
+				continue
+			}
+			entry.Routing.CapacityLimit = config.Machine.Capacity
+			if err := fleet.UpdateRunner(t.Context(), entry.RunnerID, runnerauth.RoutingChange{ExpectedRevision: entry.Revision, Routing: entry.Routing}); err != nil {
+				t.Fatal(err)
+			}
+			if err := fleet.UpdateHost(t.Context(), entry.MachineID, runnerauth.HostChange{ExpectedRevision: entry.HostRevision, DisplayName: entry.HostDisplayName, Capacity: config.Machine.Capacity}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	scheduler, err := newTestScheduler(h.scheduler.Transport(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +277,7 @@ func dispatchEnableEnrollment(t *testing.T, h *nativeChangeHub) {
 	saved, _ := schedulerFixtures.Load(h.scheduler)
 	schedulerConfig := saved.(*schedulerFixture).config
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
-	file, err := runnerauth.Initialize(path, config.URL)
+	file, err := hubclientInitializeIdentity(path, config.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +290,7 @@ func dispatchEnableEnrollment(t *testing.T, h *nativeChangeHub) {
 	if err := fixtureRunnerRequest(t, h.admin.Transport(), enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/runner-enrollments/redeem", redemption, &file.Identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := runnerauth.Save(path, file); err != nil {
+	if err := hubclientSaveIdentity(path, file); err != nil {
 		t.Fatal(err)
 	}
 	config.IdentityFile = path
@@ -276,7 +303,7 @@ func dispatchEnableEnrollment(t *testing.T, h *nativeChangeHub) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.connector, err = NewNativeConnector(h.native)
+	h.connector.worker, err = NewNativeConnector(h.native)
 	if err != nil {
 		t.Fatal(err)
 	}

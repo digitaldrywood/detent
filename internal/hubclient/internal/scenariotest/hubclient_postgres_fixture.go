@@ -80,12 +80,12 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 	if socket == "." {
 		connection.Host = data
 	}
-	if _, err := admin.ExecContext(t.Context(), `ALTER DATABASE `+`"`+connection.Database+`" CONNECTION LIMIT 6`); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `ALTER DATABASE `+`"`+connection.Database+`" CONNECTION LIMIT 10`); err != nil {
 		t.Fatal(err)
 	}
 	cfg.DatabasePath = ""
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
-	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
+	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 6, ServingConnections: 4, BackgroundConnections: 1}}
 	if cfg.Hosted == nil {
 		cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: hubclientIdentityProvider{}}
 	}
