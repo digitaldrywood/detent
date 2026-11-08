@@ -225,6 +225,12 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			return nil, err
 		}
 		data := tracker.CollaborationData{Revision: issue.Revision, FromState: previousState, ToState: request.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}
+		if previousState != request.State {
+			data.Change, err = s.landingTransitionSource(ctx, scope, row)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if awaitsFiler {
 			data.Verification = tracker.VerificationPending
 		}
