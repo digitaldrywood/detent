@@ -1122,6 +1122,10 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 		}
 		content[messageID] = payload
 	}
+	loadedMessages := make(map[string]conversationstore.Message, len(candidates))
+	for _, message := range candidates {
+		loadedMessages[message.ID] = message
+	}
 	changed := false
 	err = r.service.server.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if err := r.service.server.authorizeAccessScope(ctx, writer, scope, false); err != nil {
@@ -1157,6 +1161,10 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			return err
 		}
 		for _, storedMessage := range messages.Items {
+			loaded, found := loadedMessages[storedMessage.ID]
+			if !found || loaded.Revision != storedMessage.Revision || loaded.ContentReference != storedMessage.ContentReference {
+				break
+			}
 			message := storedMessage
 			if message.Kind != conversation.MessageText && message.Kind != conversation.MessageContinue && message.Kind != conversation.MessageAnswer && message.Kind != conversation.MessageInterrupt {
 				continue
@@ -1176,6 +1184,9 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			switch message.Kind {
 			case conversation.MessageText, conversation.MessageContinue:
 				control.Kind, control.Text = "message", payload.Text
+				if message.ContentReference == "" {
+					control.Text = message.Text
+				}
 			case conversation.MessageInterrupt:
 				control.Kind = "interrupt"
 			case conversation.MessageAnswer:

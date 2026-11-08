@@ -286,8 +286,68 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool) {
 	if err := json.Unmarshal(controls.Body.Bytes(), &controlPage); err != nil {
 		t.Fatal(err)
 	}
-	if len(controlPage.Controls) != 1 || controlPage.Controls[0].Key != "pg-control" {
+	if len(controlPage.Controls) != 1 || controlPage.Controls[0].Key != "pg-control" || controlPage.Controls[0].Text != "Example instruction" {
 		t.Fatalf("controls page = %+v", controlPage)
+	}
+	controlCursor := controlPage.Cursor
+	for _, test := range []struct {
+		name    string
+		late    bool
+		changed bool
+	}{
+		{name: "preloaded_inline_control"},
+		{name: "control_arrives_after_preload", late: true},
+		{name: "control_changes_after_preload", changed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var message conversationstore.Message
+			seed := func() error {
+				return repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					var err error
+					message, err = w.CreateMessage(t.Context(), conversationstore.Message{
+						OrganizationID: f.project.OrganizationID, ConversationID: linked.ID, ID: conversation.NewMessageID(),
+						Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "Example inline control", Delivery: conversation.DeliveryQueued,
+						Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: ownerCredential.ID}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+					})
+					return err
+				})
+			}
+			wantText := "Example inline control"
+			if test.late {
+				f.service.config.TenantRepository = &conversationControlSnapshotRepository{Repository: repository, beforeWrite: seed}
+			} else if err := seed(); err != nil {
+				t.Fatal(err)
+			}
+			if test.changed {
+				wantText = "Example updated inline control"
+				f.service.config.TenantRepository = &conversationControlSnapshotRepository{Repository: repository, beforeWrite: func() error {
+					return repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						current, err := w.Message(t.Context(), linked.ID, message.ID)
+						if err != nil {
+							return err
+						}
+						previous := current.Revision
+						current.Revision++
+						current.Text, current.UpdatedAt = wantText, time.Now().UTC()
+						message, err = w.UpdateMessage(t.Context(), current, previous)
+						return err
+					})
+				}}
+			}
+			t.Cleanup(func() { f.service.config.TenantRepository = repository })
+			page, err := router.pollControlsPostgres(t.Context(), scope, linked.ID, identity, controlCursor)
+			f.service.config.TenantRepository = repository
+			if test.late || test.changed {
+				if err != nil || len(page.Controls) != 0 || page.Cursor != controlCursor {
+					t.Fatalf("unloaded control advanced delivery: %+v, %v", page, err)
+				}
+				page, err = router.pollControlsPostgres(t.Context(), scope, linked.ID, identity, controlCursor)
+			}
+			if err != nil || len(page.Controls) != 1 || page.Controls[0].MessageID != message.ID || page.Controls[0].Text != wantText || page.Controls[0].Expected.AttemptID != identity.AttemptID {
+				t.Fatalf("control lost its loaded body or owner: %+v, %v", page, err)
+			}
+			controlCursor = page.Cursor
+		})
 	}
 	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		stored, err := r.Conversation(t.Context(), f.project.ID, linked.ID)
@@ -592,6 +652,21 @@ func callConversationWorkerRoute(t *testing.T, handler echo.HandlerFunc, scope n
 		echo.New().HTTPErrorHandler(err, c)
 	}
 	return response
+}
+
+type conversationControlSnapshotRepository struct {
+	tenantstore.Repository
+	beforeWrite func() error
+	once        sync.Once
+}
+
+func (r *conversationControlSnapshotRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	var err error
+	r.once.Do(func() { err = r.beforeWrite() })
+	if err != nil {
+		return err
+	}
+	return r.Repository.WriteTenant(ctx, org, workload, write)
 }
 
 type conversationBindOrderRepository struct {
