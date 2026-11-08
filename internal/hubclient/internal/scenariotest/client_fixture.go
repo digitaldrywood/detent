@@ -246,7 +246,11 @@ func fixtureConfigureScheduler(t testing.TB, h *nativeChangeHub, configure func(
 			if err := fleet.UpdateRunner(t.Context(), entry.RunnerID, runnerauth.RoutingChange{ExpectedRevision: entry.Revision, Routing: entry.Routing}); err != nil {
 				t.Fatal(err)
 			}
-			if err := fleet.UpdateHost(t.Context(), entry.MachineID, runnerauth.HostChange{ExpectedRevision: entry.HostRevision, DisplayName: entry.HostDisplayName, Capacity: config.Machine.Capacity}); err != nil {
+			hostName := entry.HostDisplayName
+			if hostName == "" {
+				hostName = entry.Hostname
+			}
+			if err := fleet.UpdateHost(t.Context(), entry.MachineID, runnerauth.HostChange{ExpectedRevision: entry.HostRevision, DisplayName: hostName, Capacity: config.Machine.Capacity}); err != nil {
 				t.Fatal(err)
 			}
 		}
