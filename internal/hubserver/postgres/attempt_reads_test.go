@@ -7,10 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
-
 	"github.com/digitaldrywood/detent/internal/attachment"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -47,6 +46,19 @@ func TestAttemptMetadataBoundsTenantPage(t *testing.T) {
 			FROM native_attempts WHERE organization_id=$1`, org); err != nil {
 			t.Fatal(err)
 		}
+		checkpoint, _, err := attachment.PrepareArchive(string(org), 1, strings.NewReader(`{"checkpoint":{}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: "checkpoint", Reference: checkpoint, CreatedAt: historyAt()})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_object_key=$2 WHERE organization_id=$1`, org, checkpoint.Key); err != nil {
+			t.Fatal(err)
+		}
 	}
 	repository, counts := attemptCountedRepository(t, repository, pool)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -67,10 +79,13 @@ func TestAttemptMetadataBoundsTenantPage(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					if len(metadata.Leases) != size || len(metadata.Events) != size || len(metadata.Archives) != 1 || len(metadata.Attachments) != 0 {
+					if len(metadata.Leases) != size || len(metadata.Events) != size || len(metadata.Archives) != 2 || len(metadata.Attachments) != 0 {
 						t.Fatalf("metadata shape: leases=%d events=%d archives=%d attachments=%d", len(metadata.Leases), len(metadata.Events), len(metadata.Archives), len(metadata.Attachments))
 					}
 					for _, attempt := range page.Items {
+						if attempt.CheckpointObjectKey == nil || metadata.Archives[*attempt.CheckpointObjectKey].OrganizationID != org {
+							t.Fatal("attempt snapshot omitted its tenant checkpoint metadata")
+						}
 						lease, event := metadata.Leases[attempt.LeaseID], metadata.Events[attempt.ID]
 						if lease.OrganizationID != org || lease.FencingToken != attempt.FencingToken || event.OrganizationID != org || event.AttemptID != attempt.ID || event.WorkItemID != "wi_1" {
 							t.Fatalf("attempt metadata crossed identity: %+v %+v", lease, event)

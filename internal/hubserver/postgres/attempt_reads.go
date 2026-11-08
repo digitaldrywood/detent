@@ -33,6 +33,9 @@ func (s *session) AttemptMetadata(ctx context.Context, project tracker.ProjectID
 			return metadata, corestore.ErrTenantMismatch
 		}
 		ids, leases, keys = append(ids, attempt.ID), append(leases, attempt.LeaseID), append(keys, attempt.PayloadObjectKey)
+		if attempt.CheckpointObjectKey != nil {
+			keys = append(keys, *attempt.CheckpointObjectKey)
+		}
 		attachments = append(attachments, "att_"+artifact.Digest([]byte(string(s.organization) + "\n" + attempt.PayloadObjectKey))[:32])
 	}
 	if len(attempts) == 0 {
