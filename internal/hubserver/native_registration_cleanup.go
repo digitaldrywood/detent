@@ -15,6 +15,7 @@ import (
 
 type tenantRunCleanupPredecessor struct {
 	attempt   leasestore.Attempt
+	lease     leasestore.Lease
 	event     eventstore.Event
 	committed map[int64]eventstore.Event
 }
@@ -37,7 +38,11 @@ func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, 
 	if err != nil {
 		return nil, err
 	}
-	previous := &tenantRunCleanupPredecessor{attempt: attempt, event: event, committed: map[int64]eventstore.Event{}}
+	lease, err := r.Lease(ctx, attempt.LeaseID)
+	if err != nil {
+		return nil, err
+	}
+	previous := &tenantRunCleanupPredecessor{attempt: attempt, lease: lease, event: event, committed: map[int64]eventstore.Event{}}
 	reader, ok := r.(nativeRunEventReader)
 	if !ok {
 		return nil, nativeRunEventStorageUnavailable()
@@ -77,7 +82,17 @@ func readTenantRunCleanupData(ctx context.Context, content *eventstore.Content, 
 			return nil, nil, err
 		}
 		run := event.Data.Run
-		if run == nil || run.AttemptID != previous.attempt.ID || run.RunID != previous.attempt.RunID || run.LeaseID != tracker.LeaseID(previous.attempt.LeaseID) || run.FencingToken != tracker.FencingToken(previous.attempt.FencingToken) || run.Sequence != sequence {
+		if run == nil || run.AttemptID != previous.attempt.ID || run.RunID != previous.attempt.RunID || run.LeaseID != tracker.LeaseID(previous.attempt.LeaseID) || run.FencingToken != tracker.FencingToken(previous.attempt.FencingToken) {
+			return nil, nil, artifact.ErrIntegrity
+		}
+		if sequence == previous.attempt.Sequence {
+			if !nativeAttemptRunMatches(tenantAttemptSnapshot{attempt: previous.attempt, lease: previous.lease, event: row}, *run) {
+				return nil, nil, artifact.ErrIntegrity
+			}
+			copy := *run
+			copy.Sequence = sequence
+			run = &copy
+		} else if run.Sequence != sequence {
 			return nil, nil, artifact.ErrIntegrity
 		}
 		runs[sequence] = run

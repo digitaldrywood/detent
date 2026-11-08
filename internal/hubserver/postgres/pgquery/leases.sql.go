@@ -107,7 +107,7 @@ func (q *Queries) BindAttemptRun(ctx context.Context, arg BindAttemptRunParams) 
 }
 
 const cancelLeaseAttempt = `-- name: CancelLeaseAttempt :exec
-UPDATE native_attempts SET status='cancelled',sequence=sequence+1,updated_at=$4
+UPDATE native_attempts SET status='cancelled',updated_at=$4
 WHERE organization_id=$1 AND lease_id=$2 AND fencing_token=$3 AND status='running'
 `
 

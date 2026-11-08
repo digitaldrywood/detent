@@ -891,7 +891,7 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope nativeScop
 	return tracker.NativeAttempt{
 		NativeRunData: tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, LeaseID: data.LeaseID,
 			FencingToken: data.FencingToken, PolicyID: data.PolicyID, Identity: data.Identity, MachineID: data.MachineID,
-			SessionID: data.SessionID, RunnerID: data.RunnerID, Sequence: data.Sequence, Outcome: data.Outcome,
+			SessionID: data.SessionID, RunnerID: data.RunnerID, Sequence: snapshot.attempt.Sequence, Outcome: data.Outcome,
 			Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: data.Runtime.LocalAttemptID, Generation: data.Runtime.Generation, WorkerLaunch: data.Runtime.WorkerLaunch}},
 		Status: snapshot.attempt.Status, StartedAt: snapshot.attempt.StartedAt, ClaimReleasedAt: snapshot.lease.ReleasedAt,
 	}, nil

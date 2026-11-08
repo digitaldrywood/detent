@@ -128,6 +128,9 @@ func registrationCleanupRequired(candidate tenantAttemptSnapshot, run tracker.Na
 	if !nativeAttemptRunMatches(candidate, run) || run.RunnerID != runner {
 		return false, artifact.ErrIntegrity
 	}
+	if candidate.attempt.CleanupAcknowledgedAt != nil {
+		return false, nil
+	}
 
 	if run.Identity == nil || run.Identity.Role == "" || run.Runtime == nil || run.Runtime.WorkerLaunch == nil {
 		return false, nil
