@@ -452,6 +452,9 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 
 	t.Parallel()
 	f := newEntryFixture(t)
+	if err := f.service.closeAllocator(); err != nil {
+		t.Fatal(err)
+	}
 	store := newSpacesFixture(t, false)
 	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
 	if err != nil {
