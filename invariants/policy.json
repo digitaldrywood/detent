@@ -131,6 +131,8 @@
     "./internal/invariants": [
       "TestRepositoryBrowserTests",
       "TestBrowserPolicyViolations",
+      "TestRepositorySQLite",
+      "TestSQLitePolicyViolations",
       "TestRepositorySources",
       "TestRepositoryWorkflow",
       "TestRepositoryHasNoPullRequestActions",

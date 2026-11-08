@@ -1,0 +1,1257 @@
+{
+  "files": {
+    "cmd/detent/main_test.go": {
+      "sqlite_open": 1
+    },
+    "deploy/hub/cutover_test.go": {
+      "sql_pragma": 6
+    },
+    "deploy/hub/restore_test.go": {
+      "sql_pragma": 1,
+      "sql_schema": 1,
+      "sqlite_open": 1
+    },
+    "internal/admission/candidate_progress_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 2
+    },
+    "internal/admission/manager_test.go": {
+      "backend_sqlite": 2,
+      "sqlite_open": 3
+    },
+    "internal/apikey/service_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/artifact/catalog.go": {
+      "driver_import": 1,
+      "sql_pragma": 7,
+      "sql_schema": 1,
+      "sqlite_open": 1
+    },
+    "internal/artifact/service.go": {
+      "database_path": 2
+    },
+    "internal/artifact/service_test.go": {
+      "database_path": 6,
+      "sql_pragma": 2,
+      "sqlite_open": 1
+    },
+    "internal/auth/service_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 2
+    },
+    "internal/cli/artifact_test.go": {
+      "database_path": 1
+    },
+    "internal/cli/boot.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/cli/budget.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/cli/cli_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/cli/codex_retention.go": {
+      "sql_pragma": 2,
+      "sqlite_open": 1
+    },
+    "internal/cli/codex_retention_test.go": {
+      "sqlite_open": 4
+    },
+    "internal/cli/doctor.go": {
+      "driver_import": 1,
+      "sqlite_open": 11
+    },
+    "internal/cli/doctor_admission.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_admission_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_artifact_gate_convergence.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_artifact_gate_convergence_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/cli/doctor_backend_capacity.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_backend_capacity_test.go": {
+      "sqlite_open": 3
+    },
+    "internal/cli/doctor_budget.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_budget_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_dependency.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_environment.go": {
+      "sqlite_open": 2
+    },
+    "internal/cli/doctor_invariant_evidence.go": {
+      "sql_julianday": 3,
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_invariant_evidence_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/cli/doctor_test.go": {
+      "sqlite_open": 5
+    },
+    "internal/cli/doctor_throughput.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_throughput_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/cli/doctor_token_audit.go": {
+      "sql_julianday": 12,
+      "sqlite_open": 2
+    },
+    "internal/cli/doctor_token_audit_test.go": {
+      "sqlite_open": 3
+    },
+    "internal/cli/doctor_validator.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/doctor_validator_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 2
+    },
+    "internal/cli/doctor_workflow_lint.go": {
+      "sqlite_open": 2
+    },
+    "internal/cli/doctor_workflow_lint_test.go": {
+      "sqlite_open": 5
+    },
+    "internal/cli/doctor_workflow_optimization.go": {
+      "backend_sqlite": 1,
+      "sql_datetime_now": 1,
+      "sql_pragma": 1,
+      "sqlite_open": 3
+    },
+    "internal/cli/doctor_workflow_optimization_test.go": {
+      "backend_sqlite": 8,
+      "sqlite_open": 11
+    },
+    "internal/cli/fix_worker_processes.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/cli/global_reload_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/hub.go": {
+      "database_path": 1
+    },
+    "internal/cli/hub_recovery_test.go": {
+      "database_path": 2,
+      "sqlite_open": 1
+    },
+    "internal/cli/hub_secrets_test.go": {
+      "sql_pragma": 1,
+      "sqlite_open": 2
+    },
+    "internal/cli/hub_test.go": {
+      "database_path": 2
+    },
+    "internal/cli/local_configuration.go": {
+      "sqlite_open": 3
+    },
+    "internal/cli/local_configuration_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/runner_project_configuration_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/cli/runner_projects_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/runner_test.go": {
+      "backend_sqlite": 2,
+      "sqlite_open": 2
+    },
+    "internal/cli/ssh_runner_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/cli/state_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/stop_recorded_run_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/telemetry_liveness_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/update_runtime_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/cli/worker_generation_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/cli/worker_processes_test.go": {
+      "sqlite_open": 6
+    },
+    "internal/cloudentry/storage_backend_test.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/evidence/validation_test.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/internal/scenariotest/admission.go": {
+      "database_path": 1,
+      "sqlite_open": 5
+    },
+    "internal/hubclient/internal/scenariotest/change_evidence.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/internal/scenariotest/change_source.go": {
+      "database_path": 1,
+      "sqlite_open": 3
+    },
+    "internal/hubclient/internal/scenariotest/feature_fixture.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/internal/scenariotest/hubclient_postgres_fixture.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/internal/scenariotest/native_change.go": {
+      "database_path": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubclient/internal/scenariotest/native_source_loop.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubclient/internal/scenariotest/no_change.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubclient/internal/scenariotest/planner.go": {
+      "database_path": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubclient/internal/scenariotest/provider_progress.go": {
+      "database_path": 3
+    },
+    "internal/hubclient/internal/scenariotest/read_tools.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubclient/internal/scenariotest/reconnect.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/internal/scenariotest/review_recovery.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubclient/internal/scenariotest/runtime_evidence.go": {
+      "database_path": 2
+    },
+    "internal/hubclient/internal/scenariotest/settlement.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/internal/testsupport/dispatch_postgres.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/internal/testsupport/http.go": {
+      "database_path": 2
+    },
+    "internal/hubclient/internal/testsupport/nativechange_postgres.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/nativechange/native_change_test.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/nativechange/native_integration_test.go": {
+      "database_path": 1
+    },
+    "internal/hubclient/nativechange/native_run_details_test.go": {
+      "database_path": 1
+    },
+    "internal/hubgithub/postgres_fixture_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/activity_projection.go": {
+      "sql_julianday": 1
+    },
+    "internal/hubserver/admission_claim_facts_test.go": {
+      "sql_schema": 1
+    },
+    "internal/hubserver/analytics_residence_rollups.go": {
+      "sql_julianday": 6
+    },
+    "internal/hubserver/analytics_rollups.go": {
+      "sql_julianday": 5
+    },
+    "internal/hubserver/analytics_rollups_benchmark_test.go": {
+      "database_path": 1,
+      "sql_julianday": 1
+    },
+    "internal/hubserver/analytics_typed_projection.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/api_operator_priority_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/api_test.go": {
+      "database_path": 9
+    },
+    "internal/hubserver/api_worker.go": {
+      "driver_import": 2
+    },
+    "internal/hubserver/app_ui_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/attempt_diffs_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/attempt_evidence_tenant_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/attempt_hot_projection.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/attempt_payload_objects_test.go": {
+      "database_path": 2,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/backup.go": {
+      "driver_import": 1,
+      "sql_pragma": 1
+    },
+    "internal/hubserver/change_analytics_columns.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/change_content_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/change_files_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/change_records_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/change_sources_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/change_validator_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/change_versions.go": {
+      "sql_julianday": 1
+    },
+    "internal/hubserver/changes.go": {
+      "sql_julianday": 1
+    },
+    "internal/hubserver/changes_test.go": {
+      "database_path": 7
+    },
+    "internal/hubserver/chat_usage_records_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/chat_usage_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/claim_preflight_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/cloud_attachments.go": {
+      "sql_insert_or": 1
+    },
+    "internal/hubserver/cloud_attachments_test.go": {
+      "sql_insert_or": 1
+    },
+    "internal/hubserver/collaboration_payloads_test.go": {
+      "sql_schema": 1
+    },
+    "internal/hubserver/config.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/content_settings_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/conversation_api_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/conversation_coordinator_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/conversation_dispatch_tenant_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/conversation_failure_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/conversation_logging_test.go": {
+      "database_path": 3
+    },
+    "internal/hubserver/conversation_preferences_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/conversation_stream_postgres_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/conversation_stream_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/conversation_worker_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/core_change_import_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/core_execution_import_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/core_tenant_import_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/core_work_item_import_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 5
+    },
+    "internal/hubserver/cost_records_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/credential_maintenance_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/dashboard_delivery_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/database.go": {
+      "database_path": 1,
+      "sql_pragma": 11,
+      "sql_schema": 1
+    },
+    "internal/hubserver/database_backend.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/database_backend_test.go": {
+      "database_path": 4
+    },
+    "internal/hubserver/database_template_test.go": {
+      "database_path": 4,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/database_test.go": {
+      "database_path": 4,
+      "sql_schema": 1
+    },
+    "internal/hubserver/diagnostics_analytics.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/event_compaction.go": {
+      "sql_julianday": 16
+    },
+    "internal/hubserver/github_webhook_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/health_detector.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/health_issues.go": {
+      "sql_julianday": 6
+    },
+    "internal/hubserver/health_rate_snapshot.go": {
+      "sql_julianday": 18
+    },
+    "internal/hubserver/health_scheduled.go": {
+      "sql_julianday": 13
+    },
+    "internal/hubserver/health_snapshot.go": {
+      "sql_julianday": 17
+    },
+    "internal/hubserver/heartbeat_timing_test.go": {
+      "sql_pragma": 1
+    },
+    "internal/hubserver/hosted_allowances.go": {
+      "sql_schema": 1
+    },
+    "internal/hubserver/hosted_auth.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/hosted_browser_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/hosted_diagnostics.go": {
+      "sql_julianday": 16
+    },
+    "internal/hubserver/hosted_diagnostics_test.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/hosted_login_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/hosted_plans_test.go": {
+      "database_path": 4,
+      "sql_insert_or": 1
+    },
+    "internal/hubserver/hosted_reports.go": {
+      "sql_julianday": 8
+    },
+    "internal/hubserver/hosted_reports_filters.go": {
+      "sql_julianday": 18
+    },
+    "internal/hubserver/hosted_review_lane_migration_test.go": {
+      "sql_pragma": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/hosted_security_test.go": {
+      "database_path": 3
+    },
+    "internal/hubserver/hosted_shared_test.go": {
+      "database_path": 4
+    },
+    "internal/hubserver/hosted_storage.go": {
+      "sql_julianday": 1
+    },
+    "internal/hubserver/hosted_storage_test.go": {
+      "database_path": 3,
+      "sql_insert_or": 1
+    },
+    "internal/hubserver/hosted_usage_test.go": {
+      "database_path": 3
+    },
+    "internal/hubserver/hot_read_plans_test.go": {
+      "sql_insert_or": 1,
+      "sql_julianday": 7
+    },
+    "internal/hubserver/hot_sql_benchmark_test.go": {
+      "sql_julianday": 13
+    },
+    "internal/hubserver/independent_failure_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/integration.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/integration_checkout.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/issue_contract_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/issue_page_events.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/key_actor_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/linked_issue_source_records_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/local_board_import_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/migrate.go": {
+      "sql_pragma": 2,
+      "sql_schema": 1
+    },
+    "internal/hubserver/migrate_test.go": {
+      "sql_pragma": 3,
+      "sql_schema": 2,
+      "sqlite_open": 3
+    },
+    "internal/hubserver/native_archive_reader.go": {
+      "sql_pragma": 1
+    },
+    "internal/hubserver/native_archive_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/native_attempts.go": {
+      "sql_julianday": 1
+    },
+    "internal/hubserver/native_attempts_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/native_blockers.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/native_board_execution.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/native_board_page.go": {
+      "sql_julianday": 6
+    },
+    "internal/hubserver/native_board_test.go": {
+      "database_path": 3,
+      "sql_insert_or": 3,
+      "sql_julianday": 2
+    },
+    "internal/hubserver/native_candidates.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/native_dispatch_requests_test.go": {
+      "sql_insert_or": 1
+    },
+    "internal/hubserver/native_dispatch_wait.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/native_duplicates.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/native_duplicates_test.go": {
+      "database_path": 2,
+      "driver_import": 1
+    },
+    "internal/hubserver/native_event_rejection_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/native_events_tenant_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/native_labels_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/native_migration_test.go": {
+      "database_path": 3,
+      "sql_pragma": 6,
+      "sqlite_open": 2
+    },
+    "internal/hubserver/native_progress_test.go": {
+      "sql_schema": 1
+    },
+    "internal/hubserver/native_retention_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/native_runtime_read_test.go": {
+      "database_path": 2,
+      "driver_import": 1
+    },
+    "internal/hubserver/native_runtime_tenant_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/native_source_placement_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/native_source_transfer_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/native_storage_archive.go": {
+      "sql_julianday": 6
+    },
+    "internal/hubserver/native_work_page.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/native_work_search_fallback.go": {
+      "driver_import": 1
+    },
+    "internal/hubserver/native_work_search_index.go": {
+      "driver_import": 1
+    },
+    "internal/hubserver/native_work_search_snippet.go": {
+      "driver_import": 1
+    },
+    "internal/hubserver/native_work_search_tokenizer.go": {
+      "driver_import": 1
+    },
+    "internal/hubserver/native_worker_claim_tenant_test.go": {
+      "database_path": 3
+    },
+    "internal/hubserver/native_worker_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/onboarding_issue_intake.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/onboarding_issue_intake_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/onboarding_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/operator_activity.go": {
+      "sql_julianday": 13
+    },
+    "internal/hubserver/operator_activity_durations.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/operator_activity_issues.go": {
+      "sql_julianday": 8
+    },
+    "internal/hubserver/operator_analytics.go": {
+      "sql_julianday": 8
+    },
+    "internal/hubserver/operator_analytics_attempts.go": {
+      "sql_julianday": 8
+    },
+    "internal/hubserver/operator_analytics_quality.go": {
+      "sql_julianday": 18
+    },
+    "internal/hubserver/operator_analytics_queue.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/operator_analytics_residence.go": {
+      "sql_julianday": 6
+    },
+    "internal/hubserver/operator_changes_test.go": {
+      "sql_schema": 1
+    },
+    "internal/hubserver/operator_failure_signatures.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/operator_failure_signatures_test.go": {
+      "sql_insert_or": 2
+    },
+    "internal/hubserver/operator_work_test.go": {
+      "database_path": 2,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/pilot_artifacts_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/pilot_self_hosted_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/policy.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/policy_revision_migration_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/policy_test.go": {
+      "database_path": 6
+    },
+    "internal/hubserver/postgres/access_import_copy_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/postgres/billing_import_copy_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/postgres/conversation_history_import_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/postgres/core_cutover_source_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/postgres/core_policy_import.go": {
+      "driver_import": 1
+    },
+    "internal/hubserver/postgres/core_policy_import_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/postgres/core_project_import.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/postgres/core_project_import_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 3
+    },
+    "internal/hubserver/postgres/cost_import_page_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 2
+    },
+    "internal/hubserver/postgres/credit_history_import_test.go": {
+      "driver_import": 1
+    },
+    "internal/hubserver/postgres/search_publication_test.go": {
+      "sql_insert_or": 1
+    },
+    "internal/hubserver/postgres/storage_conversion_test.go": {
+      "sql_insert_or": 1
+    },
+    "internal/hubserver/postgres_worker_workflow_transition_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/project_configuration.go": {
+      "sql_julianday": 4
+    },
+    "internal/hubserver/project_deletion.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/project_placement.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/project_records_test.go": {
+      "database_path": 3
+    },
+    "internal/hubserver/project_sprite_allocation.go": {
+      "sql_julianday": 3
+    },
+    "internal/hubserver/project_sprite_pool.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/project_sprite_provision.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/project_sprites.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/provider_capacity_test.go": {
+      "database_path": 6
+    },
+    "internal/hubserver/pull_requests_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/readable_urls_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/reader_paths_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/recovery.go": {
+      "database_path": 5,
+      "sql_pragma": 2,
+      "sql_schema": 1
+    },
+    "internal/hubserver/recovery_migration_test.go": {
+      "sql_pragma": 2,
+      "sqlite_open": 2
+    },
+    "internal/hubserver/report_productivity.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/report_productivity_rollups.go": {
+      "sql_julianday": 3
+    },
+    "internal/hubserver/reporter_migration_test.go": {
+      "sql_pragma": 3,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/request_latency_history.go": {
+      "sql_insert_or": 1
+    },
+    "internal/hubserver/run_details_test.go": {
+      "sql_insert_or": 1,
+      "sql_schema": 1
+    },
+    "internal/hubserver/runner_identity.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/runner_identity_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/runner_isolation_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/runner_project_capacity_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/runner_recommendation.go": {
+      "sql_julianday": 5
+    },
+    "internal/hubserver/runner_repositories.go": {
+      "sql_julianday": 1
+    },
+    "internal/hubserver/runner_routing.go": {
+      "sql_julianday": 8
+    },
+    "internal/hubserver/runner_routing_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/runner_selection_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/runner_update_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/runner_validation_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/runner_write_load_test.go": {
+      "database_path": 1,
+      "sql_pragma": 2
+    },
+    "internal/hubserver/runtime_capacity.go": {
+      "sql_julianday": 8
+    },
+    "internal/hubserver/saved_work_views_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/scale_soak_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/scheduled_validation_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/secret_status.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/secret_status_test.go": {
+      "database_path": 1,
+      "sql_pragma": 2
+    },
+    "internal/hubserver/server_timing_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    },
+    "internal/hubserver/service.go": {
+      "sql_pragma": 1
+    },
+    "internal/hubserver/service_test.go": {
+      "database_path": 3
+    },
+    "internal/hubserver/service_unix_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/slack_delivery.go": {
+      "sql_insert_or": 2,
+      "sql_julianday": 2
+    },
+    "internal/hubserver/sql_parameters_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/hubserver/startup_health.go": {
+      "sql_schema": 2
+    },
+    "internal/hubserver/storage_conversion.go": {
+      "sql_julianday": 6
+    },
+    "internal/hubserver/storage_conversion_authority.go": {
+      "driver_import": 1
+    },
+    "internal/hubserver/storage_conversion_test.go": {
+      "sql_pragma": 1
+    },
+    "internal/hubserver/storage_reclaim.go": {
+      "sql_pragma": 4
+    },
+    "internal/hubserver/storage_review_regression_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/tenant_load_test.go": {
+      "sql_schema": 1
+    },
+    "internal/hubserver/usage_costs_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/work_item_records_test.go": {
+      "database_path": 6
+    },
+    "internal/hubserver/workflow_lanes_migration_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/hubserver/workspace_relay_http.go": {
+      "sql_julianday": 2
+    },
+    "internal/hubserver/workspace_relay_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/workspace_relay_tickets.go": {
+      "sql_julianday": 6
+    },
+    "internal/hubserver/workspace_runner_lane_test.go": {
+      "database_path": 2
+    },
+    "internal/hubserver/workspace_store.go": {
+      "sql_insert_or": 1
+    },
+    "internal/hubserver/workspace_test.go": {
+      "database_path": 1
+    },
+    "internal/hubserver/writer_timing.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    },
+    "internal/localboard/import.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    },
+    "internal/localboard/import_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/autopromote_tick_test.go": {
+      "backend_sqlite": 4,
+      "sqlite_open": 4
+    },
+    "internal/orchestrator/blocker_evidence_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/checkpoint_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/completion_classification_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 2
+    },
+    "internal/orchestrator/completion_deferral_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/e2e_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/heartbeat_contention_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/history_retention_test.go": {
+      "backend_sqlite": 1,
+      "driver_import": 1,
+      "sqlite_open": 2
+    },
+    "internal/orchestrator/human_question_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/orchestrator/implement_dependency_deferral_test.go": {
+      "sqlite_open": 4
+    },
+    "internal/orchestrator/issue_contract_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 3
+    },
+    "internal/orchestrator/lane_mutation_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/merge_queue_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/orchestrator/merge_required_checks_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/native_completion_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/operational_completion_restart_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/rework_gate_wait_test.go": {
+      "backend_sqlite": 2,
+      "sqlite_open": 2
+    },
+    "internal/orchestrator/session_brake_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/staleness_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/orchestrator/stop_run_integration_test.go": {
+      "backend_sqlite": 5,
+      "sqlite_open": 5
+    },
+    "internal/orchestrator/terminal_attempt_retry_test.go": {
+      "backend_sqlite": 2,
+      "sqlite_open": 3
+    },
+    "internal/orchestrator/work_attempt_recovery_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/worker_generation_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/orchestrator/workflow_metrics_test.go": {
+      "backend_sqlite": 7,
+      "sqlite_open": 7
+    },
+    "internal/project/managed_config_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/project/runner_setup_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/runner/activity_profile_benchmark_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/sqlstmt/cache_test.go": {
+      "driver_import": 1
+    },
+    "internal/staleness/acknowledgements_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/store/admission.go": {
+      "sql_julianday": 6
+    },
+    "internal/store/admission_test.go": {
+      "backend_sqlite": 1
+    },
+    "internal/store/api_keys_test.go": {
+      "backend_sqlite": 2
+    },
+    "internal/store/busy.go": {
+      "driver_import": 2
+    },
+    "internal/store/busy_test.go": {
+      "sql_pragma": 1,
+      "sqlite_open": 2
+    },
+    "internal/store/capacity_constraints_test.go": {
+      "backend_sqlite": 1
+    },
+    "internal/store/dispatch_status_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/store/history_fixture_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/store/history_retention.go": {
+      "sql_julianday": 6,
+      "sql_pragma": 1
+    },
+    "internal/store/history_retention_test.go": {
+      "backend_sqlite": 1,
+      "sql_pragma": 3
+    },
+    "internal/store/lane_ledger.go": {
+      "sql_julianday": 1
+    },
+    "internal/store/metrics_benchmark_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/store/metrics_index_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/store/migrate.go": {
+      "sql_pragma": 2
+    },
+    "internal/store/migrate_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/store/operations.go": {
+      "sql_julianday": 22
+    },
+    "internal/store/pool_contention_e2e_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 2
+    },
+    "internal/store/pool_contention_test.go": {
+      "backend_sqlite": 1
+    },
+    "internal/store/refresh_benchmark_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/store/refresh_queries_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/store/schedulehealth_test.go": {
+      "backend_sqlite": 1
+    },
+    "internal/store/security_audit_test.go": {
+      "backend_sqlite": 2
+    },
+    "internal/store/session_progress_test.go": {
+      "sql_insert_or": 1
+    },
+    "internal/store/sqlc/store.sql.go": {
+      "sql_julianday": 5
+    },
+    "internal/store/sqlite.go": {
+      "backend_sqlite": 1,
+      "driver_import": 1,
+      "sql_pragma": 3,
+      "sqlite_open": 2
+    },
+    "internal/store/startup_reclaim_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/store/store.go": {
+      "backend_sqlite": 2,
+      "sqlite_open": 1
+    },
+    "internal/store/store_test.go": {
+      "backend_sqlite": 14,
+      "sql_pragma": 3,
+      "sql_schema": 4,
+      "sqlite_open": 8
+    },
+    "internal/store/storetest/fixture.go": {
+      "backend_sqlite": 2,
+      "sqlite_open": 2
+    },
+    "internal/store/storetest/fixture_test.go": {
+      "sql_schema": 1,
+      "sqlite_open": 2
+    },
+    "internal/store/typed_projections_test.go": {
+      "sqlite_open": 5
+    },
+    "internal/store/unique_inserts_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/store/validator_context_test.go": {
+      "backend_sqlite": 1
+    },
+    "internal/store/worker_generations_test.go": {
+      "backend_sqlite": 1
+    },
+    "internal/testenv/sqlite_inventory.go": {
+      "sql_schema": 1
+    },
+    "internal/testenv/sqlite_inventory_test.go": {
+      "sql_pragma": 1,
+      "sqlite_open": 1
+    },
+    "internal/testenv/unique_inserts.go": {
+      "sql_schema": 1
+    },
+    "internal/testenv/unique_inserts_test.go": {
+      "driver_import": 1,
+      "sql_insert_or": 1,
+      "sqlite_open": 1
+    },
+    "internal/web/api_benchmark_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "internal/web/artifacts_test.go": {
+      "database_path": 1
+    },
+    "internal/web/attempt_costs_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/web/change_review_browser_test.go": {
+      "database_path": 1
+    },
+    "internal/web/completions_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 2
+    },
+    "internal/web/library.go": {
+      "driver_import": 1,
+      "sql_pragma": 1,
+      "sqlite_open": 1
+    },
+    "internal/web/library_internal_test.go": {
+      "sqlite_open": 1
+    },
+    "internal/web/native_work_integration_test.go": {
+      "database_path": 1
+    },
+    "internal/web/reports_digest_test.go": {
+      "backend_sqlite": 2,
+      "sqlite_open": 2
+    },
+    "internal/web/server_test.go": {
+      "backend_sqlite": 3,
+      "sqlite_open": 2
+    },
+    "internal/web/staleness_warning_test.go": {
+      "sqlite_open": 2
+    },
+    "internal/web/workflow_metrics_benchmark_test.go": {
+      "backend_sqlite": 1,
+      "sqlite_open": 1
+    },
+    "tools/checklock/report_test.go": {
+      "driver_import": 1,
+      "sqlite_open": 1
+    }
+  },
+  "modules": {
+    "modernc.org/sqlite": 1
+  }
+}
