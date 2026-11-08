@@ -1491,10 +1491,6 @@ func successfulReworkGateWaitAttempt(
 }
 
 func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := t.Context()
@@ -1528,24 +1524,6 @@ func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
 		TerminalStates: []string{"Done", "Cancelled"},
 	})
 	state := newState(cfg)
-	runtimeStore, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = runtimeStore.Close() })
-	attemptID, err := runtimeStore.StartWorkAttempt(ctx, store.WorkAttemptStart{
-		ProjectID:      defaultWorkflowMetricsProjectID,
-		IssueID:        issue.ID,
-		Identifier:     issue.Identifier,
-		WorkerType:     "agent",
-		Lane:           issue.State,
-		AttemptNumber:  1,
-		StartedAt:      now.Add(-time.Minute),
-		LeaseExpiresAt: now.Add(time.Minute),
-	})
-	if err != nil {
-		t.Fatalf("StartWorkAttempt() error = %v", err)
-	}
 	state.Completed[issue.ID] = Completed{
 		Issue:       issue,
 		CompletedAt: now.Add(-5 * time.Minute),
@@ -1553,7 +1531,7 @@ func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
 	}
 	state.Running[issue.ID] = Running{
 		Issue:         issue,
-		WorkAttemptID: attemptID,
+		WorkAttemptID: 1,
 		Generation:    1,
 		StartedAt:     now.Add(-time.Minute),
 	}
@@ -1561,7 +1539,7 @@ func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
 	orch := &Orchestrator{
 		cfg:        cfg,
 		connector:  tracker,
-		laneLedger: runtimeStore,
+		laneLedger: &recordingLaneLedger{},
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
@@ -3311,10 +3289,6 @@ func TestValidatorProvenanceFailureStaysRetryable(t *testing.T) {
 }
 
 func TestValidatorDiffFetchFailureUsesInstancePath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name      string
@@ -3332,7 +3306,7 @@ func TestValidatorDiffFetchFailureUsesInstancePath(t *testing.T) {
 			t.Parallel()
 			issue := connector.Issue{ID: "issue-diff-fetch", Identifier: "digitaldrywood/detent#3150",
 				PullRequest: &connector.PullRequest{Number: 3151, BaseSHA: "base", HeadSHA: "head"}}
-			memo := openValidatorMemoStore(t)
+			memo := &validatorMemoFixture{}
 			cfg := autoPromoteValidatorTestConfig()
 			cfg.AutoPromote.Gate.Validator.MaxAttempts = 1
 			validator := &autoPromoteTickValidator{}

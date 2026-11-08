@@ -439,20 +439,12 @@ func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *
 }
 
 func TestRefreshCurrentLaneEntriesUsesHydratedTrackerReentry(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := t.Context()
 	firstEntry := time.Date(2026, 8, 17, 4, 53, 35, 0, time.UTC)
 	latestEntry := time.Date(2026, 8, 18, 22, 30, 8, 0, time.UTC)
-	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = backend.Close() })
+	backend := &autoPromoteWorkflowMetricsRecorder{}
 	if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
 		ProjectID:  "corp",
 		IssueID:    "I_74",
