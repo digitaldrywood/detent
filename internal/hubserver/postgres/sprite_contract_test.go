@@ -2,12 +2,15 @@ package postgres_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,7 +25,7 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 			seedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
 		}
 		err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
-			settings := postgres.SpritePool{OrganizationID: org, MaxRunners: 10, IdleSeconds: 300, ConfiguredBy: "admin", IsolationTier: "native-trusted", PlacementMode: "blended", BootstrapObjectKey: new("objects/bootstrap/" + string(org))}
+			settings := postgres.SpritePool{OrganizationID: org, MaxRunners: 101, IdleSeconds: 300, ConfiguredBy: "admin", IsolationTier: "native-trusted", PlacementMode: "blended", BootstrapObjectKey: new("objects/bootstrap/" + string(org))}
 			got, err := w.PutSpritePool(t.Context(), settings, 0)
 			if err != nil {
 				return err
@@ -58,6 +61,44 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 			return w.RecordSpriteProvisionFailure(t.Context(), "prj_first", 1)
 		})
 		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
+			for i := range 22 {
+				name := fmt.Sprintf("zz_history_%02d", i)
+				enrollment := runnerstore.Enrollment{OrganizationID: org, ID: name, TokenHash: apikey.HashToken(string(org) + name), Scope: "organization", Operations: []string{"read"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "admin"}
+				if err := w.(tenantstore.Writer).CreateRunnerEnrollment(t.Context(), enrollment); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: org, Name: name, EnrollmentID: name, ProviderOrganization: "example", State: "deleted", CreatedAt: now.Add(time.Duration(i+1) * time.Minute), IdleSince: now, AllocationProjectID: "prj_first"}); err != nil {
+					return err
+				}
+			}
+			row, err := w.SpriteAllocation(t.Context(), "prj_first")
+			if err != nil {
+				return err
+			}
+			row.DesiredCount, row.RequestedAt = 3, now.Add(5*time.Second)
+			row, err = w.PutSpriteAllocation(t.Context(), row, row.Revision)
+			if err != nil {
+				return err
+			}
+			row.DesiredCount, row.RequestedAt = 4, now.Add(10*time.Second)
+			row, err = w.PutSpriteAllocation(t.Context(), row, row.Revision)
+			if err != nil {
+				return err
+			}
+			if !row.RequestedAt.Equal(now.Add(5 * time.Second)) {
+				t.Fatalf("shortfall lost queue position: %+v", row)
+			}
+			member, err := w.SpriteMember(t.Context(), "second")
+			if err != nil {
+				return err
+			}
+			return w.UpdateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: org, Name: member.Name, EnrollmentID: member.EnrollmentID, ProviderOrganization: member.ProviderOrganization, State: "deleting", CreatedAt: member.CreatedAt, IdleSince: member.IdleSince, AllocationProjectID: tracker.ProjectID(member.AllocationProjectID), AllocationRevision: member.AllocationRevision})
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -138,7 +179,7 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 			if err != nil {
 				return err
 			}
-			if settings.OrganizationID != org || settings.BootstrapObjectKey == nil || *settings.BootstrapObjectKey != "objects/bootstrap/"+string(org) {
+			if settings.MaxRunners != 101 || settings.OrganizationID != org || settings.BootstrapObjectKey == nil || *settings.BootstrapObjectKey != "objects/bootstrap/"+string(org) {
 				t.Fatalf("pool=%+v", settings)
 			}
 			allocations, err := r.SpriteAllocations(t.Context(), "", 2)
@@ -149,7 +190,11 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 				t.Fatalf("allocations=%+v", allocations)
 			}
 			for i, row := range allocations {
-				if row.OrganizationID != org || row.DesiredCount != int32(i+1) {
+				want := int32(i + 1)
+				if i == 0 {
+					want = 4
+				}
+				if row.OrganizationID != org || row.DesiredCount != want {
 					t.Fatalf("allocation=%+v", row)
 				}
 			}
@@ -164,6 +209,58 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 				if member.OrganizationID != org || member.AllocationProjectID == "" {
 					t.Fatalf("member=%+v", member)
 				}
+			}
+			for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
+				count, err := r.SpriteActiveMemberCount(t.Context(), project)
+				if err != nil {
+					return err
+				}
+				if count != 1 {
+					t.Fatalf("%s active count=%d", project, count)
+				}
+			}
+			activeCount, err := r.SpritePoolMemberCount(t.Context())
+			if err != nil {
+				return err
+			}
+			if activeCount != 2 {
+				t.Fatalf("pool count=%d", activeCount)
+			}
+			queue, err := r.SpriteAllocationQueue(t.Context(), postgres.SpriteAllocationCursor{}, 1)
+			if err != nil {
+				return err
+			}
+			if len(queue) != 1 || queue[0].ProjectID != "prj_second" {
+				t.Fatalf("first queue page=%+v", queue)
+			}
+			queue, err = r.SpriteAllocationQueue(t.Context(), postgres.SpriteAllocationCursor{RequestedAt: queue[0].RequestedAt, ProjectID: queue[0].ProjectID}, 1)
+			if err != nil {
+				return err
+			}
+			if len(queue) != 1 || queue[0].ProjectID != "prj_first" {
+				t.Fatalf("second queue page=%+v", queue)
+			}
+			seen := map[string]bool{}
+			cursor := postgres.SpriteMemberCursor{}
+			for range 4 {
+				page, err := r.SpritePoolMemberPage(t.Context(), cursor, 7)
+				if err != nil {
+					return err
+				}
+				for _, view := range page {
+					m := view.RunnerSpriteMembership
+					if m.OrganizationID != org || seen[m.Name] || m.Name == "zz_history_00" || m.Name == "zz_history_01" {
+						t.Fatalf("invalid pool page member=%+v", view)
+					}
+					if m.State != "deleted" && view.RunnerID != m.Name {
+						t.Fatalf("runner binding=%+v", view)
+					}
+					seen[m.Name] = true
+					cursor = postgres.SpriteMemberCursor{CreatedAt: m.CreatedAt, Name: m.Name}
+				}
+			}
+			if len(seen) != 22 {
+				t.Fatalf("active and recent deleted members=%d", len(seen))
 			}
 			operation, err := r.SpriteOperation(t.Context(), "first")
 			if err != nil {

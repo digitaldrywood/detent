@@ -21,8 +21,8 @@ INSERT INTO project_sprite_allocations(organization_id,project_id,desired_count,
 VALUES($1,$2,$3,1,0,$4,$5) ON CONFLICT DO NOTHING RETURNING *;
 
 -- name: UpdateSpriteAllocation :one
-UPDATE project_sprite_allocations SET desired_count=sqlc.arg(desired_count),revision=revision+1,provision_failures=0,requested_at=sqlc.arg(requested_at),configured_by=sqlc.arg(configured_by)
-WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND revision=sqlc.arg(expected_revision) RETURNING *;
+UPDATE project_sprite_allocations SET desired_count=sqlc.arg(desired_count),revision=revision+1,provision_failures=0,requested_at=CASE WHEN (SELECT count(*) FROM runner_sprite_memberships m WHERE m.organization_id=project_sprite_allocations.organization_id AND m.allocation_project_id=project_sprite_allocations.project_id AND m.state<>'deleted')>=desired_count THEN sqlc.arg(requested_at)::timestamptz ELSE requested_at END,configured_by=sqlc.arg(configured_by)
+WHERE project_sprite_allocations.organization_id=sqlc.arg(organization_id) AND project_sprite_allocations.project_id=sqlc.arg(project_id) AND project_sprite_allocations.revision=sqlc.arg(expected_revision) RETURNING *;
 
 -- name: SpriteAllocations :many
 SELECT * FROM project_sprite_allocations WHERE organization_id=$1 AND project_id>$2 ORDER BY project_id LIMIT $3;
@@ -46,3 +46,40 @@ SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND outcome I
 
 -- name: RecordSpriteProvisionFailure :execrows
 UPDATE project_sprite_allocations SET provision_failures=provision_failures+1 WHERE organization_id=$1 AND project_id=$2 AND revision=$3;
+
+-- name: LockSpritePool :one
+SELECT * FROM organization_sprite_pools WHERE organization_id=$1 FOR UPDATE;
+
+-- name: SpriteMember :one
+SELECT * FROM runner_sprite_memberships WHERE organization_id=$1 AND name=$2;
+
+-- name: SpriteActiveMemberCount :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND allocation_project_id=$2 AND state<>'deleted';
+
+-- name: SpritePoolMemberCount :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND state<>'deleted';
+
+-- name: SpriteAllocationQueue :many
+SELECT a.* FROM project_sprite_allocations a
+JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id AND p.deleted_at IS NULL
+WHERE a.organization_id=sqlc.arg(organization_id) AND (a.requested_at,a.project_id)>(sqlc.arg(after_requested_at)::timestamptz,sqlc.arg(after_project_id)::text)
+ORDER BY a.requested_at,a.project_id LIMIT sqlc.arg(page_limit);
+
+-- name: SpritePoolMemberPage :many
+WITH recent_deleted AS (
+ SELECT d.organization_id,d.name,d.created_at FROM runner_sprite_memberships d
+ WHERE d.organization_id=sqlc.arg(organization_id) AND d.state='deleted'
+ ORDER BY d.created_at DESC,d.name DESC LIMIT 20
+), selected AS (
+ (SELECT a.organization_id,a.name,a.created_at FROM runner_sprite_memberships a
+  WHERE a.organization_id=sqlc.arg(organization_id) AND a.state<>'deleted'
+   AND (a.created_at,a.name)>(sqlc.arg(after_created_at)::timestamptz,sqlc.arg(after_name)::text)
+  ORDER BY a.created_at,a.name LIMIT sqlc.arg(page_limit))
+ UNION ALL
+ SELECT d.organization_id,d.name,d.created_at FROM recent_deleted d
+ WHERE (d.created_at,d.name)>(sqlc.arg(after_created_at)::timestamptz,sqlc.arg(after_name)::text)
+)
+SELECT sqlc.embed(m),COALESCE(r.runner_id,'')::text AS runner_id
+FROM selected s JOIN runner_sprite_memberships m ON m.organization_id=s.organization_id AND m.name=s.name
+LEFT JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
+ORDER BY m.created_at,m.name LIMIT sqlc.arg(page_limit);

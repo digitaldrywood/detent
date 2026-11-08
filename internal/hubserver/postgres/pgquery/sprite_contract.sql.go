@@ -85,6 +85,31 @@ func (q *Queries) CreateSpriteOperation(ctx context.Context, arg CreateSpriteOpe
 	return i, err
 }
 
+const lockSpritePool = `-- name: LockSpritePool :one
+SELECT organization_id, min_runners, max_runners, idle_seconds, bootstrap_object_key, configured_by, revision, isolation_tier, share_idle_capacity, placement_mode, todo_threshold, overflow_slots, max_sprite_slots FROM organization_sprite_pools WHERE organization_id=$1 FOR UPDATE
+`
+
+func (q *Queries) LockSpritePool(ctx context.Context, organizationID tracker.OrganizationID) (OrganizationSpritePool, error) {
+	row := q.db.QueryRow(ctx, lockSpritePool, organizationID)
+	var i OrganizationSpritePool
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.MinRunners,
+		&i.MaxRunners,
+		&i.IdleSeconds,
+		&i.BootstrapObjectKey,
+		&i.ConfiguredBy,
+		&i.Revision,
+		&i.IsolationTier,
+		&i.ShareIdleCapacity,
+		&i.PlacementMode,
+		&i.TodoThreshold,
+		&i.OverflowSlots,
+		&i.MaxSpriteSlots,
+	)
+	return i, err
+}
+
 const pendingSpriteOperations = `-- name: PendingSpriteOperations :many
 SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at FROM sprite_lifecycle_operations WHERE organization_id=$1 AND outcome IN ('pending','uncertain') AND next_attempt_at<=$2 ORDER BY next_attempt_at,idempotency_key LIMIT $3
 `
@@ -204,6 +229,22 @@ func (q *Queries) RecordSpriteProvisionFailure(ctx context.Context, arg RecordSp
 	return result.RowsAffected(), nil
 }
 
+const spriteActiveMemberCount = `-- name: SpriteActiveMemberCount :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND allocation_project_id=$2 AND state<>'deleted'
+`
+
+type SpriteActiveMemberCountParams struct {
+	OrganizationID      tracker.OrganizationID
+	AllocationProjectID string
+}
+
+func (q *Queries) SpriteActiveMemberCount(ctx context.Context, arg SpriteActiveMemberCountParams) (int64, error) {
+	row := q.db.QueryRow(ctx, spriteActiveMemberCount, arg.OrganizationID, arg.AllocationProjectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const spriteAllocation = `-- name: SpriteAllocation :one
 SELECT organization_id, project_id, desired_count, revision, provision_failures, requested_at, configured_by FROM project_sprite_allocations WHERE organization_id=$1 AND project_id=$2
 `
@@ -226,6 +267,53 @@ func (q *Queries) SpriteAllocation(ctx context.Context, arg SpriteAllocationPara
 		&i.ConfiguredBy,
 	)
 	return i, err
+}
+
+const spriteAllocationQueue = `-- name: SpriteAllocationQueue :many
+SELECT a.organization_id, a.project_id, a.desired_count, a.revision, a.provision_failures, a.requested_at, a.configured_by FROM project_sprite_allocations a
+JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id AND p.deleted_at IS NULL
+WHERE a.organization_id=$1 AND (a.requested_at,a.project_id)>($2::timestamptz,$3::text)
+ORDER BY a.requested_at,a.project_id LIMIT $4
+`
+
+type SpriteAllocationQueueParams struct {
+	OrganizationID   tracker.OrganizationID
+	AfterRequestedAt time.Time
+	AfterProjectID   string
+	PageLimit        int32
+}
+
+func (q *Queries) SpriteAllocationQueue(ctx context.Context, arg SpriteAllocationQueueParams) ([]ProjectSpriteAllocation, error) {
+	rows, err := q.db.Query(ctx, spriteAllocationQueue,
+		arg.OrganizationID,
+		arg.AfterRequestedAt,
+		arg.AfterProjectID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectSpriteAllocation{}
+	for rows.Next() {
+		var i ProjectSpriteAllocation
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.DesiredCount,
+			&i.Revision,
+			&i.ProvisionFailures,
+			&i.RequestedAt,
+			&i.ConfiguredBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const spriteAllocations = `-- name: SpriteAllocations :many
@@ -264,6 +352,34 @@ func (q *Queries) SpriteAllocations(ctx context.Context, arg SpriteAllocationsPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const spriteMember = `-- name: SpriteMember :one
+SELECT organization_id, name, provider_organization, token_project_id, enrollment_id, state, bootstrap_log, idle_since, created_at, allocation_project_id, allocation_revision FROM runner_sprite_memberships WHERE organization_id=$1 AND name=$2
+`
+
+type SpriteMemberParams struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+}
+
+func (q *Queries) SpriteMember(ctx context.Context, arg SpriteMemberParams) (RunnerSpriteMembership, error) {
+	row := q.db.QueryRow(ctx, spriteMember, arg.OrganizationID, arg.Name)
+	var i RunnerSpriteMembership
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.Name,
+		&i.ProviderOrganization,
+		&i.TokenProjectID,
+		&i.EnrollmentID,
+		&i.State,
+		&i.BootstrapLog,
+		&i.IdleSince,
+		&i.CreatedAt,
+		&i.AllocationProjectID,
+		&i.AllocationRevision,
+	)
+	return i, err
 }
 
 const spriteMembers = `-- name: SpriteMembers :many
@@ -360,9 +476,90 @@ func (q *Queries) SpritePool(ctx context.Context, organizationID tracker.Organiz
 	return i, err
 }
 
+const spritePoolMemberCount = `-- name: SpritePoolMemberCount :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND state<>'deleted'
+`
+
+func (q *Queries) SpritePoolMemberCount(ctx context.Context, organizationID tracker.OrganizationID) (int64, error) {
+	row := q.db.QueryRow(ctx, spritePoolMemberCount, organizationID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const spritePoolMemberPage = `-- name: SpritePoolMemberPage :many
+WITH recent_deleted AS (
+ SELECT d.organization_id,d.name,d.created_at FROM runner_sprite_memberships d
+ WHERE d.organization_id=$2 AND d.state='deleted'
+ ORDER BY d.created_at DESC,d.name DESC LIMIT 20
+), selected AS (
+ (SELECT a.organization_id,a.name,a.created_at FROM runner_sprite_memberships a
+  WHERE a.organization_id=$2 AND a.state<>'deleted'
+   AND (a.created_at,a.name)>($3::timestamptz,$4::text)
+  ORDER BY a.created_at,a.name LIMIT $1)
+ UNION ALL
+ SELECT d.organization_id,d.name,d.created_at FROM recent_deleted d
+ WHERE (d.created_at,d.name)>($3::timestamptz,$4::text)
+)
+SELECT m.organization_id, m.name, m.provider_organization, m.token_project_id, m.enrollment_id, m.state, m.bootstrap_log, m.idle_since, m.created_at, m.allocation_project_id, m.allocation_revision,COALESCE(r.runner_id,'')::text AS runner_id
+FROM selected s JOIN runner_sprite_memberships m ON m.organization_id=s.organization_id AND m.name=s.name
+LEFT JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
+ORDER BY m.created_at,m.name LIMIT $1
+`
+
+type SpritePoolMemberPageParams struct {
+	PageLimit      int32
+	OrganizationID tracker.OrganizationID
+	AfterCreatedAt time.Time
+	AfterName      string
+}
+
+type SpritePoolMemberPageRow struct {
+	RunnerSpriteMembership RunnerSpriteMembership
+	RunnerID               string
+}
+
+func (q *Queries) SpritePoolMemberPage(ctx context.Context, arg SpritePoolMemberPageParams) ([]SpritePoolMemberPageRow, error) {
+	rows, err := q.db.Query(ctx, spritePoolMemberPage,
+		arg.PageLimit,
+		arg.OrganizationID,
+		arg.AfterCreatedAt,
+		arg.AfterName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SpritePoolMemberPageRow{}
+	for rows.Next() {
+		var i SpritePoolMemberPageRow
+		if err := rows.Scan(
+			&i.RunnerSpriteMembership.OrganizationID,
+			&i.RunnerSpriteMembership.Name,
+			&i.RunnerSpriteMembership.ProviderOrganization,
+			&i.RunnerSpriteMembership.TokenProjectID,
+			&i.RunnerSpriteMembership.EnrollmentID,
+			&i.RunnerSpriteMembership.State,
+			&i.RunnerSpriteMembership.BootstrapLog,
+			&i.RunnerSpriteMembership.IdleSince,
+			&i.RunnerSpriteMembership.CreatedAt,
+			&i.RunnerSpriteMembership.AllocationProjectID,
+			&i.RunnerSpriteMembership.AllocationRevision,
+			&i.RunnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateSpriteAllocation = `-- name: UpdateSpriteAllocation :one
-UPDATE project_sprite_allocations SET desired_count=$1,revision=revision+1,provision_failures=0,requested_at=$2,configured_by=$3
-WHERE organization_id=$4 AND project_id=$5 AND revision=$6 RETURNING organization_id, project_id, desired_count, revision, provision_failures, requested_at, configured_by
+UPDATE project_sprite_allocations SET desired_count=$1,revision=revision+1,provision_failures=0,requested_at=CASE WHEN (SELECT count(*) FROM runner_sprite_memberships m WHERE m.organization_id=project_sprite_allocations.organization_id AND m.allocation_project_id=project_sprite_allocations.project_id AND m.state<>'deleted')>=desired_count THEN $2::timestamptz ELSE requested_at END,configured_by=$3
+WHERE project_sprite_allocations.organization_id=$4 AND project_sprite_allocations.project_id=$5 AND project_sprite_allocations.revision=$6 RETURNING organization_id, project_id, desired_count, revision, provision_failures, requested_at, configured_by
 `
 
 type UpdateSpriteAllocationParams struct {

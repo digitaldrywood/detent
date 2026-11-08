@@ -18,9 +18,25 @@ type SpritePool = pgquery.OrganizationSpritePool
 type SpriteAllocation = pgquery.ProjectSpriteAllocation
 type SpriteMember = pgquery.RunnerSpriteMembership
 type SpriteOperation = pgquery.SpriteLifecycleOperation
+type SpritePoolMember = pgquery.SpritePoolMemberPageRow
+
+type SpriteMemberCursor struct {
+	CreatedAt time.Time
+	Name      string
+}
+
+type SpriteAllocationCursor struct {
+	RequestedAt time.Time
+	ProjectID   tracker.ProjectID
+}
 
 type SpriteReader interface {
 	SpritePool(context.Context) (SpritePool, error)
+	SpriteMember(context.Context, string) (SpriteMember, error)
+	SpriteActiveMemberCount(context.Context, tracker.ProjectID) (int64, error)
+	SpritePoolMemberCount(context.Context) (int64, error)
+	SpritePoolMemberPage(context.Context, SpriteMemberCursor, int) ([]SpritePoolMember, error)
+	SpriteAllocationQueue(context.Context, SpriteAllocationCursor, int) ([]SpriteAllocation, error)
 	SpriteAllocation(context.Context, tracker.ProjectID) (SpriteAllocation, error)
 	SpriteAllocations(context.Context, tracker.ProjectID, int) ([]SpriteAllocation, error)
 	SpriteMembers(context.Context, string, int) ([]SpriteMember, error)
@@ -30,6 +46,7 @@ type SpriteReader interface {
 
 type SpriteWriter interface {
 	SpriteReader
+	LockSpritePool(context.Context) (SpritePool, error)
 	PutSpritePool(context.Context, SpritePool, int64) (SpritePool, error)
 	PutSpriteAllocation(context.Context, SpriteAllocation, int64) (SpriteAllocation, error)
 	CreateRunnerSpriteMembership(context.Context, runnerstore.SpriteMembership) error
@@ -57,7 +74,7 @@ func (s *session) PutSpritePool(ctx context.Context, row SpritePool, expected in
 		return SpritePool{}, err
 	}
 	placement := policy.Placement{Mode: row.PlacementMode, TodoThreshold: int(row.TodoThreshold), OverflowSlots: int(row.OverflowSlots), MaxSpriteSlots: int(row.MaxSpriteSlots)}
-	if expected < 0 || placement.Validate() != nil || row.MinRunners < 0 || row.MaxRunners < row.MinRunners || row.MaxRunners > 100 || row.IdleSeconds < 30 || row.ConfiguredBy == "" || (row.IsolationTier != "sandbox" && row.IsolationTier != "native-trusted") || row.BootstrapObjectKey != nil && *row.BootstrapObjectKey == "" {
+	if expected < 0 || placement.Validate() != nil || row.MinRunners < 0 || row.MaxRunners < row.MinRunners || row.IdleSeconds < 30 || row.ConfiguredBy == "" || (row.IsolationTier != "sandbox" && row.IsolationTier != "native-trusted") || row.BootstrapObjectKey != nil && *row.BootstrapObjectKey == "" {
 		return SpritePool{}, corestore.ErrInvalidPage
 	}
 	var result SpritePool
@@ -171,4 +188,46 @@ func (s *session) RecordSpriteProvisionFailure(ctx context.Context, project trac
 		return corestore.ErrRevisionConflict
 	}
 	return nil
+}
+
+func (s *session) LockSpritePool(ctx context.Context) (SpritePool, error) {
+	row, err := s.queries.LockSpritePool(ctx, s.organization)
+	return row, mapError(ctx, err)
+}
+
+func (s *session) SpriteMember(ctx context.Context, name string) (SpriteMember, error) {
+	row, err := s.queries.SpriteMember(ctx, pgquery.SpriteMemberParams{OrganizationID: s.organization, Name: name})
+	return row, mapError(ctx, err)
+}
+
+func (s *session) SpriteActiveMemberCount(ctx context.Context, project tracker.ProjectID) (int64, error) {
+	count, err := s.queries.SpriteActiveMemberCount(ctx, pgquery.SpriteActiveMemberCountParams{OrganizationID: s.organization, AllocationProjectID: string(project)})
+	return count, mapError(ctx, err)
+}
+
+func (s *session) SpritePoolMemberCount(ctx context.Context) (int64, error) {
+	count, err := s.queries.SpritePoolMemberCount(ctx, s.organization)
+	return count, mapError(ctx, err)
+}
+
+func (s *session) SpritePoolMemberPage(ctx context.Context, after SpriteMemberCursor, limit int) ([]SpritePoolMember, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	if after.CreatedAt.IsZero() {
+		after.CreatedAt = time.Unix(0, 0).UTC()
+	}
+	rows, err := s.queries.SpritePoolMemberPage(ctx, pgquery.SpritePoolMemberPageParams{OrganizationID: s.organization, AfterCreatedAt: after.CreatedAt, AfterName: after.Name, PageLimit: int32(limit)})
+	return rows, mapError(ctx, err)
+}
+
+func (s *session) SpriteAllocationQueue(ctx context.Context, after SpriteAllocationCursor, limit int) ([]SpriteAllocation, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	if after.RequestedAt.IsZero() {
+		after.RequestedAt = time.Unix(0, 0).UTC()
+	}
+	rows, err := s.queries.SpriteAllocationQueue(ctx, pgquery.SpriteAllocationQueueParams{OrganizationID: s.organization, AfterRequestedAt: after.RequestedAt, AfterProjectID: string(after.ProjectID), PageLimit: int32(limit)})
+	return rows, mapError(ctx, err)
 }
