@@ -46,6 +46,7 @@ var processCluster binaryCluster
 type binaryCluster struct {
 	mu        sync.Mutex
 	owner     *Template
+	tempDir   string
 	once      sync.Once
 	server    *server
 	err       error
@@ -80,6 +81,7 @@ func NewTemplate(migrate func(context.Context, *sql.DB) error) *Template {
 	processCluster.mu.Lock()
 	if processCluster.owner == nil {
 		processCluster.owner = p
+		processCluster.tempDir = os.TempDir()
 	}
 	processCluster.mu.Unlock()
 	return p
@@ -444,13 +446,17 @@ func connectionConfig(selection string) (*pgtransport.Connection, error) {
 }
 
 func openServer(ctx context.Context, selection string) (_ *server, resultErr error) {
+	return openServerAt(ctx, selection, os.TempDir())
+}
+
+func openServerAt(ctx context.Context, selection, tempDir string) (_ *server, resultErr error) {
 	if selection == "" {
 		return nil, errNotConfigured
 	}
 	stop := func(context.Context) error { return nil }
 	if selection == "binary" {
 		var err error
-		selection, stop, err = startBinary(ctx)
+		selection, stop, err = startBinary(ctx, tempDir)
 		if err != nil {
 			return nil, err
 		}
@@ -486,19 +492,19 @@ func openServer(ctx context.Context, selection string) (_ *server, resultErr err
 
 const maxSocketDirectoryLength = 64
 
-func socketParent() string {
-	if dir := os.TempDir(); len(dir) <= maxSocketDirectoryLength {
+func socketParent(dir string) string {
+	if len(dir) <= maxSocketDirectoryLength {
 		return dir
 	}
 	return "/tmp"
 }
 
-func startBinary(ctx context.Context) (_ string, _ func(context.Context) error, resultErr error) {
-	dir, err := os.MkdirTemp("", "pg-")
+func startBinary(ctx context.Context, tempDir string) (_ string, _ func(context.Context) error, resultErr error) {
+	dir, err := os.MkdirTemp(tempDir, "pg-")
 	if err != nil {
 		return "", nil, err
 	}
-	socketDir, err := os.MkdirTemp(socketParent(), "pgs-")
+	socketDir, err := os.MkdirTemp(socketParent(tempDir), "pgs-")
 	if err != nil {
 		return "", nil, errors.Join(err, os.RemoveAll(dir))
 	}
@@ -509,7 +515,7 @@ func startBinary(ctx context.Context) (_ string, _ func(context.Context) error, 
 	}()
 	init := exec.CommandContext(ctx, "initdb", "-D", "data", "-U", "detent_test", "--auth=trust", "--no-locale", "--encoding=UTF8")
 	init.Dir = dir
-	init.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + os.TempDir()}
+	init.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tempDir}
 	procgroup.Configure(ctx, init)
 	if output, err := init.CombinedOutput(); err != nil {
 		return "", nil, fmt.Errorf("initialize disposable PostgreSQL: %w: %s", err, output)
@@ -630,7 +636,11 @@ func fixtureConnector(connection pgtransport.Connection) (driver.Connector, erro
 
 func (c *binaryCluster) open(ctx context.Context) (*server, error) {
 	c.once.Do(func() {
-		c.server, c.err = openServer(ctx, "binary")
+		tempDir := c.tempDir
+		if tempDir == "" {
+			tempDir = os.TempDir()
+		}
+		c.server, c.err = openServerAt(ctx, "binary", tempDir)
 		c.admission = &Template{owners: make(map[string]int), changed: make(chan struct{})}
 	})
 	if c.err != nil {

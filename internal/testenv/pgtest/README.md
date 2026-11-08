@@ -6,7 +6,11 @@ package; supply them as the template migration function.
 
 Keep a `pgtest.NewTemplate(migrate)` in a package variable for the test process.
 The first constructed Template owns the binary cluster's lifetime, including
-when another Template initializes first. Close that owner after `m.Run()` in
+when another Template initializes first. It captures the process temporary
+directory when constructed, so later test-scoped `TMPDIR` changes cannot put
+the shared cluster inside a directory removed by a sibling test's cleanup.
+Construct the lifetime owner before any test-scoped environment changes.
+Close that owner after `m.Run()` in
 `TestMain`, before `os.Exit`, even if the owner never needed a database. Give the
 close context the test process deadline. Other Templates borrow the same server;
 their `Close` drops only their own databases. Close all borrowers before the

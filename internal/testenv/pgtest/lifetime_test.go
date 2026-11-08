@@ -22,13 +22,22 @@ import (
 
 type binaryLifetime struct {
 	Data    string
+	Socket  string
 	PID     int
 	Segment string
 }
 
 func TestBinaryLifetime(t *testing.T) {
 	if mode := os.Getenv("DETENT_PGTEST_LIFETIME"); mode != "" {
-		if err := processTemplate.initialize(t.Context(), "binary"); err != nil {
+		if strings.HasSuffix(mode, "initializer cleanup") || mode == "failed initializer" {
+			t.Run("initializer", func(t *testing.T) {
+				t.Setenv("TMPDIR", t.TempDir())
+				processTemplate.Database(t)
+				if mode == "failed initializer" {
+					t.Fatal("intentional initializer failure")
+				}
+			})
+		} else if err := processTemplate.initialize(t.Context(), "binary"); err != nil {
 			t.Fatal(err)
 		}
 		borrower := NewTemplate(migrateFixture)
@@ -55,7 +64,7 @@ func TestBinaryLifetime(t *testing.T) {
 			t.Fatal(err)
 		}
 		ready := os.NewFile(3, "fixture-ready")
-		if err := json.NewEncoder(ready).Encode(binaryLifetime{data, pid, strings.Fields(lines[6])[1]}); err != nil {
+		if err := json.NewEncoder(ready).Encode(binaryLifetime{Data: data, Socket: processTemplate.server.config.Host, PID: pid, Segment: strings.Fields(lines[6])[1]}); err != nil {
 			t.Fatal(err)
 		}
 		if err := ready.Close(); err != nil {
@@ -74,12 +83,17 @@ func TestBinaryLifetime(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		signal syscall.Signal
+		failed bool
+		long   bool
 	}{
 		{name: "SIGKILL", signal: syscall.SIGKILL},
 		{name: "SIGINT", signal: syscall.SIGINT},
 		{name: "SIGTERM", signal: syscall.SIGTERM},
 		{name: "TestMain"},
 		{name: "close"},
+		{name: "initializer cleanup"},
+		{name: "failed initializer", failed: true},
+		{name: "long initializer cleanup", long: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			executable, err := os.Executable()
@@ -93,6 +107,17 @@ func TestBinaryLifetime(t *testing.T) {
 			t.Cleanup(func() { ready.Close(); writer.Close() })
 			cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestBinaryLifetime$", "-test.timeout="+flag.Lookup("test.timeout").Value.String())
 			cmd.Env = append(os.Environ(), "DETENT_PGTEST_LIFETIME="+tc.name, "GOCOVERDIR="+t.TempDir())
+			root := os.TempDir()
+			if tc.long {
+				root = t.TempDir()
+				for len(root) < 300 {
+					root = filepath.Join(root, strings.Repeat("workspace-", 5))
+				}
+				if err := os.MkdirAll(root, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				cmd.Env = append(cmd.Env, "TMPDIR="+root)
+			}
 			cmd.ExtraFiles = []*os.File{writer}
 			var output bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &output, &output
@@ -120,9 +145,12 @@ func TestBinaryLifetime(t *testing.T) {
 			})
 			writer.Close()
 			if err := json.NewDecoder(ready).Decode(&fixture); err != nil {
-				t.Fatalf("fixture readiness: %v", err)
+				control.Close()
+				waitErr := cmd.Wait()
+				waited = true
+				t.Fatalf("fixture readiness: %v, exit: %v: %s", err, waitErr, output.String())
 			}
-			base, err := filepath.EvalSymlinks(os.TempDir())
+			base, err := filepath.EvalSymlinks(root)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -145,7 +173,7 @@ func TestBinaryLifetime(t *testing.T) {
 			}
 			err = cmd.Wait()
 			waited = true
-			if (err != nil) != (tc.signal != 0) {
+			if (err != nil) != (tc.signal != 0 || tc.failed) {
 				t.Fatalf("helper exit: %v: %s", err, output.String())
 			}
 			testenv.WaitUntil(t, t.Context(), func() error {
@@ -161,6 +189,13 @@ func TestBinaryLifetime(t *testing.T) {
 				}
 				return nil
 			})
+			if tc.signal == 0 {
+				for _, path := range []string{filepath.Dir(fixture.Data), fixture.Socket} {
+					if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("fixture shutdown left %s: %v", path, err)
+					}
+				}
+			}
 		})
 	}
 }
@@ -200,7 +235,7 @@ func TestBinaryStartupExit(t *testing.T) {
 		}
 	})
 	go func() {
-		_, stop, err := startBinary(ctx)
+		_, stop, err := startBinary(ctx, os.TempDir())
 		if stop != nil {
 			err = errors.Join(err, stop(ctx))
 		}

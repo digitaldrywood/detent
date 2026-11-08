@@ -911,7 +911,7 @@ func TestBinaryDurabilitySettingsAndURLPreservation(t *testing.T) {
 				}
 				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 				var stop func(context.Context) error
-				selection, stop, err = startBinary(ctx)
+				selection, stop, err = startBinary(ctx, os.TempDir())
 				if err != nil {
 					t.Fatal(err)
 				}
