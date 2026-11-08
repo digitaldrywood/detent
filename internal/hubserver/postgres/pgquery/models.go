@@ -5103,16 +5103,21 @@ type SlackIntegration struct {
 }
 
 type SpriteLifecycleOperation struct {
-	OrganizationID   tracker.OrganizationID
-	IdempotencyKey   string
-	Name             string
-	Operation        string
-	Outcome          string
-	ReceiptObjectKey *string
-	Attempts         int64
-	NextAttemptAt    time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	OrganizationID     tracker.OrganizationID
+	IdempotencyKey     string
+	Name               string
+	Operation          string
+	Outcome            string
+	ReceiptObjectKey   *string
+	Attempts           int64
+	NextAttemptAt      time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	RequestObjectKey   *string
+	TargetEnrollmentID string
+	ExecSessionID      *string
+	ProviderResourceID string
+	ProjectID          tracker.ProjectID
 }
 
 type StorageConversionCursor struct {

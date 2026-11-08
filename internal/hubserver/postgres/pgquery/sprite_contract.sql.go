@@ -47,17 +47,20 @@ func (q *Queries) CreateSpriteAllocation(ctx context.Context, arg CreateSpriteAl
 }
 
 const createSpriteOperation = `-- name: CreateSpriteOperation :one
-INSERT INTO sprite_lifecycle_operations(organization_id,idempotency_key,name,operation,outcome,attempts,next_attempt_at,created_at,updated_at)
-VALUES($1,$2,$3,$4,'pending',0,$5,$6,$6) ON CONFLICT DO NOTHING RETURNING organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at
+INSERT INTO sprite_lifecycle_operations(organization_id,idempotency_key,name,operation,outcome,attempts,next_attempt_at,created_at,updated_at,request_object_key,target_enrollment_id,project_id)
+VALUES($1,$2,$3,$4,'pending',0,$5,$6,$6,$7,$8,$9) ON CONFLICT DO NOTHING RETURNING organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id
 `
 
 type CreateSpriteOperationParams struct {
-	OrganizationID tracker.OrganizationID
-	IdempotencyKey string
-	Name           string
-	Operation      string
-	NextAttemptAt  time.Time
-	CreatedAt      time.Time
+	OrganizationID     tracker.OrganizationID
+	IdempotencyKey     string
+	Name               string
+	Operation          string
+	NextAttemptAt      time.Time
+	CreatedAt          time.Time
+	RequestObjectKey   *string
+	TargetEnrollmentID string
+	ProjectID          tracker.ProjectID
 }
 
 func (q *Queries) CreateSpriteOperation(ctx context.Context, arg CreateSpriteOperationParams) (SpriteLifecycleOperation, error) {
@@ -68,6 +71,9 @@ func (q *Queries) CreateSpriteOperation(ctx context.Context, arg CreateSpriteOpe
 		arg.Operation,
 		arg.NextAttemptAt,
 		arg.CreatedAt,
+		arg.RequestObjectKey,
+		arg.TargetEnrollmentID,
+		arg.ProjectID,
 	)
 	var i SpriteLifecycleOperation
 	err := row.Scan(
@@ -81,6 +87,11 @@ func (q *Queries) CreateSpriteOperation(ctx context.Context, arg CreateSpriteOpe
 		&i.NextAttemptAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RequestObjectKey,
+		&i.TargetEnrollmentID,
+		&i.ExecSessionID,
+		&i.ProviderResourceID,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -111,7 +122,7 @@ func (q *Queries) LockSpritePool(ctx context.Context, organizationID tracker.Org
 }
 
 const pendingSpriteOperations = `-- name: PendingSpriteOperations :many
-SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at FROM sprite_lifecycle_operations WHERE organization_id=$1 AND outcome IN ('pending','uncertain') AND next_attempt_at<=$2 ORDER BY next_attempt_at,idempotency_key LIMIT $3
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id FROM sprite_lifecycle_operations WHERE organization_id=$1 AND outcome IN ('pending','uncertain') AND next_attempt_at<=$2 ORDER BY next_attempt_at,idempotency_key LIMIT $3
 `
 
 type PendingSpriteOperationsParams struct {
@@ -140,6 +151,11 @@ func (q *Queries) PendingSpriteOperations(ctx context.Context, arg PendingSprite
 			&i.NextAttemptAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RequestObjectKey,
+			&i.TargetEnrollmentID,
+			&i.ExecSessionID,
+			&i.ProviderResourceID,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -149,6 +165,46 @@ func (q *Queries) PendingSpriteOperations(ctx context.Context, arg PendingSprite
 		return nil, err
 	}
 	return items, nil
+}
+
+const promoteSpriteSecret = `-- name: PromoteSpriteSecret :execrows
+INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at)
+SELECT $1,'fly_sprites_token',s.organization_slug,$2::bytea,$3::bytea,$4::bytea,$5::integer,$6::timestamptz
+FROM project_secrets s
+WHERE s.organization_id=$1 AND s.kind='fly_sprites_token'
+AND s.project_id=$7 AND s.ciphertext=$8::bytea AND s.nonce=$9::bytea
+AND s.project_id=(SELECT first.project_id FROM project_secrets first JOIN projects p ON p.organization_id=first.organization_id AND p.id=first.project_id WHERE first.organization_id=$1 AND first.kind='fly_sprites_token' AND p.deleted_at IS NULL ORDER BY p.scheduling_rank,p.id LIMIT 1)
+ON CONFLICT (organization_id,kind) DO NOTHING
+`
+
+type PromoteSpriteSecretParams struct {
+	OrganizationID   tracker.OrganizationID
+	Ciphertext       []byte
+	Nonce            []byte
+	WrappedDataKey   []byte
+	MasterKeyVersion int32
+	UpdatedAt        time.Time
+	SourceProjectID  tracker.ProjectID
+	SourceCiphertext []byte
+	SourceNonce      []byte
+}
+
+func (q *Queries) PromoteSpriteSecret(ctx context.Context, arg PromoteSpriteSecretParams) (int64, error) {
+	result, err := q.db.Exec(ctx, promoteSpriteSecret,
+		arg.OrganizationID,
+		arg.Ciphertext,
+		arg.Nonce,
+		arg.WrappedDataKey,
+		arg.MasterKeyVersion,
+		arg.UpdatedAt,
+		arg.SourceProjectID,
+		arg.SourceCiphertext,
+		arg.SourceNonce,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const putSpritePool = `-- name: PutSpritePool :one
@@ -223,6 +279,33 @@ type RecordSpriteProvisionFailureParams struct {
 
 func (q *Queries) RecordSpriteProvisionFailure(ctx context.Context, arg RecordSpriteProvisionFailureParams) (int64, error) {
 	result, err := q.db.Exec(ctx, recordSpriteProvisionFailure, arg.OrganizationID, arg.ProjectID, arg.Revision)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setSpriteExecSession = `-- name: SetSpriteExecSession :execrows
+UPDATE sprite_lifecycle_operations SET exec_session_id=$1::text
+WHERE organization_id=$2 AND idempotency_key=$3
+AND attempts=$4 AND outcome='uncertain'
+AND (exec_session_id IS NULL OR exec_session_id=$1::text)
+`
+
+type SetSpriteExecSessionParams struct {
+	ExecSessionID    string
+	OrganizationID   tracker.OrganizationID
+	IdempotencyKey   string
+	ExpectedAttempts int64
+}
+
+func (q *Queries) SetSpriteExecSession(ctx context.Context, arg SetSpriteExecSessionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSpriteExecSession,
+		arg.ExecSessionID,
+		arg.OrganizationID,
+		arg.IdempotencyKey,
+		arg.ExpectedAttempts,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -381,6 +464,57 @@ func (q *Queries) SpriteAllocations(ctx context.Context, arg SpriteAllocationsPa
 	return items, nil
 }
 
+const spriteBudgetRetainsMember = `-- name: SpriteBudgetRetainsMember :one
+SELECT EXISTS(SELECT 1 FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
+ JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
+ JOIN monthly_budget_admissions a ON a.organization_id=l.organization_id AND a.issue_id=l.issue_id
+ WHERE m.organization_id=$1 AND m.name=$2 AND l.fencing_token=(SELECT max(latest.fencing_token) FROM leases latest WHERE latest.organization_id=l.organization_id AND latest.issue_id=l.issue_id))::boolean
+`
+
+type SpriteBudgetRetainsMemberParams struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+}
+
+func (q *Queries) SpriteBudgetRetainsMember(ctx context.Context, arg SpriteBudgetRetainsMemberParams) (bool, error) {
+	row := q.db.QueryRow(ctx, spriteBudgetRetainsMember, arg.OrganizationID, arg.Name)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const spriteEnrollmentWake = `-- name: SpriteEnrollmentWake :one
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id FROM sprite_lifecycle_operations WHERE organization_id=$1 AND target_enrollment_id=$2 AND operation='wake' ORDER BY created_at DESC,idempotency_key DESC LIMIT 1
+`
+
+type SpriteEnrollmentWakeParams struct {
+	OrganizationID     tracker.OrganizationID
+	TargetEnrollmentID string
+}
+
+func (q *Queries) SpriteEnrollmentWake(ctx context.Context, arg SpriteEnrollmentWakeParams) (SpriteLifecycleOperation, error) {
+	row := q.db.QueryRow(ctx, spriteEnrollmentWake, arg.OrganizationID, arg.TargetEnrollmentID)
+	var i SpriteLifecycleOperation
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.IdempotencyKey,
+		&i.Name,
+		&i.Operation,
+		&i.Outcome,
+		&i.ReceiptObjectKey,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RequestObjectKey,
+		&i.TargetEnrollmentID,
+		&i.ExecSessionID,
+		&i.ProviderResourceID,
+		&i.ProjectID,
+	)
+	return i, err
+}
+
 const spriteMember = `-- name: SpriteMember :one
 SELECT organization_id, name, provider_organization, token_project_id, enrollment_id, state, bootstrap_log, idle_since, created_at, allocation_project_id, allocation_revision FROM runner_sprite_memberships WHERE organization_id=$1 AND name=$2
 `
@@ -407,6 +541,108 @@ func (q *Queries) SpriteMember(ctx context.Context, arg SpriteMemberParams) (Run
 		&i.AllocationRevision,
 	)
 	return i, err
+}
+
+const spriteMemberBusy = `-- name: SpriteMemberBusy :one
+SELECT EXISTS(SELECT 1 FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
+ JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
+ WHERE m.organization_id=$1 AND m.name=$2 AND l.released_at IS NULL)::boolean
+`
+
+type SpriteMemberBusyParams struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+}
+
+func (q *Queries) SpriteMemberBusy(ctx context.Context, arg SpriteMemberBusyParams) (bool, error) {
+	row := q.db.QueryRow(ctx, spriteMemberBusy, arg.OrganizationID, arg.Name)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const spriteMemberOperations = `-- name: SpriteMemberOperations :many
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id FROM sprite_lifecycle_operations WHERE organization_id=$1 AND name=$2 AND outcome IN ('committed','rejected') AND receipt_object_key IS NOT NULL ORDER BY created_at,idempotency_key LIMIT 6
+`
+
+type SpriteMemberOperationsParams struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+}
+
+func (q *Queries) SpriteMemberOperations(ctx context.Context, arg SpriteMemberOperationsParams) ([]SpriteLifecycleOperation, error) {
+	rows, err := q.db.Query(ctx, spriteMemberOperations, arg.OrganizationID, arg.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SpriteLifecycleOperation{}
+	for rows.Next() {
+		var i SpriteLifecycleOperation
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.IdempotencyKey,
+			&i.Name,
+			&i.Operation,
+			&i.Outcome,
+			&i.ReceiptObjectKey,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RequestObjectKey,
+			&i.TargetEnrollmentID,
+			&i.ExecSessionID,
+			&i.ProviderResourceID,
+			&i.ProjectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const spriteMemberRunner = `-- name: SpriteMemberRunner :one
+SELECT r.runner_id FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
+WHERE m.organization_id=$1 AND m.name=$2
+`
+
+type SpriteMemberRunnerParams struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+}
+
+func (q *Queries) SpriteMemberRunner(ctx context.Context, arg SpriteMemberRunnerParams) (string, error) {
+	row := q.db.QueryRow(ctx, spriteMemberRunner, arg.OrganizationID, arg.Name)
+	var runner_id string
+	err := row.Scan(&runner_id)
+	return runner_id, err
+}
+
+const spriteMemberWanted = `-- name: SpriteMemberWanted :one
+SELECT (m.state IN ('bootstrapping','enrolled') AND CASE WHEN m.allocation_project_id='' THEN p.max_runners>0 ELSE
+ EXISTS(SELECT 1 FROM project_sprite_allocations a JOIN projects pr ON pr.organization_id=a.organization_id AND pr.id=a.project_id AND pr.deleted_at IS NULL
+ WHERE a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id AND
+ (SELECT count(*) FROM runner_sprite_memberships ahead WHERE ahead.organization_id=m.organization_id AND ahead.allocation_project_id=m.allocation_project_id AND ahead.name<>m.name
+ AND (ahead.state='enrolled' OR ahead.state='bootstrapping' AND (ahead.created_at,ahead.name)<(m.created_at,m.name)))
+ < LEAST(a.desired_count,GREATEST(p.max_runners-(SELECT count(*) FROM runner_sprite_memberships other WHERE other.organization_id=m.organization_id AND other.allocation_project_id<>m.allocation_project_id AND other.state NOT IN ('deleted','deleting')),0))) END)::boolean
+FROM runner_sprite_memberships m JOIN organization_sprite_pools p ON p.organization_id=m.organization_id WHERE m.organization_id=$1 AND m.name=$2
+`
+
+type SpriteMemberWantedParams struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+}
+
+func (q *Queries) SpriteMemberWanted(ctx context.Context, arg SpriteMemberWantedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, spriteMemberWanted, arg.OrganizationID, arg.Name)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const spriteMembers = `-- name: SpriteMembers :many
@@ -452,7 +688,7 @@ func (q *Queries) SpriteMembers(ctx context.Context, arg SpriteMembersParams) ([
 }
 
 const spriteOperation = `-- name: SpriteOperation :one
-SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at FROM sprite_lifecycle_operations WHERE organization_id=$1 AND idempotency_key=$2
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id FROM sprite_lifecycle_operations WHERE organization_id=$1 AND idempotency_key=$2
 `
 
 type SpriteOperationParams struct {
@@ -474,6 +710,11 @@ func (q *Queries) SpriteOperation(ctx context.Context, arg SpriteOperationParams
 		&i.NextAttemptAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RequestObjectKey,
+		&i.TargetEnrollmentID,
+		&i.ExecSessionID,
+		&i.ProviderResourceID,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -584,6 +825,57 @@ func (q *Queries) SpritePoolMemberPage(ctx context.Context, arg SpritePoolMember
 	return items, nil
 }
 
+const spritePromotionSource = `-- name: SpritePromotionSource :one
+SELECT s.organization_id, s.project_id, s.kind, s.organization_slug, s.ciphertext, s.nonce, s.wrapped_data_key, s.master_key_version, s.updated_at FROM project_secrets s JOIN projects p ON p.organization_id=s.organization_id AND p.id=s.project_id
+WHERE s.organization_id=$1 AND s.kind='fly_sprites_token' AND p.deleted_at IS NULL ORDER BY p.scheduling_rank,p.id LIMIT 1
+`
+
+func (q *Queries) SpritePromotionSource(ctx context.Context, organizationID tracker.OrganizationID) (ProjectSecret, error) {
+	row := q.db.QueryRow(ctx, spritePromotionSource, organizationID)
+	var i ProjectSecret
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.OrganizationSlug,
+		&i.Ciphertext,
+		&i.Nonce,
+		&i.WrappedDataKey,
+		&i.MasterKeyVersion,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const spriteWakeTarget = `-- name: SpriteWakeTarget :one
+SELECT EXISTS(SELECT 1 FROM runner_identities r JOIN machines m ON m.organization_id=r.organization_id AND m.id=r.machine_id
+JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
+WHERE r.organization_id=$1 AND r.enrollment_id=$2 AND m.sprite_name=$3 AND m.hostname=$3
+AND r.removed_at IS NULL AND r.state='active' AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>$4::timestamptz)
+AND (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=$5)))::boolean
+`
+
+type SpriteWakeTargetParams struct {
+	OrganizationID tracker.OrganizationID
+	EnrollmentID   string
+	SpriteName     string
+	At             time.Time
+	ProjectID      tracker.ProjectID
+}
+
+func (q *Queries) SpriteWakeTarget(ctx context.Context, arg SpriteWakeTargetParams) (bool, error) {
+	row := q.db.QueryRow(ctx, spriteWakeTarget,
+		arg.OrganizationID,
+		arg.EnrollmentID,
+		arg.SpriteName,
+		arg.At,
+		arg.ProjectID,
+	)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const updateSpriteAllocation = `-- name: UpdateSpriteAllocation :one
 UPDATE project_sprite_allocations SET desired_count=$1,revision=revision+1,provision_failures=0,requested_at=CASE WHEN (SELECT count(*) FROM runner_sprite_memberships m WHERE m.organization_id=project_sprite_allocations.organization_id AND m.allocation_project_id=project_sprite_allocations.project_id AND m.state<>'deleted')>=desired_count THEN $2::timestamptz ELSE requested_at END,configured_by=$3
 WHERE project_sprite_allocations.organization_id=$4 AND project_sprite_allocations.project_id=$5 AND project_sprite_allocations.revision=$6 RETURNING organization_id, project_id, desired_count, revision, provision_failures, requested_at, configured_by
@@ -621,24 +913,26 @@ func (q *Queries) UpdateSpriteAllocation(ctx context.Context, arg UpdateSpriteAl
 }
 
 const updateSpriteOperation = `-- name: UpdateSpriteOperation :execrows
-UPDATE sprite_lifecycle_operations SET outcome=$1,receipt_object_key=$2,attempts=attempts+1,next_attempt_at=$3,updated_at=$4
-WHERE organization_id=$5 AND idempotency_key=$6 AND attempts=$7 AND outcome IN ('pending','uncertain')
+UPDATE sprite_lifecycle_operations SET outcome=$1,receipt_object_key=$2,provider_resource_id=CASE WHEN $3::text='' THEN provider_resource_id ELSE $3::text END,attempts=attempts+1,next_attempt_at=$4,updated_at=$5
+WHERE organization_id=$6 AND idempotency_key=$7 AND attempts=$8 AND outcome IN ('pending','uncertain')
 `
 
 type UpdateSpriteOperationParams struct {
-	Outcome          string
-	ReceiptObjectKey *string
-	NextAttemptAt    time.Time
-	UpdatedAt        time.Time
-	OrganizationID   tracker.OrganizationID
-	IdempotencyKey   string
-	ExpectedAttempts int64
+	Outcome            string
+	ReceiptObjectKey   *string
+	ProviderResourceID string
+	NextAttemptAt      time.Time
+	UpdatedAt          time.Time
+	OrganizationID     tracker.OrganizationID
+	IdempotencyKey     string
+	ExpectedAttempts   int64
 }
 
 func (q *Queries) UpdateSpriteOperation(ctx context.Context, arg UpdateSpriteOperationParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateSpriteOperation,
 		arg.Outcome,
 		arg.ReceiptObjectKey,
+		arg.ProviderResourceID,
 		arg.NextAttemptAt,
 		arg.UpdatedAt,
 		arg.OrganizationID,

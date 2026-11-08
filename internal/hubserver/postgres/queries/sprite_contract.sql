@@ -34,11 +34,11 @@ SELECT * FROM runner_sprite_memberships WHERE organization_id=$1 AND name>$2 ORD
 SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND idempotency_key=$2;
 
 -- name: CreateSpriteOperation :one
-INSERT INTO sprite_lifecycle_operations(organization_id,idempotency_key,name,operation,outcome,attempts,next_attempt_at,created_at,updated_at)
-VALUES($1,$2,$3,$4,'pending',0,$5,$6,$6) ON CONFLICT DO NOTHING RETURNING *;
+INSERT INTO sprite_lifecycle_operations(organization_id,idempotency_key,name,operation,outcome,attempts,next_attempt_at,created_at,updated_at,request_object_key,target_enrollment_id,project_id)
+VALUES($1,$2,$3,$4,'pending',0,$5,$6,$6,sqlc.narg(request_object_key),sqlc.arg(target_enrollment_id),sqlc.arg(project_id)) ON CONFLICT DO NOTHING RETURNING *;
 
 -- name: UpdateSpriteOperation :execrows
-UPDATE sprite_lifecycle_operations SET outcome=sqlc.arg(outcome),receipt_object_key=sqlc.narg(receipt_object_key),attempts=attempts+1,next_attempt_at=sqlc.arg(next_attempt_at),updated_at=sqlc.arg(updated_at)
+UPDATE sprite_lifecycle_operations SET outcome=sqlc.arg(outcome),receipt_object_key=sqlc.narg(receipt_object_key),provider_resource_id=CASE WHEN sqlc.arg(provider_resource_id)::text='' THEN provider_resource_id ELSE sqlc.arg(provider_resource_id)::text END,attempts=attempts+1,next_attempt_at=sqlc.arg(next_attempt_at),updated_at=sqlc.arg(updated_at)
 WHERE organization_id=sqlc.arg(organization_id) AND idempotency_key=sqlc.arg(idempotency_key) AND attempts=sqlc.arg(expected_attempts) AND outcome IN ('pending','uncertain');
 
 -- name: PendingSpriteOperations :many
@@ -96,3 +96,59 @@ SELECT EXISTS(
   WHERE m.organization_id=a.organization_id AND m.principal_id=t.id AND m.active AND m.role IN ('owner','admin') AND g.project_id=a.project_id AND g.can_write
  ))
 )::boolean;
+
+-- name: SetSpriteExecSession :execrows
+UPDATE sprite_lifecycle_operations SET exec_session_id=sqlc.arg(exec_session_id)::text
+WHERE organization_id=sqlc.arg(organization_id) AND idempotency_key=sqlc.arg(idempotency_key)
+AND attempts=sqlc.arg(expected_attempts) AND outcome='uncertain'
+AND (exec_session_id IS NULL OR exec_session_id=sqlc.arg(exec_session_id)::text);
+
+-- name: SpriteMemberBusy :one
+SELECT EXISTS(SELECT 1 FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
+ JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
+ WHERE m.organization_id=$1 AND m.name=$2 AND l.released_at IS NULL)::boolean;
+
+-- name: SpriteMemberWanted :one
+SELECT (m.state IN ('bootstrapping','enrolled') AND CASE WHEN m.allocation_project_id='' THEN p.max_runners>0 ELSE
+ EXISTS(SELECT 1 FROM project_sprite_allocations a JOIN projects pr ON pr.organization_id=a.organization_id AND pr.id=a.project_id AND pr.deleted_at IS NULL
+ WHERE a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id AND
+ (SELECT count(*) FROM runner_sprite_memberships ahead WHERE ahead.organization_id=m.organization_id AND ahead.allocation_project_id=m.allocation_project_id AND ahead.name<>m.name
+ AND (ahead.state='enrolled' OR ahead.state='bootstrapping' AND (ahead.created_at,ahead.name)<(m.created_at,m.name)))
+ < LEAST(a.desired_count,GREATEST(p.max_runners-(SELECT count(*) FROM runner_sprite_memberships other WHERE other.organization_id=m.organization_id AND other.allocation_project_id<>m.allocation_project_id AND other.state NOT IN ('deleted','deleting')),0))) END)::boolean
+FROM runner_sprite_memberships m JOIN organization_sprite_pools p ON p.organization_id=m.organization_id WHERE m.organization_id=$1 AND m.name=$2;
+
+-- name: SpriteMemberRunner :one
+SELECT r.runner_id FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
+WHERE m.organization_id=$1 AND m.name=$2;
+
+-- name: SpriteBudgetRetainsMember :one
+SELECT EXISTS(SELECT 1 FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
+ JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
+ JOIN monthly_budget_admissions a ON a.organization_id=l.organization_id AND a.issue_id=l.issue_id
+ WHERE m.organization_id=$1 AND m.name=$2 AND l.fencing_token=(SELECT max(latest.fencing_token) FROM leases latest WHERE latest.organization_id=l.organization_id AND latest.issue_id=l.issue_id))::boolean;
+
+-- name: SpriteWakeTarget :one
+SELECT EXISTS(SELECT 1 FROM runner_identities r JOIN machines m ON m.organization_id=r.organization_id AND m.id=r.machine_id
+JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
+WHERE r.organization_id=sqlc.arg(organization_id) AND r.enrollment_id=sqlc.arg(enrollment_id) AND m.sprite_name=sqlc.arg(sprite_name) AND m.hostname=sqlc.arg(sprite_name)
+AND r.removed_at IS NULL AND r.state='active' AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>sqlc.arg(at)::timestamptz)
+AND (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=sqlc.arg(project_id))))::boolean;
+
+-- name: SpriteMemberOperations :many
+SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND name=$2 AND outcome IN ('committed','rejected') AND receipt_object_key IS NOT NULL ORDER BY created_at,idempotency_key LIMIT 6;
+
+-- name: SpritePromotionSource :one
+SELECT s.* FROM project_secrets s JOIN projects p ON p.organization_id=s.organization_id AND p.id=s.project_id
+WHERE s.organization_id=$1 AND s.kind='fly_sprites_token' AND p.deleted_at IS NULL ORDER BY p.scheduling_rank,p.id LIMIT 1;
+
+-- name: PromoteSpriteSecret :execrows
+INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at)
+SELECT sqlc.arg(organization_id),'fly_sprites_token',s.organization_slug,sqlc.arg(ciphertext)::bytea,sqlc.arg(nonce)::bytea,sqlc.arg(wrapped_data_key)::bytea,sqlc.arg(master_key_version)::integer,sqlc.arg(updated_at)::timestamptz
+FROM project_secrets s
+WHERE s.organization_id=sqlc.arg(organization_id) AND s.kind='fly_sprites_token'
+AND s.project_id=sqlc.arg(source_project_id) AND s.ciphertext=sqlc.arg(source_ciphertext)::bytea AND s.nonce=sqlc.arg(source_nonce)::bytea
+AND s.project_id=(SELECT first.project_id FROM project_secrets first JOIN projects p ON p.organization_id=first.organization_id AND p.id=first.project_id WHERE first.organization_id=sqlc.arg(organization_id) AND first.kind='fly_sprites_token' AND p.deleted_at IS NULL ORDER BY p.scheduling_rank,p.id LIMIT 1)
+ON CONFLICT (organization_id,kind) DO NOTHING;
+
+-- name: SpriteEnrollmentWake :one
+SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND target_enrollment_id=$2 AND operation='wake' ORDER BY created_at DESC,idempotency_key DESC LIMIT 1;

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -46,7 +47,7 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 				if err := w.CreateRunnerSpriteMembership(t.Context(), member); err != nil {
 					return err
 				}
-				operation := postgres.SpriteOperation{OrganizationID: org, IdempotencyKey: id, Name: id, Operation: "provision", CreatedAt: now, NextAttemptAt: now.Add(time.Second)}
+				operation := postgres.SpriteOperation{OrganizationID: org, IdempotencyKey: id, Name: id, Operation: "provision", RequestObjectKey: new("objects/request"), CreatedAt: now, NextAttemptAt: now.Add(time.Second)}
 				if _, err := w.CreateSpriteOperation(t.Context(), operation); err != nil {
 					return err
 				}
@@ -54,7 +55,7 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 				if err != nil {
 					return err
 				}
-				if replay.Attempts != 0 || replay.Outcome != "pending" || !replay.CreatedAt.Equal(now) {
+				if replay.Attempts != 0 || replay.Outcome != "pending" || !replay.CreatedAt.Equal(now) || replay.RequestObjectKey == nil || *replay.RequestObjectKey != "objects/request" || replay.TargetEnrollmentID != "enrollment_"+id || replay.ProjectID != allocation.ProjectID {
 					t.Fatalf("replay=%+v", replay)
 				}
 			}
@@ -132,8 +133,32 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 			_, err = w.PutSpriteAllocation(t.Context(), row, 4)
 			return err
 		}, corestore.ErrRevisionConflict},
+		{"deleted project source", "org_first", func(w postgres.SpriteWriter) error {
+			writer, ok := w.(tenantstore.Writer)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			project, err := writer.Project(t.Context(), "prj_first")
+			if err != nil {
+				return err
+			}
+			project.DeletedAt = &now
+			if _, err := writer.UpdateProject(t.Context(), project); err != nil {
+				return err
+			}
+			_, err = w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "deleted-project", Name: "first", Operation: "bootstrap", RequestObjectKey: new("objects/request"), CreatedAt: now, NextAttemptAt: now})
+			return err
+		}, corestore.ErrNotFound},
+		{"missing request payload", "org_first", func(w postgres.SpriteWriter) error {
+			_, err := w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "missing-request", Name: "first", Operation: "provision", CreatedAt: now, NextAttemptAt: now})
+			return err
+		}, corestore.ErrInvalidPage},
+		{"foreign enrollment binding", "org_first", func(w postgres.SpriteWriter) error {
+			_, err := w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "foreign-binding", Name: "first", Operation: "provision", TargetEnrollmentID: "enrollment_second", ProjectID: "prj_first", RequestObjectKey: new("objects/request"), CreatedAt: now, NextAttemptAt: now})
+			return err
+		}, corestore.ErrNotFound},
 		{"conflicting replay", "org_first", func(w postgres.SpriteWriter) error {
-			_, err := w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "first", Name: "second", Operation: "provision", CreatedAt: now, NextAttemptAt: now.Add(time.Second)})
+			_, err := w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "first", Name: "second", Operation: "provision", RequestObjectKey: new("objects/request"), CreatedAt: now, NextAttemptAt: now.Add(time.Second)})
 			return err
 		}, corestore.ErrUniqueViolation},
 	}
