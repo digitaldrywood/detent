@@ -101,7 +101,7 @@ set -eu
 case "$*" in
   'build ./...') exec "$DETENT_MAKE_TEST_BINARY" -test.run='^TestMakeCheckFastBuildHelper$' ;;
   'run ./tools/invariantcheck'|'run ./tools/migrationcheck'|'run ./internal/config/cmd/configdoc -root .') exit 0 ;;
-  'run github.com/sqlc-dev/sqlc/cmd/sqlc@'*' diff -f sqlc/sqlc.yaml') exit 0 ;;
+  'run github.com/sqlc-dev/sqlc/cmd/sqlc@'*' diff -f sqlc/sqlc.yaml'|'run github.com/sqlc-dev/sqlc/cmd/sqlc@'*' diff -f internal/hubserver/postgres/sqlc.yaml') exit 0 ;;
   *) echo "unexpected gate command: $*" >&2; exit 99 ;;
 esac
 `,
@@ -236,13 +236,14 @@ func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 		invalid   bool
 		wantTrace string
 		wantError bool
-		staleSQL  bool
+		staleSQL  string
 	}{
-		{"stale SQL", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\n", true, true},
-		{"broken config generator", "configdoc", false, "invariants\nmigrations\nconfigdoc\n", true, false},
-		{"generation succeeds", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\nenrollmentdocs\n", false, false},
-		{"broken enrollment docs", "enrollmentdocs", false, "invariants\nmigrations\nconfigdoc\nsqlc\nenrollmentdocs\n", true, false},
-		{"invariant failure", "", true, "invariants\n", true, false},
+		{"stale SQL", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\n", true, "sqlc"},
+		{"stale Hub SQL", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\nhubsqlc\n", true, "hubsqlc"},
+		{"broken config generator", "configdoc", false, "invariants\nmigrations\nconfigdoc\n", true, ""},
+		{"generation succeeds", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\nhubsqlc\nenrollmentdocs\n", false, ""},
+		{"broken enrollment docs", "enrollmentdocs", false, "invariants\nmigrations\nconfigdoc\nsqlc\nhubsqlc\nenrollmentdocs\n", true, ""},
+		{"invariant failure", "", true, "invariants\n", true, ""},
 	}
 	for _, target := range []string{"check", "check-fast"} {
 		for _, tt := range tests {
@@ -260,8 +261,8 @@ func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 				if tt.broken != "" {
 					write("broken-"+tt.broken, "", 0o600)
 				}
-				if tt.staleSQL {
-					write("stale-sql", "", 0o600)
+				if tt.staleSQL != "" {
+					write("stale-"+tt.staleSQL, "", 0o600)
 				}
 				if tt.invalid {
 					write("invalid-invariants", "", 0o600)
@@ -285,7 +286,11 @@ case "$*" in
     ;;
   'run github.com/sqlc-dev/sqlc/cmd/sqlc@'*' diff -f sqlc/sqlc.yaml')
     echo sqlc >> trace
-    test ! -f stale-sql
+    test ! -f stale-sqlc
+    ;;
+  'run github.com/sqlc-dev/sqlc/cmd/sqlc@'*' diff -f internal/hubserver/postgres/sqlc.yaml')
+    echo hubsqlc >> trace
+    test ! -f stale-hubsqlc
     ;;
   'run ./internal/config/cmd/configdoc -root .')
     echo configdoc >> trace
