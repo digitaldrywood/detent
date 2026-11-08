@@ -56,8 +56,9 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceCopy := newBillingImportCopy(t, catalog, "usage_cost_observations")
+	copies := map[tracker.OrganizationID]string{}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		sourceCopy := newNeutralBillingFixture(t, organization, "usage_cost_observations")
 		for _, sourceID := range []string{"active", "voided"} {
 			for _, revision := range []int64{9, 10} {
 				amount := revision * 10
@@ -66,18 +67,15 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				statement := `INSERT INTO usage_cost_observations (organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at,voided) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 				voided := 0
 				if o.Voided {
 					voided = 1
 				}
-				if _, err := sourceCopy.db.ExecContext(t.Context(), statement, organization, "project_example", o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, sourceID, from.Format(time.RFC3339Nano), o.To.Format(time.RFC3339Nano), revision, string(raw), from.Add(time.Hour).Format(time.RFC3339Nano), voided); err != nil {
-					t.Fatal(err)
-				}
+				sourceCopy.add(t, "usage_cost_observations", map[string]any{"organization_id": organization, "project_id": "project_example", "provider": o.Provider, "provider_account": o.ProviderAccount, "resource_id": o.ResourceID, "bucket": o.Bucket, "metric": o.Metric, "source_id": sourceID, "period_start": from.Format(time.RFC3339Nano), "period_end": o.To.Format(time.RFC3339Nano), "revision": revision, "observation_json": string(raw), "received_at": from.Add(time.Hour).Format(time.RFC3339Nano), "voided": voided})
 			}
 		}
+		copies[organization] = sourceCopy.seal(t)
 	}
-	copyPath := sourceCopy.seal(t)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, organization)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -87,7 +85,7 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 			t.Fatal(err)
 		}
 		objects := &costImportObjects{historyObjects: newHistoryObjects()}
-		source := postgres.CostImportSource{CopyPath: copyPath, Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: objects, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
+		source := postgres.CostImportSource{BundlePath: copies[organization], Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: objects, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
 		objects.fail = true
 		if _, err := repository.ImportCostCopy(t.Context(), source); err == nil {
 			t.Fatal("missing object storage accepted")
@@ -101,6 +99,10 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 		if progress != want {
 			t.Fatalf("progress=%+v want %+v", progress, want)
 		}
+		if err := repository.Close(); err != nil {
+			t.Fatal(err)
+		}
+		repository, _ = repositoryFor(t, admin, smallPool())
 		if replay, err := repository.ImportCostCopy(t.Context(), source); err != nil || replay != want {
 			t.Fatalf("completed replay=%+v %v", replay, err)
 		}
@@ -125,12 +127,10 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 				t.Fatal(err)
 			}
 		}()
-		changedCopy := newBillingImportCopy(t, catalog, "usage_cost_observations")
-		if _, err := changedCopy.db.ExecContext(t.Context(), `INSERT INTO usage_cost_observations (organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at,voided) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, organization, "project_example", "example", "account", "same_resource", "runner_api", "tokens", "new", from.Format(time.RFC3339Nano), from.Add(time.Nanosecond).Format(time.RFC3339Nano), 1, `{}`, from.Add(time.Hour).Format(time.RFC3339Nano), 0); err != nil {
-			t.Fatal(err)
-		}
+		changedCopy := newNeutralBillingFixture(t, organization, "usage_cost_observations")
+		changedCopy.add(t, "usage_cost_observations", map[string]any{"organization_id": organization, "project_id": "project_example", "provider": "example", "provider_account": "account", "resource_id": "same_resource", "bucket": "runner_api", "metric": "tokens", "source_id": "new", "period_start": from.Format(time.RFC3339Nano), "period_end": from.Add(time.Nanosecond).Format(time.RFC3339Nano), "revision": 1, "observation_json": "{}", "received_at": from.Add(time.Hour).Format(time.RFC3339Nano), "voided": 0})
 		changed := source
-		changed.CopyPath = changedCopy.seal(t)
+		changed.BundlePath = changedCopy.seal(t)
 		if _, err := repository.ImportCostCopy(t.Context(), changed); !errors.Is(err, mutation.ErrConflict) {
 			t.Fatalf("changed source copy accepted: %v", err)
 		}

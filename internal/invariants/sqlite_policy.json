@@ -1559,10 +1559,6 @@
     "internal/hubserver/postgres/cost_import.go": {
       "sql_pragma_table": 1
     },
-    "internal/hubserver/postgres/cost_import_page_test.go": {
-      "driver_import": 1,
-      "sqlite_open": 2
-    },
     "internal/hubserver/postgres/credit_history_import_test.go": {
       "driver_import": 1
     },

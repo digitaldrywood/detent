@@ -5,10 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const costImportPageLimit = 100
@@ -88,40 +86,8 @@ func readCostImportPage(ctx context.Context, db *sql.Tx, organization string, ca
 				raw[costImportColumns[n]] = storagecatalog.Cell{Encoding: "utf8", Data: []byte(value.String)}
 			}
 		}
-		organization, err := binding.ValidateMappedRow("usage_cost_observations", raw)
+		row, err := decodeCostImportPageRow(binding, raw)
 		if err != nil {
-			return nil, err
-		}
-		var row costImportPageRow
-		for n := range row.key {
-			row.key[n] = cells[n].String
-		}
-		r := &row.record
-		r.OrganizationID, r.ProjectID = tracker.OrganizationID(organization), tracker.ProjectID(cells[7].String)
-		r.Provider, r.ProviderAccount, r.SourceID = cells[1].String, cells[2].String, cells[3].String
-		r.ResourceID, r.Bucket, r.Metric = cells[8].String, cells[9].String, cells[10].String
-		r.Revision, err = strconv.ParseInt(cells[6].String, 10, 64)
-		if err != nil {
-			return nil, ErrCostImport
-		}
-		for n, target := range map[int]*time.Time{4: &r.From, 5: &r.To, 11: &r.ReceivedAt} {
-			*target, err = time.Parse(time.RFC3339Nano, cells[n].String)
-			if err != nil {
-				return nil, ErrCostImport
-			}
-		}
-		if cells[12].Valid {
-			switch cells[12].String {
-			case "0":
-				r.Voided = new(false)
-			case "1":
-				r.Voided = new(true)
-			default:
-				return nil, ErrCostImport
-			}
-		}
-		r.Payload = []byte(cells[13].String)
-		if _, err := decodeCostImportRecord(tracker.OrganizationID(organization), *r); err != nil {
 			return nil, err
 		}
 		page = append(page, row)

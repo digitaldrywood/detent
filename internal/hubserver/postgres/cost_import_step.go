@@ -93,7 +93,13 @@ func (i *costImporter) step(ctx context.Context, limit int) (CostImportProgress,
 }
 
 func (i *costImporter) prepareSourcePage(ctx context.Context, checkpoint costImportCheckpoint, limit int) ([]preparedCostImportRow, error) {
-	page, err := readCostImportPage(ctx, i.source.copyTx, i.source.Source.OrganizationID, i.source.Catalog, i.binding, checkpoint.after, checkpoint.hasAfter, limit)
+	var page []costImportPageRow
+	var err error
+	if i.source.neutral != nil {
+		page, err = readNeutralCostImportPage(ctx, i.source.neutral, i.source.Source.OrganizationID, i.source.Catalog, i.binding, checkpoint.after, checkpoint.hasAfter, limit)
+	} else {
+		page, err = readCostImportPage(ctx, i.source.copyTx, i.source.Source.OrganizationID, i.source.Catalog, i.binding, checkpoint.after, checkpoint.hasAfter, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
