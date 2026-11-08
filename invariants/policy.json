@@ -133,6 +133,7 @@
       "TestBrowserPolicyViolations",
       "TestRepositorySQLite",
       "TestSQLitePolicyViolations",
+      "TestSQLiteShrinkData",
       "TestRepositorySources",
       "TestRepositoryWorkflow",
       "TestRepositoryHasNoPullRequestActions",
