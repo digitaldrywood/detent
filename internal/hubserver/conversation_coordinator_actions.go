@@ -30,7 +30,7 @@ import (
 
 func (s *Service) bindCoordinatorConnection(ctx context.Context, key string) (context.Context, error) {
 	connection := operatortool.CurrentConnection(ctx)
-	if s.config.Hosted == nil || !connection.Identity.Valid() || key == "" {
+	if !connection.Identity.Valid() || key == "" {
 		return ctx, nil
 	}
 	origin := cmp.Or(connection.Identity.SessionID, connection.Identity.CredentialID)

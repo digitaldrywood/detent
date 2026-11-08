@@ -538,9 +538,14 @@ func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record c
 	if reference == "" || strings.HasPrefix(reference, "wi_") {
 		return reference, nil
 	}
+	ctx, scope, err := t.workReadContext(ctx, record)
+	if err != nil {
+		return "", err
+	}
+	scope.project = record.ProjectID
 	s := t.coordinator.service.server
-	issue, err := s.resolveOperatorNativeItem(ctx, nil, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, reference)
-	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, explain.ErrNotFound) {
+	issue, err := s.resolveOperatorNativeItem(ctx, nil, scope, reference)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, explain.ErrNotFound) || isNativeNotFound(err) {
 		return "", fmt.Errorf("no issue %s in this project", "#"+strings.TrimPrefix(reference, "#"))
 	}
 	if err != nil {

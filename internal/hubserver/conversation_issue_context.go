@@ -9,40 +9,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (t *coordinatorToolset) workReadContext(ctx context.Context, record conversationRecord) (context.Context, nativeScope, error) {
-	if record.OwnerSubject != "" {
-		current, err := t.actionContext(ctx, record)
-		if err != nil {
-			return ctx, nativeScope{}, err
-		}
-		current, err = operatortool.AuthorizeCurrent(current, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(record.ProjectID)})
-		if err != nil {
-			return ctx, nativeScope{}, err
-		}
-		resolve, ok := current.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
-		if !ok {
-			return ctx, nativeScope{}, operatortool.ErrAccessDenied
-		}
-		scope, err := resolve(current)
-		return current, scope, err
+	current, err := t.actionContext(ctx, record)
+	if err != nil {
+		return ctx, nativeScope{}, err
 	}
-	identity := operatortool.Identity{PrincipalID: record.OwnerPrincipalID, CredentialID: record.OwnerPrincipalID, OrganizationID: string(record.OrganizationID)}
-	connection := operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
-		readable, err := t.readableProjects(ctx, record)
-		if err != nil {
-			return operatortool.Authority{}, err
-		}
-		return operatortool.Authority{Identity: identity, Check: func(_ context.Context, r operatortool.Requirement) error {
-			if r.Scope != apikey.ScopeRead || !slices.Contains(readable, tracker.ProjectID(r.ProjectID)) {
-				return operatortool.ErrAccessDenied
-			}
-			return nil
-		}}, nil
-	}}
-	return operatortool.WithConnection(ctx, connection), nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: apiCredential{ID: record.OwnerPrincipalID, Scope: apiScopeOperator, NativeOnly: true}}, nil
+	current, err = operatortool.AuthorizeCurrent(current, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(record.ProjectID)})
+	if err != nil {
+		return ctx, nativeScope{}, err
+	}
+	resolve, ok := current.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	if !ok {
+		return ctx, nativeScope{}, operatortool.ErrAccessDenied
+	}
+	scope, err := resolve(current)
+	return current, scope, err
 }
 
 func (t *coordinatorToolset) issueContext(ctx context.Context, record conversationRecord) (operatortool.IssueContext, error) {
