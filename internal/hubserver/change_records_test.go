@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -664,6 +665,14 @@ func TestChangeReviewPolicyRechecksDemotedAdminInTenantWriter(t *testing.T) {
 }
 
 func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *testing.T) {
+	testChangeVersionRecordPublication(t, false)
+}
+
+func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
+	testChangeVersionRecordPublication(t, true)
+}
+
+func testChangeVersionRecordPublication(t *testing.T, running bool) {
 	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 4)
 	service := f.service
 	originalPostgres := service.database.postgres
@@ -748,6 +757,9 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 		Mutation: tracker.Mutation{IdempotencyKey: "source-run-start"}, Type: "run.started", SchemaVersion: 1,
 		Data: tracker.NativeRunData{AttemptID: attemptID, RunID: runID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: policy.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example"}},
 	}
+	if running {
+		start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", LocalAttemptID: 42, Generation: 1, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 1, SessionID: 42}}
+	}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, start), http.StatusOK)
 	finish := start
 	finish.IdempotencyKey = "source-run-finish"
@@ -755,11 +767,24 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	finish.Data.Sequence = 2
 	finish.Data.Outcome = "succeeded"
 	finish.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", LocalAttemptID: 42, Generation: 1, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 1, SessionID: 42}}
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, finish), http.StatusOK)
+
+	if !running {
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, finish), http.StatusOK)
+	}
 	input := changeTestInput()
 	input.AttemptID, input.RunID = start.Data.AttemptID, start.Data.RunID
 	bundle := changeTestSource(t, &input)
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-version", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, ExpectedVersionID: "", ChangeVersionInput: input, SourceBundle: bundle}
+	if running {
+		diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: attemptID, RunnerID: runnerID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 2}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/attempts/"+attemptID+"/diff", workerToken, diff), http.StatusAccepted)
+		for sequence := int64(2); sequence <= 3; sequence++ {
+			observation := start
+			observation.Type, observation.Data.Sequence = "run.observed", sequence
+			observation.IdempotencyKey = fmt.Sprintf("source-run-progress-%d", sequence)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, observation), http.StatusOK)
+		}
+	}
 	service.config.TenantRepository = failingChangeEventRepository{Repository: repository}
 	failed := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, request)
 	requireNativeStatus(t, failed, http.StatusInternalServerError)
@@ -816,6 +841,10 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	requireNativeStatus(t, versionResponse, http.StatusOK)
 	var version tracker.ChangeVersion
 	decodeHubResponse(t, versionResponse, &version)
+	if running {
+		finish.Data.Sequence = 4
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, finish), http.StatusOK)
+	}
 	if version.Source == nil || version.Source.BundleSHA256 != input.Source.BundleSHA256 || version.Policy.ID != policy.ID || version.ReviewPolicy.ID != reviewPolicy.ID || version.Number != 1 {
 		t.Fatalf("published version=%+v", version)
 	}
@@ -828,6 +857,9 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	changed.SourceBundle = append(bytes.Clone(bundle), 0)
 	conflict := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, changed)
 	requireNativeStatus(t, conflict, http.StatusConflict)
+	if running {
+		return
+	}
 	sourceResponse := f.request(t, owner, http.MethodGet, changePath+"/versions/"+version.ID+"/source", nil)
 	requireNativeStatus(t, sourceResponse, http.StatusOK)
 	if !bytes.Equal(sourceResponse.Body.Bytes(), bundle) {

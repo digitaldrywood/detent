@@ -79,7 +79,19 @@ func (o *Orchestrator) completeNativeChangeRun(
 	retryReason := terminalAttemptWithoutWorkProductReason
 	retryErrorClass := terminalAttemptWithoutWorkProductReason
 	retryMessage := noWorkProductMessage
-	if change != nil && (change.VersionID != "" || change.NoChange != nil) {
+	unpublishedWorkProduct := change != nil && change.Changed && change.ChangeID != "" && change.VersionID == "" && change.HeadSHA != ""
+	if !unpublishedWorkProduct && event.Err != nil && event.Request.Execution != nil {
+		recovery := event.Request.Execution.Recovery()
+		if current := recovery.ChangeDetail; current != nil && current.Change.ID != "" && current.Change.CurrentVersion == "" {
+			for _, attempt := range recovery.Attempts {
+				if source := attempt.Finalization; source != nil && source.Changed && source.ChangeID == current.Change.ID && source.BaseSHA != "" && source.HeadSHA != "" {
+					unpublishedWorkProduct = true
+					break
+				}
+			}
+		}
+	}
+	if unpublishedWorkProduct || change != nil && (change.VersionID != "" || change.NoChange != nil) {
 		retryReason = "state_transition"
 		retryErrorClass = ""
 		retryMessage = "published source requires further work"
@@ -106,7 +118,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 				return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))
 			}
 		} else {
-			if running.DiffStats.RecoveryStateAvailable {
+			if running.DiffStats.RecoveryStateAvailable || unpublishedWorkProduct {
 				target = cfg.ReworkState
 			}
 			target, allowed = nativeRetryLane(states, issue.State, target)
