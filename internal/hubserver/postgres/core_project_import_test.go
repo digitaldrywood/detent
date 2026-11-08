@@ -2,7 +2,7 @@ package postgres_test
 
 import (
 	"context"
-	"database/sql"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,10 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -24,77 +23,97 @@ import (
 
 func coreProjectCopy(t *testing.T, org tracker.OrganizationID) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "source.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var columns []string
-	for name, column := range catalog.Tables["hub/projects"].Columns {
-		var metadata []json.RawMessage
-		if err := json.Unmarshal([]byte(column.Source), &metadata); err != nil {
-			t.Fatal(err)
-		}
-		var kind string
-		var defaultSQL *string
-		if err := json.Unmarshal(metadata[2], &kind); err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(metadata[4], &defaultSQL); err != nil {
-			t.Fatal(err)
-		}
-		definition := `"` + name + `" ` + kind
-		if defaultSQL != nil {
-			definition += " DEFAULT (" + *defaultSQL + ")"
-		}
-		columns = append(columns, definition)
-	}
-	for _, query := range []string{"CREATE TABLE projects (" + strings.Join(columns, ",") + ")", `CREATE TABLE repositories(id INTEGER PRIMARY KEY,github_owner TEXT,github_name TEXT)`} {
-		if _, err := db.ExecContext(t.Context(), query); err != nil {
-			t.Fatal(err)
-		}
-	}
+	table := neutralFixtureTable(t, "projects", []postgres.NeutralImportKey{{Column: "id", Kind: "text"}})
 	states := `[{"name":"Todo","dispatchable":true,"transitions":["Done"]},{"name":"Done","terminal":true,"transitions":["Todo"]}]`
+	var records []postgres.NeutralImportRow
 	for _, id := range []string{"prj_import_a", "prj_import_b"} {
-		_, err := db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,slug,profile,states_json,created_at,workflow_markdown,content_settings_revision,integration_revision,model_selection_revision) VALUES(?,?,?,?,'native',?,'2026-11-01T00:00:00Z','example workflow',7,9,11)`, id, org, "Example "+id, strings.ReplaceAll(id, "_", "-"), states)
-		if err != nil {
-			t.Fatal(err)
+		record := neutralFixtureRow(t, table, map[string]any{"id": id, "organization_id": org, "name": "Example " + id, "slug": strings.ReplaceAll(id, "_", "-"), "profile": "native", "states_json": states, "created_at": "2026-11-01T00:00:00Z", "workflow_markdown": "example workflow", "content_settings_revision": 7, "integration_revision": 9, "model_selection_revision": 11})
+		if id == "prj_import_b" {
+			record.Values["archive_completed_after_days"] = storagecatalog.Cell{Null: true}
+			record.Values["archive_cancelled_after_days"] = storagecatalog.Cell{Null: true}
 		}
+		records = append(records, record)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0400); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	directory, _ := writeNeutralFixture(t, org, []postgres.NeutralImportTable{table}, map[string][]postgres.NeutralImportRow{"projects": records})
+	return directory
 }
 
 func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) {
 	db := template.Database(t)
-	repository, _ := repositoryFor(t, db, smallPool())
 	for _, org := range []tracker.OrganizationID{"org_import_first", "org_import_second"} {
 		t.Run(string(org), func(t *testing.T) {
+			repository, _ := repositoryFor(t, db, smallPool())
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,slug,local,created_at) VALUES($1,'Example',$1,false,now())`, org); err != nil {
 				t.Fatal(err)
 			}
-			source := postgres.CoreProjectImportSource{CopyPath: coreProjectCopy(t, org), OrganizationID: org, Objects: newHistoryObjects()}
+			source := postgres.CoreProjectImportSource{BundlePath: coreProjectCopy(t, org), OrganizationID: org, Objects: newHistoryObjects()}
+			if err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, org, nil); err != nil {
+				t.Fatal(err)
+			}
+			var dryRunProjects int
+			if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects WHERE organization_id=$1", org).Scan(&dryRunProjects); err != nil || dryRunProjects != 0 {
+				t.Fatalf("dry run wrote projects=%d: %v", dryRunProjects, err)
+			}
 			for range 2 {
 				count, err := repository.ImportCoreProjects(t.Context(), source)
 				if err != nil || count != 2 {
 					t.Fatalf("import count=%d error=%v", count, err)
 				}
 			}
-			err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := repository.Close(); err != nil {
+				t.Fatal(err)
+			}
+			repository, _ = repositoryFor(t, db, smallPool())
+			manifestRaw, err := os.ReadFile(filepath.Join(source.BundlePath, "manifest.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadCutover(t.Context(), org, corestore.Serving, func(reader postgres.CutoverReader) error {
+				pin, err := reader.NeutralImportSource(t.Context(), postgres.NeutralImportSourceInput{OrganizationID: org, SourceID: "example-source"})
+				if err != nil {
+					return err
+				}
+				expected := fmt.Sprintf("%x", sha256.Sum256(manifestRaw))
+				if pin.Checksum != expected || pin.SchemaVersion != 1 || pin.SchemaDigest == "" {
+					t.Fatalf("neutral source provenance=%+v", pin)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(reader eventstore.Reader) error {
+				receipt, err := reader.Receipt(t.Context(), "production-import", "neutral-source", "example-source")
+				if err != nil {
+					return err
+				}
+				raw, err := eventstore.NewContent(source.Objects).Receipt(t.Context(), receipt)
+				if err != nil {
+					return err
+				}
+				var saved postgres.NeutralImportManifest
+				if err := json.Unmarshal(raw, &saved); err != nil {
+					return err
+				}
+				expected := fmt.Sprintf("%x", sha256.Sum256([]byte("historical source")))
+				if saved.Identity.SourceSHA256 != expected || saved.Identity.OrganizationID != org || saved.Version != 1 || len(saved.Tables) != 1 {
+					t.Fatalf("source manifest provenance lost: %+v", saved.Identity)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			err = repository.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
 				for _, id := range []tracker.ProjectID{"prj_import_a", "prj_import_b"} {
 					record, err := reader.ProjectRecord(t.Context(), id)
 					if err != nil {
 						return err
+					}
+					if id == "prj_import_b" {
+						if record.Settings.ArchiveCompletedAfterDays != nil || record.Settings.ArchiveCancelledAfterDays != nil {
+							return fmt.Errorf("imported project lost null archive policy: %+v", record.Settings)
+						}
+					} else if record.Settings.ArchiveCompletedAfterDays == nil || *record.Settings.ArchiveCompletedAfterDays != 30 || record.Settings.ArchiveCancelledAfterDays == nil || *record.Settings.ArchiveCancelledAfterDays != 7 {
+						return fmt.Errorf("imported project lost nullable archive policy: %+v", record.Settings)
 					}
 					if record.Core.ContentSettingsRevision != 7 || record.Settings.Revision != 9 || record.Settings.ModelRevision != 11 || len(record.States) != 2 || record.Settings.WorkflowKey == "" {
 						return fmt.Errorf("imported project lost settings: %+v", record)
@@ -105,28 +124,31 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			bytes, err := os.ReadFile(source.CopyPath)
+			changedPath := coreProjectCopy(t, org)
+			manifestPath := filepath.Join(changedPath, "manifest.json")
+			raw, err := os.ReadFile(manifestPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			changedPath := filepath.Join(t.TempDir(), "changed.db")
-			if err := os.WriteFile(changedPath, bytes, 0600); err != nil {
+			var manifest postgres.NeutralImportManifest
+			if err := json.Unmarshal(raw, &manifest); err != nil {
 				t.Fatal(err)
 			}
-			changed, err := sql.Open("sqlite", changedPath)
+			manifest.Identity.SourceID = "changed-source"
+			raw, err = json.Marshal(manifest)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := changed.ExecContext(t.Context(), `DELETE FROM projects WHERE id='prj_import_b'`); err != nil {
+			if err := os.Chmod(manifestPath, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := changed.Close(); err != nil {
+			if err := os.WriteFile(manifestPath, raw, 0400); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Chmod(changedPath, 0400); err != nil {
+			if err := os.Chmod(manifestPath, 0400); err != nil {
 				t.Fatal(err)
 			}
-			source.CopyPath = changedPath
+			source.BundlePath = changedPath
 			if _, err := repository.ImportCoreProjects(t.Context(), source); !errors.Is(err, mutation.ErrConflict) {
 				t.Fatalf("different actual copy error=%v", err)
 			}
@@ -159,28 +181,35 @@ func TestCoreProjectImportRejectsCopyChangedDuringImport(t *testing.T) {
 	}
 	path := coreProjectCopy(t, org)
 	replacement := coreProjectCopy(t, org)
-	if err := os.Chmod(replacement, 0600); err != nil {
-		t.Fatal(err)
-	}
-	changed, err := sql.Open("sqlite", replacement)
+	manifestPath := filepath.Join(replacement, "manifest.json")
+	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := changed.ExecContext(t.Context(), `CREATE TABLE copied_metadata(value TEXT)`); err != nil {
+	var manifest postgres.NeutralImportManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if err := changed.Close(); err != nil {
+	manifest.Identity.SourceID = "changed-during-import"
+	raw, err = json.Marshal(manifest)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(replacement, 0400); err != nil {
+	if err := os.Chmod(manifestPath, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, raw, 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(manifestPath, 0400); err != nil {
 		t.Fatal(err)
 	}
 	objects := &changingCoreImportObjects{historyObjects: newHistoryObjects(), change: func() {
-		if err := os.Rename(replacement, path); err != nil {
+		if err := os.Rename(manifestPath, filepath.Join(path, "manifest.json")); err != nil {
 			t.Fatal(err)
 		}
 	}}
-	source := postgres.CoreProjectImportSource{CopyPath: path, OrganizationID: org, Objects: objects}
+	source := postgres.CoreProjectImportSource{BundlePath: path, OrganizationID: org, Objects: objects}
 	if _, err := repository.ImportCoreProjects(t.Context(), source); !errors.Is(err, mutation.ErrConflict) {
 		t.Fatalf("changed copy completed: %v", err)
 	}

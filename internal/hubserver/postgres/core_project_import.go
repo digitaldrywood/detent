@@ -27,6 +27,7 @@ import (
 )
 
 type CoreProjectImportSource struct {
+	BundlePath     string
 	CopyPath       string
 	OrganizationID tracker.OrganizationID
 	Objects        attachment.DetailStore
@@ -49,8 +50,11 @@ type coreProjectImportRow struct {
 }
 
 func (r *Repository) ImportCoreProjects(ctx context.Context, source CoreProjectImportSource) (int64, error) {
-	if source.CopyPath == "" || source.OrganizationID == "" || source.Objects == nil {
+	if (source.CopyPath == "") == (source.BundlePath == "") || source.OrganizationID == "" || source.Objects == nil {
 		return 0, errors.New("invalid core project import source")
+	}
+	if source.BundlePath != "" {
+		return r.importNeutralCoreProjects(ctx, source)
 	}
 	var count int64
 	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
@@ -94,11 +98,17 @@ func (r *Repository) PinCoreImportSource(ctx context.Context, organization track
 }
 
 func (r *Repository) importCoreProjects(ctx context.Context, source CoreProjectImportSource, tx *sql.Tx, copyHash string) (int64, error) {
+	return r.importCoreProjectPages(ctx, source, func(after string) ([]coreProjectImportRow, error) {
+		return readCoreProjectImportPage(ctx, tx, source.OrganizationID, after)
+	})
+}
+
+func (r *Repository) importCoreProjectPages(ctx context.Context, source CoreProjectImportSource, read func(string) ([]coreProjectImportRow, error)) (int64, error) {
 	content := eventstore.NewContent(source.Objects)
 	var count int64
 	var after string
 	for {
-		rows, err := readCoreProjectImportPage(ctx, tx, source.OrganizationID, after)
+		rows, err := read(after)
 		if err != nil {
 			return count, err
 		}

@@ -1563,10 +1563,6 @@
       "driver_import": 1,
       "sqlite_open": 1
     },
-    "internal/hubserver/postgres/core_project_import_test.go": {
-      "driver_import": 1,
-      "sqlite_open": 3
-    },
     "internal/hubserver/postgres/cost_import.go": {
       "sql_pragma_table": 1
     },
