@@ -492,15 +492,19 @@ func changeDetailResponse(detail tracker.ChangeDetail) tracker.ChangeDetail {
 	detail.Discussion = append([]tracker.ChangeDiscussion{}, detail.Discussion...)
 	detail.Summary.Messages = append([]string{}, detail.Summary.Messages...)
 	for i := range detail.Versions {
-		version := &detail.Versions[i]
-		version.Artifacts = append([]tracker.ChangeArtifact{}, version.Artifacts...)
-		version.Checks = append([]tracker.ChangeCheckExpectation{}, version.Checks...)
-		version.ReviewPolicy.RequiredChecks = append([]tracker.ChangeCheckSpec{}, version.ReviewPolicy.RequiredChecks...)
+		detail.Versions[i] = changeVersionResponse(detail.Versions[i])
 	}
 	for i := range detail.Checks {
 		detail.Checks[i].Evidence = append([]tracker.ChangeArtifact{}, detail.Checks[i].Evidence...)
 	}
 	return detail
+}
+
+func changeVersionResponse(version tracker.ChangeVersion) tracker.ChangeVersion {
+	version.Artifacts = append([]tracker.ChangeArtifact{}, version.Artifacts...)
+	version.Checks = append([]tracker.ChangeCheckExpectation{}, version.Checks...)
+	version.ReviewPolicy.RequiredChecks = append([]tracker.ChangeCheckSpec{}, version.ReviewPolicy.RequiredChecks...)
+	return version
 }
 
 func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {

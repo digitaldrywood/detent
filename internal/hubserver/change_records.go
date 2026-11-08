@@ -1075,7 +1075,7 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 	if len(evidence) > corestore.MaxPageSize {
 		return tracker.ChangeDetail{}, corestore.ErrInvalidPage
 	}
-	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{version}}
+	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{changeVersionResponse(version)}}
 	priorApproval := false
 	for _, row := range evidence {
 		if row.OrganizationID != scope.organization || row.ChangeID != changeRecord.ID {
@@ -1084,7 +1084,8 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 		currentReview := row.Kind == "review" && row.VersionID != nil && *row.VersionID == version.ID
 		priorReview := row.Kind == "review" && row.Decision == "approved" && (row.VersionID == nil || *row.VersionID != version.ID) && !priorApproval
 		currentCheck := row.Kind == "check" && row.VersionID != nil && *row.VersionID == version.ID
-		if !currentReview && !priorReview && !currentCheck {
+		currentDiscussion := row.Kind == "discussion" && (row.VersionID == nil || *row.VersionID == "" || *row.VersionID == version.ID)
+		if !currentReview && !priorReview && !currentCheck && !currentDiscussion {
 			continue
 		}
 		raw, err := content.Evidence(ctx, row)
@@ -1114,6 +1115,15 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 				return tracker.ChangeDetail{}, eventstore.ErrInvalidRecord
 			}
 			detail.Checks = append(detail.Checks, check)
+		case "discussion":
+			var discussion tracker.ChangeDiscussion
+			if err := json.Unmarshal(raw, &discussion); err != nil {
+				return tracker.ChangeDetail{}, err
+			}
+			if discussion.VersionID != valueOrEmpty(row.VersionID) || discussion.Actor.Kind != row.ActorKind || discussion.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(discussion.CreatedAt, row.CreatedAt) {
+				return tracker.ChangeDetail{}, eventstore.ErrInvalidRecord
+			}
+			detail.Discussion = append(detail.Discussion, discussion)
 		}
 	}
 	currentApproval, err := boardCurrentApproval(ctx, content, scope, policyRows, approval)

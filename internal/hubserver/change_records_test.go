@@ -325,6 +325,38 @@ func TestChangeDetailEmptyCollectionsAreArrays(t *testing.T) {
 					}
 				}
 			}
+			response = performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var published tracker.ChangeDetail
+			decodeHubResponse(t, response, &published)
+			for _, test := range []struct {
+				name, version string
+			}{
+				{name: "whole Change"},
+				{name: "current version", version: published.Change.CurrentVersion},
+			} {
+				t.Run("recovery discussion "+test.name, func(t *testing.T) {
+					body := "Preserve exact feedback for " + string(id) + " " + test.name
+					response := performHubAPIRequest(t, service, http.MethodPost, path+"/discussion", testHubAdminToken, tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "discuss-" + test.name}, VersionID: test.version, Body: body})
+					requireNativeStatus(t, response, http.StatusOK)
+					response = performHubAPIRequest(t, service, http.MethodGet, base+"/work-items/"+string(issue.WorkItemID)+"?view=recovery", testHubAdminToken, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var recovery tracker.NativeRecovery
+					decodeHubResponse(t, response, &recovery)
+					if recovery.ChangeDetail == nil || !slices.ContainsFunc(recovery.ChangeDetail.Discussion, func(discussion tracker.ChangeDiscussion) bool {
+						return discussion.Body == body && discussion.VersionID == test.version
+					}) {
+						t.Fatalf("source recovery lost current Change feedback: %+v", recovery.ChangeDetail)
+					}
+					response = performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var complete tracker.ChangeDetail
+					decodeHubResponse(t, response, &complete)
+					if !reflect.DeepEqual(recovery.ChangeDetail.Versions, complete.Versions) {
+						t.Fatalf("recovery source version differs: expected=%+v actual=%+v", complete.Versions, recovery.ChangeDetail.Versions)
+					}
+				})
+			}
 		})
 	}
 }
