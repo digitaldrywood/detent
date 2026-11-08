@@ -183,7 +183,7 @@ func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "global.yaml")
-	writeGlobalConfig(t, path, nil)
+	writeCLIInstallConfig(t, path, nil)
 
 	booted := make(chan cli.BootConfig, 1)
 	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
@@ -566,7 +566,7 @@ func TestRootCommandPassesVersionToBoot(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "global.yaml")
-	writeGlobalConfig(t, path, nil)
+	writeCLIInstallConfig(t, path, nil)
 
 	booted := make(chan cli.BootConfig, 1)
 	cmd := cli.NewRootCommand(context.Background(),
@@ -593,7 +593,7 @@ func TestRootCommandCapturesHeadlessFlagAndTerminalState(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "global.yaml")
-	writeGlobalConfig(t, path, nil)
+	writeCLIInstallConfig(t, path, nil)
 
 	booted := make(chan cli.BootConfig, 1)
 	cmd := cli.NewRootCommand(
@@ -722,7 +722,7 @@ func TestCLIValidationErrorsCarryHints(t *testing.T) {
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
-	writeGlobalConfig(t, configPath, nil)
+	writeCLIInstallConfig(t, configPath, nil)
 
 	tests := []struct {
 		name         string
@@ -1133,7 +1133,7 @@ func TestPauseCommandRejectsInvalidFlags(t *testing.T) {
 
 	paths := createProjectFiles(t)
 	configPath := filepath.Join(paths.root, "global.yaml")
-	writeGlobalConfig(t, configPath, []globalconfig.Project{{
+	writeCLIInstallConfig(t, configPath, []globalconfig.Project{{
 		ID:       "detent",
 		Workflow: paths.workflowPath,
 		Workdir:  paths.workdirPath,
@@ -1334,7 +1334,7 @@ func assertBootServer(t *testing.T, cfg cli.BootConfig, host string, port int) {
 	}
 }
 
-func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
+func writeCLIInstallConfig(t *testing.T, path string, projects []globalconfig.Project) globalconfig.Config {
 	t.Helper()
 
 	cfg := globalconfig.Config{
@@ -1355,6 +1355,12 @@ func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Projec
 	if err := globalconfig.Write(path, cfg); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
+	return cfg
+}
+
+func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
+	t.Helper()
+	cfg := writeCLIInstallConfig(t, path, projects)
 	backend, err := store.Open(context.Background(), store.Config{Path: filepath.Join(filepath.Dir(path), "detent.db")})
 	if err != nil {
 		t.Fatal(err)
