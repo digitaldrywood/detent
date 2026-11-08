@@ -72,7 +72,8 @@ func checkSQLiteDependencies(root string) error {
 }
 
 func shrinkSQLitePolicy(root string) error {
-	command := exec.Command("git", "-C", root, "show", "HEAD:internal/invariants/sqlite_policy.json")
+	command := exec.Command("git", "show", "HEAD:internal/invariants/sqlite_policy.json")
+	command.Dir = root
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "GIT_") {
 			command.Env = append(command.Env, entry)
