@@ -62,7 +62,7 @@ func TestHealthEndpoint(t *testing.T) {
 			name:       "unregistered route",
 			path:       "/api/v1/not-found",
 			ready:      true,
-			wantStatus: http.StatusServiceUnavailable,
+			wantStatus: http.StatusNotFound,
 		},
 	}
 	for _, test := range tests {
@@ -79,7 +79,7 @@ func TestHealthEndpoint(t *testing.T) {
 				var body struct {
 					Code string `json:"code"`
 				}
-				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Code != "storage_owner_unavailable" {
+				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Code != "not_found" {
 					t.Fatalf("unmounted route: %s (%v)", response.Body.String(), err)
 				}
 				return

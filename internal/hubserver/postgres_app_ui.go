@@ -29,6 +29,8 @@ import (
 func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 	if s.config.Hosted != nil {
 		s.registerReadableRoutes(e)
+		e.GET("/", s.hostedLanding)
+		e.GET("/organization", s.hostedHome)
 		e.POST("/projects", s.createHostedProject)
 		e.POST("/organization/invite", s.inviteHostedMember)
 		e.POST("/organization/members/:member/revoke", s.revokeHostedMember)
@@ -76,7 +78,10 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 
 func (s *Service) postgresAppFallback(c echo.Context) error {
 	path := c.Request().URL.Path
-	if appReserved(path) || path == "/internal" || strings.HasPrefix(path, "/internal/") || s.config.Hosted == nil || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+	if appReserved(path) || path == "/internal" || strings.HasPrefix(path, "/internal/") {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if s.config.Hosted == nil || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return s.postgresFeatureUnavailable(c)
 	}
 	return s.postgresAppShell(c)

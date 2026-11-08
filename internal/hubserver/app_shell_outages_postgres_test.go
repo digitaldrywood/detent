@@ -3,6 +3,7 @@ package hubserver
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,5 +72,37 @@ func TestPostgresAppRunnerGrantOutages(t *testing.T) {
 			c.Method, c.Role = http.MethodGet, "viewer"
 		})
 		requireEntryAuthResponse(t, response.Code, response.Body.String(), http.StatusNotFound)
+	}
+}
+
+func TestPostgresAppReservedRoutesReturnNotFound(t *testing.T) {
+	f := newSharedRouteFixture(t)
+	for org := range f.services {
+		for _, path := range []string{"/api/v2/unknown", "/api", "/auth/unknown", "/webhooks/unknown", "/app/unknown", "/logout", "/metrics"} {
+			t.Run(org+path, func(t *testing.T) {
+				response := f.request(t, org, "/organizations/"+org+path, "", func(c *cloudassert.Claims) {
+					sharedRouteBrowserClaims(c)
+					c.Method = http.MethodGet
+				})
+				requireEntryAuthResponse(t, response.Code, response.Body.String(), http.StatusNotFound)
+			})
+		}
+	}
+}
+
+func TestPostgresOrganizationPageUsesGrantedProjects(t *testing.T) {
+	f := newBrowserHostedFixture(t, true)
+	for _, test := range []struct {
+		account string
+		private bool
+	}{{account: "owner", private: true}, {account: "viewer"}} {
+		t.Run(test.account, func(t *testing.T) {
+			response := f.appRequest(t, test.account, http.MethodGet, "/organization")
+			browserHostedStatus(t, response, http.StatusOK)
+			body := response.Body.String()
+			if !strings.Contains(body, "Browser collaboration") || strings.Contains(body, "Owner private project") != test.private {
+				t.Fatalf("organization page lost project authorization: %s", body)
+			}
+		})
 	}
 }

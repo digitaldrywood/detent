@@ -22,6 +22,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -365,14 +368,16 @@ func (f hostedSecurityFixture) grant(t *testing.T, user hostedSecurityUser, writ
 
 func (f hostedSecurityFixture) grantContext(ctx context.Context, t *testing.T, user hostedSecurityUser, write, runner bool) {
 	t.Helper()
-	var principal string
-	if err := f.service.database.db.QueryRowContext(ctx, "SELECT principal_id FROM hosted_members WHERE user_id = ?", user.identity.Subject).Scan(&principal); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(ctx, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,'org_security',?,?,?) ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner", user.identity.Subject, f.project, write, runner); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,'org_security',?) ON CONFLICT DO NOTHING", principal, f.project); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(ctx, user.identity.Subject)
+		if err != nil {
+			return err
+		}
+		if err := w.SetAccessProjectGrant(ctx, accessstore.ProjectGrant{OrganizationID: "org_security", UserID: user.identity.Subject, ProjectID: f.project, CanWrite: write, ManageRunner: runner}); err != nil {
+			return err
+		}
+		return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: "org_security", TokenID: member.PrincipalID, ProjectID: f.project})
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

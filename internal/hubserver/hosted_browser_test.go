@@ -25,6 +25,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -290,23 +292,13 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 	for _, apply := range configure {
 		apply(&cfg)
 	}
-	seedHubDatabaseTemplate(t, cfg.DatabasePath)
-	service, err := Open(t.Context(), cfg)
-	if err != nil {
-		if listen {
-			server.Close()
-		}
-		t.Fatal(err)
-	}
+	service := openTestService(t, cfg)
 	fixture := &browserHostedFixture{service: service, server: server, provider: provider, cookies: make(map[string]*http.Cookie), stop: make(chan struct{})}
 	accounts := make(map[string]auth.Identity)
 	t.Cleanup(func() {
 		if listen {
 			fixture.server.CloseClientConnections()
 			fixture.server.Close()
-		}
-		if err := fixture.service.CloseContext(context.WithoutCancel(t.Context())); err != nil {
-			t.Error(err)
 		}
 	})
 	for _, account := range []struct {
@@ -322,7 +314,7 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 		{name: "revoked", user: "user_browser_viewer", email: "viewer@example.test"},
 		{name: "expired", user: "user_browser_viewer", email: "viewer@example.test"},
 	} {
-		organization := ""
+		organization := service.config.Hosted.WorkOSOrganizationID
 		if allocated && (account.role != "" || account.support != "" || account.name == "revoked" || account.name == "expired") {
 			organization = provider.organization.ID
 		}
@@ -351,7 +343,11 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 				t.Fatal(err)
 			}
 		}
-		token, session, err := service.hostedSessions.CreateIdentitySession(t.Context(), identity)
+		sessionIdentity := identity
+		sessionHosted := *identity.Hosted
+		sessionHosted.OrganizationID = service.config.Hosted.WorkOSOrganizationID
+		sessionIdentity.Hosted = &sessionHosted
+		token, session, err := service.hostedSessions.CreateIdentitySession(t.Context(), sessionIdentity)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -510,7 +506,15 @@ func (f *browserHostedFixture) createProject(t *testing.T, name string) string {
 		t.Fatal("project form returned an invalid project location")
 	}
 	seedNativeFixturePolicy(t, f.service, f.service.config.Hosted.OrganizationID+"/"+project)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), tracker.ProjectID(project))
+		if err != nil {
+			return err
+		}
+		record.Settings.DuplicateChallenge = false
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return project

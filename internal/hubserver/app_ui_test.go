@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -68,7 +69,11 @@ func TestAppShellServing(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
 	f := newBrowserHostedFixture(t, true)
 	var projectSlug string
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT slug FROM projects WHERE id=?", f.project).Scan(&projectSlug); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(r tenantstore.Reader) error {
+		project, err := r.ProjectRecord(t.Context(), tracker.ProjectID(f.project))
+		projectSlug = project.Core.Slug
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -194,7 +199,7 @@ func TestConversationClientShellFor(t *testing.T) {
 
 func TestAppSharedEntry(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
-	f := newHostedSharedFixture(t)
+	f := newOperatorSharedFixture(t).shared
 	owner := f.member(t, "owner", "owner", "write")
 	member := f.member(t, "member", "member", "write")
 	viewer := f.member(t, "viewer", "viewer", "read")
@@ -218,9 +223,9 @@ func TestAppSharedEntry(t *testing.T) {
 	}{
 		{name: "revoked work", user: &revoked, target: prefix + "/work", status: http.StatusSeeOther, location: "/organizations?switch=1"},
 		{name: "revoked chat", user: &revoked, target: prefix + "/chat/c/conv_1", status: http.StatusSeeOther, location: "/organizations?switch=1"},
-		{name: "work", user: &owner, target: prefix + "/work", status: http.StatusPermanentRedirect, location: "/local-organization/work"},
-		{name: "chat", user: &owner, target: prefix + "/chat?view=all", status: http.StatusPermanentRedirect, location: "/local-organization/chat?view=all"},
-		{name: "viewer settings", user: &viewer, target: prefix + "/settings/general", status: http.StatusPermanentRedirect, location: "/local-organization/settings/general"},
+		{name: "work", user: &owner, target: prefix + "/work", status: http.StatusPermanentRedirect, location: "/org-security/work"},
+		{name: "chat", user: &owner, target: prefix + "/chat?view=all", status: http.StatusPermanentRedirect, location: "/org-security/chat?view=all"},
+		{name: "viewer settings", user: &viewer, target: prefix + "/settings/general", status: http.StatusPermanentRedirect, location: "/org-security/settings/general"},
 		{name: "unscoped client route", user: &owner, target: "/work", status: http.StatusNotFound},
 		{name: "unscoped bootstrap", user: &owner, target: "/app/bootstrap", status: http.StatusNotFound},
 		{name: "unscoped static", user: &owner, target: "/static/app/conversation/app.js", status: http.StatusNotFound},
@@ -300,8 +305,12 @@ func TestAppSharedEntry(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			grants := `[{"project_id":"` + string(f.project) + `","write":true,"runner":false}]`
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at,grants_json) VALUES (?,?,'org_security','admin',?,?,?)", id, email, formatHubTime(now), now.Add(time.Hour).Format(time.RFC3339), grants); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: "org_security", ID: id, Email: email, Role: "admin", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+					return err
+				}
+				return w.CreateAccessInvitationGrant(t.Context(), accessstore.InvitationGrant{OrganizationID: "org_security", InvitationID: id, ProjectID: f.project, CanWrite: true})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			response := f.serve(t, hostedSharedRequest{user: &joiner, target: prefix + "/app/bootstrap"})
@@ -309,10 +318,20 @@ func TestAppSharedEntry(t *testing.T) {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
 			}
 			var members, accepted int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members WHERE user_id = ? AND active = 1 AND role = 'admin'", subject).Scan(&members); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_invitations WHERE id = ? AND accepted_user_id = ?", id, subject).Scan(&accepted); err != nil {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				member, err := r.AccessMember(t.Context(), subject)
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				if member.Active && member.Role == "admin" {
+					members++
+				}
+				invitation, err := r.AccessInvitation(t.Context(), id)
+				if invitation.AcceptedUserID == subject {
+					accepted++
+				}
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			want := 0

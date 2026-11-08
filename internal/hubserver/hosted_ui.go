@@ -116,6 +116,9 @@ func (s *Service) hostedDenied(c echo.Context, status int, message string, denia
 // invitation guidance and the staff notice.
 func (s *Service) hostedLanding(c echo.Context) error {
 	if _, _, err := s.hostedCredential(c.Request().Context(), c); err == nil {
+		if s.database.postgres != nil {
+			return s.postgresAppShell(c)
+		}
 		return s.appShell(c)
 	}
 	return s.hostedHome(c)
@@ -174,28 +177,18 @@ func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data 
 		data.SupportActor, data.SupportReason = identity.SupportActor, identity.SupportReason
 		data.SupportExpiry = identity.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	if err := s.database.reader.QueryRowContext(readCtx, "SELECT name FROM organizations WHERE id = ?", s.config.Hosted.OrganizationID).Scan(&data.OrganizationName); err != nil {
-		return err
-	}
-	rows, err := s.database.reader.QueryContext(readCtx, `SELECT p.id,p.name,g.manage_runner FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, identity.Subject, s.config.Hosted.OrganizationID)
+	organization, err := s.readPostgresAccessOrganization(readCtx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var project templates.HostedProjectChoice
-		var runner bool
-		if err := rows.Scan(&project.ID, &project.Name, &runner); err != nil {
-			return errors.Join(err, rows.Close())
-		}
-		data.Projects = append(data.Projects, project)
-		data.CanManageRunners = data.CanManageRunners || runner
-	}
-	if err := rows.Close(); err != nil {
+	data.OrganizationName = organization.Name
+	projects, err := s.postgresAppProjects(readCtx, credential)
+	if err != nil {
 		return err
 	}
-	if err := rows.Err(); err != nil {
-		return err
+	for _, project := range projects {
+		data.Projects = append(data.Projects, templates.HostedProjectChoice{ID: project.ID, Name: project.Name})
+		data.CanManageRunners = data.CanManageRunners || project.CanManageRunners
 	}
 	if !data.CanManage {
 		return nil
@@ -431,7 +424,11 @@ func (s *Service) hostedAccountSetupFor(ctx context.Context, session auth.Sessio
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var members int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&members); err != nil {
+	if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		rows, err := r.AccessMembers(ctx, "", 1)
+		members = len(rows)
+		return err
+	}); err != nil {
 		return hostedAccountSetup{}, err
 	}
 	staff := s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == ""
