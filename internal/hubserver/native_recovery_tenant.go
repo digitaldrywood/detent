@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -377,6 +378,16 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 		result.ChangeDetail = &detail
 		if changeVersion != nil {
 			result.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: changeVersion.ID, HeadSHA: changeVersion.HeadSHA}
+			for _, snapshot := range snapshots {
+				if snapshot.attempt.ID != latestAttemptID {
+					continue
+				}
+				plan := nativeClaimPlan{candidate: claimstore.Candidate{State: result.Issue.State}, item: row, changeRecord: change, changeVersion: *changeVersion, latestAttempt: snapshot.attempt, latestAttemptFound: true, latestRunEvent: snapshot.event, latestRunEventFound: snapshot.event.ID != ""}
+				if nativeClaimPendingLanding(plan) {
+					result.Issue.ListChange = &tracker.NativeListChange{LandingPending: true, HeadSHA: changeVersion.HeadSHA}
+				}
+				break
+			}
 			if row.RecoveryRunnerID != "" && row.RecoveryVersionID == changeVersion.ID {
 				result.SourceVersionID = changeVersion.ID
 			}
