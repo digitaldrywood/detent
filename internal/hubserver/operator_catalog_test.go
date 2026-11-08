@@ -218,3 +218,32 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgresOperatorCatalogBootstrapAuthority(t *testing.T) {
+	for _, test := range []struct {
+		organization string
+		allocated    bool
+	}{
+		{organization: "org_first"},
+		{organization: "org_second", allocated: true},
+	} {
+		t.Run(test.organization, func(t *testing.T) {
+			f := newBrowserHostedOrganizationFixture(t, test.allocated, test.organization)
+			cookie := f.cookies["owner"]
+			session, err := f.service.hostedSessions.Authenticate(t.Context(), cookie.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			role := "account"
+			if test.allocated {
+				role = "owner"
+			}
+			credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, HostedRole: role, SessionHash: apikey.HashToken(cookie.Value)}
+			ctx := f.service.withOperatorCatalog(t.Context(), credential, test.organization)
+			catalog := ctx.Value(operatorCatalogKey{}).(operatorCatalogAuthority)
+			if catalog.createOrganization != !test.allocated || catalog.support {
+				t.Fatalf("bootstrap catalog create=%t support=%t allocated=%t", catalog.createOrganization, catalog.support, test.allocated)
+			}
+		})
+	}
+}

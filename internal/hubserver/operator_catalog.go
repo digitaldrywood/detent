@@ -32,8 +32,8 @@ func (s *Service) withOperatorCatalog(ctx context.Context, credential apiCredent
 		if session, err := s.storedWebSession(readCtx, credential.SessionHash, s.config.now()); err == nil {
 			catalog.support = hostedEmailListed(s.config.Hosted.SupportActors, session.Email)
 			if credential.Hosted.Subject == s.config.Hosted.BootstrapSubject && !hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-				var count int
-				catalog.createOrganization = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members").Scan(&count) == nil && count == 0
+				setup, err := s.hostedAccountSetupFor(readCtx, session)
+				catalog.createOrganization = err == nil && setup.CanCreate
 			}
 		}
 	}
