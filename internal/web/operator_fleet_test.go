@@ -11,8 +11,10 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
@@ -51,11 +53,19 @@ func fleetCall(t *testing.T, server *web.Server, token, name string, args any) (
 	return response, envelope.Result.Data
 }
 
+type fleetReadStoreFixture struct {
+	authKeyStoreFixture
+}
+
+func (*fleetReadStoreFixture) OperationsReport(ctx context.Context, now, _ time.Time) (operations.Report, error) {
+	return operations.Report{DataTime: now}, ctx.Err()
+}
+
 func TestMCPFleetReads(t *testing.T) {
 	for _, name := range []string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.OperationsReport, operatortool.RunnerFleet} {
 		t.Run(name, func(t *testing.T) {
 			deps := testDeps(t)
-			deps.Store = openWebTestStore(t)
+			deps.Store = &fleetReadStoreFixture{authKeyStoreFixture: authKeyStoreFixture{keys: make(map[string]store.APIKey)}}
 			if name == operatortool.AIDebugPrompt {
 				cfg := workflowconfig.Default()
 				cfg.Tracker.Kind = workflowconfig.TrackerHubNative

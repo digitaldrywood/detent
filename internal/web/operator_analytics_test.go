@@ -1,7 +1,9 @@
 package web_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -15,20 +17,35 @@ import (
 
 func TestMCPAnalyticsReads(t *testing.T) {
 	deps := testDeps(t)
-	deps.Store = openWebTestStore(t)
+	backend := &authKeyStoreFixture{keys: make(map[string]store.APIKey)}
+	deps.Store = backend
 	now := time.Now().UTC()
+	models := map[string]store.UsageReportModel{
+		"detent": {Model: "detent-model", TotalTokens: 10, Events: 1},
+		"other":  {Model: "other-model", TotalTokens: 10, Events: 1},
+	}
+	backend.usageReport = func(ctx context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
+		if len(query.ProjectIDs) != 1 {
+			return store.UsageReport{}, errors.New("expected one project report")
+		}
+		id := query.ProjectIDs[0]
+		model, ok := models[id]
+		if !ok {
+			return store.UsageReport{}, errors.New("unexpected report project")
+		}
+		keys := map[store.UsageReportGroup]string{
+			store.UsageReportByDay:     now.Add(-time.Hour).Format(time.DateOnly),
+			store.UsageReportByProject: id, store.UsageReportByIssue: id + "-issue",
+			store.UsageReportByPR: "none", store.UsageReportByModel: model.Model,
+		}
+		return store.UsageReport{
+			By:     query.By,
+			Totals: store.UsageReportTotals{TotalTokens: 10, Events: 1, Models: []store.UsageReportModel{model}},
+			Rows:   []store.UsageReportRow{{Key: keys[query.By], TotalTokens: 10, Events: 1, Models: []store.UsageReportModel{model}}},
+		}, ctx.Err()
+	}
 	for _, id := range []string{"detent", "other"} {
 		if err := deps.Registry.Set(newBudgetTestProject(t, id, 100, 10)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := deps.Store.RecordUsageEvent(t.Context(), store.UsageEvent{ProjectID: id, IssueID: id + "-issue", Model: id + "-model", TotalTokens: 10, StartedAt: now.Add(-time.Hour), FinishedAt: now.Add(-time.Minute), Outcome: "completed"}); err != nil {
-			t.Fatal(err)
-		}
-		session, err := deps.Store.StartSession(t.Context(), store.SessionStart{ProjectID: id, IssueID: id + "-issue", StartedAt: now.Add(-time.Hour), Model: id + "-model"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := deps.Store.FinishSession(t.Context(), session, store.SessionFinish{CompletedAt: now.Add(-time.Minute), TotalTokens: 10, FinalState: "completed", Model: id + "-model"}); err != nil {
 			t.Fatal(err)
 		}
 	}
