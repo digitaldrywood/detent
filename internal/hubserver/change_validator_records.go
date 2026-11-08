@@ -44,11 +44,11 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 	var rows []eventstore.Evidence
 	var itemVersion eventstore.CollaborationVersion
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		p.attempt, _, err = s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), false)
+		attempt, approved, err := s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), false)
 		if err != nil {
 			return fmt.Errorf("read review authority: %w", err)
 		}
+		p.attempt = attempt
 		p.change, err = r.Change(ctx, change.ID)
 		if err != nil {
 			return fmt.Errorf("read review change: %w", err)
@@ -73,7 +73,7 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 		if err != nil {
 			return fmt.Errorf("read review session: %w", err)
 		}
-		if p.session.AttemptID != p.attempt.ID || p.session.IssueID != string(change.WorkItemID) || p.session.PolicyID != source.PolicyRevisionID || p.session.CompletedAt == nil || p.session.FinalState != "completed" {
+		if p.session.AttemptID != p.attempt.ID || p.session.IssueID != string(change.WorkItemID) || p.session.PolicyID != approved.PolicyID || p.session.CompletedAt == nil || p.session.FinalState != "completed" {
 			return tracker.ErrStaleFencingToken
 		}
 		reviews, ok := r.(eventstore.ValidatorReviewReader)
