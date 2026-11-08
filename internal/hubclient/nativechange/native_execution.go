@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
 	"github.com/digitaldrywood/detent/internal/hubclient/planner"
 	"github.com/digitaldrywood/detent/internal/hubclient/publication"
+	"github.com/digitaldrywood/detent/internal/hubclient/runtimeevidence"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -1073,8 +1074,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 		if e.data.Runtime == nil {
 			e.data.Runtime = runtime
 		} else {
-			observation := *e.data.Runtime
-			observation.Pipeline, observation.PipelineDropped = gate.MergePipeline(observation.Pipeline, runtime.Pipeline, max(observation.PipelineDropped, runtime.PipelineDropped))
+			observation := runtimeevidence.Merge(e.data.Runtime, *runtime)
 			e.data.Runtime = &observation
 		}
 		e.runtimeDirty = true

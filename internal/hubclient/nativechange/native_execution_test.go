@@ -1711,6 +1711,53 @@ func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 	}
 }
 
+func TestRuntimeFlushPreservesNewerBufferedEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		observation tracker.NativeRuntimeObservation
+	}{
+		{name: "recovery", observation: tracker.NativeRuntimeObservation{Recovery: &tracker.NativeRecoveryDecision{Action: "retry", Reason: "progress unavailable"}}},
+		{name: "validation", observation: tracker.NativeRuntimeObservation{Validation: &gate.CommandResult{Command: "go test ./internal/example", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, ExitCode: 0}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Retain buffered runtime evidence")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			execution.claim.lease.RunDetailBatching = false
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now().UTC()
+			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: at}); err != nil {
+				t.Fatal(err)
+			}
+			execution.claim.lease.RunDetailBatching = true
+			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{Phase: "rework", HeartbeatAt: at}); err != nil {
+				t.Fatal(err)
+			}
+			if len(execution.observations) != 1 {
+				t.Fatal("older runtime observation was not queued")
+			}
+			if err := execution.ObserveRuntime(t.Context(), test.observation); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.FlushRuntime(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), execution.data.AttemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, runtime := range []*tracker.NativeRuntimeObservation{execution.data.Runtime, stored.Runtime} {
+				if runtime == nil || !reflect.DeepEqual(runtime.Recovery, test.observation.Recovery) || !reflect.DeepEqual(runtime.Validation, test.observation.Validation) || runtime.Phase != "rework" {
+					t.Fatalf("flushing older observation lost newer %s evidence: %+v", test.name, runtime)
+				}
+			}
+		})
+	}
+}
+
 func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 	t.Parallel()
 	for _, phase := range []string{"waiting_cache_admission", "waiting_cache_consumers"} {
