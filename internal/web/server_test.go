@@ -12122,14 +12122,12 @@ func testDeps(t *testing.T) web.Dependencies {
 func newLibraryTestServer(t *testing.T) *web.Server {
 	t.Helper()
 
-	ctx := context.Background()
-	backend := openWebTestStore(t)
 	registry := project.NewRegistry()
 
 	mustSetWebGitHubLabelProject(t, registry, "detent", "example-org/example-project")
 
 	prUpdatedAt := time.Date(2026, 7, 3, 15, 0, 0, 0, time.UTC)
-	if err := backend.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
+	verdict := store.ValidatorVerdict{
 		ProjectID:  "detent",
 		IssueID:    "issue-933",
 		HeadSHA:    "1234567890abcdef",
@@ -12142,12 +12140,18 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 		Summary:    "validator clean",
 		RecordedAt: prUpdatedAt.Add(-time.Minute),
 		UpdatedAt:  prUpdatedAt,
-	}); err != nil {
-		t.Fatalf("RecordValidatorVerdict() error = %v", err)
 	}
 
 	deps := testDeps(t)
-	deps.Store = backend
+	deps.Store = storeProbe{validatorVerdicts: func(_ context.Context, query store.ValidatorVerdictQuery) ([]store.ValidatorVerdict, error) {
+		if query.ProjectID != "" && query.ProjectID != verdict.ProjectID {
+			return nil, nil
+		}
+		if !query.From.IsZero() && verdict.UpdatedAt.Before(query.From) || !query.To.IsZero() && !verdict.UpdatedAt.Before(query.To) {
+			return nil, nil
+		}
+		return []store.ValidatorVerdict{verdict}, nil
+	}}
 	deps.Registry = registry
 	deps.Connector = connectorProbe{name: "mixed"}
 	server, err := newServerWithLaneWriter(web.Config{DashboardURL: "http://127.0.0.1:4000"}, deps)
