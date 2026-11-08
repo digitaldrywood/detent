@@ -207,6 +207,7 @@ func (c *Catalog) Execute(ctx context.Context, command artifact.CatalogCommand) 
 				return artifact.ErrDenied
 			}
 			cfg = current
+			storagePrefix := cfg.OrganizationID + "/" + cfg.ProjectID + "/" + cfg.ServiceID + "/" + scope.UploadID + "/"
 
 			switch command.Operation {
 			case "prepare_manifest":
@@ -214,11 +215,14 @@ func (c *Catalog) Execute(ctx context.Context, command artifact.CatalogCommand) 
 				if !artifact.ValidID(v.ID, "intent") {
 					return artifact.ErrInvalid
 				}
-				key := cfg.OrganizationID + "/" + cfg.ProjectID + "/" + cfg.ServiceID + "/" + scope.UploadID + "/manifests/" + strconv.FormatInt(v.Revision, 10) + "/" + v.SHA256 + "/" + v.ID
+				key := storagePrefix + "manifests/" + strconv.FormatInt(v.Revision, 10) + "/" + v.SHA256 + "/" + v.ID
 				row, err := w.PrepareCatalogManifestIntent(ctx, postgres.CatalogManifestIntent{OrganizationID: org, ProjectID: project, ServiceID: scope.ServiceID, UploadID: scope.UploadID, ID: v.ID, Revision: v.Revision, BodyObjectKey: key, Sha256: v.SHA256, BodyBytes: v.Bytes, ManifestState: v.ManifestState}, now)
 				result.Intent = intent(row)
 				return err
 			case "verify_manifest", "begin_manifest_discard", "finish_manifest_discard":
+				if !artifact.ValidID(command.Intent.ID, "intent") || command.Operation == "finish_manifest_discard" && command.Intent.Receipt != storagePrefix+"discarded/"+command.Intent.ID {
+					return artifact.ErrInvalid
+				}
 				state := "verified"
 				if command.Operation == "begin_manifest_discard" {
 					state = "discarding"
@@ -274,7 +278,7 @@ func (c *Catalog) Execute(ctx context.Context, command artifact.CatalogCommand) 
 				return err
 			case "put_object", "verify_object", "discard_object":
 				o := command.Object
-				if o.Sequence < 0 || o.Sequence >= artifact.MaxObjects {
+				if !artifact.ValidID(o.ID, "object") || o.Sequence < 0 || o.Sequence >= artifact.MaxObjects || command.Operation == "discard_object" && command.Receipt != storagePrefix+"discarded/"+o.ID {
 					return artifact.ErrInvalid
 				}
 				row := postgres.CatalogObject{OrganizationID: org, ProjectID: project, ServiceID: scope.ServiceID, UploadID: scope.UploadID, Sequence: int32(o.Sequence), ID: o.ID, MediaType: o.MediaType, Size: o.Size, Sha256: o.SHA256, Path: o.Path, Side: o.Side, ByteOffset: o.Offset, StorageVersion: o.StorageVersion}
@@ -291,7 +295,7 @@ func (c *Catalog) Execute(ctx context.Context, command artifact.CatalogCommand) 
 				return err
 			case "commit":
 				m := command.Manifest
-				if m.Objects < 0 || m.Objects > artifact.MaxObjects || !strings.HasPrefix(m.BodyKey, cfg.OrganizationID+"/"+cfg.ProjectID+"/"+cfg.ServiceID+"/"+command.UploadID+"/manifests/"+strconv.FormatInt(m.Revision, 10)+"/"+m.SHA256+"/") {
+				if !artifact.ValidID(m.ManifestID, "manifest") || m.Objects < 0 || m.Objects > artifact.MaxObjects || !strings.HasPrefix(m.BodyKey, storagePrefix+"manifests/"+strconv.FormatInt(m.Revision, 10)+"/"+m.SHA256+"/") {
 					return artifact.ErrInvalid
 				}
 				if m.OrganizationID != cfg.OrganizationID || m.ProjectID != cfg.ProjectID || m.ServiceID != cfg.ServiceID || m.ArtifactID != command.UploadID {
@@ -322,6 +326,9 @@ func (c *Catalog) Execute(ctx context.Context, command artifact.CatalogCommand) 
 				result.Upload = upload(row, cfg)
 				return err
 			case "finish_delete":
+				if command.Receipt != storagePrefix+"deleted" {
+					return artifact.ErrInvalid
+				}
 				row, err := w.FinishCatalogDeletion(ctx, postgres.CatalogDeletion{CatalogScope: scope, At: now, ReceiptObjectKey: command.Receipt})
 				result.Upload = upload(row, cfg)
 				return err

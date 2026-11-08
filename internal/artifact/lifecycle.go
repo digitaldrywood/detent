@@ -154,7 +154,7 @@ func (s *Service) pruneReceipts(ctx context.Context, upload Upload) error {
 		}
 		for _, intent := range result.Intents {
 			if intent.Receipt != "" {
-				if err := s.deleteReceipt(ctx, intent.Receipt); err != nil {
+				if err := s.deleteReceipt(ctx, s.scopedObjectKey(upload.ProjectID, upload.ArtifactID, "discarded/"+intent.ID)); err != nil {
 					return err
 				}
 			}

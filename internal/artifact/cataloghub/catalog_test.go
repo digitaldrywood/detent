@@ -371,6 +371,19 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 		if _, err := service.Finalize(t.Context(), rejectedUpload.ArtifactID, "complete", nil); !errors.Is(err, artifact.ErrConflict) {
 			t.Fatal("expected rejected commit", err)
 		}
+		rejectedScope := artifact.CatalogScope{OrganizationID: cfg.OrganizationID, ProjectID: cfg.ProjectID, ServiceID: cfg.ServiceID}
+		candidates, err := cfg.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: rejectedScope, Operation: "manifest_intents", UploadID: rejectedUpload.ArtifactID, Outcome: "pending", Limit: 32})
+		if err != nil || len(candidates.Intents) != 1 {
+			t.Fatal("rejected body intent missing", err)
+		}
+		candidate := candidates.Intents[0]
+		if _, err := cfg.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: rejectedScope, Operation: "begin_manifest_discard", UploadID: rejectedUpload.ArtifactID, Intent: candidate}); err != nil {
+			t.Fatal(err)
+		}
+		candidate.Receipt = "foreign-organization/foreign-artifact/receipt"
+		if _, err := cfg.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: rejectedScope, Operation: "finish_manifest_discard", UploadID: rejectedUpload.ArtifactID, Intent: candidate}); !errors.Is(err, artifact.ErrInvalid) {
+			t.Fatal("catalog accepted a receipt outside the upload storage namespace", err)
+		}
 		interrupted, err := service.Finalize(t.Context(), rejectedUpload.ArtifactID, "interrupted", nil)
 		if err != nil || interrupted.State != "interrupted" {
 			t.Fatal("rejected body blocks interrupted finalization", err)
@@ -385,6 +398,12 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 		}
 		scope := artifact.CatalogScope{OrganizationID: cfg.OrganizationID, ProjectID: cfg.ProjectID, ServiceID: cfg.ServiceID}
 		descriptor := artifact.CatalogObject{Object: artifact.Object{ID: artifact.NewID("object"), Sequence: 0, MediaType: "text/plain; charset=utf-8", Size: admitted.PartLimit + 1, SHA256: artifact.Digest([]byte("example"))}}
+		malformed := descriptor
+		malformed.ID = "../foreign-object"
+		malformed.Size = 1
+		if _, err := cfg.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: scope, Operation: "put_object", UploadID: admitted.ArtifactID, Object: malformed}); !errors.Is(err, artifact.ErrInvalid) {
+			t.Fatal("catalog accepted a noncanonical storage object ID", err)
+		}
 		if _, err := cfg.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: scope, Operation: "put_object", UploadID: admitted.ArtifactID, Object: descriptor}); !errors.Is(err, artifact.ErrQuota) {
 			t.Fatal("admitted part limit bypassed", err)
 		}
