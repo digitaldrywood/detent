@@ -66,6 +66,10 @@ type ArtifactCatalogReader interface {
 	CatalogTraffic(context.Context, CatalogTrafficInput) ([]CatalogTrafficBucket, error)
 }
 type ArtifactCatalogWriter interface {
+	BeginCatalogObjectWrite(context.Context, CatalogWrite) (CatalogObject, error)
+	FinishCatalogObjectWrite(context.Context, CatalogWrite) (CatalogObject, error)
+	BeginCatalogManifestWrite(context.Context, CatalogWrite) (CatalogManifestIntent, error)
+	FinishCatalogManifestWrite(context.Context, CatalogWrite) (CatalogManifestIntent, error)
 	ArtifactCatalogReader
 	SetCatalogPolicy(context.Context, tracker.ProjectID, string, artifact.Policy) (CatalogBinding, error)
 	CatalogExecutionAuthority(context.Context, CatalogExecutionAuthorityInput) error

@@ -101,14 +101,26 @@ func (s *session) TransitionCatalogManifestIntent(ctx context.Context, arg Catal
 	var result CatalogManifestIntent
 	switch arg.State {
 	case "verified":
+		if current.WriteState != "written" {
+			return CatalogManifestIntent{}, corestore.ErrRevisionConflict
+		}
 		if arg.StorageVersion == "" {
 			return CatalogManifestIntent{}, artifact.ErrInvalid
+		}
+		if current.StorageVersion != arg.StorageVersion {
+			return CatalogManifestIntent{}, corestore.ErrRevisionConflict
 		}
 		if current.StorageVersion == arg.StorageVersion && current.State == "committed" {
 			return current, nil
 		}
 		result, err = s.queries.VerifyCatalogManifestIntent(ctx, pgquery.VerifyCatalogManifestIntentParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, ServiceID: arg.ServiceID, UploadID: arg.UploadID, ID: arg.ID, StorageVersion: arg.StorageVersion})
 	case "discarding":
+		if current.WriteState == "ready" {
+			current, err = s.queries.SetCatalogManifestWrite(ctx, pgquery.SetCatalogManifestWriteParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, ServiceID: arg.ServiceID, UploadID: arg.UploadID, ID: arg.ID, WriteState: "rejected"})
+			if err != nil {
+				return CatalogManifestIntent{}, mapError(ctx, err)
+			}
+		}
 		if current.State == "discarded" {
 			return current, nil
 		}
@@ -116,6 +128,9 @@ func (s *session) TransitionCatalogManifestIntent(ctx context.Context, arg Catal
 	case "discarded":
 		if arg.ReceiptObjectKey == "" {
 			return CatalogManifestIntent{}, artifact.ErrInvalid
+		}
+		if current.WriteState != "written" && current.WriteState != "rejected" {
+			return CatalogManifestIntent{}, corestore.ErrRevisionConflict
 		}
 		if current.State == "discarded" {
 			if current.ReceiptObjectKey != arg.ReceiptObjectKey {

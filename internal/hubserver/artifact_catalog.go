@@ -130,7 +130,7 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 		switch command.Operation {
 		case "reserve":
 			reservation = command.Upload.Reservation
-		case "put_object", "verify_object", "prepare_manifest", "verify_manifest", "commit":
+		case "put_object", "begin_object_write", "prepare_manifest", "begin_manifest_write", "commit":
 			row, err := r.CatalogUpload(ctx, postgres.CatalogUploadInput{OrganizationID: scope.organization, ProjectID: scope.project, ServiceID: command.ServiceID, ID: command.UploadID})
 			if err != nil {
 				return artifact.ErrDenied
@@ -150,7 +150,7 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 			if command.Operation == "prepare_manifest" && command.Intent.ManifestState == "interrupted" {
 				return nil
 			}
-			if command.Operation == "verify_manifest" {
+			if command.Operation == "begin_manifest_write" {
 				intent, err := r.CatalogManifestIntent(ctx, postgres.CatalogManifestIntentInput{OrganizationID: scope.organization, ProjectID: scope.project, ServiceID: command.ServiceID, UploadID: command.UploadID, ID: command.Intent.ID})
 				if err != nil {
 					return artifact.ErrDenied

@@ -66,7 +66,7 @@ func (q *Queries) AccountCatalogManifestIntent(ctx context.Context, arg AccountC
 }
 
 const activeCatalogManifestIntent = `-- name: ActiveCatalogManifestIntent :one
-SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at FROM artifact_catalog_manifest_intents WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND revision=$5 AND sha256=$6 AND state IN ('pending','discarding')
+SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id FROM artifact_catalog_manifest_intents WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND revision=$5 AND sha256=$6 AND state IN ('pending','discarding')
 `
 
 type ActiveCatalogManifestIntentParams struct {
@@ -103,12 +103,14 @@ func (q *Queries) ActiveCatalogManifestIntent(ctx context.Context, arg ActiveCat
 		&i.StorageVersion,
 		&i.ReceiptObjectKey,
 		&i.CreatedAt,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
 
 const beginCatalogManifestDiscard = `-- name: BeginCatalogManifestDiscard :one
-UPDATE artifact_catalog_manifest_intents SET state='discarding' WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5 AND state IN ('pending','discarding') RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at
+UPDATE artifact_catalog_manifest_intents SET state='discarding' WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5 AND state IN ('pending','discarding') RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id
 `
 
 type BeginCatalogManifestDiscardParams struct {
@@ -143,12 +145,14 @@ func (q *Queries) BeginCatalogManifestDiscard(ctx context.Context, arg BeginCata
 		&i.StorageVersion,
 		&i.ReceiptObjectKey,
 		&i.CreatedAt,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
 
 const catalogManifestIntent = `-- name: CatalogManifestIntent :one
-SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at FROM artifact_catalog_manifest_intents WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5
+SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id FROM artifact_catalog_manifest_intents WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5
 `
 
 type CatalogManifestIntentParams struct {
@@ -183,12 +187,14 @@ func (q *Queries) CatalogManifestIntent(ctx context.Context, arg CatalogManifest
 		&i.StorageVersion,
 		&i.ReceiptObjectKey,
 		&i.CreatedAt,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
 
 const catalogManifestIntentByKey = `-- name: CatalogManifestIntentByKey :one
-SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at FROM artifact_catalog_manifest_intents WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND body_object_key=$5
+SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id FROM artifact_catalog_manifest_intents WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND body_object_key=$5
 `
 
 type CatalogManifestIntentByKeyParams struct {
@@ -223,12 +229,14 @@ func (q *Queries) CatalogManifestIntentByKey(ctx context.Context, arg CatalogMan
 		&i.StorageVersion,
 		&i.ReceiptObjectKey,
 		&i.CreatedAt,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
 
 const catalogManifestIntents = `-- name: CatalogManifestIntents :many
-SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at FROM artifact_catalog_manifest_intents
+SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id FROM artifact_catalog_manifest_intents
 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id>$5
 AND (NOT $7::boolean OR state IN ('pending','discarding')) ORDER BY id LIMIT $6
 `
@@ -275,6 +283,8 @@ func (q *Queries) CatalogManifestIntents(ctx context.Context, arg CatalogManifes
 			&i.StorageVersion,
 			&i.ReceiptObjectKey,
 			&i.CreatedAt,
+			&i.WriteState,
+			&i.WriteID,
 		); err != nil {
 			return nil, err
 		}
@@ -287,7 +297,7 @@ func (q *Queries) CatalogManifestIntents(ctx context.Context, arg CatalogManifes
 }
 
 const commitCatalogManifestIntent = `-- name: CommitCatalogManifestIntent :one
-UPDATE artifact_catalog_manifest_intents SET state='committed' WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5 AND state='pending' AND storage_version<>'' RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at
+UPDATE artifact_catalog_manifest_intents SET state='committed' WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5 AND state='pending' AND storage_version<>'' RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id
 `
 
 type CommitCatalogManifestIntentParams struct {
@@ -322,13 +332,15 @@ func (q *Queries) CommitCatalogManifestIntent(ctx context.Context, arg CommitCat
 		&i.StorageVersion,
 		&i.ReceiptObjectKey,
 		&i.CreatedAt,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
 
 const createCatalogManifestIntent = `-- name: CreateCatalogManifestIntent :one
 INSERT INTO artifact_catalog_manifest_intents(organization_id,project_id,service_id,upload_id,id,revision,body_object_key,sha256,body_bytes,created_at,manifest_state)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id
 `
 
 type CreateCatalogManifestIntentParams struct {
@@ -375,12 +387,14 @@ func (q *Queries) CreateCatalogManifestIntent(ctx context.Context, arg CreateCat
 		&i.StorageVersion,
 		&i.ReceiptObjectKey,
 		&i.CreatedAt,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
 
 const finishCatalogManifestDiscard = `-- name: FinishCatalogManifestDiscard :one
-UPDATE artifact_catalog_manifest_intents SET state='discarded',receipt_object_key=$6 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5 AND state='discarding' RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at
+UPDATE artifact_catalog_manifest_intents SET state='discarded',receipt_object_key=$6 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5 AND state='discarding' RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id
 `
 
 type FinishCatalogManifestDiscardParams struct {
@@ -417,12 +431,14 @@ func (q *Queries) FinishCatalogManifestDiscard(ctx context.Context, arg FinishCa
 		&i.StorageVersion,
 		&i.ReceiptObjectKey,
 		&i.CreatedAt,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
 
 const verifyCatalogManifestIntent = `-- name: VerifyCatalogManifestIntent :one
-UPDATE artifact_catalog_manifest_intents SET storage_version=$6 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5 AND state='pending' AND storage_version IN ('',$6) RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at
+UPDATE artifact_catalog_manifest_intents SET storage_version=$6 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5 AND state='pending' AND storage_version IN ('',$6) RETURNING organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id
 `
 
 type VerifyCatalogManifestIntentParams struct {
@@ -459,6 +475,8 @@ func (q *Queries) VerifyCatalogManifestIntent(ctx context.Context, arg VerifyCat
 		&i.StorageVersion,
 		&i.ReceiptObjectKey,
 		&i.CreatedAt,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }

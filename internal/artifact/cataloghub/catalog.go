@@ -210,6 +210,36 @@ func (c *Catalog) Execute(ctx context.Context, command artifact.CatalogCommand) 
 			storagePrefix := cfg.OrganizationID + "/" + cfg.ProjectID + "/" + cfg.ServiceID + "/" + scope.UploadID + "/"
 
 			switch command.Operation {
+			case "begin_object_write", "finish_object_write":
+				v := command.Object
+				if !artifact.ValidID(v.ID, "object") || !artifact.ValidID(v.WriteID, "write") {
+					return artifact.ErrInvalid
+				}
+				arg := postgres.CatalogWrite{CatalogScope: scope, ID: v.ID, Sequence: int32(v.Sequence), WriteID: v.WriteID, Outcome: command.Outcome, StorageVersion: v.StorageVersion, At: now}
+				var row postgres.CatalogObject
+				var err error
+				if command.Operation == "begin_object_write" {
+					row, err = w.BeginCatalogObjectWrite(ctx, arg)
+				} else {
+					row, err = w.FinishCatalogObjectWrite(ctx, arg)
+				}
+				result.Object = object(row)
+				return err
+			case "begin_manifest_write", "finish_manifest_write":
+				v := command.Intent
+				if !artifact.ValidID(v.ID, "intent") || !artifact.ValidID(v.WriteID, "write") {
+					return artifact.ErrInvalid
+				}
+				arg := postgres.CatalogWrite{CatalogScope: scope, ID: v.ID, WriteID: v.WriteID, Outcome: command.Outcome, StorageVersion: v.StorageVersion, At: now}
+				var row postgres.CatalogManifestIntent
+				var err error
+				if command.Operation == "begin_manifest_write" {
+					row, err = w.BeginCatalogManifestWrite(ctx, arg)
+				} else {
+					row, err = w.FinishCatalogManifestWrite(ctx, arg)
+				}
+				result.Intent = intent(row)
+				return err
 			case "prepare_manifest":
 				v := command.Intent
 				if !artifact.ValidID(v.ID, "intent") {
@@ -369,7 +399,7 @@ func upload(row postgres.CatalogUpload, cfg artifact.Config) artifact.Upload {
 }
 
 func object(row postgres.CatalogObject) artifact.CatalogObject {
-	return artifact.CatalogObject{ProjectID: string(row.ProjectID), UploadID: row.UploadID, Object: artifact.Object{ID: row.ID, MediaType: row.MediaType, Size: row.Size, SHA256: row.Sha256, Path: row.Path, Side: row.Side, Sequence: int(row.Sequence), Offset: row.ByteOffset}, StorageVersion: row.StorageVersion, Verified: row.VerifiedAt != nil, Discarded: row.DiscardedAt != nil}
+	return artifact.CatalogObject{WriteState: row.WriteState, WriteID: row.WriteID, ProjectID: string(row.ProjectID), UploadID: row.UploadID, Object: artifact.Object{ID: row.ID, MediaType: row.MediaType, Size: row.Size, SHA256: row.Sha256, Path: row.Path, Side: row.Side, Sequence: int(row.Sequence), Offset: row.ByteOffset}, StorageVersion: row.StorageVersion, Verified: row.VerifiedAt != nil, Discarded: row.DiscardedAt != nil}
 }
 
 func manifest(row postgres.CatalogManifest, u postgres.CatalogUpload) artifact.CatalogManifest {
@@ -389,7 +419,7 @@ func reservationHash(r artifact.Reservation) string {
 }
 
 func intent(row postgres.CatalogManifestIntent) artifact.CatalogIntent {
-	return artifact.CatalogIntent{ManifestState: row.ManifestState, UploadID: row.UploadID, ProjectID: string(row.ProjectID), ID: row.ID, Revision: row.Revision, BodyKey: row.BodyObjectKey, SHA256: row.Sha256, Bytes: row.BodyBytes, State: row.State, StorageVersion: row.StorageVersion, Receipt: row.ReceiptObjectKey}
+	return artifact.CatalogIntent{WriteState: row.WriteState, WriteID: row.WriteID, ManifestState: row.ManifestState, UploadID: row.UploadID, ProjectID: string(row.ProjectID), ID: row.ID, Revision: row.Revision, BodyKey: row.BodyObjectKey, SHA256: row.Sha256, Bytes: row.BodyBytes, State: row.State, StorageVersion: row.StorageVersion, Receipt: row.ReceiptObjectKey}
 }
 
 func (c *Catalog) read(ctx context.Context, command artifact.CatalogCommand, run func(postgres.ArtifactCatalogReader) error) error {

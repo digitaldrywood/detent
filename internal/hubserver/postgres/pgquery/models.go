@@ -188,6 +188,8 @@ type ArtifactCatalogManifestIntent struct {
 	StorageVersion   string
 	ReceiptObjectKey string
 	CreatedAt        time.Time
+	WriteState       string
+	WriteID          string
 }
 
 type ArtifactCatalogObject struct {
@@ -207,6 +209,8 @@ type ArtifactCatalogObject struct {
 	VerifiedAt              *time.Time
 	DiscardedAt             *time.Time
 	DiscardReceiptObjectKey *string
+	WriteState              string
+	WriteID                 string
 }
 
 type ArtifactCatalogPublication struct {

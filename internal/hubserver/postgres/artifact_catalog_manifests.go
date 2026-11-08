@@ -51,7 +51,7 @@ func (s *session) CommitCatalogManifest(ctx context.Context, row CatalogManifest
 	if err != nil {
 		return CatalogManifest{}, mapError(ctx, err)
 	}
-	if intent.ManifestState != row.State || intent.State != "pending" || intent.StorageVersion == "" || intent.Revision != row.Revision || intent.Sha256 != row.Sha256 || intent.BodyBytes != row.BodyBytes || row.State != "partial" && upload.ManifestReservedBytes != intent.BodyBytes {
+	if intent.WriteState != "written" || intent.ManifestState != row.State || intent.State != "pending" || intent.StorageVersion == "" || intent.Revision != row.Revision || intent.Sha256 != row.Sha256 || intent.BodyBytes != row.BodyBytes || row.State != "partial" && upload.ManifestReservedBytes != intent.BodyBytes {
 		return CatalogManifest{}, corestore.ErrRevisionConflict
 	}
 	if _, err := s.queries.AccountCatalogManifestIntent(ctx, pgquery.AccountCatalogManifestIntentParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, ID: row.UploadID, ManifestReservedBytes: -intent.BodyBytes}); err != nil {
@@ -121,6 +121,17 @@ func (s *session) FinishCatalogDeletion(ctx context.Context, arg CatalogDeletion
 		return row, nil
 	}
 	if row.State != "deletion_pending" {
+		return CatalogUpload{}, corestore.ErrRevisionConflict
+	}
+	unsettled, err := s.queries.CatalogUnsettledWrites(ctx, pgquery.CatalogUnsettledWritesParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, ServiceID: arg.ServiceID, UploadID: arg.UploadID})
+	if err != nil {
+		return CatalogUpload{}, mapError(ctx, err)
+	}
+	totals, err := s.queries.CatalogObjectTotals(ctx, pgquery.CatalogObjectTotalsParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, ServiceID: arg.ServiceID, UploadID: arg.UploadID})
+	if err != nil {
+		return CatalogUpload{}, mapError(ctx, err)
+	}
+	if unsettled || totals.PendingCount != 0 {
 		return CatalogUpload{}, corestore.ErrRevisionConflict
 	}
 	result, err := s.queries.FinishCatalogDeletion(ctx, pgquery.FinishCatalogDeletionParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, ServiceID: arg.ServiceID, ID: arg.UploadID, DeletedAt: new(arg.At), DeletionReceiptObjectKey: new(arg.ReceiptObjectKey)})

@@ -341,7 +341,7 @@ func (q *Queries) PruneScopedCatalogTrafficReceipts(ctx context.Context, arg Pru
 }
 
 const scopedCatalogIntents = `-- name: ScopedCatalogIntents :many
-SELECT i.organization_id, i.project_id, i.service_id, i.upload_id, i.id, i.revision, i.body_object_key, i.sha256, i.body_bytes, i.manifest_state, i.state, i.storage_version, i.receipt_object_key, i.created_at FROM artifact_catalog_manifest_intents i WHERE i.organization_id=$1 AND i.service_id=$2 AND ($3::text='' OR i.project_id=$3) AND ($4::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=i.organization_id AND b.project_id=i.project_id AND b.id=i.service_id AND b.publisher_token_id=$4)) AND (i.project_id,i.upload_id,i.id)>($5::text,$6::text,$7::text) ORDER BY i.project_id,i.upload_id,i.id LIMIT $8
+SELECT i.organization_id, i.project_id, i.service_id, i.upload_id, i.id, i.revision, i.body_object_key, i.sha256, i.body_bytes, i.manifest_state, i.state, i.storage_version, i.receipt_object_key, i.created_at, i.write_state, i.write_id FROM artifact_catalog_manifest_intents i WHERE i.organization_id=$1 AND i.service_id=$2 AND ($3::text='' OR i.project_id=$3) AND ($4::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=i.organization_id AND b.project_id=i.project_id AND b.id=i.service_id AND b.publisher_token_id=$4)) AND (i.project_id,i.upload_id,i.id)>($5::text,$6::text,$7::text) ORDER BY i.project_id,i.upload_id,i.id LIMIT $8
 `
 
 type ScopedCatalogIntentsParams struct {
@@ -388,6 +388,8 @@ func (q *Queries) ScopedCatalogIntents(ctx context.Context, arg ScopedCatalogInt
 			&i.StorageVersion,
 			&i.ReceiptObjectKey,
 			&i.CreatedAt,
+			&i.WriteState,
+			&i.WriteID,
 		); err != nil {
 			return nil, err
 		}
@@ -467,7 +469,7 @@ func (q *Queries) ScopedCatalogManifests(ctx context.Context, arg ScopedCatalogM
 }
 
 const scopedCatalogObjects = `-- name: ScopedCatalogObjects :many
-SELECT o.organization_id, o.project_id, o.service_id, o.upload_id, o.sequence, o.id, o.media_type, o.size, o.sha256, o.path, o.side, o.byte_offset, o.storage_version, o.verified_at, o.discarded_at, o.discard_receipt_object_key FROM artifact_catalog_objects o WHERE o.organization_id=$1 AND o.service_id=$2 AND ($3::text='' OR o.project_id=$3) AND ($4::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=o.organization_id AND b.project_id=o.project_id AND b.id=o.service_id AND b.publisher_token_id=$4)) AND (o.project_id,o.upload_id,o.sequence)>($5::text,$6::text,$7::integer) ORDER BY o.project_id,o.upload_id,o.sequence LIMIT $8
+SELECT o.organization_id, o.project_id, o.service_id, o.upload_id, o.sequence, o.id, o.media_type, o.size, o.sha256, o.path, o.side, o.byte_offset, o.storage_version, o.verified_at, o.discarded_at, o.discard_receipt_object_key, o.write_state, o.write_id FROM artifact_catalog_objects o WHERE o.organization_id=$1 AND o.service_id=$2 AND ($3::text='' OR o.project_id=$3) AND ($4::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=o.organization_id AND b.project_id=o.project_id AND b.id=o.service_id AND b.publisher_token_id=$4)) AND (o.project_id,o.upload_id,o.sequence)>($5::text,$6::text,$7::integer) ORDER BY o.project_id,o.upload_id,o.sequence LIMIT $8
 `
 
 type ScopedCatalogObjectsParams struct {
@@ -516,6 +518,8 @@ func (q *Queries) ScopedCatalogObjects(ctx context.Context, arg ScopedCatalogObj
 			&i.VerifiedAt,
 			&i.DiscardedAt,
 			&i.DiscardReceiptObjectKey,
+			&i.WriteState,
+			&i.WriteID,
 		); err != nil {
 			return nil, err
 		}

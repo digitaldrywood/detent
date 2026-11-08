@@ -276,10 +276,12 @@ func (s *Service) Append(ctx context.Context, id string, p Part) (Object, error)
 	var pending *CatalogObject
 	var total int64
 	count := 0
+	active := 0
 	for _, stored := range result.Objects {
-		if stored.Discarded {
+		if stored.Discarded || stored.WriteState == "rejected" {
 			continue
 		}
+		active++
 		total += stored.Size
 		if stored.Verified {
 			count++
@@ -317,7 +319,7 @@ func (s *Service) Append(ctx context.Context, id string, p Part) (Object, error)
 		return Object{}, ErrQuota
 	}
 	if pending == nil {
-		if count != p.Sequence || len(result.Objects) != count {
+		if count != p.Sequence || active != count {
 			return Object{}, ErrConflict
 		}
 		obj.Offset = total
@@ -346,25 +348,17 @@ func (s *Service) Append(ctx context.Context, id string, p Part) (Object, error)
 			return Object{}, err
 		}
 		obj = stored.Object.Object
+		pending = &stored.Object
 	}
 	key := s.scopedObjectKey(u.ProjectID, id, obj.ID)
-	version, err := s.storage.Put(ctx, key, p.Data)
-	if err != nil && !errors.Is(err, ErrConflict) {
-		return Object{}, err
-	}
-	read, err := s.storage.Get(ctx, key, version, obj.Size)
+	storedWrite, err := s.putBlobOnce(ctx, CatalogCommand{UploadID: id, Object: *pending}, key, p.Data, blobWrite{kind: "object", state: pending.WriteState, id: pending.WriteID, version: pending.StorageVersion})
 	if err != nil {
 		return Object{}, err
 	}
-	if int64(len(read)) != obj.Size || Digest(read) != obj.SHA256 {
-		return Object{}, ErrIntegrity
-	}
-	if version == "" {
-		version = "null"
-	}
-	if _, err := s.command(ctx, CatalogCommand{Operation: "verify_object", UploadID: id, Object: CatalogObject{Object: obj, StorageVersion: version}, At: s.now().UTC()}); err != nil {
+	if _, err := s.command(ctx, CatalogCommand{Operation: "verify_object", UploadID: id, Object: storedWrite.Object, At: s.now().UTC()}); err != nil {
 		return Object{}, err
 	}
+
 	if u.Kind == "log" {
 		if _, err := s.seal(ctx, id, "partial", nil); err != nil {
 			return obj, err
@@ -481,24 +475,15 @@ func (s *Service) seal(ctx context.Context, id, state string, capture *Capture) 
 		return Reference{}, ErrConflict
 	}
 	key := intent.BodyKey
-	version, err := s.storage.Put(ctx, key, raw)
-	if err != nil && !errors.Is(err, ErrConflict) {
-		return Reference{}, err
-	}
-	read, err := s.storage.Get(ctx, key, version, MaxManifestBytes)
+	written, err := s.putBlobOnce(ctx, CatalogCommand{UploadID: id, Intent: intent}, key, raw, blobWrite{kind: "manifest", state: intent.WriteState, id: intent.WriteID, version: intent.StorageVersion})
 	if err != nil {
 		return Reference{}, err
 	}
-	if Digest(read) != ref.SHA256 {
-		return Reference{}, ErrConflict
-	}
-	if version == "" {
-		version = "null"
-	}
-	intent.StorageVersion = version
+	intent = written.Intent
 	if _, err := s.command(ctx, CatalogCommand{Operation: "verify_manifest", UploadID: id, Intent: intent}); err != nil {
 		return Reference{}, err
 	}
+
 	committed, err := s.command(ctx, CatalogCommand{Operation: "commit", UploadID: id, Manifest: CatalogManifest{Reference: ref, BodyKey: key, BodyBytes: int64(len(raw)), CreatedAt: u.CreatedAt, RetentionPolicyID: m.RetentionPolicyID, Capture: capture}, At: s.now().UTC()})
 	return committed.Manifest.Reference, err
 }

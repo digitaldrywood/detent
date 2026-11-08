@@ -18,7 +18,9 @@ type CatalogScope struct {
 }
 
 type CatalogObject struct {
-	ProjectID string `json:"project_id,omitempty"`
+	WriteState string `json:"write_state"`
+	WriteID    string `json:"write_id,omitempty"`
+	ProjectID  string `json:"project_id,omitempty"`
 	Object
 	UploadID       string `json:"upload_id"`
 	StorageVersion string `json:"storage_version"`
@@ -27,6 +29,8 @@ type CatalogObject struct {
 }
 
 type CatalogIntent struct {
+	WriteState     string `json:"write_state"`
+	WriteID        string `json:"write_id,omitempty"`
 	ManifestState  string `json:"manifest_state"`
 	UploadID       string `json:"upload_id,omitempty"`
 	ProjectID      string `json:"project_id,omitempty"`

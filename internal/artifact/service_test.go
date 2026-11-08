@@ -26,7 +26,7 @@ func (m *memoryStorage) Put(_ context.Context, key string, data []byte) (string,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failure != nil {
-		return "", m.failure
+		return "", errors.Join(m.failure, ErrWriteRejected)
 	}
 	if _, ok := m.data[key]; ok {
 		return "version", ErrConflict
@@ -702,4 +702,112 @@ func TestRejectedManifestCandidateDoesNotBlockInterruption(t *testing.T) {
 	if err != nil || ref.State != "interrupted" {
 		t.Fatalf("rejected complete body permanently blocks interruption: state=%q error=%v", ref.State, err)
 	}
+}
+
+type admittedPutBarrier struct {
+	Storage
+	match   func(string) bool
+	entered chan string
+	resume  chan struct{}
+	once    sync.Once
+	release sync.Once
+}
+
+func (b *admittedPutBarrier) Put(ctx context.Context, key string, data []byte) (string, error) {
+	if b.match(key) {
+		b.once.Do(func() { b.entered <- key; <-b.resume })
+	}
+	return b.Storage.Put(ctx, key, data)
+}
+func (b *admittedPutBarrier) unblock() { b.release.Do(func() { close(b.resume) }) }
+
+func TestAdmittedPutRetainsCustodyDuringCleanup(t *testing.T) {
+	for _, target := range []string{"object", "manifest"} {
+		for _, cleanup := range []string{"delete", "interrupt"} {
+			t.Run(target+"/"+cleanup, func(t *testing.T) {
+				writer, storage := testService(t)
+				cleaner, err := NewService(t.Context(), writer.config, storage, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				barrier := &admittedPutBarrier{Storage: storage, match: func(key string) bool {
+					if target == "manifest" {
+						return strings.Contains(key, "/manifests/")
+					}
+					return strings.Contains(key, "/object_")
+				}, entered: make(chan string, 1), resume: make(chan struct{})}
+				writer.storage = barrier
+				request := testReservation(writer)
+				upload, err := writer.Reserve(t.Context(), request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				part := testPart(0, "admitted write stays in custody")
+				finished := make(chan struct{})
+				var object Object
+				var appendErr error
+				t.Cleanup(func() { barrier.unblock(); <-finished })
+				go func() { object, appendErr = writer.Append(t.Context(), upload.ArtifactID, part); close(finished) }()
+				var key string
+				select {
+				case key = <-barrier.entered:
+				case <-finished:
+					t.Fatal("append failed before its storage barrier", appendErr)
+				}
+				clean := func() error {
+					if cleanup == "delete" {
+						return cleaner.Delete(t.Context(), upload.ArtifactID)
+					}
+					_, err := cleaner.Finalize(t.Context(), upload.ArtifactID, "interrupted", nil)
+					return err
+				}
+				if err := clean(); err == nil {
+					t.Fatal("cleanup released custody while an admitted storage Put was outstanding")
+				}
+				usage, err := cleaner.Usage(t.Context())
+				if err != nil || usage.ReservedBytes+usage.RetainedBytes != request.Bytes {
+					t.Fatal("outstanding write lost its reservation", usage, err)
+				}
+				barrier.unblock()
+				<-finished
+				if err := clean(); err != nil {
+					t.Fatal("cleanup did not reconcile the completed write", err, appendErr)
+				}
+				usage, err = cleaner.Usage(t.Context())
+				if err != nil || usage.ReservedBytes != 0 {
+					t.Fatal("settled cleanup retained a reservation", usage, err)
+				}
+				if cleanup == "delete" || target == "manifest" {
+					if _, err := storage.Get(t.Context(), key, "", MaxManifestBytes); !errors.Is(err, ErrMissing) {
+						t.Fatal("cleanup left a late blob outside custody", err)
+					}
+				}
+				if cleanup == "delete" {
+					if usage.RetainedBytes != 0 {
+						t.Fatal("deletion retained bytes", usage)
+					}
+				} else {
+					_, ref, err := cleaner.Manifest(t.Context(), upload.ArtifactID, 0)
+					if err != nil || ref.State != "interrupted" {
+						t.Fatal("interrupted publication was lost", ref, err)
+					}
+					_, data, err := cleaner.ReadObject(t.Context(), upload.ArtifactID, ref.Revision, object.ID)
+					if err != nil || !bytes.Equal(data, part.Data) {
+						t.Fatal("settled content was neither retained nor deleted", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func (m *memoryStorage) GetVersion(ctx context.Context, key, version string, limit int64) ([]byte, string, error) {
+	data, err := m.Get(ctx, key, version, limit)
+	return data, "version", err
+}
+func (b *admittedPutBarrier) GetVersion(ctx context.Context, key, version string, limit int64) ([]byte, string, error) {
+	if storage, ok := b.Storage.(VersionedStorage); ok {
+		return storage.GetVersion(ctx, key, version, limit)
+	}
+	return nil, "", ErrUnsupported
 }

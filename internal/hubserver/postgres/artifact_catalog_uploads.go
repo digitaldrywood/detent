@@ -94,6 +94,16 @@ func (s *session) PutCatalogObject(ctx context.Context, row CatalogObject, at ti
 	}
 	existing, err := s.queries.CatalogObject(ctx, pgquery.CatalogObjectParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, Sequence: row.Sequence})
 	if err == nil {
+		if existing.WriteState == "rejected" && existing.VerifiedAt == nil && row.ID != existing.ID {
+			if upload.State != "uploading" || !at.Before(upload.UploadDeadline) {
+				return CatalogObject{}, corestore.ErrRevisionConflict
+			}
+			if err := s.checkCatalogObjectAdmission(ctx, row, upload, row.Size); err != nil {
+				return CatalogObject{}, err
+			}
+			replacement, err := s.queries.ReplaceRejectedCatalogObject(ctx, pgquery.ReplaceRejectedCatalogObjectParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, Sequence: row.Sequence, ID: row.ID, MediaType: row.MediaType, Size: row.Size, Sha256: row.Sha256, Path: row.Path, Side: row.Side, ByteOffset: row.ByteOffset})
+			return replacement, mapError(ctx, err)
+		}
 		if existing.ID != row.ID || existing.Sha256 != row.Sha256 || existing.Size != row.Size || existing.MediaType != row.MediaType || existing.Path != row.Path || existing.Side != row.Side || existing.ByteOffset != row.ByteOffset {
 			return CatalogObject{}, corestore.ErrRevisionConflict
 		}
@@ -132,7 +142,7 @@ func (s *session) VerifyCatalogObject(ctx context.Context, row CatalogObject, at
 	if err != nil {
 		return CatalogObject{}, mapError(ctx, err)
 	}
-	if current.DiscardedAt != nil {
+	if current.ID != row.ID || current.DiscardedAt != nil || current.WriteState != "written" || current.StorageVersion != row.StorageVersion {
 		return CatalogObject{}, corestore.ErrRevisionConflict
 	}
 	if current.VerifiedAt != nil {
@@ -141,11 +151,8 @@ func (s *session) VerifyCatalogObject(ctx context.Context, row CatalogObject, at
 		}
 		return current, nil
 	}
-	if upload.State != "uploading" {
+	if upload.State != "uploading" && upload.State != "deletion_pending" {
 		return CatalogObject{}, corestore.ErrRevisionConflict
-	}
-	if !at.Before(upload.UploadDeadline) {
-		return CatalogObject{}, artifact.ErrExpired
 	}
 	if current.Sha256 != row.Sha256 || current.Size != row.Size {
 		return CatalogObject{}, artifact.ErrIntegrity
@@ -178,7 +185,16 @@ func (s *session) DiscardCatalogObject(ctx context.Context, row CatalogObject, a
 	if err != nil {
 		return CatalogObject{}, mapError(ctx, err)
 	}
-	if current.VerifiedAt != nil {
+	if current.VerifiedAt != nil || current.ID != row.ID {
+		return CatalogObject{}, corestore.ErrRevisionConflict
+	}
+	if current.WriteState == "ready" {
+		current, err = s.queries.SetCatalogObjectWrite(ctx, pgquery.SetCatalogObjectWriteParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, Sequence: row.Sequence, WriteState: "rejected"})
+		if err != nil {
+			return CatalogObject{}, mapError(ctx, err)
+		}
+	}
+	if current.WriteState != "written" && current.WriteState != "rejected" {
 		return CatalogObject{}, corestore.ErrRevisionConflict
 	}
 	if current.DiscardedAt != nil {

@@ -16,12 +16,18 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 type Storage interface {
 	Put(context.Context, string, []byte) (string, error)
 	Get(context.Context, string, string, int64) ([]byte, error)
 	Delete(context.Context, string, string) error
+}
+
+type VersionedStorage interface {
+	Storage
+	GetVersion(context.Context, string, string, int64) ([]byte, string, error)
 }
 
 type StorageConfig struct {
@@ -77,7 +83,7 @@ func (s *S3Storage) Put(ctx context.Context, key string, data []byte) (string, e
 	if err != nil {
 		return "", ErrIntegrity
 	}
-	result, err := s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(key), Body: bytes.NewReader(data), ContentLength: aws.Int64(int64(len(data))), ContentType: aws.String("application/octet-stream"), IfNoneMatch: aws.String("*"), ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(digest))})
+	result, err := s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(key), Body: bytes.NewReader(data), ContentLength: aws.Int64(int64(len(data))), ContentType: aws.String("application/octet-stream"), IfNoneMatch: aws.String("*"), ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(digest))}, func(options *s3.Options) { options.RetryMaxAttempts = 1 })
 	if err != nil {
 		if errors.Is(storageError(err), ErrConflict) {
 			head, headErr := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(key)})
@@ -90,6 +96,10 @@ func (s *S3Storage) Put(ctx context.Context, key string, data []byte) (string, e
 			}
 			return version, ErrConflict
 		}
+		var response *smithyhttp.ResponseError
+		if errors.As(err, &response) && response.HTTPStatusCode() >= 400 && response.HTTPStatusCode() < 500 && response.HTTPStatusCode() != 408 && response.HTTPStatusCode() != 409 {
+			return "", errors.Join(storageError(err), ErrWriteRejected)
+		}
 		return "", storageError(err)
 	}
 	version := aws.ToString(result.VersionId)
@@ -100,26 +110,35 @@ func (s *S3Storage) Put(ctx context.Context, key string, data []byte) (string, e
 }
 
 func (s *S3Storage) Get(ctx context.Context, key, version string, limit int64) ([]byte, error) {
+	data, _, err := s.GetVersion(ctx, key, version, limit)
+	return data, err
+}
+
+func (s *S3Storage) GetVersion(ctx context.Context, key, version string, limit int64) ([]byte, string, error) {
 	input := &s3.GetObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(key)}
 	if version != "" {
 		input.VersionId = aws.String(version)
 	}
 	result, err := s.client.GetObject(ctx, input)
 	if err != nil {
-		return nil, storageError(err)
+		return nil, "", storageError(err)
 	}
 	defer result.Body.Close()
 	if result.ContentLength != nil && *result.ContentLength > limit {
-		return nil, ErrIntegrity
+		return nil, "", ErrIntegrity
 	}
 	data, err := io.ReadAll(io.LimitReader(result.Body, limit+1))
 	if err != nil {
-		return nil, ErrStorage
+		return nil, "", ErrStorage
 	}
 	if int64(len(data)) > limit {
-		return nil, ErrIntegrity
+		return nil, "", ErrIntegrity
 	}
-	return data, nil
+	version = aws.ToString(result.VersionId)
+	if version == "" {
+		version = "null"
+	}
+	return data, version, nil
 }
 
 func (s *S3Storage) Delete(ctx context.Context, key, version string) error {

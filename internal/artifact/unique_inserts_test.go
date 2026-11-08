@@ -77,6 +77,7 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 		}
 		v := c.Intent
 		v.State = "pending"
+		v.WriteState = "ready"
 		v.BodyKey = c.OrganizationID + "/" + c.ProjectID + "/" + c.ServiceID + "/" + c.UploadID + "/manifests/" + fmt.Sprint(v.Revision) + "/" + v.SHA256 + "/" + v.ID
 		m.intents[c.UploadID][v.ID] = v
 		result.Intent = v
@@ -87,7 +88,7 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 		}
 		switch c.Operation {
 		case "verify_manifest":
-			if v.State != "pending" {
+			if v.State != "pending" || v.WriteState != "written" {
 				return result, ErrConflict
 			}
 			v.StorageVersion = c.Intent.StorageVersion
@@ -96,13 +97,41 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 				return result, ErrConflict
 			}
 			v.State = "discarding"
+			if v.WriteState == "ready" {
+				v.WriteState = "rejected"
+			}
 		case "finish_manifest_discard":
+			if v.WriteState != "written" && v.WriteState != "rejected" {
+				return result, ErrConflict
+			}
 			v.State = "discarded"
 			v.Receipt = c.Intent.Receipt
 		}
 		m.intents[c.UploadID][v.ID] = v
 		result.Intent = v
 
+	case "begin_manifest_write", "finish_manifest_write":
+		v, ok := m.intents[c.UploadID][c.Intent.ID]
+		if !ok {
+			return result, ErrMissing
+		}
+		if c.Operation == "begin_manifest_write" {
+			if v.WriteState != "ready" || v.State != "pending" || u.State != "uploading" {
+				return result, ErrConflict
+			}
+			v.WriteState, v.WriteID = "writing", c.Intent.WriteID
+		} else {
+			if c.Outcome == "rejected" {
+				if v.WriteState != "ready" && (v.WriteState != "writing" || v.WriteID != c.Intent.WriteID) {
+					return result, ErrConflict
+				}
+			} else if v.WriteID != c.Intent.WriteID || v.WriteState != "writing" && v.WriteState != "uncertain" && v.WriteState != "written" {
+				return result, ErrConflict
+			}
+			v.WriteState, v.WriteID, v.StorageVersion = c.Outcome, c.Intent.WriteID, c.Intent.StorageVersion
+		}
+		m.intents[c.UploadID][v.ID] = v
+		result.Intent = v
 	case "traffic_settings":
 		result.Traffic = m.settings
 	case "set_traffic_settings":
@@ -209,6 +238,15 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 		case "objects":
 			result.Objects = slices.Clone(m.objects[c.UploadID])
 		case "put_object":
+			for i, o := range m.objects[c.UploadID] {
+				if o.Sequence == c.Object.Sequence && o.WriteState == "rejected" && !o.Verified && u.State == "uploading" && o.ID != c.Object.ID {
+					c.Object.WriteState = "ready"
+					c.Object.UploadID = c.UploadID
+					m.objects[c.UploadID][i] = c.Object
+					result.Object = c.Object
+					return result, nil
+				}
+			}
 			for _, o := range m.objects[c.UploadID] {
 				if o.Sequence == c.Object.Sequence {
 					if o.Object != c.Object.Object {
@@ -227,17 +265,52 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 			if c.Object.Size > u.PartLimit || c.Object.Size > u.ReservedBytes-pending {
 				return result, ErrQuota
 			}
+			c.Object.WriteState = "ready"
 			c.Object.UploadID = c.UploadID
 			m.objects[c.UploadID] = append(m.objects[c.UploadID], c.Object)
 			result.Object = c.Object
+		case "begin_object_write", "finish_object_write":
+			for i, o := range m.objects[c.UploadID] {
+				if o.ID != c.Object.ID || o.Sequence != c.Object.Sequence {
+					continue
+				}
+				if c.Operation == "begin_object_write" {
+					if o.WriteState != "ready" || u.State != "uploading" {
+						return result, ErrConflict
+					}
+					o.WriteState, o.WriteID = "writing", c.Object.WriteID
+				} else {
+					if c.Outcome == "rejected" {
+						if o.WriteState != "ready" && (o.WriteState != "writing" || o.WriteID != c.Object.WriteID) {
+							return result, ErrConflict
+						}
+					} else if o.WriteID != c.Object.WriteID || o.WriteState != "writing" && o.WriteState != "uncertain" && o.WriteState != "written" {
+						return result, ErrConflict
+					}
+					o.WriteState, o.WriteID, o.StorageVersion = c.Outcome, c.Object.WriteID, c.Object.StorageVersion
+				}
+				m.objects[c.UploadID][i] = o
+				result.Object = o
+				return result, nil
+			}
+			return result, ErrMissing
 		case "verify_object", "discard_object":
 			for i, o := range m.objects[c.UploadID] {
 				if o.Sequence != c.Object.Sequence {
 					continue
 				}
 				if c.Operation == "discard_object" {
+					if o.WriteState == "ready" {
+						o.WriteState = "rejected"
+					}
+					if o.WriteState != "written" && o.WriteState != "rejected" {
+						return result, ErrConflict
+					}
 					o.Discarded = true
 				} else if !o.Verified {
+					if o.WriteState != "written" || u.State != "uploading" && u.State != "deletion_pending" {
+						return result, ErrConflict
+					}
 					o.Verified = true
 					o.StorageVersion = c.Object.StorageVersion
 					u.RetainedBytes += o.Size
@@ -306,6 +379,16 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 			m.uploads[c.UploadID] = u
 			result.Upload = u
 		case "finish_delete":
+			for _, o := range m.objects[c.UploadID] {
+				if o.WriteState != "written" && o.WriteState != "rejected" || !o.Verified && !o.Discarded {
+					return result, ErrConflict
+				}
+			}
+			for _, v := range m.intents[c.UploadID] {
+				if v.WriteState != "written" && v.WriteState != "rejected" || v.State == "pending" || v.State == "discarding" {
+					return result, ErrConflict
+				}
+			}
 			u.State = "deleted"
 			u.ReservedBytes = 0
 			u.RetainedBytes = 0

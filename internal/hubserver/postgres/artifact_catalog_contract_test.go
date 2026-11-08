@@ -90,6 +90,13 @@ func TestArtifactCatalogContractAccountsReceiptsOnceAcrossReopen(t *testing.T) {
 						if _, err := w.PutCatalogObject(t.Context(), object, now); err != nil {
 							return err
 						}
+						write := postgres.CatalogWrite{CatalogScope: postgres.CatalogScope{OrganizationID: org, ProjectID: project, ServiceID: service, UploadID: "upload"}, Sequence: object.Sequence, ID: object.ID, WriteID: artifact.NewID("write"), At: now, Outcome: "written", StorageVersion: "version"}
+						if _, err := w.BeginCatalogObjectWrite(t.Context(), write); err != nil {
+							return err
+						}
+						if _, err := w.FinishCatalogObjectWrite(t.Context(), write); err != nil {
+							return err
+						}
 						object.StorageVersion = "version"
 						for range 2 {
 							verified, err := w.VerifyCatalogObject(t.Context(), object, now)
@@ -611,6 +618,13 @@ func prepareCatalogManifest(t *testing.T, w postgres.ArtifactCatalogWriter, m po
 	t.Helper()
 	row, err := w.PrepareCatalogManifestIntent(t.Context(), postgres.CatalogManifestIntent{OrganizationID: m.OrganizationID, ProjectID: m.ProjectID, ServiceID: m.ServiceID, UploadID: m.UploadID, ID: m.ID + "_body", Revision: m.Revision, BodyObjectKey: m.BodyObjectKey, Sha256: m.Sha256, BodyBytes: m.BodyBytes, ManifestState: m.State}, m.ObservedAt)
 	if err != nil {
+		return err
+	}
+	write := postgres.CatalogWrite{CatalogScope: postgres.CatalogScope{OrganizationID: m.OrganizationID, ProjectID: m.ProjectID, ServiceID: m.ServiceID, UploadID: m.UploadID}, ID: row.ID, WriteID: artifact.NewID("write"), At: m.ObservedAt, Outcome: "written", StorageVersion: "version"}
+	if _, err := w.BeginCatalogManifestWrite(t.Context(), write); err != nil {
+		return err
+	}
+	if _, err := w.FinishCatalogManifestWrite(t.Context(), write); err != nil {
 		return err
 	}
 	_, err = w.TransitionCatalogManifestIntent(t.Context(), postgres.CatalogIntentTransition{CatalogScope: postgres.CatalogScope{OrganizationID: m.OrganizationID, ProjectID: m.ProjectID, ServiceID: m.ServiceID, UploadID: m.UploadID}, ID: row.ID, State: "verified", StorageVersion: "version"})

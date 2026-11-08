@@ -13,7 +13,7 @@ import (
 )
 
 const accountCatalogObject = `-- name: AccountCatalogObject :one
-UPDATE artifact_catalog_uploads SET reserved_bytes=reserved_bytes-$5,retained_bytes=retained_bytes+$5 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state='uploading' AND reserved_bytes>=$5 RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in
+UPDATE artifact_catalog_uploads SET reserved_bytes=reserved_bytes-$5,retained_bytes=retained_bytes+$5 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state IN ('uploading','deletion_pending') AND reserved_bytes>=$5 RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in
 `
 
 type AccountCatalogObjectParams struct {
@@ -207,7 +207,7 @@ func (q *Queries) CatalogManifest(ctx context.Context, arg CatalogManifestParams
 }
 
 const catalogObject = `-- name: CatalogObject :one
-SELECT organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND sequence=$5
+SELECT organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key, write_state, write_id FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND sequence=$5
 `
 
 type CatalogObjectParams struct {
@@ -244,12 +244,14 @@ func (q *Queries) CatalogObject(ctx context.Context, arg CatalogObjectParams) (A
 		&i.VerifiedAt,
 		&i.DiscardedAt,
 		&i.DiscardReceiptObjectKey,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
 
 const catalogObjectTotals = `-- name: CatalogObjectTotals :one
-SELECT count(*) FILTER(WHERE verified_at IS NOT NULL)::bigint AS verified_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NOT NULL),0)::bigint AS verified_bytes,count(*) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL)::bigint AS pending_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL),0)::bigint AS pending_bytes FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4
+SELECT count(*) FILTER(WHERE verified_at IS NOT NULL)::bigint AS verified_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NOT NULL),0)::bigint AS verified_bytes,count(*) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL AND write_state<>'rejected')::bigint AS pending_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL AND write_state<>'rejected'),0)::bigint AS pending_bytes FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4
 `
 
 type CatalogObjectTotalsParams struct {
@@ -284,7 +286,7 @@ func (q *Queries) CatalogObjectTotals(ctx context.Context, arg CatalogObjectTota
 }
 
 const catalogObjects = `-- name: CatalogObjects :many
-SELECT organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND sequence>=$5 ORDER BY sequence LIMIT $6
+SELECT organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key, write_state, write_id FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND sequence>=$5 ORDER BY sequence LIMIT $6
 `
 
 type CatalogObjectsParams struct {
@@ -329,6 +331,8 @@ func (q *Queries) CatalogObjects(ctx context.Context, arg CatalogObjectsParams) 
 			&i.VerifiedAt,
 			&i.DiscardedAt,
 			&i.DiscardReceiptObjectKey,
+			&i.WriteState,
+			&i.WriteID,
 		); err != nil {
 			return nil, err
 		}
@@ -781,7 +785,7 @@ func (q *Queries) CreateCatalogManifest(ctx context.Context, arg CreateCatalogMa
 }
 
 const createCatalogObject = `-- name: CreateCatalogObject :one
-INSERT INTO artifact_catalog_objects(organization_id,project_id,service_id,upload_id,sequence,id,media_type,size,sha256,path,side,byte_offset) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key
+INSERT INTO artifact_catalog_objects(organization_id,project_id,service_id,upload_id,sequence,id,media_type,size,sha256,path,side,byte_offset) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key, write_state, write_id
 `
 
 type CreateCatalogObjectParams struct {
@@ -832,6 +836,8 @@ func (q *Queries) CreateCatalogObject(ctx context.Context, arg CreateCatalogObje
 		&i.VerifiedAt,
 		&i.DiscardedAt,
 		&i.DiscardReceiptObjectKey,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
@@ -950,7 +956,7 @@ func (q *Queries) CreateCatalogUpload(ctx context.Context, arg CreateCatalogUplo
 }
 
 const discardCatalogObject = `-- name: DiscardCatalogObject :one
-UPDATE artifact_catalog_objects SET discarded_at=$6,discard_receipt_object_key=$7 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND sequence=$5 AND verified_at IS NULL AND discarded_at IS NULL RETURNING organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key
+UPDATE artifact_catalog_objects SET discarded_at=$6,discard_receipt_object_key=$7 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND sequence=$5 AND verified_at IS NULL AND discarded_at IS NULL RETURNING organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key, write_state, write_id
 `
 
 type DiscardCatalogObjectParams struct {
@@ -991,6 +997,8 @@ func (q *Queries) DiscardCatalogObject(ctx context.Context, arg DiscardCatalogOb
 		&i.VerifiedAt,
 		&i.DiscardedAt,
 		&i.DiscardReceiptObjectKey,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }
@@ -1372,7 +1380,7 @@ func (q *Queries) SealCatalogUpload(ctx context.Context, arg SealCatalogUploadPa
 }
 
 const verifyCatalogObject = `-- name: VerifyCatalogObject :one
-UPDATE artifact_catalog_objects SET storage_version=$6,verified_at=$7 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND sequence=$5 AND verified_at IS NULL AND discarded_at IS NULL RETURNING organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key
+UPDATE artifact_catalog_objects SET storage_version=$6,verified_at=$7 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND sequence=$5 AND verified_at IS NULL AND discarded_at IS NULL RETURNING organization_id, project_id, service_id, upload_id, sequence, id, media_type, size, sha256, path, side, byte_offset, storage_version, verified_at, discarded_at, discard_receipt_object_key, write_state, write_id
 `
 
 type VerifyCatalogObjectParams struct {
@@ -1413,6 +1421,8 @@ func (q *Queries) VerifyCatalogObject(ctx context.Context, arg VerifyCatalogObje
 		&i.VerifiedAt,
 		&i.DiscardedAt,
 		&i.DiscardReceiptObjectKey,
+		&i.WriteState,
+		&i.WriteID,
 	)
 	return i, err
 }

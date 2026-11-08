@@ -25,6 +25,10 @@ func (s *Service) discardPending(ctx context.Context, upload Upload) error {
 		if obj.Verified || obj.Discarded {
 			continue
 		}
+		obj, err = s.settleObjectForCleanup(ctx, upload, obj)
+		if err != nil {
+			return err
+		}
 		key := s.scopedObjectKey(upload.ProjectID, id, obj.ID)
 		if err := s.storage.Delete(ctx, key, obj.StorageVersion); err != nil {
 			return err
@@ -206,12 +210,29 @@ func (s *Service) delete(ctx context.Context, id string) error {
 		return err
 	}
 	for _, obj := range result.Objects {
+		obj, err = s.settleObjectForCleanup(ctx, upload, obj)
+		if err != nil {
+			return err
+		}
 		key := s.scopedObjectKey(upload.ProjectID, id, obj.ID)
 		if err := s.storage.Delete(ctx, key, obj.StorageVersion); err != nil {
 			return err
 		}
 		if _, err := s.storage.Get(ctx, key, obj.StorageVersion, 0); !errors.Is(err, ErrMissing) {
 			return errors.Join(ErrStorage, err)
+		}
+		if !obj.Verified && !obj.Discarded {
+			marker := s.scopedObjectKey(upload.ProjectID, id, "discarded/"+obj.ID)
+			v, err := s.storage.Put(ctx, marker, []byte(obj.SHA256))
+			if err != nil && !errors.Is(err, ErrConflict) {
+				return err
+			}
+			if _, err := s.storage.Get(ctx, marker, v, 128); err != nil {
+				return err
+			}
+			if _, err := s.command(ctx, CatalogCommand{Operation: "discard_object", UploadID: id, Object: obj, At: s.now().UTC(), Receipt: marker}); err != nil {
+				return err
+			}
 		}
 	}
 	for revision := int64(1); revision <= upload.ManifestRevision; revision++ {
@@ -233,6 +254,16 @@ func (s *Service) delete(ctx context.Context, id string) error {
 			return err
 		}
 		for _, intent := range candidates.Intents {
+			if intent.State == "pending" || intent.State == "discarding" {
+				if err := s.discardManifestIntent(ctx, upload, intent); err != nil {
+					return err
+				}
+				continue
+			}
+			intent, err = s.settleIntentForCleanup(ctx, upload, intent)
+			if err != nil {
+				return err
+			}
 			if err := s.storage.Delete(ctx, intent.BodyKey, intent.StorageVersion); err != nil {
 				return err
 			}
@@ -259,28 +290,10 @@ func (s *Service) cleanManifestIntents(ctx context.Context, upload Upload, revis
 		return err
 	}
 	for _, intent := range result.Intents {
-		if intent.State == "pending" && intent.Revision == revision && intent.SHA256 == digest {
+		if intent.State == "pending" && intent.Revision == revision && intent.SHA256 == digest && intent.WriteState != "rejected" {
 			continue
 		}
-		if _, err := s.command(ctx, CatalogCommand{Operation: "begin_manifest_discard", UploadID: id, Intent: intent}); err != nil {
-			return err
-		}
-		if err := s.storage.Delete(ctx, intent.BodyKey, intent.StorageVersion); err != nil {
-			return err
-		}
-		if _, err := s.storage.Get(ctx, intent.BodyKey, intent.StorageVersion, 0); !errors.Is(err, ErrMissing) {
-			return errors.Join(ErrStorage, err)
-		}
-		receipt := s.scopedObjectKey(upload.ProjectID, id, "discarded/"+intent.ID)
-		version, err := s.storage.Put(ctx, receipt, []byte(intent.SHA256))
-		if err != nil && !errors.Is(err, ErrConflict) {
-			return err
-		}
-		if _, err := s.storage.Get(ctx, receipt, version, 128); err != nil {
-			return err
-		}
-		intent.Receipt = receipt
-		if _, err := s.command(ctx, CatalogCommand{Operation: "finish_manifest_discard", UploadID: id, Intent: intent}); err != nil {
+		if err := s.discardManifestIntent(ctx, upload, intent); err != nil {
 			return err
 		}
 	}
@@ -288,4 +301,36 @@ func (s *Service) cleanManifestIntents(ctx context.Context, upload Upload, revis
 		return ErrConflict
 	}
 	return nil
+}
+
+func (s *Service) discardManifestIntent(ctx context.Context, upload Upload, intent CatalogIntent) error {
+	fenced, err := s.command(ctx, CatalogCommand{Operation: "begin_manifest_discard", UploadID: upload.ArtifactID, Intent: intent})
+	if err != nil {
+		return err
+	}
+	intent = fenced.Intent
+	if intent.State == "discarded" {
+		return nil
+	}
+	intent, err = s.settleIntentForCleanup(ctx, upload, intent)
+	if err != nil {
+		return err
+	}
+	if err := s.storage.Delete(ctx, intent.BodyKey, intent.StorageVersion); err != nil {
+		return err
+	}
+	if _, err := s.storage.Get(ctx, intent.BodyKey, intent.StorageVersion, 0); !errors.Is(err, ErrMissing) {
+		return errors.Join(ErrStorage, err)
+	}
+	receipt := s.scopedObjectKey(upload.ProjectID, upload.ArtifactID, "discarded/"+intent.ID)
+	version, err := s.storage.Put(ctx, receipt, []byte(intent.SHA256))
+	if err != nil && !errors.Is(err, ErrConflict) {
+		return err
+	}
+	if _, err := s.storage.Get(ctx, receipt, version, 128); err != nil {
+		return err
+	}
+	intent.Receipt = receipt
+	_, err = s.command(ctx, CatalogCommand{Operation: "finish_manifest_discard", UploadID: upload.ArtifactID, Intent: intent})
+	return err
 }

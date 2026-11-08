@@ -281,6 +281,52 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := artifact.Reservation{Scope: artifact.Scope{OrganizationID: cfg.OrganizationID, ProjectID: cfg.ProjectID, WorkItemID: fixture.item, RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, ServiceID: cfg.ServiceID, Mode: cfg.Mode, Key: "example", Kind: "log", Bytes: 4 << 20, LeaseID: "example", FencingToken: 1}
+		for _, target := range []string{"object", "manifest"} {
+			barrier := &catalogPutBarrier{Storage: storage, target: target, entered: make(chan string, 1), resume: make(chan struct{})}
+			writer, err := artifact.NewService(t.Context(), cfg, barrier, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := request
+			input.Key = "fenced-" + target
+			allocated, err := writer.Reserve(t.Context(), input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			finished := make(chan struct{})
+			var writeErr error
+			t.Cleanup(func() { barrier.unblock(); <-finished })
+			go func() {
+				_, writeErr = writer.Append(t.Context(), allocated.ArtifactID, artifact.Part{Sequence: 0, MediaType: "text/plain; charset=utf-8", Data: []byte("fenced write"), SHA256: artifact.Digest([]byte("fenced write"))})
+				close(finished)
+			}()
+			var key string
+			select {
+			case key = <-barrier.entered:
+			case <-finished:
+				t.Fatal("write did not reach storage barrier", writeErr)
+			}
+			if err := service.Delete(t.Context(), allocated.ArtifactID); !errors.Is(err, artifact.ErrConflict) {
+				t.Fatal("separate service released outstanding write custody", err)
+			}
+			held, err := service.Upload(t.Context(), allocated.ArtifactID)
+			if err != nil || held.State != "deletion_pending" || held.ReservedBytes+held.RetainedBytes != input.Bytes {
+				t.Fatal("Hub released an outstanding reservation", held, err)
+			}
+			barrier.unblock()
+			<-finished
+			if err := service.Delete(t.Context(), allocated.ArtifactID); err != nil {
+				t.Fatal("settled write was not reconciled", err, writeErr)
+			}
+			held, err = service.Upload(t.Context(), allocated.ArtifactID)
+			if err != nil || held.State != "deleted" || held.ReservedBytes != 0 || held.RetainedBytes != 0 {
+				t.Fatal("settled deletion accounting", held, err)
+			}
+			if _, err := storage.Get(t.Context(), key, "", artifact.MaxManifestBytes); !errors.Is(err, artifact.ErrMissing) {
+				t.Fatal("late object survived deletion", err)
+			}
+		}
+
 		lostOperation.Store("reserve")
 		if _, err := service.Reserve(t.Context(), request); !errors.Is(err, artifact.ErrAuthorization) {
 			t.Fatal("lost reservation response", err)
@@ -429,11 +475,18 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			t.Fatal("pending descriptors exceeded reservation", err)
 		}
 		dataKey := cfg.OrganizationID + "/" + cfg.ProjectID + "/" + cfg.ServiceID + "/" + admitted.ArtifactID + "/" + firstDescriptor.ID
+		firstDescriptor.WriteID = artifact.NewID("write")
+		if _, err := cfg.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: scope, Operation: "begin_object_write", UploadID: admitted.ArtifactID, Object: firstDescriptor}); err != nil {
+			t.Fatal(err)
+		}
 		version, err := storage.Put(t.Context(), dataKey, bytes.Repeat([]byte("x"), int(admitted.PartLimit)))
 		if err != nil {
 			t.Fatal(err)
 		}
 		firstDescriptor.StorageVersion = version
+		if _, err := cfg.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: scope, Operation: "finish_object_write", UploadID: admitted.ArtifactID, Object: firstDescriptor, Outcome: "written"}); err != nil {
+			t.Fatal(err)
+		}
 		for range 2 {
 			if _, err := cfg.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: scope, Operation: "verify_object", UploadID: admitted.ArtifactID, Object: firstDescriptor}); err != nil {
 				t.Fatal(err)
@@ -498,4 +551,29 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			t.Fatal("revoked publisher accepted", err)
 		}
 	}
+}
+
+func (o *objects) GetVersion(ctx context.Context, key, version string, limit int64) ([]byte, string, error) {
+	data, err := o.Get(ctx, key, version, limit)
+	return data, "version", err
+}
+
+type catalogPutBarrier struct {
+	artifact.Storage
+	target  string
+	entered chan string
+	resume  chan struct{}
+	once    sync.Once
+	release sync.Once
+}
+
+func (b *catalogPutBarrier) Put(ctx context.Context, key string, data []byte) (string, error) {
+	if b.target == "manifest" && strings.Contains(key, "/manifests/") || b.target == "object" && strings.Contains(key, "/object_") {
+		b.once.Do(func() { b.entered <- key; <-b.resume })
+	}
+	return b.Storage.Put(ctx, key, data)
+}
+func (b *catalogPutBarrier) unblock() { b.release.Do(func() { close(b.resume) }) }
+func (b *catalogPutBarrier) GetVersion(ctx context.Context, key, version string, limit int64) ([]byte, string, error) {
+	return b.Storage.(artifact.VersionedStorage).GetVersion(ctx, key, version, limit)
 }

@@ -29,6 +29,7 @@ var (
 	ErrIntegrity     = errors.New("checksum_mismatch")
 	ErrMissing       = errors.New("missing")
 	ErrStorage       = errors.New("storage_unreachable")
+	ErrWriteRejected = errors.New("storage_write_rejected")
 	ErrUnsupported   = errors.New("unsupported_capability")
 	ErrConflict      = errors.New("conflict")
 	ErrQuota         = errors.New("quota_exceeded")
