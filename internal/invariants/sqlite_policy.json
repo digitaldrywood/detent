@@ -372,10 +372,6 @@
       "driver_import": 1,
       "sqlite_open": 1
     },
-    "internal/hubserver/core_execution_import_test.go": {
-      "driver_import": 1,
-      "sqlite_open": 1
-    },
     "internal/hubserver/core_tenant_import_test.go": {
       "driver_import": 1,
       "sqlite_open": 1

@@ -329,7 +329,7 @@ func validNeutralImportColumn(name, signature string) bool {
 	if json.Unmarshal(fields[0], &ordinal) != nil || json.Unmarshal(fields[1], &column) != nil || json.Unmarshal(fields[2], &kind) != nil || json.Unmarshal(fields[3], &required) != nil || json.Unmarshal(fields[4], &fallback) != nil || json.Unmarshal(fields[5], &primary) != nil || json.Unmarshal(fields[6], &hidden) != nil {
 		return false
 	}
-	return ordinal >= 0 && column == name && kind != "" && (required == 0 || required == 1) && primary >= 0 && hidden == 0
+	return ordinal >= 0 && column == name && kind != "" && (required == 0 || required == 1) && primary >= 0 && (hidden == 0 || hidden == 2 || hidden == 3)
 }
 
 func neutralImportIdentifier(value string) bool {

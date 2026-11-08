@@ -185,6 +185,9 @@ func validateNeutralCoreSourceSchema(source *VerifiedNeutralImport, names ...str
 		return storagecatalog.ErrUnmapped
 	}
 	definitions := neutralCoreSourceSchemasV1()
+	for name, definition := range neutralExecutionSourceSchemasV1() {
+		definitions[name] = definition
+	}
 	for _, name := range names {
 		definition, ok := definitions[name]
 		if !ok {

@@ -22,6 +22,7 @@ import (
 )
 
 type CoreExecutionImportSource struct {
+	BundlePath     string
 	CopyPath       string
 	OrganizationID tracker.OrganizationID
 	SourceObjects  attachment.DetailStore
@@ -71,13 +72,21 @@ type coreWorkEventImportRow struct {
 }
 
 func ImportCoreExecution(ctx context.Context, target *postgres.Repository, source CoreExecutionImportSource) (int64, error) {
-	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
+	if source.CopyPath != "" {
+		return 0, postgres.ErrNeutralImport
+	}
+	if target == nil || source.BundlePath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
 		return 0, errors.New("invalid core execution import source")
 	}
 	content := eventstore.NewContent(source.Objects)
 	var imported int64
-	err := postgres.ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
-		if err := target.PinCoreImportSource(ctx, source.OrganizationID, copyHash, source.Objects); err != nil {
+	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if err := postgres.ValidateNeutralCoreImportTables(bundle, "issues", "leases", "machines", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "api_tokens", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "native_attempts", "native_attempt_events", "work_events", "change_content_objects", "attachments"); err != nil {
+			return err
+		}
+		tx := newCoreNeutralImport(bundle)
+		copyHash := bundle.Identity().SourceSHA256
+		if err := target.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
 		}
 		machines, err := readCoreMachineImportPage(ctx, tx, source.OrganizationID, "")
@@ -243,19 +252,18 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 	return imported, err
 }
 
-func readCoreMachineImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after string) ([]coreMachineImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id,hostname,display_name,capacity,version,sprite_name,last_heartbeat_at,registered_at,updated_at
-FROM machines WHERE organization_id=? AND id>? ORDER BY id LIMIT 100`, organization, after)
+func readCoreMachineImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after string) ([]coreMachineImportRow, error) {
+	rows, err := tx.rows(ctx, "machines", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreMachineImportRow, 0, 100)
-	for rows.Next() {
+	for _, raw := range rows {
 		var row coreMachineImportRow
 		row.Machine.OrganizationID = organization
 		var heartbeat, registered, updated string
-		if err := rows.Scan(&row.Machine.ID, &row.Machine.Hostname, &row.Machine.DisplayName, &row.Machine.Capacity, &row.Machine.Version, &row.Machine.SpriteName, &heartbeat, &registered, &updated); err != nil {
+
+		if err := raw.Decode(map[string]any{"id": &row.Machine.ID, "hostname": &row.Machine.Hostname, "display_name": &row.Machine.DisplayName, "capacity": &row.Machine.Capacity, "version": &row.Machine.Version, "sprite_name": &row.Machine.SpriteName, "last_heartbeat_at": &heartbeat, "registered_at": &registered, "updated_at": &updated}); err != nil {
 			return nil, err
 		}
 		row.LastHeartbeatAt, err = parseCoreExecutionTime(heartbeat)
@@ -272,23 +280,22 @@ FROM machines WHERE organization_id=? AND id>? ORDER BY id LIMIT 100`, organizat
 		}
 		result = append(result, row)
 	}
-	return result, errors.Join(rows.Err(), rows.Close())
+	return result, nil
 }
 
-func readCoreRunnerEnrollmentImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after string) ([]coreRunnerEnrollmentImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id,runner_id,machine_id,token_hash,scope,shared_machine,operations_json,created_at,expires_at,created_by,redeemed_at,revoked_at
-FROM runner_enrollments WHERE organization_id=? AND id>? ORDER BY id LIMIT 100`, organization, after)
+func readCoreRunnerEnrollmentImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after string) ([]coreRunnerEnrollmentImportRow, error) {
+	rows, err := tx.rows(ctx, "runner_enrollments", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreRunnerEnrollmentImportRow, 0, 100)
-	for rows.Next() {
+	for _, raw := range rows {
 		var row coreRunnerEnrollmentImportRow
 		row.Enrollment.OrganizationID = organization
 		var operations, created, expires string
 		var redeemed, revoked sql.NullString
-		if err := rows.Scan(&row.Enrollment.ID, &row.Enrollment.RunnerID, &row.Enrollment.MachineID, &row.Enrollment.TokenHash, &row.Enrollment.Scope, &row.Enrollment.SharedMachine, &operations, &created, &expires, &row.Enrollment.CreatedBy, &redeemed, &revoked); err != nil {
+
+		if err := raw.Decode(map[string]any{"id": &row.Enrollment.ID, "runner_id": &row.Enrollment.RunnerID, "machine_id": &row.Enrollment.MachineID, "token_hash": &row.Enrollment.TokenHash, "scope": &row.Enrollment.Scope, "shared_machine": &row.Enrollment.SharedMachine, "operations_json": &operations, "created_at": &created, "expires_at": &expires, "created_by": &row.Enrollment.CreatedBy, "redeemed_at": &redeemed, "revoked_at": &revoked}); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(operations), &row.Enrollment.Operations); err != nil {
@@ -318,42 +325,59 @@ FROM runner_enrollments WHERE organization_id=? AND id>? ORDER BY id LIMIT 100`,
 		row.Enrollment.ProjectIDs = projectIDs
 		result = append(result, row)
 	}
-	return result, errors.Join(rows.Err(), rows.Close())
+	return result, nil
 }
 
-func readCoreEnrollmentProjectIDs(ctx context.Context, tx *sql.Tx, enrollmentID string) ([]tracker.ProjectID, error) {
-	projects, err := tx.QueryContext(ctx, `SELECT project_id FROM runner_enrollment_projects WHERE enrollment_id=? ORDER BY project_id`, enrollmentID)
+func readCoreEnrollmentProjectIDs(ctx context.Context, tx *coreNeutralImport, enrollmentID string) ([]tracker.ProjectID, error) {
+	rows, err := tx.rows(ctx, "runner_enrollment_projects", map[string]string{"enrollment_id": enrollmentID}, []string{"project_id"}, nil, runnerstore.MaxRunnerProjectList+1)
 	if err != nil {
 		return nil, err
 	}
-	var projectIDs []tracker.ProjectID
-	defer projects.Close()
-	for projects.Next() {
-		var projectID tracker.ProjectID
-		if err := projects.Scan(&projectID); err != nil {
+	if len(rows) > runnerstore.MaxRunnerProjectList {
+		return nil, runnerstore.ErrLimitExceeded
+	}
+	var result []tracker.ProjectID
+	for _, row := range rows {
+		var id tracker.ProjectID
+		if err := row.Decode(map[string]any{"project_id": &id}); err != nil {
 			return nil, err
 		}
-		projectIDs = append(projectIDs, projectID)
+		result = append(result, id)
 	}
-	return projectIDs, projects.Err()
+	return result, nil
 }
 
-func readCoreRunnerIdentityImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after string) ([]coreRunnerIdentityImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.machine_id,r.token_id,r.enrollment_id,r.scope,r.state,r.revision,r.tags_json,r.operations_json,r.display_name,r.capacity_limit,r.reported_capacity,r.os,r.architecture,r.created_at,COALESCE(t.expires_at,e.expires_at),r.last_heartbeat_at,r.removed_at,r.routing_settings_json,r.capacity_configuration_json
-FROM runner_identities r JOIN api_tokens t ON t.id=r.token_id JOIN runner_enrollments e ON e.id=r.enrollment_id
-WHERE r.organization_id=? AND r.id>? ORDER BY r.id LIMIT 100`, organization, after)
+func readCoreRunnerIdentityImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after string) ([]coreRunnerIdentityImportRow, error) {
+	rows, err := tx.rows(ctx, "runner_identities", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreRunnerIdentityImportRow, 0, 100)
-	for rows.Next() {
+	for _, raw := range rows {
 		var row coreRunnerIdentityImportRow
 		identity := &row.Identity
 		identity.OrganizationID = organization
 		var tags, operations, created, expires, heartbeat, routing, capacityConfig string
 		var removed sql.NullString
-		if err := rows.Scan(&identity.RunnerID, &identity.MachineID, &identity.TokenID, &identity.EnrollmentID, &identity.Scope, &identity.State, &identity.Revision, &tags, &operations, &identity.DisplayName, &identity.CapacityLimit, &identity.ReportedCapacity, &identity.OS, &identity.Architecture, &created, &expires, &heartbeat, &removed, &routing, &capacityConfig); err != nil {
+
+		if err := raw.Decode(map[string]any{"id": &identity.RunnerID, "machine_id": &identity.MachineID, "token_id": &identity.TokenID, "enrollment_id": &identity.EnrollmentID, "scope": &identity.Scope, "state": &identity.State, "revision": &identity.Revision, "tags_json": &tags, "operations_json": &operations, "display_name": &identity.DisplayName, "capacity_limit": &identity.CapacityLimit, "reported_capacity": &identity.ReportedCapacity, "os": &identity.OS, "architecture": &identity.Architecture, "created_at": &created, "last_heartbeat_at": &heartbeat, "removed_at": &removed, "routing_settings_json": &routing, "capacity_configuration_json": &capacityConfig}); err != nil {
+			return nil, err
+		}
+		token, err := tx.one(ctx, "api_tokens", map[string]string{"id": identity.TokenID}, []string{"id"})
+		if err != nil {
+			return nil, err
+		}
+		enrollment, err := tx.one(ctx, "runner_enrollments", map[string]string{"id": identity.EnrollmentID, "organization_id": string(organization)}, []string{"id"})
+		if err != nil {
+			return nil, err
+		}
+		var tokenExpiry *string
+		if err := token.Decode(map[string]any{"expires_at": &tokenExpiry}); err != nil {
+			return nil, err
+		}
+		if tokenExpiry != nil {
+			expires = *tokenExpiry
+		} else if err := enrollment.Decode(map[string]any{"expires_at": &expires}); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(tags), &identity.Tags); err != nil {
@@ -406,69 +430,56 @@ WHERE r.organization_id=? AND r.id>? ORDER BY r.id LIMIT 100`, organization, aft
 		}
 		result = append(result, row)
 	}
-	return result, errors.Join(rows.Err(), rows.Close())
+	return result, nil
 }
 
-func readCoreRunnerProjectRows(ctx context.Context, tx *sql.Tx, identity *runnerstore.Identity) error {
-	for _, query := range []struct {
-		SQL                string
-		Limit              int
-		OrganizationScoped bool
-		Assign             func(tracker.ProjectID, int) error
+func readCoreRunnerProjectRows(ctx context.Context, tx *coreNeutralImport, identity *runnerstore.Identity) error {
+	for _, selection := range []struct {
+		table, column string
+		limit         int
+		target        map[tracker.ProjectID]int
+		scoped        bool
 	}{
-		{SQL: `SELECT project_id,capacity_limit FROM runner_project_capacity_limits WHERE organization_id=? AND runner_id=? ORDER BY project_id LIMIT 2001`, Limit: runnerstore.MaxRunnerProjectList, OrganizationScoped: true, Assign: func(projectID tracker.ProjectID, value int) error {
-			identity.ProjectCapacityLimits[projectID] = value
-			return nil
-		}},
-		{SQL: `SELECT project_id,rank FROM runner_project_ranks WHERE runner_id=? ORDER BY project_id LIMIT 101`, Limit: runnerstore.MaxRunnerProjectRanks, Assign: func(projectID tracker.ProjectID, value int) error {
-			identity.ProjectRanks[projectID] = value
-			return nil
-		}},
+		{"runner_project_capacity_limits", "capacity_limit", runnerstore.MaxRunnerProjectList, identity.ProjectCapacityLimits, true},
+		{"runner_project_ranks", "rank", runnerstore.MaxRunnerProjectRanks, identity.ProjectRanks, false},
 	} {
-		args := []any{identity.RunnerID}
-		if query.OrganizationScoped {
-			args = []any{identity.OrganizationID, identity.RunnerID}
+		filters := map[string]string{"runner_id": identity.RunnerID}
+		if selection.scoped {
+			filters["organization_id"] = string(identity.OrganizationID)
 		}
-		rows, err := tx.QueryContext(ctx, query.SQL, args...)
+		rows, err := tx.rows(ctx, selection.table, filters, []string{"project_id"}, nil, selection.limit+1)
 		if err != nil {
 			return err
 		}
-		if err := func() (resultErr error) {
-			defer func() { resultErr = errors.Join(resultErr, rows.Close()) }()
-			count := 0
-			for rows.Next() {
-				var projectID tracker.ProjectID
-				var value int
-				if err := rows.Scan(&projectID, &value); err != nil {
-					return err
-				}
-				count++
-				if count > query.Limit {
-					return runnerstore.ErrLimitExceeded
-				}
-				if err := query.Assign(projectID, value); err != nil {
-					return err
-				}
+		if len(rows) > selection.limit {
+			return runnerstore.ErrLimitExceeded
+		}
+		for _, row := range rows {
+			var id tracker.ProjectID
+			var value int
+			if err := row.Decode(map[string]any{"project_id": &id, selection.column: &value}); err != nil {
+				return err
 			}
-			return rows.Err()
-		}(); err != nil {
-			return err
+			selection.target[id] = value
 		}
 	}
 	return nil
 }
 
-func readCoreRunnerIdentityEventPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after int64) ([]coreRunnerIdentityEventRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.runner_id,e.actor_id,e.kind,e.occurred_at FROM runner_identity_events e JOIN runner_identities r ON r.id=e.runner_id WHERE r.organization_id=? AND e.id>? ORDER BY e.id LIMIT 200`, organization, after)
+func readCoreRunnerIdentityEventPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after int64) ([]coreRunnerIdentityEventRow, error) {
+	rows, err := tx.rows(ctx, "runner_identity_events", nil, []string{"id"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreRunnerIdentityEventRow, 0, 200)
-	for rows.Next() {
+	for _, raw := range rows {
 		var event coreRunnerIdentityEventRow
 		var occurred string
-		if err := rows.Scan(&event.SourceID, &event.RunnerID, &event.ActorID, &event.Kind, &occurred); err != nil {
+
+		if err := raw.Decode(map[string]any{"id": &event.SourceID, "runner_id": &event.RunnerID, "actor_id": &event.ActorID, "kind": &event.Kind, "occurred_at": &occurred}); err != nil {
+			return nil, err
+		}
+		if _, err := tx.one(ctx, "runner_identities", map[string]string{"id": event.RunnerID, "organization_id": string(organization)}, []string{"id"}); err != nil {
 			return nil, err
 		}
 		event.OrganizationID = organization
@@ -478,10 +489,10 @@ func readCoreRunnerIdentityEventPage(ctx context.Context, tx *sql.Tx, organizati
 		}
 		result = append(result, event)
 	}
-	return result, errors.Join(rows.Err(), rows.Close())
+	return result, nil
 }
 
-func importCoreRunnerIdentityEvents(ctx context.Context, tx *sql.Tx, target *postgres.Repository, content *eventstore.Content, organization tracker.OrganizationID, copyHash string) error {
+func importCoreRunnerIdentityEvents(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, organization tracker.OrganizationID, copyHash string) error {
 	var after int64
 	for {
 		events, err := readCoreRunnerIdentityEventPage(ctx, tx, organization, after)
@@ -504,18 +515,29 @@ func importCoreRunnerIdentityEvents(ctx context.Context, tx *sql.Tx, target *pos
 	}
 }
 
-func readCoreRunnerLeaseAssignmentImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after string) ([]coreRunnerLeaseAssignmentImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT lr.lease_id,lr.runner_id,l.acquired_at FROM lease_runners lr JOIN leases l ON l.lease_id=lr.lease_id JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=? AND lr.lease_id>? ORDER BY lr.lease_id LIMIT 100`, organization, after)
+func readCoreRunnerLeaseAssignmentImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after string) ([]coreRunnerLeaseAssignmentImportRow, error) {
+	rows, err := tx.rows(ctx, "lease_runners", nil, []string{"lease_id"}, []string{after}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreRunnerLeaseAssignmentImportRow, 0, 100)
-	for rows.Next() {
+	for _, raw := range rows {
 		var row coreRunnerLeaseAssignmentImportRow
 		row.Assignment.OrganizationID = organization
 		var assigned string
-		if err := rows.Scan(&row.Assignment.LeaseID, &row.Assignment.RunnerID, &assigned); err != nil {
+
+		if err := raw.Decode(map[string]any{"lease_id": &row.Assignment.LeaseID, "runner_id": &row.Assignment.RunnerID}); err != nil {
+			return nil, err
+		}
+		lease, err := tx.one(ctx, "leases", map[string]string{"lease_id": row.Assignment.LeaseID}, []string{"lease_id"})
+		if err != nil {
+			return nil, err
+		}
+		var issueID int64
+		if err := lease.Decode(map[string]any{"acquired_at": &assigned, "issue_id": &issueID}); err != nil {
+			return nil, err
+		}
+		if _, err := tx.one(ctx, "issues", map[string]string{"id": strconv.FormatInt(issueID, 10), "organization_id": string(organization)}, []string{"id"}); err != nil {
 			return nil, err
 		}
 		row.Assignment.AssignedAt, err = parseCoreExecutionTime(assigned)
@@ -524,24 +546,27 @@ func readCoreRunnerLeaseAssignmentImportPage(ctx context.Context, tx *sql.Tx, or
 		}
 		result = append(result, row)
 	}
-	return result, errors.Join(rows.Err(), rows.Close())
+	return result, nil
 }
 
-func readCoreWorkEventImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after int64) ([]coreWorkEventImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.issue_id,e.fencing_token,e.machine_id,e.session_id,e.run_id,e.kind,e.payload_json,e.occurred_at,e.recorded_at FROM work_events e JOIN issues i ON i.id=e.issue_id WHERE i.organization_id=? AND e.id>? ORDER BY e.id LIMIT 100`, organization, after)
+func readCoreWorkEventImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after int64) ([]coreWorkEventImportRow, error) {
+	rows, err := tx.rows(ctx, "work_events", nil, []string{"id"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreWorkEventImportRow, 0, 100)
-	for rows.Next() {
+	for _, raw := range rows {
 		var row coreWorkEventImportRow
 		event := &row.Event
 		event.OrganizationID = organization
 		var fencing sql.NullInt64
 		var machine, sessionID, runID sql.NullString
 		var occurred, recorded string
-		if err := rows.Scan(&event.ID, &event.IssueID, &fencing, &machine, &sessionID, &runID, &event.Kind, &event.PayloadJSON, &occurred, &recorded); err != nil {
+
+		if err := raw.Decode(map[string]any{"id": &event.ID, "issue_id": &event.IssueID, "fencing_token": &fencing, "machine_id": &machine, "session_id": &sessionID, "run_id": &runID, "kind": &event.Kind, "payload_json": &event.PayloadJSON, "occurred_at": &occurred, "recorded_at": &recorded}); err != nil {
+			return nil, err
+		}
+		if _, err := tx.one(ctx, "issues", map[string]string{"id": strconv.FormatInt(event.IssueID, 10), "organization_id": string(organization)}, []string{"id"}); err != nil {
 			return nil, err
 		}
 		if fencing.Valid {
@@ -566,27 +591,41 @@ func readCoreWorkEventImportPage(ctx context.Context, tx *sql.Tx, organization t
 		}
 		result = append(result, row)
 	}
-	return result, errors.Join(rows.Err(), rows.Close())
+	return result, nil
 }
 
-func readCoreLeaseImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after int64) ([]coreLeaseImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT l.fencing_token,l.lease_id,l.issue_id,l.machine_id,l.session_id,l.work_item_revision,l.landing_capacity,l.acquired_at,l.renewed_at,l.expires_at,l.released_at,'',i.project_id,lp.scope,lp.policy_id
-FROM leases l JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_policies lp ON lp.lease_id=l.lease_id
-WHERE i.organization_id=? AND l.fencing_token>? ORDER BY l.fencing_token LIMIT 100`, organization, after)
+func readCoreLeaseImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after int64) ([]coreLeaseImportRow, error) {
+	rows, err := tx.rows(ctx, "leases", nil, []string{"fencing_token"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreLeaseImportRow, 0, 100)
-	for rows.Next() {
+	for _, raw := range rows {
 		var row coreLeaseImportRow
 		row.Lease.OrganizationID = organization
 		var acquired, renewed, expires string
 		var released sql.NullString
 		var projectID tracker.ProjectID
 		var policyScope, policyID sql.NullString
-		if err := rows.Scan(&row.Lease.FencingToken, &row.Lease.LeaseID, &row.Lease.IssueID, &row.Lease.MachineID, &row.Lease.SessionID, &row.Lease.WorkItemRevision, &row.Lease.LandingCapacity, &acquired, &renewed, &expires, &released, &row.Lease.ReleaseReason, &projectID, &policyScope, &policyID); err != nil {
+
+		if err := raw.Decode(map[string]any{"fencing_token": &row.Lease.FencingToken, "lease_id": &row.Lease.LeaseID, "issue_id": &row.Lease.IssueID, "machine_id": &row.Lease.MachineID, "session_id": &row.Lease.SessionID, "work_item_revision": &row.Lease.WorkItemRevision, "landing_capacity": &row.Lease.LandingCapacity, "acquired_at": &acquired, "renewed_at": &renewed, "expires_at": &expires, "released_at": &released}); err != nil {
 			return nil, err
+		}
+		issue, err := tx.one(ctx, "issues", map[string]string{"id": strconv.FormatInt(row.Lease.IssueID, 10), "organization_id": string(organization)}, []string{"id"})
+		if err != nil {
+			return nil, err
+		}
+		if err := issue.Decode(map[string]any{"project_id": &projectID}); err != nil {
+			return nil, err
+		}
+		policy, err := tx.one(ctx, "lease_policies", map[string]string{"lease_id": row.Lease.LeaseID}, []string{"lease_id"})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if err == nil {
+			if err := policy.Decode(map[string]any{"scope": &policyScope, "policy_id": &policyID}); err != nil {
+				return nil, err
+			}
 		}
 		if policyScope.Valid != policyID.Valid {
 			return nil, eventstore.ErrInvalidRecord
@@ -618,24 +657,32 @@ WHERE i.organization_id=? AND l.fencing_token>? ORDER BY l.fencing_token LIMIT 1
 		}
 		result = append(result, row)
 	}
-	return result, errors.Join(rows.Err(), rows.Close())
+	return result, nil
 }
 
-func readCoreAttemptImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after int64) ([]coreAttemptImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT a.id,i.id,a.lease_id,a.fencing_token,a.run_id,a.sequence,a.status,a.work_item_revision,a.dispatch_generation,
-a.data_json,a.checkpoint_json,a.artifact_ids_json,a.started_at,a.updated_at,a.payload_object_key,a.checkpoint_object_key
-FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
-WHERE a.organization_id=? AND a.fencing_token>? ORDER BY a.fencing_token LIMIT 100`, organization, after)
+func readCoreAttemptImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after int64) ([]coreAttemptImportRow, error) {
+	rows, err := tx.rows(ctx, "native_attempts", map[string]string{"organization_id": string(organization)}, []string{"fencing_token"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreAttemptImportRow, 0, 100)
-	for rows.Next() {
+	for _, raw := range rows {
 		var row coreAttemptImportRow
 		row.Attempt.OrganizationID = organization
 		var started, updated string
-		if err := rows.Scan(&row.Attempt.ID, &row.Attempt.IssueID, &row.Attempt.LeaseID, &row.Attempt.FencingToken, &row.Attempt.RunID, &row.Attempt.Sequence, &row.Attempt.Status, &row.Attempt.WorkItemRevision, &row.Attempt.DispatchGeneration, &row.Payload, &row.Checkpoint, &row.ArtifactIDs, &started, &updated, &row.PayloadObject, &row.CheckpointObject); err != nil {
+
+		if err := raw.Decode(map[string]any{"id": &row.Attempt.ID, "lease_id": &row.Attempt.LeaseID, "fencing_token": &row.Attempt.FencingToken, "run_id": &row.Attempt.RunID, "sequence": &row.Attempt.Sequence, "status": &row.Attempt.Status, "work_item_revision": &row.Attempt.WorkItemRevision, "dispatch_generation": &row.Attempt.DispatchGeneration, "data_json": &row.Payload, "checkpoint_json": &row.Checkpoint, "artifact_ids_json": &row.ArtifactIDs, "started_at": &started, "updated_at": &updated, "payload_object_key": &row.PayloadObject, "checkpoint_object_key": &row.CheckpointObject}); err != nil {
+			return nil, err
+		}
+		var project, item string
+		if err := raw.Decode(map[string]any{"project_id": &project, "work_item_id": &item}); err != nil {
+			return nil, err
+		}
+		issue, err := tx.one(ctx, "issues", map[string]string{"organization_id": string(organization), "project_id": project, "native_id": item}, []string{"id"})
+		if err != nil {
+			return nil, err
+		}
+		if err := issue.Decode(map[string]any{"id": &row.Attempt.IssueID}); err != nil {
 			return nil, err
 		}
 		row.Attempt.StartedAt, err = parseCoreExecutionTime(started)
@@ -648,7 +695,7 @@ WHERE a.organization_id=? AND a.fencing_token>? ORDER BY a.fencing_token LIMIT 1
 		}
 		result = append(result, row)
 	}
-	return result, errors.Join(rows.Err(), rows.Close())
+	return result, nil
 }
 
 func prepareCoreExecutionReceipt[T any](ctx context.Context, content *eventstore.Content, organization tracker.OrganizationID, copyHash, kind, id string, value T) (eventstore.Receipt, error) {
@@ -667,7 +714,7 @@ func prepareCoreExecutionReceipt[T any](ctx context.Context, content *eventstore
 	return content.PrepareReceipt(ctx, receipt, raw)
 }
 
-func prepareCoreExecutionAttempt(ctx context.Context, tx *sql.Tx, content *eventstore.Content, source CoreExecutionImportSource, copyHash string, row coreAttemptImportRow) (postgres.CoreAttemptImport, error) {
+func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, content *eventstore.Content, source CoreExecutionImportSource, copyHash string, row coreAttemptImportRow) (postgres.CoreAttemptImport, error) {
 	attempt := row.Attempt
 	payload := []byte(row.Payload)
 	if row.PayloadObject.Valid && row.PayloadObject.String != "" {
@@ -727,29 +774,23 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *sql.Tx, content *event
 	return postgres.CoreAttemptImport{Attempt: attempt, Receipt: receipt}, nil
 }
 
-func importCoreAttemptEvents(ctx context.Context, tx *sql.Tx, target *postgres.Repository, organization tracker.OrganizationID, attempt leasestore.Attempt) error {
+func importCoreAttemptEvents(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, organization tracker.OrganizationID, attempt leasestore.Attempt) error {
 	var after int64
 	for {
-		rows, err := tx.QueryContext(ctx, `SELECT sequence,request_hash FROM native_attempt_events WHERE attempt_id=? AND sequence>? ORDER BY sequence LIMIT 200`, attempt.ID, after)
+		rows, err := tx.rows(ctx, "native_attempt_events", map[string]string{"attempt_id": attempt.ID}, []string{"sequence"}, []string{strconv.FormatInt(after, 10)}, 100)
 		if err != nil {
 			return err
 		}
-		events := make([]postgres.CoreAttemptEventImport, 0, 200)
-		if err := func() (resultErr error) {
-			defer func() { resultErr = errors.Join(resultErr, rows.Close()) }()
-			for rows.Next() {
-				var event postgres.CoreAttemptEventImport
-				if err := rows.Scan(&event.Sequence, &event.RequestHash); err != nil {
-					return err
-				}
-				events = append(events, event)
-			}
-			return rows.Err()
-		}(); err != nil {
-			return err
-		}
-		if len(events) == 0 {
+		if len(rows) == 0 {
 			return nil
+		}
+		events := make([]postgres.CoreAttemptEventImport, 0, len(rows))
+		for _, row := range rows {
+			var event postgres.CoreAttemptEventImport
+			if err := row.Decode(map[string]any{"sequence": &event.Sequence, "request_hash": &event.RequestHash}); err != nil {
+				return err
+			}
+			events = append(events, event)
 		}
 		if err := target.ImportCoreAttemptEvents(ctx, organization, attempt.ID, events); err != nil {
 			return err
@@ -758,21 +799,8 @@ func importCoreAttemptEvents(ctx context.Context, tx *sql.Tx, target *postgres.R
 	}
 }
 
-func readCoreExecutionObject(ctx context.Context, tx *sql.Tx, source CoreExecutionImportSource, key string) ([]byte, error) {
-	var ref attachment.ArchiveReference
-	ref.Codec = "gzip"
-	ref.SchemaVersion = 1
-	ref.Kind = "archive"
-	ref.Retention = attachment.ArchiveRetention
-	err := tx.QueryRowContext(ctx, `SELECT object_key,object_sha256,object_bytes,content_bytes FROM change_content_objects WHERE organization_id=? AND object_key=?
-UNION ALL SELECT object_key,sha256,size,uncompressed_size FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND customer_owned=0 AND storage_binding_id='' LIMIT 1`, source.OrganizationID, key, source.OrganizationID, key).Scan(&ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize)
-	if err != nil {
-		return nil, err
-	}
-	if err := ref.Validate(string(source.OrganizationID)); err != nil {
-		return nil, err
-	}
-	return source.SourceObjects.ReadDetail(ctx, string(source.OrganizationID), ref)
+func readCoreExecutionObject(ctx context.Context, tx *coreNeutralImport, source CoreExecutionImportSource, key string) ([]byte, error) {
+	return readCoreNeutralObject(ctx, tx, source.OrganizationID, source.SourceObjects, key)
 }
 
 func parseCoreExecutionTime(raw string) (time.Time, error) {

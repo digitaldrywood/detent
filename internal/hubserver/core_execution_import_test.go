@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,20 +15,22 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-
-	_ "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	var native *pgxpool.Config
+	repository, admin := projectRecordPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
 	objects := &memoryRunDetails{}
+	closeAfterTenants := t.Cleanup
 	for _, organization := range []tracker.OrganizationID{"org_execution_import", "org_execution_import_other"} {
 		t.Run(string(organization), func(t *testing.T) {
 			project := tracker.ProjectID("prj_execution_import")
@@ -40,6 +44,7 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 				for _, credential := range []accessstore.Credential{
 					{OrganizationID: organization, ID: "owner_token_execution_import", Name: "owner token", Hash: coreExecutionHash('1'), Fingerprint: "owner", Scope: "admin", ProjectAccess: "selected", CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), Kind: "service"},
 					{OrganizationID: organization, ID: "runner_token_execution_import", Name: "runner token", Hash: coreExecutionHash('2'), Fingerprint: "runner", Scope: "worker", ProjectAccess: "selected", NativeOnly: true, CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), ExpiresAt: coreExecutionTimePointer(time.Date(2027, 10, 1, 0, 0, 0, 0, time.UTC)), Kind: "service"},
+					{OrganizationID: organization, ID: "runner_token_execution_import_second", Name: "second runner token", Hash: coreExecutionHash('5'), Fingerprint: "runner-second", Scope: "worker", ProjectAccess: "selected", NativeOnly: true, CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), ExpiresAt: coreExecutionTimePointer(time.Date(2027, 10, 1, 0, 0, 0, 0, time.UTC)), Kind: "service"},
 				} {
 					if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
 						return fmt.Errorf("create import test credential %s: %w", credential.ID, err)
@@ -52,15 +57,17 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 				}); err != nil {
 					return fmt.Errorf("create import test project: %w", err)
 				}
-				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{
-					OrganizationID: organization, ID: 41, NativeID: "wi_execution_import", ProjectID: project, Number: 1,
-					Revision: 1, EventSequence: 1, Title: "Example issue", ActorKind: coreExecutionStringPointer("human"), ActorPrincipalID: coreExecutionStringPointer("example-owner"),
-					CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
-					NativeCreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), NativeUpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
-					LastActivityAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), WorkflowStateName: coreExecutionStringPointer("Todo"),
-				})
-				if err != nil {
-					return fmt.Errorf("create import test work item: %w", err)
+				for index, suffix := range []string{"", "_second"} {
+					_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{
+						OrganizationID: organization, ID: int64(41 + index), NativeID: tracker.NativeWorkItemID("wi_execution_import" + suffix), ProjectID: project, Number: int64(1 + index),
+						Revision: 1, EventSequence: 1, Title: "Example issue", ActorKind: coreExecutionStringPointer("human"), ActorPrincipalID: coreExecutionStringPointer("example-owner"),
+						CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+						NativeCreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), NativeUpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+						LastActivityAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), WorkflowStateName: coreExecutionStringPointer("Todo"),
+					})
+					if err != nil {
+						return fmt.Errorf("create import test work item: %w", err)
+					}
 				}
 				return nil
 			}); err != nil {
@@ -74,13 +81,32 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 				t.Fatalf("seed import test policy: %v", err)
 			}
 			copyPath := coreExecutionSourceCopy(t, organization)
-			source := CoreExecutionImportSource{CopyPath: copyPath, OrganizationID: organization, SourceObjects: objects, Objects: objects}
+			source := CoreExecutionImportSource{BundlePath: copyPath, OrganizationID: organization, SourceObjects: objects, Objects: objects}
 			for range 2 {
 				count, err := ImportCoreExecution(t.Context(), repository, source)
-				if err != nil || count != 7 {
+				if err != nil || count != 14 {
 					t.Fatalf("execution import count=%d error=%v", count, err)
 				}
 			}
+			if err := repository.Close(); err != nil {
+				t.Fatal(err)
+			}
+			pool, err := pgxpool.NewWithConfig(t.Context(), native.Copy())
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository, err = postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+			if err != nil {
+				pool.Close()
+				t.Fatal(err)
+			}
+			reopened := repository
+			closeAfterTenants(func() {
+				if err := reopened.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+
 			if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 				lease, err := r.Lease(t.Context(), "lease_execution_import")
 				if err != nil {
@@ -124,6 +150,26 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 				if pinned.ProjectID != project || pinned.PolicyID != "policy_example" || !pinned.BoundAt.Equal(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)) {
 					return errors.New("lease policy binding was not preserved")
 				}
+				secondLease, err := r.Lease(t.Context(), "lease_execution_import_second")
+				if err != nil {
+					return err
+				}
+				secondAttempt, err := r.Attempt(t.Context(), "attempt_execution_import_second")
+				if err != nil {
+					return err
+				}
+				secondRunner, err := r.RunnerIdentityByCredential(t.Context(), "runner_token_execution_import_second")
+				if err != nil {
+					return err
+				}
+				secondEnrollment, err := r.RunnerEnrollment(t.Context(), "enrollment_execution_import_second")
+				if err != nil {
+					return err
+				}
+				if secondLease.FencingToken != 41 || secondLease.IssueID != 42 || secondAttempt.FencingToken != 41 || secondAttempt.WorkItemRevision != 0 || secondRunner.RunnerID != "runner_execution_import_second" || secondEnrollment.RunnerID != secondRunner.RunnerID || secondRunner.ExpiresAt != identity.ExpiresAt {
+					return errors.New("second imported execution identity was not preserved after reopen")
+				}
+
 				return nil
 			}); err != nil {
 				t.Fatal(err)
@@ -131,7 +177,7 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 			var sourceID, issueID int64
 			var fencingToken sql.NullInt64
 			var machineID, kind, payload string
-			if err := admin.QueryRowContext(t.Context(), `SELECT source_id,issue_id,fencing_token,machine_id,kind,payload_json FROM core_work_events WHERE organization_id=$1`, organization).Scan(&sourceID, &issueID, &fencingToken, &machineID, &kind, &payload); err != nil {
+			if err := admin.QueryRowContext(t.Context(), `SELECT source_id,issue_id,fencing_token,machine_id,kind,payload_json FROM core_work_events WHERE organization_id=$1 AND source_id=7`, organization).Scan(&sourceID, &issueID, &fencingToken, &machineID, &kind, &payload); err != nil {
 				t.Fatal(err)
 			}
 			if sourceID != 7 || issueID != 41 || !fencingToken.Valid || fencingToken.Int64 != 40 || machineID != "machine_execution_import" || kind != "progress" || payload != `{"step":"compile"}` {
@@ -145,8 +191,8 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if claimed.FencingToken <= 40 {
-				t.Fatalf("new lease fencing token %d did not advance beyond imported token 40", claimed.FencingToken)
+			if claimed.FencingToken <= 41 {
+				t.Fatalf("new lease fencing token %d did not advance beyond imported token 41", claimed.FencingToken)
 			}
 
 		})
@@ -155,90 +201,42 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 
 func coreExecutionSourceCopy(t *testing.T, organization tracker.OrganizationID) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "execution-source.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, statement := range []string{
-		`CREATE TABLE issues(id INTEGER,organization_id TEXT,project_id TEXT,native_id TEXT)`,
-		`CREATE TABLE machines(id TEXT,organization_id TEXT,hostname TEXT,display_name TEXT,capacity INTEGER,version TEXT,sprite_name TEXT,last_heartbeat_at TEXT,registered_at TEXT,updated_at TEXT)`,
-		`CREATE TABLE leases(fencing_token INTEGER,lease_id TEXT,issue_id INTEGER,machine_id TEXT,session_id TEXT,work_item_revision INTEGER,landing_capacity INTEGER,acquired_at TEXT,renewed_at TEXT,expires_at TEXT,released_at TEXT)`,
-		`CREATE TABLE native_attempts(id TEXT,organization_id TEXT,project_id TEXT,work_item_id TEXT,lease_id TEXT,fencing_token INTEGER,run_id TEXT,sequence INTEGER,status TEXT,work_item_revision INTEGER,dispatch_generation INTEGER,data_json TEXT,checkpoint_json TEXT,artifact_ids_json TEXT,started_at TEXT,updated_at TEXT,payload_object_key TEXT,checkpoint_object_key TEXT)`,
-		`CREATE TABLE native_attempt_events(attempt_id TEXT,sequence INTEGER,request_hash TEXT)`,
-		`CREATE TABLE change_content_objects(organization_id TEXT,object_key TEXT,object_sha256 TEXT,object_bytes INTEGER,content_bytes INTEGER)`,
-		`CREATE TABLE attachments(organization_id TEXT,object_key TEXT,sha256 TEXT,size INTEGER,uncompressed_size INTEGER,kind TEXT,customer_owned INTEGER,storage_binding_id TEXT)`,
-		`CREATE TABLE api_tokens(id TEXT,expires_at TEXT)`,
-		`CREATE TABLE runner_enrollments(id TEXT,organization_id TEXT,runner_id TEXT,machine_id TEXT,token_hash TEXT,scope TEXT,shared_machine INTEGER,operations_json TEXT,created_at TEXT,expires_at TEXT,created_by TEXT,redeemed_at TEXT,revoked_at TEXT)`,
-		`CREATE TABLE runner_enrollment_projects(enrollment_id TEXT,project_id TEXT)`,
-		`CREATE TABLE runner_identities(id TEXT,organization_id TEXT,machine_id TEXT,token_id TEXT,enrollment_id TEXT,scope TEXT,state TEXT,revision INTEGER,tags_json TEXT,operations_json TEXT,display_name TEXT,capacity_limit INTEGER,reported_capacity INTEGER,os TEXT,architecture TEXT,created_at TEXT,last_heartbeat_at TEXT,removed_at TEXT,routing_settings_json TEXT,capacity_configuration_json TEXT)`,
-		`CREATE TABLE runner_project_capacity_limits(organization_id TEXT,runner_id TEXT,project_id TEXT,capacity_limit INTEGER)`,
-		`CREATE TABLE runner_project_ranks(runner_id TEXT,project_id TEXT,rank INTEGER)`,
-		`CREATE TABLE runner_identity_events(id INTEGER,runner_id TEXT,actor_id TEXT,kind TEXT,occurred_at TEXT)`,
-		`CREATE TABLE lease_runners(lease_id TEXT,runner_id TEXT)`,
-		`CREATE TABLE lease_policies(lease_id TEXT PRIMARY KEY,scope TEXT,policy_id TEXT)`,
-		`CREATE TABLE work_events(id INTEGER,issue_id INTEGER,fencing_token INTEGER,machine_id TEXT,session_id TEXT,run_id TEXT,kind TEXT,payload_json TEXT,occurred_at TEXT,recorded_at TEXT)`,
-	} {
-		if _, err := db.ExecContext(t.Context(), statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	return coreExecutionNeutralFixture(t, organization).write()
+}
+
+func coreExecutionNeutralFixture(t *testing.T, organization tracker.OrganizationID) *coreNeutralFixture {
+	t.Helper()
+	fixture := newCoreNeutralFixture(t, organization, "issues", "machines", "leases", "native_attempts", "native_attempt_events", "change_content_objects", "attachments", "api_tokens", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "work_events")
 	const acquired = "2026-10-01T00:00:00Z"
 	const updated = "2026-10-02T00:00:00Z"
 	const expired = "2026-10-01T01:00:00Z"
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO issues VALUES(41,?,'prj_execution_import','wi_execution_import')`, organization); err != nil {
-		t.Fatal(err)
+	for index, suffix := range []string{"", "_second"} {
+		id := func(value string) string { return value + suffix }
+		fixture.add("issues", map[string]any{"id": 41 + index, "organization_id": organization, "project_id": "prj_execution_import", "native_id": id("wi_execution_import")})
+		fixture.add("machines", map[string]any{"id": id("machine_execution_import"), "organization_id": organization, "hostname": "example-host", "display_name": "Example host", "capacity": 2, "version": "v0.173.4", "sprite_name": "", "last_heartbeat_at": acquired, "registered_at": acquired, "updated_at": updated})
+		var expiry any = "2027-10-01T00:00:00Z"
+		if index == 1 {
+			expiry = nil
+		}
+		fixture.add("api_tokens", map[string]any{"id": id("runner_token_execution_import"), "expires_at": expiry})
+		fixture.add("runner_enrollments", map[string]any{"id": id("enrollment_execution_import"), "organization_id": organization, "runner_id": id("runner_execution_import"), "machine_id": id("machine_execution_import"), "token_hash": coreExecutionHash(byte('3' + index)), "scope": "projects", "shared_machine": 0, "operations_json": "[\"read\",\"claim\"]", "created_at": acquired, "expires_at": "2027-10-01T00:00:00Z", "created_by": "owner_token_execution_import", "redeemed_at": acquired, "revoked_at": nil})
+		fixture.add("runner_enrollment_projects", map[string]any{"enrollment_id": id("enrollment_execution_import"), "project_id": "prj_execution_import"})
+		fixture.add("runner_identities", map[string]any{"id": id("runner_execution_import"), "organization_id": organization, "machine_id": id("machine_execution_import"), "token_id": id("runner_token_execution_import"), "enrollment_id": id("enrollment_execution_import"), "scope": "projects", "state": "active", "revision": 1, "tags_json": "[]", "operations_json": "[\"read\",\"claim\"]", "display_name": "Example runner", "capacity_limit": 2, "reported_capacity": 2, "os": "darwin", "architecture": "arm64", "created_at": acquired, "last_heartbeat_at": updated, "removed_at": nil, "routing_settings_json": "{}", "capacity_configuration_json": "null"})
+		fixture.add("runner_identity_events", map[string]any{"id": 9 + index, "runner_id": id("runner_execution_import"), "actor_id": "owner_token_execution_import", "kind": "enrolled", "occurred_at": acquired})
+		fixture.add("leases", map[string]any{"fencing_token": 40 + index, "lease_id": id("lease_execution_import"), "issue_id": 41 + index, "machine_id": id("machine_execution_import"), "session_id": id("session_execution_import"), "work_item_revision": 0, "landing_capacity": 0, "acquired_at": acquired, "renewed_at": acquired, "expires_at": expired, "released_at": updated})
+		fixture.add("lease_runners", map[string]any{"lease_id": id("lease_execution_import"), "runner_id": id("runner_execution_import")})
+		fixture.add("lease_policies", map[string]any{"lease_id": id("lease_execution_import"), "scope": string(organization) + "/prj_execution_import", "policy_id": "policy_example"})
+		run := tracker.NativeRunData{AttemptID: id("attempt_execution_import"), LeaseID: tracker.LeaseID(id("lease_execution_import")), FencingToken: tracker.FencingToken(40 + index), RunID: id("run_execution_import"), Sequence: 1, PolicyID: "policy_example"}
+		runData, err := json.Marshal(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.add("native_attempts", map[string]any{"id": id("attempt_execution_import"), "organization_id": organization, "project_id": "prj_execution_import", "work_item_id": id("wi_execution_import"), "lease_id": id("lease_execution_import"), "fencing_token": 40 + index, "run_id": id("run_execution_import"), "sequence": 1, "status": "failed", "work_item_revision": 0, "dispatch_generation": 0, "data_json": string(runData), "checkpoint_json": nil, "artifact_ids_json": "[]", "started_at": updated, "updated_at": updated, "payload_object_key": "", "checkpoint_object_key": ""})
+		requestHash := hex.EncodeToString(make([]byte, 32))
+		fixture.add("native_attempt_events", map[string]any{"attempt_id": id("attempt_execution_import"), "sequence": 1, "request_hash": requestHash})
+		fixture.add("work_events", map[string]any{"id": 7 + index, "issue_id": 41 + index, "fencing_token": 40 + index, "machine_id": id("machine_execution_import"), "session_id": id("session_execution_import"), "run_id": id("run_execution_import"), "kind": "progress", "payload_json": "{\"step\":\"compile\"}", "occurred_at": updated, "recorded_at": updated})
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO machines VALUES('machine_execution_import',?,'example-host','Example host',2,'v0.173.4','',?,?,?)`, organization, acquired, acquired, updated); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO api_tokens VALUES('runner_token_execution_import',?)`, "2027-10-01T00:00:00Z"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO runner_enrollments VALUES('enrollment_execution_import',?,'runner_execution_import','machine_execution_import',?,'projects',0,'["read","claim"]',?,?, 'owner_token_execution_import',?,NULL)`, organization, coreExecutionHash('3'), acquired, "2027-10-01T00:00:00Z", acquired); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO runner_enrollment_projects VALUES('enrollment_execution_import','prj_execution_import')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO runner_identities VALUES('runner_execution_import',?,'machine_execution_import','runner_token_execution_import','enrollment_execution_import','projects','active',1,'[]','["read","claim"]','Example runner',2,2,'darwin','arm64',?,? ,NULL,'{}','null')`, organization, acquired, updated); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO runner_identity_events VALUES(9,'runner_execution_import','owner_token_execution_import','enrolled',?)`, acquired); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO leases VALUES(40,'lease_execution_import',41,'machine_execution_import','session_execution_import',0,0,?,?,?,?)`, acquired, acquired, expired, updated); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO lease_runners VALUES('lease_execution_import','runner_execution_import')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO lease_policies VALUES('lease_execution_import',?,'policy_example')`, string(organization)+"/prj_execution_import"); err != nil {
-		t.Fatal(err)
-	}
-	run := tracker.NativeRunData{AttemptID: "attempt_execution_import", LeaseID: "lease_execution_import", FencingToken: 40, RunID: "run_execution_import", Sequence: 1, PolicyID: "policy_example"}
-	runData, err := json.Marshal(run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO native_attempts VALUES('attempt_execution_import',?, 'prj_execution_import','wi_execution_import','lease_execution_import',40,'run_execution_import',1,'failed',0,0,?,NULL,'[]',?,?, '', '')`, organization, string(runData), updated, updated); err != nil {
-		t.Fatal(err)
-	}
-	requestHash := hex.EncodeToString(make([]byte, 32))
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO native_attempt_events VALUES('attempt_execution_import',1,?)`, requestHash); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO work_events VALUES(7,41,40,'machine_execution_import','session_execution_import','run_execution_import','progress','{"step":"compile"}',?,?)`, updated, updated); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0400); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return fixture
 }
 
 func coreExecutionHash(char byte) string {
@@ -251,4 +249,73 @@ func coreExecutionTimePointer(value time.Time) *time.Time {
 
 func coreExecutionStringPointer(value string) *string {
 	return &value
+}
+
+func TestCoreExecutionImportRefusesLegacyCopy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "historical-source.db")
+	original := []byte("preserved verified historical source")
+	if err := os.WriteFile(path, original, 0400); err != nil {
+		t.Fatal(err)
+	}
+	for _, bundle := range []string{"", "unused-neutral-bundle"} {
+		_, err := ImportCoreExecution(t.Context(), &postgres.Repository{}, CoreExecutionImportSource{CopyPath: path, BundlePath: bundle, OrganizationID: "org_example", SourceObjects: &memoryRunDetails{}, Objects: &memoryRunDetails{}})
+		if !errors.Is(err, postgres.ErrNeutralImport) {
+			t.Fatalf("legacy selector error=%v", err)
+		}
+	}
+	current, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(current, original) {
+		t.Fatalf("historical source changed: %v", err)
+	}
+}
+
+func TestCoreExecutionImportRejectsUnsupportedSchemaBeforePin(t *testing.T) {
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	for _, scenario := range []struct{ table, column, change string }{
+		{"native_attempts", "data_json", "extra"},
+		{"native_attempts", "activity_started_at", "generated"},
+		{"native_attempts", "id", "primary"},
+		{"runner_identities", "id", "primary"},
+		{"leases", "fencing_token", "primary"},
+		{"runner_enrollments", "scope", "type"},
+	} {
+		t.Run(scenario.table+"/"+scenario.change, func(t *testing.T) {
+			fixture := coreExecutionNeutralFixture(t, "org_execution_schema")
+			table := fixture.tables[scenario.table]
+			if scenario.change == "extra" {
+				table.Columns["unaccounted"] = fmt.Sprintf(`[%d,"unaccounted","TEXT",1,null,0,0]`, len(table.Columns))
+				for _, row := range fixture.records[scenario.table] {
+					row.Values["unaccounted"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte("must survive migration")}
+				}
+			} else {
+				var signature []any
+				if err := json.Unmarshal([]byte(table.Columns[scenario.column]), &signature); err != nil {
+					t.Fatal(err)
+				}
+				switch scenario.change {
+				case "generated":
+					signature[6] = float64(0)
+				case "primary":
+					signature[5] = float64(0)
+				case "type":
+					signature[2] = "BLOB"
+				}
+				raw, err := json.Marshal(signature)
+				if err != nil {
+					t.Fatal(err)
+				}
+				table.Columns[scenario.column] = string(raw)
+			}
+			fixture.tables[scenario.table] = table
+			objects := &memoryRunDetails{}
+			_, err := ImportCoreExecution(t.Context(), repository, CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: fixture.organization, SourceObjects: objects, Objects: objects})
+			if !errors.Is(err, storagecatalog.ErrUnmapped) {
+				t.Fatalf("unsupported schema error=%v", err)
+			}
+			var count int
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM neutral_import_sources").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("source pinned before schema validation: count=%d error=%v", count, err)
+			}
+		})
+	}
 }

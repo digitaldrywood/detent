@@ -121,7 +121,7 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err != nil {
 		return result, fmt.Errorf("import tenant dependencies: %w", err)
 	}
-	result.ExecutionRows, err = ImportCoreExecution(ctx, repository, CoreExecutionImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
+	result.ExecutionRows, err = ImportCoreExecution(ctx, repository, CoreExecutionImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant execution: %w", err)
 	}
