@@ -904,6 +904,20 @@ type DailySummaryReceipt struct {
 	RecordedAt     time.Time
 }
 
+type GithubCutover struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	Checkpoint          string
+	SourceProfile       string
+	ExpectedRevision    int64
+	ReceiptObjectKey    string
+	ReceiptSha256       string
+	ReceiptBytes        int64
+	ReceiptContentBytes int64
+	ActorID             string
+	CreatedAt           time.Time
+}
+
 type GithubImport struct {
 	OrganizationID  tracker.OrganizationID
 	ProjectID       tracker.ProjectID
@@ -1696,6 +1710,16 @@ type LinkedIssueSource struct {
 	SnapshotSha256       *string
 	SnapshotBytes        pgtype.Int8
 	SnapshotContentBytes pgtype.Int8
+}
+
+type LocalBoardImport struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	SourceKey      string
+	SourceKind     string
+	SourceDigest   string
+	WorkItemID     string
+	ImportedAt     time.Time
 }
 
 type Machine struct {
@@ -2651,6 +2675,30 @@ type NativeWorkItemPageProgress struct {
 	BackfillPhase       int16
 	BackfillIssueID     int64
 	BackfillCommentID   string
+}
+
+type NeutralImportRecord struct {
+	OrganizationID      tracker.OrganizationID
+	SourceID            string
+	Family              string
+	SourceKey           string
+	RecordDigest        string
+	DestinationID       string
+	SourceRevision      int64
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+	ImportedAt          time.Time
+}
+
+type NeutralImportSource struct {
+	OrganizationID tracker.OrganizationID
+	SourceID       string
+	SchemaVersion  int64
+	Checksum       string
+	SchemaDigest   string
+	VerifiedAt     time.Time
 }
 
 type OnboardingIssueIntake struct {
