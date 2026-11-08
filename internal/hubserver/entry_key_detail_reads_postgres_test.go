@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -551,6 +552,14 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 	service, currentOrganization = firstService, "org_startup"
 	for _, name := range []string{operatortool.ListComments, operatortool.ListChanges} {
 		t.Run(name+"_current_payload_integrity", func(t *testing.T) {
+			if name == operatortool.ListComments {
+				if err := service.stopGitHubWebhookMaintenance(); err != nil {
+					t.Fatal(err)
+				}
+				repository := service.config.TenantRepository
+				service.config.TenantRepository = entryKeyPendingCommentsRepository{Repository: repository}
+				t.Cleanup(func() { service.config.TenantRepository = repository })
+			}
 			var key string
 			if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 				if name == operatortool.ListComments {
@@ -694,4 +703,29 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 			}
 		})
 	}
+}
+
+type entryKeyPendingCommentsRepository struct {
+	tenantstore.Repository
+}
+
+func (r entryKeyPendingCommentsRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
+		return read(entryKeyPendingCommentsReader{Reader: reader, WorkItemPageReader: reader.(viewstore.WorkItemPageReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), CollaborationVersionsReader: reader.(eventstore.CollaborationVersionsReader)})
+	})
+}
+
+func (r entryKeyPendingCommentsRepository) ReadRequest(ctx context.Context, org tracker.OrganizationID, read func(context.Context) error) error {
+	return r.Repository.(tenantstore.RequestReader).ReadRequest(ctx, org, read)
+}
+
+type entryKeyPendingCommentsReader struct {
+	tenantstore.Reader
+	viewstore.WorkItemPageReader
+	tenantstore.WorkItemRelationshipBatchReader
+	eventstore.CollaborationVersionsReader
+}
+
+func (entryKeyPendingCommentsReader) CommentPageRecords(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, bool, int) ([]viewstore.CommentPageRecord, error) {
+	return nil, viewstore.ErrPagePending
 }
