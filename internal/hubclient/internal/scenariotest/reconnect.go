@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -307,7 +308,7 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 					t.Fatal(err)
 				}
 				projected, err := execution.claim.source.NativeClient().Issue(t.Context(), current.WorkItemID)
-				if err != nil || !projected.DependencyReady || len(projected.Blockers) != 0 {
+				if err != nil || projected.DependencyReady || !slices.Contains(projected.OmittedFields, "dependency_ready") || len(projected.Blockers) != 0 || len(projected.Dependencies) != 0 {
 					t.Fatalf("hidden blocker projection = %+v, %v", projected, err)
 				}
 			}
