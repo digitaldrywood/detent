@@ -74,6 +74,14 @@ func RunNativeSecurityAuditCapturesBeyondStoredDiff(t *testing.T) {
 			}
 			request.Files, _ = tracker.NormalizeDiffFiles(request.Files)
 			version := tracker.ChangeVersion{ID: "version_example", ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example-org/example-project", BaseSHA: base, HeadSHA: head, PolicyID: "policy_example"}, Policy: policy.Descriptor{Gates: policy.Gates{SecurityAudit: true}}}
+			var source tracker.ChangeSourceCapture
+			if size != 0 {
+				source, err = workspace.CaptureChangeSource(t.Context(), directory, base, head)
+				if err != nil {
+					t.Fatal(err)
+				}
+				version.Source = &source.Source
+			}
 			detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: "change_example", ProjectID: "prj_example", WorkItemID: "wi_example", CurrentVersion: version.ID}, Versions: []tracker.ChangeVersion{version}}
 			runtime := tracker.NativeRuntimeEvidence{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_example"}}, Attempt: &tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: "attempt_example", PolicyID: version.PolicyID}}}
 			client, err := createTestClient(t, Config{URL: "http://native-hub.test", TokenSource: func() string { return "token" }, HTTPClient: testsupport.HandlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,8 +115,8 @@ func RunNativeSecurityAuditCapturesBeyondStoredDiff(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			capture := &validationCapture{required: size != 0, source: func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-				return workspace.CaptureChangeSource(ctx, directory, base, head)
+			capture := &validationCapture{required: size != 0, source: func(context.Context, string, string) (tracker.ChangeSourceCapture, error) {
+				return source, nil
 			}}
 			state := validation.VersionState{Change: &runner.NativeChange{ChangeID: detail.Change.ID, VersionID: version.ID}, Data: runtime.Attempt.NativeRunData, Diff: &request, Lease: tracker.NativeLease{WorkItemID: "wi_example"}, Organization: "org_example", Project: "prj_example", SourceRequired: capture.required}
 			if size >= tracker.MaxChangeDiffBytes {
