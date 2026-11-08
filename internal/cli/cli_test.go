@@ -54,7 +54,7 @@ func TestCommandHelpLeadsWithExample(t *testing.T) {
 		flags   []string
 	}{
 		{name: "pause", args: []string{"pause"}, example: "detent pause api", flags: []string{"--config", "--reason"}},
-		{name: "migration Hub", args: []string{"hub", "serve"}, example: "detent hub serve", flags: []string{"--database", "--listen", "--github-disabled"}},
+		{name: "migration Hub", args: []string{"hub", "serve"}, example: "detent hub serve", flags: []string{"--database", "--listen"}},
 		{name: "migration backup", args: []string{"hub", "backup"}, example: "detent hub backup", flags: []string{"--database", "--output"}},
 		{name: "migration verification", args: []string{"hub", "verify"}, example: "detent hub verify", flags: []string{"--database"}},
 		{name: "migration registration", args: []string{"hub", "runner", "register"}, example: "detent hub runner register", flags: []string{"--url", "--organization", "--name", "--capacity", "--config", "--workspace-root"}},

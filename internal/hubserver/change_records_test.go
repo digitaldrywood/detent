@@ -631,7 +631,6 @@ func newChangePolicyPostgresFixtureWithDetails(t *testing.T, maxConnections int,
 		BillingRepository: repository,
 		TenantRepository:  repository,
 		RunDetails:        details,
-		GitHubDisabled:    true,
 		Hosted: &HostedConfig{
 			Plans:                &plans,
 			OrganizationID:       "org_security",
