@@ -11,6 +11,7 @@ import (
 )
 
 type Event struct {
+	HistoryHidden        bool
 	PushKnown            bool
 	PushChangeID         string
 	PushVersionID        string
@@ -46,6 +47,11 @@ type Event struct {
 	LandingHeadSHA       string
 	ProjectSequence      int64
 	Report               *reportstore.EventProjection
+}
+
+type HistoryReader interface {
+	HistoryEvents(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
+	HistoryEventsBefore(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 }
 
 type ProjectChange struct {
@@ -247,6 +253,7 @@ type LinkedSource struct {
 type Receipt = receiptstore.Record
 
 type Reader interface {
+	HistoryReader
 	PRPublication(context.Context, string) (NativePRPublication, error)
 	ReleaseDelivery(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (ReleaseDelivery, error)
 	ReviewPolicy(context.Context, tracker.ProjectID) (ReviewPolicy, error)

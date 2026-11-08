@@ -631,6 +631,7 @@ type CollaborationEvent struct {
 	PushHeadSha          string
 	PushExternalEffect   string
 	PushEffectState      string
+	HistoryHidden        bool
 }
 
 type CollaborationVersion struct {

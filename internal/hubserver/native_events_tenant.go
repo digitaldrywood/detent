@@ -467,6 +467,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
+		history.HistoryHidden = i == len(events)-1 && usageCorrection || event.Type == "run.observed" && predecessor != nil && !nativeRuntimeHistoryChanged(predecessor.Runtime, event.Data.Runtime)
 		authority := NativeRunEventAuthority{BatchThrough: events[len(events)-1].Data.Sequence, Termination: termination, Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event}
 		if i == len(events)-1 && usageFactsFound && !termination {
 			facts := usageFacts

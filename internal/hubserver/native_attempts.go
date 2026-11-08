@@ -590,6 +590,15 @@ func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObs
 	left.REST, right.REST = nil, nil
 	left.GitHub, right.GitHub = nil, nil
 	left.HeartbeatAt, right.HeartbeatAt = time.Time{}, time.Time{}
+	if len(left.Pipeline) == 0 && len(right.Pipeline) == 0 {
+		left.Pipeline, right.Pipeline = nil, nil
+	}
+	if len(left.Phases) == 0 && len(right.Phases) == 0 {
+		left.Phases, right.Phases = nil, nil
+	}
+	if len(left.RepairDependencies) == 0 && len(right.RepairDependencies) == 0 {
+		left.RepairDependencies, right.RepairDependencies = nil, nil
+	}
 	if left.Landing != nil {
 		landing := *left.Landing
 		landing.ObservedAt = time.Time{}

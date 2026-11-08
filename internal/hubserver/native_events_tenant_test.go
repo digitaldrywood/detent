@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -237,7 +238,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	stale.IdempotencyKey = "stale"
 	stale.Data.Sequence = 4
 	var conflict *nativeError
-	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), stale); !errors.As(err, &conflict) || conflict.Code != "revision_conflict" {
+	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), stale); !errors.As(err, &conflict) || conflict.Code != "run_sequence_conflict" {
 		t.Fatalf("stale event sequence error=%v", err)
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -311,7 +312,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	laterObservation := observation
 	laterObservation.IdempotencyKey = "later-observation"
 	laterObservation.Data.Sequence = 3
-	laterObservation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.now().UTC().Add(time.Second)}
+	laterObservation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: service.config.now().UTC().Add(time.Second)}
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), laterObservation); err != nil {
 		t.Fatal(err)
 	}
@@ -887,5 +888,87 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestRuntimeRefreshPreservesAuditWithoutGrowingHistory(t *testing.T) {
+	f := newRunnerPGFixture(t)
+	f.service.config.SecretKeys = secretTestKeys(t, "1", "1")
+	envelope, err := f.service.config.SecretKeys.Seal(bytes.Repeat([]byte{0x35}, 32), accessstore.SecretAAD("org_startup", "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: time.Now().UTC()}, accessstore.SecretAudit{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index, lease := range f.leases {
+		itemPath := "/api/v2/organizations/org_startup/projects/prj_runner/work-items/" + string(lease.WorkItemID)
+		credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), "org_startup", apikey.HashToken(f.tokens[index]), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}
+		data := f.data[index]
+		var pending []tracker.NativeRunEvent
+		var last tracker.NativeRunEvent
+		for sequence := int64(2); sequence <= 5; sequence++ {
+			data.Sequence = sequence
+			phase := "implementation"
+			if sequence == 5 {
+				phase = "validation"
+			}
+			data.Runtime = &tracker.NativeRuntimeObservation{Phase: phase, HeartbeatAt: time.Now().UTC()}
+			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + "-history-" + strconv.FormatInt(sequence, 10)}, Type: "run.observed", SchemaVersion: 1, Data: data}
+			if index == 1 && sequence > 2 && sequence < 5 {
+				pending = append(pending, event)
+				continue
+			}
+			event.PriorEvents = pending
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", f.tokens[index], event), http.StatusOK)
+			last = event
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", f.tokens[index], last), http.StatusOK)
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			rows, err := r.Events(t.Context(), scope.project, lease.WorkItemID, 0, 10)
+			if err == nil && len(rows) != 5 {
+				t.Fatalf("immutable audit rows = %d, want 5", len(rows))
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, direction := range []string{"oldest", "newest"} {
+			query := url.Values{"view": {"timeline"}, "limit": {"2"}, "direction": {direction}}
+			first, err := f.service.readHistoryTenant(t.Context(), scope, string(lease.WorkItemID), query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(first.Items) != 2 || first.NextCursor == "" {
+				t.Fatalf("first history page = %+v", first)
+			}
+			query.Set("cursor", first.NextCursor)
+			next, err := f.service.readHistoryTenant(t.Context(), scope, string(lease.WorkItemID), query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(next.Items) != 1 || next.NextCursor != "" {
+				t.Fatalf("runtime refresh grew %s history: %+v", direction, next)
+			}
+			if direction == "oldest" && (first.Items[0].Type != "run.started" || next.Items[0].ID != nativeAttemptHistoryID("run.observed", last.Data)) {
+				t.Fatal("meaningful oldest history lost order or identity")
+			}
+			if direction == "newest" && (first.Items[0].ID != nativeAttemptHistoryID("run.observed", last.Data) || next.Items[0].Type != "run.started") {
+				t.Fatal("meaningful newest history lost order or identity")
+			}
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/attempts/"+data.AttemptID, f.tokens[index], nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var attempt tracker.NativeAttempt
+		decodeHubResponse(t, response, &attempt)
+		if attempt.Sequence != 5 || attempt.Runtime == nil || attempt.Runtime.Phase != "validation" {
+			t.Fatalf("latest immutable attempt changed: %+v", attempt)
+		}
 	}
 }

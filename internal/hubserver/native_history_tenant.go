@@ -75,9 +75,9 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 			return nativeNotFound()
 		}
 		if newest {
-			records, err = r.EventsBefore(ctx, scope.project, workItem.NativeID, boundary, limit)
+			records, err = r.HistoryEventsBefore(ctx, scope.project, workItem.NativeID, boundary, limit)
 		} else {
-			records, err = r.Events(ctx, scope.project, workItem.NativeID, boundary, limit)
+			records, err = r.HistoryEvents(ctx, scope.project, workItem.NativeID, boundary, limit)
 		}
 		if err != nil || len(records) < limit {
 			return err
@@ -85,9 +85,9 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 		last := records[len(records)-1].Sequence
 		var lookahead []eventstore.Event
 		if newest {
-			lookahead, err = r.EventsBefore(ctx, scope.project, workItem.NativeID, last, 1)
+			lookahead, err = r.HistoryEventsBefore(ctx, scope.project, workItem.NativeID, last, 1)
 		} else {
-			lookahead, err = r.Events(ctx, scope.project, workItem.NativeID, last, 1)
+			lookahead, err = r.HistoryEvents(ctx, scope.project, workItem.NativeID, last, 1)
 		}
 		hasMore = len(lookahead) != 0
 		return err
