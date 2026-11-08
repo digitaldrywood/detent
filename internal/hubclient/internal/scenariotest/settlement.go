@@ -1722,22 +1722,24 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				if !reflect.DeepEqual(current.Versions, original.Versions) || !reflect.DeepEqual(current.Reviews, original.Reviews) || !reflect.DeepEqual(current.Checks, original.Checks) || !reflect.DeepEqual(current.Change.Landed, original.Change.Landed) {
 					t.Fatal("same-head publication changed immutable version, reviews or CI evidence")
 				}
-				var visible tracker.NativeIssue
-				if err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+"/work-items/"+issue.ID+"?include=change", nil, &visible); err != nil {
+				publicationURL := fmt.Sprintf("%s/pull/%d", nativeChangeRepository, publicationNumber)
+				published, err := h.admin.Change(t.Context(), item, original.Change.ID)
+				if err != nil {
 					t.Fatal(err)
 				}
-				if visible.Change == nil || visible.Change.URL != fmt.Sprintf("%s/pull/%d", nativeChangeRepository, publicationNumber) || visible.PullRequest == nil || visible.PullRequest.Number != publicationNumber || visible.PullRequest.URL != visible.Change.URL {
-					t.Fatalf("operator reads omitted the verified PR: %+v", visible)
+				version := published.Versions[len(published.Versions)-1]
+				if version.External == nil || version.External.Provider != "github" || version.External.ID != fmt.Sprint(publicationNumber) || version.External.URL != publicationURL {
+					t.Fatalf("operator Change read omitted the verified PR: %+v", version.External)
 				}
 				var pulls []tracker.PullRequestView
 				if err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+"/work-items/"+issue.ID+"/pull-requests", nil, &pulls); err != nil {
 					t.Fatal(err)
 				}
-				if len(pulls) != 1 || pulls[0].Number != publicationNumber || pulls[0].URL != visible.Change.URL {
+				if len(pulls) != 1 || pulls[0].Number != publicationNumber || pulls[0].URL != publicationURL {
 					t.Fatalf("operator PR list omitted the verified publication: %+v", pulls)
 				}
 				target, err := execution.(runner.LandingExecution).LandingTarget(t.Context())
-				if !errors.Is(err, runner.ErrLandingNotReviewed) || target.External == nil || target.External.URL != visible.Change.URL {
+				if !errors.Is(err, runner.ErrLandingNotReviewed) || target.External == nil || target.External.URL != publicationURL {
 					t.Fatalf("publication lost the human hold or landing identity: %+v, %v", target, err)
 				}
 			}

@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -227,7 +228,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			if test.Enrolled {
 				identityPath = filepath.Join(t.TempDir(), "private", "runner.json")
 				hubURL := strings.Replace(fixtureClient(h.native.Transport()).baseURL.String(), "http://", "https://", 1)
-				file, err := runnerauth.Initialize(identityPath, hubURL)
+				file, err := hubclientInitializeIdentity(identityPath, hubURL)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -246,7 +247,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					t.Fatal(err)
 				}
 				file.Identity = identity
-				if err := runnerauth.Save(identityPath, file); err != nil {
+				if err := hubclientSaveIdentity(identityPath, file); err != nil {
 					t.Fatal(err)
 				}
 				fleet, err := NewFleetClient(enrollmentAdmin, h.organization, map[string]tracker.ProjectID{"local": h.project})
@@ -1569,6 +1570,10 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 
 				oldAttempt, oldLease := owner.CompletionData().AttemptID, owner.claim.lease
+				stopPublicationGuard()
+				if err := h.native.Release(t.Context(), oldLease, "released"); err != nil {
+					t.Fatal(err)
+				}
 				if genuinePublication {
 					currentIssue, readErr := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
 					if readErr != nil {
@@ -1577,32 +1582,43 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					for _, state := range []string{"Human Review", "Rework"} {
 						currentIssue, readErr = h.admin.Transition(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
 						if readErr != nil {
-							t.Fatal(readErr)
+							t.Fatalf("human transition state=%s: %T %v", state, readErr, readErr)
 						}
 					}
 				}
-				stopPublicationGuard()
-				if err := h.native.Release(t.Context(), oldLease, "released"); err != nil {
+				machine := fixtureSchedulerMachine(h.scheduler)
+				client := h.scheduler.Transport()
+				if test.PublicationFault == "foreign_source" || test.ForeignRunner || genuinePublication {
+					client, machine = hubclientEnrolledRunner(t, h.admin.Transport(), h.organization, h.project, h.failChanges)
+					h.native, err = client.Native(h.organization, h.project)
+					if err != nil {
+						t.Fatal(err)
+					}
+					h.connector.worker, err = NewNativeConnector(h.native)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				dependencies.Store = api.NewRunnerSessions(h.native)
+				agent, err = runner.NewRunner(dependencies)
+				if err != nil {
 					t.Fatal(err)
 				}
-				machineID := tracker.MachineID(testsupport.NativeChangeMachineID)
-				if test.PublicationFault == "foreign_source" || test.ForeignRunner {
-					machineID = "foreign-machine"
-				}
-				h.scheduler, err = newTestScheduler(h.scheduler.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: machineID, Hostname: "host", DisplayName: "Example runner", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
+				machineID := machine.ID
+				h.scheduler, err = newTestScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
 					t.Fatal(err)
 				}
 				if test.PublicationFault == "policy" {
 					h.repolicy(t)
 				}
-				if test.StalePolicy {
+				if test.StalePolicy || test.PublicationFault == "policy" {
 					rules, err := h.admin.ChangeReviewPolicy(t.Context())
 					if err != nil {
 						t.Fatal(err)
 					}
 					rules.PolicyID = h.descriptor.ID
-					rules.RequireReview = true
+					rules.RequireReview = rules.RequireReview || test.StalePolicy
 					if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
 						t.Fatal(err)
 					}
@@ -1873,19 +1889,19 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if test.PublicationFault != "" && test.PublicationFault != "policy" {
 					return
 				}
-				var visible tracker.NativeIssue
-				if err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+"/work-items/"+issue.ID+"?include=change", nil, &visible); err != nil {
+				var visible []tracker.PullRequestView
+				if err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+"/work-items/"+issue.ID+"/pull-requests", nil, &visible); err != nil {
 					t.Fatal(err)
 				}
-				if visible.Change == nil || visible.Change.URL != nativeChangeRepository+"/pull/7" || visible.PullRequest == nil || visible.PullRequest.Number != 7 {
-					t.Fatal("reconciled PR absent from existing issue/PR reads")
+				if len(visible) != 1 || visible[0].ChangeID != detail.Change.ID || visible[0].URL != nativeChangeRepository+"/pull/7" || visible[0].Number != 7 {
+					t.Fatal("reconciled PR absent from the operator publication owner")
 				}
 				target, err := execution.(runner.LandingExecution).LandingTarget(t.Context())
 				if !test.Formal && test.Publication == "confirmed" {
 					if err != nil || !result.NativeChange.Reviewed || target.VersionID != expected.Change.CurrentVersion {
 						t.Fatalf("fresh applicable native decision did not establish readiness: target=%+v error=%v", target, err)
 					}
-				} else if !errors.Is(err, runner.ErrLandingNotReviewed) || target.External == nil || target.External.URL != visible.Change.URL {
+				} else if !errors.Is(err, runner.ErrLandingNotReviewed) || target.External == nil || target.External.URL != visible[0].URL {
 					t.Fatal("publication cleared human hold or lost landing PR identity")
 				}
 				return
@@ -2661,13 +2677,6 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 				return
 			}
 		}
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews") {
-			if err := testsupport.NativeChangeRefreshReviews(r.Context(), config); err != nil {
-				t.Errorf("refresh fixture review evidence: %v", err)
-				http.Error(w, "fixture review evidence unavailable", 500)
-				return
-			}
-		}
 		service.Handler().ServeHTTP(w, r)
 	}
 	t.Cleanup(func() {
@@ -3060,12 +3069,7 @@ func (h *nativeChangeHub) publicationCI(t *testing.T) *NativeClient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var token struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
-	}
-	token.ID, token.Token = testsupport.NativeChangeServiceCredential(t, h.config, h.project, "operator")
-	client, err := createTestClient(t, Config{URL: fixtureClient(h.admin.Transport()).baseURL.String(), TokenSource: func() string { return token.Token }, HTTPClient: fixtureClient(h.admin.Transport()).httpClient})
+	client, err := createTestClient(t, Config{URL: fixtureClient(h.admin.Transport()).baseURL.String(), TokenSource: func() string { return "example-ci" }, HTTPClient: fixtureClient(h.admin.Transport()).httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
