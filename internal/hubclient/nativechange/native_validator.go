@@ -223,7 +223,11 @@ func recordedValidatorMatches(detail tracker.ChangeDetail, result gate.Validator
 		if err != nil {
 			return false
 		}
-		actual, err := json.Marshal(review.Validator)
+		recorded := *review.Validator
+		if recorded.Attribution == "" {
+			recorded.Attribution = normalized.Attribution
+		}
+		actual, err := json.Marshal(recorded)
 		if err == nil && bytes.Equal(canonical, actual) {
 			return true
 		}

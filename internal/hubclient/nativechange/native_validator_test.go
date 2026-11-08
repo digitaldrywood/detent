@@ -158,10 +158,12 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 
 func TestRecordedValidatorRequiresExactPublication(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		change func(*tracker.ChangeDetail, *gate.ValidatorResult)
+		name    string
+		change  func(*tracker.ChangeDetail, *gate.ValidatorResult)
+		matches bool
 	}{
-		{name: "matching publication"},
+		{name: "matching publication", matches: true},
+		{name: "empty stored attribution", matches: true, change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) { d.Reviews[0].Validator.Attribution = "" }},
 		{name: "current version changed", change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) { d.Change.CurrentVersion = "version_new" }},
 		{name: "different machine", change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) {
 			d.Reviews[0].SessionMachineID = "machine_other"
@@ -187,8 +189,8 @@ func TestRecordedValidatorRequiresExactPublication(t *testing.T) {
 			if test.change != nil {
 				test.change(&detail, &stored)
 			}
-			if got := recordedValidatorMatches(detail, result, "approved", "Validated", "machine_current"); got != (test.change == nil) {
-				t.Fatalf("publication matched = %t, want %t", got, test.change == nil)
+			if got := recordedValidatorMatches(detail, result, "approved", "Validated", "machine_current"); got != test.matches {
+				t.Fatalf("publication matched = %t, want %t", got, test.matches)
 			}
 		})
 	}
