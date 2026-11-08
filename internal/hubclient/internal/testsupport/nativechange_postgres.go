@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -66,7 +65,7 @@ func CloseNativeChangePostgres(ctx context.Context) error { return nativeChangeT
 
 func NativeChangeDatabasePath(t testing.TB) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "unused.db")
+	return ""
 }
 
 var nativeChangeDatabases sync.Map

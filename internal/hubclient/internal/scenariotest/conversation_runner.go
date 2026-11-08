@@ -41,10 +41,6 @@ func RunConversationRunnerExecutesLiveTurns(t *testing.T, constructors Construct
 		return h
 	}
 
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	for _, ordinary := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ordinary=%t", ordinary), func(t *testing.T) {
 			hub := newConversationRunnerHub(t)

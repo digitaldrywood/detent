@@ -43,7 +43,7 @@ func hubclientEnrolledRunner(t *testing.T, admin *Client, organization tracker.O
 	if err := fleet.UpdateRunner(t.Context(), identity.RunnerID, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Example runner", State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project}, IsolationTier: isolation.NativeTrusted, Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	client, err := createTestClient(t, Config{URL: url, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}}, fixtureClient(admin).constructors)
+	client, err := createTestClient(t, Config{URL: url, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}, Now: fixtureClient(admin).config.Now}, fixtureClient(admin).constructors)
 	if err != nil {
 		t.Fatal(err)
 	}

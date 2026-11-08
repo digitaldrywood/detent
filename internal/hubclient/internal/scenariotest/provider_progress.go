@@ -42,7 +42,7 @@ func (nativeOutageProgressBackend) Decide(_ context.Context, evidence progressch
 
 func RunNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T, factories Constructors) {
 	newNativeChangeHubTransport := func(t *testing.T, review string, states []tracker.NativeState, memory bool) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	}
 
 	t.Parallel()
@@ -338,7 +338,7 @@ func RunNativeRetryProgressRerouteExecutionIdentity(t *testing.T, factories Cons
 
 func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool, factories Constructors) {
 	newNativeChangeHubTransport := func(t *testing.T, review string, states []tracker.NativeState, memory bool) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	}
 
 	t.Helper()
@@ -496,7 +496,7 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool, factor
 
 func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factories Constructors) {
 	newNativeChangeHubTransport := func(t *testing.T, review string, states []tracker.NativeState, memory bool) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	}
 
 	t.Parallel()

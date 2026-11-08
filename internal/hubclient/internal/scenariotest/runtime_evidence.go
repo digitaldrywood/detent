@@ -21,10 +21,6 @@ import (
 )
 
 func RunNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T, factories Constructors) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	construct := factories.New
 	factories.New = func(host executioncontract.ExecutionHost, view executioncontract.ExecutionClaim) executioncontract.Execution {
@@ -34,7 +30,7 @@ func RunNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T, factories Constru
 	h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "Done", Terminal: true},
-	}, true, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+	}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	issue := h.createInProgress(t, "Activity checkpoints")
 	item := tracker.NativeWorkItemID(issue.ID)
 	h.claim(t, issue.ID)
@@ -254,7 +250,7 @@ func RunNativeAttemptTerminalActivityReceipts(t *testing.T, factories Constructo
 			h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
 				{Name: "Done", Terminal: true},
-			}, true, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+			}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 			issue := h.createInProgress(t, tt.name)
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)

@@ -29,9 +29,6 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 	newNativeChangeHubWithStates := func(t *testing.T, review string, states []tracker.NativeState) *nativeChangeHub {
 		return newNativeChangeHubConfigured(t, review, states, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}, factories)
 	}
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Setenv("TMPDIR", t.TempDir())
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {

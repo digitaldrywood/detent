@@ -29,7 +29,7 @@ import (
 func RunNativeChangeLargeValidationFinalization(t *testing.T, factories Constructors) {
 	newNativeChangeHub := func(t *testing.T) *nativeChangeHub { return newScenarioHub(t, factories) }
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("artifact service integration")
 	}
 	h := newNativeChangeHub(t)
 	store, publisher := changeEvidenceArtifactService(t, h)

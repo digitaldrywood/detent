@@ -41,7 +41,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -197,8 +196,9 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Blocked", review, "Done"}})
 				}
 			}
-			clock := time.Now
-			h := newNativeChangeHubConfigured(t, review, states, true, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock}, factories)
+			var clockOffset atomic.Int64
+			clock := func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())) }
+			h := newNativeChangeHubConfigured(t, review, states, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock}, factories)
 			var publicationCI *NativeClient
 			if test.Publication != "" {
 				previous := h.descriptor.ID
@@ -500,11 +500,12 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: local.HeadSHA, WorkspaceDigest: local.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}
 					var fencing tracker.FencingToken
 					for i := range 105 {
+						clockOffset.Add(int64(time.Minute))
 						candidates := h.candidatesIn(t, "Merging")
 						if len(candidates) != 1 {
 							t.Fatalf("reviewed unlanded version lost its claim at retry %d: %+v", i, candidates)
 						}
-						if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+						if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], h.clock()); err != nil {
 							t.Fatal(err)
 						}
 						landing := h.scheduler.RunExecution(issue.ID)
@@ -2672,7 +2673,9 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		defer requests.RUnlock()
 		if r.Method == http.MethodGet && (strings.HasSuffix(r.URL.Path, "/work-items") || r.URL.Query().Get("include") == "change") {
 			if err := testsupport.NativeChangeRefreshBoard(r.Context(), service, tracker.OrganizationID(config.Hosted.OrganizationID)); err != nil {
-				t.Errorf("refresh fixture board: %v", err)
+				if r.Context().Err() == nil {
+					t.Errorf("refresh fixture board: %v", err)
+				}
 				http.Error(w, "fixture board unavailable", 500)
 				return
 			}
@@ -2700,7 +2703,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Cleanup(server.Close)
 		serverURL, httpClient = server.URL, server.Client()
 	}
-	admin, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return nativeChangeAdminToken }, HTTPClient: httpClient})
+	admin, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return nativeChangeAdminToken }, HTTPClient: httpClient, Now: config.Clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2724,7 +2727,6 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	h.prepareEvidence = func(row eventstore.Evidence, raw []byte) (eventstore.Evidence, error) {
 		return eventstore.NewContent(config.RunDetails).PrepareEvidence(t.Context(), row, raw)
 	}
-	h.reopen = func(func(string) error) { t.Fatal("obsolete SQLite fixture seed") }
 	if h.admin, err = admin.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}
@@ -2782,7 +2784,6 @@ type nativeChangeHub struct {
 	config          hubserver.Config
 	leaseHolds      atomic.Int64
 	clock           func() time.Time
-	reopen          func(func(string) error)
 	restart         func()
 	seed            func(func(tenantstore.Writer) error)
 	prepareEvidence func(eventstore.Evidence, []byte) (eventstore.Evidence, error)
@@ -2798,10 +2799,6 @@ type nativeChangeHub struct {
 	failChanges     *changeFailingTransport
 	otherWorker     func(*testing.T) *NativeClient
 }
-
-var nativeRuntimeDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
-	return store.Open(ctx, store.Config{Path: path})
-})
 
 // repolicy approves a changed repository policy, as an operator editing the
 // project's definition between attempts does; the seeded review policy
@@ -3230,7 +3227,7 @@ func (h *nativeChangeHub) claim(t *testing.T, issueID string) connector.Issue {
 	if len(candidates) != 1 || candidates[0].ID != issueID {
 		t.Fatalf("candidates = %#v, want %s", candidates, issueID)
 	}
-	claim, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
+	claim, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], h.clock())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -85,7 +85,7 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 	}
 	cfg.DatabasePath = ""
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
-	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 6, ServingConnections: 4, BackgroundConnections: 1}}
+	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 6, ServingConnections: 4, BackgroundConnections: 1}, LeaseClock: cfg.Clock}
 	if cfg.Hosted == nil {
 		cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: hubclientIdentityProvider{}}
 	}

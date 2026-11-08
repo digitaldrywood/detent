@@ -640,9 +640,6 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 
 func RunNativeChangeOversizedReviewRecovery(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	if testing.Short() {
-		t.Skip("PostgreSQL integration")
-	}
 	h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
 	type evidence struct {
 		name    string
