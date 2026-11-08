@@ -51,7 +51,7 @@ func (s *session) ConversationByCreationKey(ctx context.Context, principal, key 
 const conversationSelect = `SELECT c.organization_id,c.project_id,c.id,c.creation_key,c.creation_hash,c.owner_principal_id,c.owner_subject,c.origin,c.title,c.visibility,c.status,
 c.subject_work_item_id,c.work_item_id,c.linked_at,c.revision,c.provider_thread_id,c.provider_thread_runner_id,c.provider_thread_origin,
 c.execution_json,c.event_seq,c.preferences_json,c.read_audience,c.created_at,c.updated_at,c.last_message_at,c.settled_at,c.archived,
-c.content_attachment_id,(SELECT count(*) FROM conversation_messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id)
+c.content_attachment_id,c.message_count
 FROM conversations c`
 
 func scanPGConversation(row interface{ Scan(...any) error }) (conversationstore.Conversation, error) {
@@ -798,8 +798,7 @@ func (s *session) CreateMessage(ctx context.Context, m conversationstore.Message
 	if err != nil {
 		return m, mapError(ctx, err)
 	}
-	_, err = s.db.Exec(ctx, `UPDATE conversations SET last_message_at=GREATEST(COALESCE(last_message_at,$1),$1) WHERE organization_id=$2 AND id=$3`, m.CreatedAt, m.OrganizationID, m.ConversationID)
-	return m, mapError(ctx, err)
+	return m, nil
 }
 
 func (s *session) UpdateMessage(ctx context.Context, m conversationstore.Message, expected int64) (conversationstore.Message, error) {

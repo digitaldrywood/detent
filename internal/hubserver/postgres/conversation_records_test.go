@@ -143,6 +143,17 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 	}
 
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		rollback := errors.New("rollback message insertion")
+		err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateMessage(ctx, conversationstore.Message{OrganizationID: organization, ConversationID: "conv_0123456789abcdef0123456789abcdef", ID: "msg_abcdefabcdefabcdefabcdefabcdefab", Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "rolled back", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman}, CreatedAt: now, UpdatedAt: now})
+			if err != nil {
+				return err
+			}
+			return rollback
+		})
+		if !errors.Is(err, rollback) {
+			t.Fatalf("rollback message error=%v", err)
+		}
 		if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 			contentID := contentIDs[organization]
 			conversationID := "conv_0123456789abcdef0123456789abcdef"
@@ -243,5 +254,49 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
+	const version = 20261108185629
+	admin, _ := migrationDatabaseAtVersion(t, version-1)
+	seedCore(t, admin)
+	for index, organization := range []string{"org_first", "org_second"} {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES($1,'count_owner','Count owner',$1,$1,'operator',true,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, organization); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversations(organization_id,id,project_id,owner_principal_id,origin,visibility,status) VALUES($1,'count_conversation','prj_shared','count_owner','user','private','active')`, organization); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversation_messages(organization_id,id,conversation_id,seq,role,kind,delivery) SELECT $1,'count_message_'||n,'count_conversation',n,'user','text','saved' FROM generate_series(1,$2::int) n`, organization, index+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	admin.SetMaxOpenConns(1)
+	if _, err := admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `SET detent.organization_id=''`); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := migrationProvider(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(t.Context(), version); err != nil {
+		t.Fatal(err)
+	}
+	var visible int
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM conversations`).Scan(&visible); err != nil || visible != 0 {
+		t.Fatalf("unscoped migration role sees conversations=%d error=%v", visible, err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `RESET ROLE`); err != nil {
+		t.Fatal(err)
+	}
+	for index, organization := range []string{"org_first", "org_second"} {
+		var count int
+		if err := admin.QueryRowContext(t.Context(), `SELECT message_count FROM conversations WHERE organization_id=$1 AND id='count_conversation'`, organization).Scan(&count); err != nil || count != index+1 {
+			t.Errorf("organization=%s migrated count=%d want=%d error=%v", organization, count, index+1, err)
+		}
 	}
 }

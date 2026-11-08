@@ -631,6 +631,7 @@ type Conversation struct {
 	ContentAttachmentID    string
 	ConversionState        int16
 	DeletedAt              *time.Time
+	MessageCount           int64
 }
 
 type ConversationAttachment struct {
