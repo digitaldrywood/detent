@@ -10817,7 +10817,7 @@ func TestServerBudgetOverrideUIUsesSharedStore(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	backend := openWebTestStore(t)
+	backend := &budgetOverrideViewStore{}
 	registry := project.NewRegistry()
 	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
@@ -10858,7 +10858,7 @@ func TestServerBudgetOverrideUIUsesSharedStore(t *testing.T) {
 			t.Fatalf("override response missing %q:\n%s", want, rec.Body.String())
 		}
 	}
-	active, err := backend.(store.BudgetOverrideStore).ActiveBudgetOverride(ctx, "detent", time.Now().UTC())
+	active, err := backend.ActiveBudgetOverride(ctx, "detent", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("ActiveBudgetOverride() error = %v", err)
 	}
@@ -12985,6 +12985,59 @@ func boardStateCountOK(t *testing.T, payload map[string]any, stateName string) (
 		}
 	}
 	return "", false
+}
+
+type budgetOverrideViewStore struct {
+	storeProbe
+	mu    sync.Mutex
+	value *store.BudgetOverride
+}
+
+func (s *budgetOverrideViewStore) ActiveBudgetOverride(ctx context.Context, projectID string, at time.Time) (store.BudgetOverride, error) {
+	if err := ctx.Err(); err != nil {
+		return store.BudgetOverride{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.value == nil || s.value.ProjectID != projectID || !s.value.ExpiresAt.After(at) {
+		return store.BudgetOverride{}, store.ErrNotFound
+	}
+	return *s.value, nil
+}
+
+func (s *budgetOverrideViewStore) SetBudgetOverride(ctx context.Context, value store.BudgetOverride) (store.BudgetOverride, error) {
+	if err := ctx.Err(); err != nil {
+		return store.BudgetOverride{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.value = &value
+	return value, nil
+}
+
+func (s *budgetOverrideViewStore) ListActiveBudgetOverrides(ctx context.Context, at time.Time) ([]store.BudgetOverride, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.value == nil || !s.value.ExpiresAt.After(at) {
+		return []store.BudgetOverride{}, nil
+	}
+	return []store.BudgetOverride{*s.value}, nil
+}
+
+func (s *budgetOverrideViewStore) ClearBudgetOverride(ctx context.Context, projectID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.value == nil || s.value.ProjectID != projectID {
+		return store.ErrNotFound
+	}
+	s.value = nil
+	return nil
 }
 
 type storeProbe struct {
