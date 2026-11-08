@@ -993,12 +993,17 @@ func TestConversationCreateIsIdempotent(t *testing.T) {
 		if replay.Conversation.ID != first.Conversation.ID {
 			t.Fatalf("replayed id = %q, want %q", replay.Conversation.ID, first.Conversation.ID)
 		}
-		var count int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations WHERE project_id = ?", f.project.ID).Scan(&count); err != nil {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			page, err := r.Conversations(t.Context(), conversationstore.ConversationQuery{ProjectID: f.project.ID, PrincipalID: f.ownerID, Limit: 2})
+			if err != nil {
+				return err
+			}
+			if len(page.Items) != 1 || page.Next != "" || page.Items[0].ID != first.Conversation.ID {
+				t.Fatalf("conversations=%+v, want exactly the original conversation", page)
+			}
+			return nil
+		}); err != nil {
 			t.Fatal(err)
-		}
-		if count != 1 {
-			t.Fatalf("conversations = %d, want exactly 1", count)
 		}
 	})
 
@@ -1287,8 +1292,9 @@ func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 	})
 
 	// Record an attempt the way a bind does.
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"INSERT INTO conversation_starts (attempt_id, conversation_id, created_at) VALUES (?, ?, ?)", "att_past", record.ID, testTimestamp); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RecordStart(t.Context(), "att_past", record.ID, f.service.config.now())
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1306,13 +1312,7 @@ func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 	t.Run("null is refused while an attempt owns the conversation", func(t *testing.T) {
 		owned := f.create(t, f.token, map[string]any{"title": "Owned"}).Conversation
 		requireNativeStatus(t, f.link(t, f.token, owned.ID, "link-owned", true, "Owned"), http.StatusOK)
-		if _, err := f.service.database.db.ExecContext(t.Context(),
-			`UPDATE conversations SET content_attachment_id='', execution_json = ? WHERE id = ?`, mustMarshalConversationExecution(t, f.service.conversations.store, owned.ID, func(execution *conversation.Execution) {
-				execution.Owner.AttemptID = "att_live"
-				execution.Status = conversation.ExecutionCompleted
-			}), owned.ID); err != nil {
-			t.Fatal(err)
-		}
+		f.setExecution(t, owned.ID, conversation.Execution{Owner: conversation.Owner{AttemptID: "att_live"}, Status: conversation.ExecutionCompleted, UpdatedAt: f.service.config.now()})
 		requireNativeError(t, f.command(t, f.token, owned.ID, conversation.Command{Key: "continue-4", Kind: conversation.CommandContinue}), http.StatusUnprocessableEntity, "invalid_request")
 	})
 }
