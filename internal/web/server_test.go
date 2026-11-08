@@ -7266,25 +7266,16 @@ func TestHealthReportsOnlyWorkerProcessesWithoutLiveSessions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := testDeps(t)
-			deps.Store = openWebTestStore(t)
-			deps.WorkerProcesses = deps.Store
+			deps.Store = storeProbe{}
 			startedAt := now.Add(-2 * time.Hour)
-			sessionID, err := deps.Store.StartSession(t.Context(), store.SessionStart{
-				IssueID:    "issue-1885",
-				Identifier: "example-org/example-project#1885",
-				StartedAt:  startedAt,
-			})
-			if err != nil {
-				t.Fatalf("StartSession() error = %v", err)
-			}
-			if err := deps.Store.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 1885, GroupID: 1885, StartedAt: startedAt}}); err != nil {
-				t.Fatalf("UpdateSessionWorkerProcess() error = %v", err)
-			}
+			const sessionID int64 = 1
+			process := store.WorkerProcess{Role: "agent", SessionID: sessionID, IssueID: "issue-1885", Identifier: "example-org/example-project#1885", WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 1885, GroupID: 1885, StartedAt: startedAt}}
 			if tt.terminal {
-				if err := deps.Store.FinishSession(t.Context(), sessionID, store.SessionFinish{CompletedAt: now.Add(-time.Hour), FinalState: "completed"}); err != nil {
-					t.Fatalf("FinishSession() error = %v", err)
-				}
+				process.FinalState = "completed"
+				process.CompletedAt = now.Add(-time.Hour)
 			}
+			deps.WorkerProcesses = &startupHealthStore{processes: []store.WorkerProcess{process}}
+
 			observedIdentities := 0
 			deps.ObserveProcesses = func(identities []procgroup.Identity) ([]procgroup.Observation, error) {
 				observedIdentities = len(identities)
@@ -11772,7 +11763,7 @@ func TestProjectDiagnosticsRendersWorkflowMetricsEmptyHistory(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
-	backend := openWebTestStore(t)
+	backend := storeProbe{}
 
 	deps := testDeps(t)
 	deps.Store = backend
