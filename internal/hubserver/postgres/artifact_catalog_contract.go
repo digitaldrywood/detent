@@ -2,10 +2,7 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -232,17 +229,13 @@ type CatalogTrafficPolicy = pgquery.PutCatalogTrafficSettingsParams
 
 func (s *session) CatalogUsage(ctx context.Context) (CatalogUsage, error) {
 	row, err := s.queries.CatalogUsage(ctx, s.organization)
-	if errors.Is(err, pgx.ErrNoRows) {
-		active, err := s.queries.CatalogOrganizationUsageActive(ctx, s.organization)
-		if err != nil {
-			return CatalogUsage{}, mapError(ctx, err)
-		}
-		if active {
-			return CatalogUsage{}, artifact.ErrIntegrity
-		}
-		return CatalogUsage{OrganizationID: s.organization}, nil
+	if err != nil {
+		return CatalogUsage{}, mapError(ctx, err)
 	}
-	return row, mapError(ctx, err)
+	if !row.HasCounter && row.Active {
+		return CatalogUsage{}, artifact.ErrIntegrity
+	}
+	return CatalogUsage{OrganizationID: s.organization, ReservedBytes: row.ReservedBytes, RetainedBytes: row.RetainedBytes}, nil
 }
 func (s *session) lockCatalogUsage(ctx context.Context) (CatalogUsage, error) {
 	if _, err := s.CatalogUsage(ctx); err != nil {

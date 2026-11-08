@@ -35,19 +35,11 @@ func (q *Queries) AdjustCatalogServiceUsage(ctx context.Context, arg AdjustCatal
 	return result.RowsAffected(), nil
 }
 
-const catalogOrganizationUsageActive = `-- name: CatalogOrganizationUsageActive :one
-SELECT EXISTS(SELECT 1 FROM artifact_catalog_uploads WHERE organization_id=$1 AND (reserved_bytes>0 OR retained_bytes>0))
-`
-
-func (q *Queries) CatalogOrganizationUsageActive(ctx context.Context, organizationID tracker.OrganizationID) (bool, error) {
-	row := q.db.QueryRow(ctx, catalogOrganizationUsageActive, organizationID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const catalogServiceUsage = `-- name: CatalogServiceUsage :one
-SELECT organization_id, service_id, reserved_bytes, retained_bytes FROM artifact_catalog_service_usage WHERE organization_id=$1 AND service_id=$2
+SELECT COALESCE(q.reserved_bytes,0)::bigint AS reserved_bytes,COALESCE(q.retained_bytes,0)::bigint AS retained_bytes,
+ (q.organization_id IS NOT NULL)::boolean AS has_counter,
+ EXISTS(SELECT 1 FROM artifact_catalog_uploads u WHERE u.organization_id=$1 AND (($2::text='' AND u.binding_mode='hosted') OR u.service_id=$2) AND (u.reserved_bytes>0 OR u.retained_bytes>0)) AS active
+FROM (SELECT 1) seed LEFT JOIN artifact_catalog_service_usage q ON q.organization_id=$1 AND q.service_id=$2
 `
 
 type CatalogServiceUsageParams struct {
@@ -55,32 +47,23 @@ type CatalogServiceUsageParams struct {
 	ServiceID      string
 }
 
-func (q *Queries) CatalogServiceUsage(ctx context.Context, arg CatalogServiceUsageParams) (ArtifactCatalogServiceUsage, error) {
+type CatalogServiceUsageRow struct {
+	ReservedBytes int64
+	RetainedBytes int64
+	HasCounter    bool
+	Active        bool
+}
+
+func (q *Queries) CatalogServiceUsage(ctx context.Context, arg CatalogServiceUsageParams) (CatalogServiceUsageRow, error) {
 	row := q.db.QueryRow(ctx, catalogServiceUsage, arg.OrganizationID, arg.ServiceID)
-	var i ArtifactCatalogServiceUsage
+	var i CatalogServiceUsageRow
 	err := row.Scan(
-		&i.OrganizationID,
-		&i.ServiceID,
 		&i.ReservedBytes,
 		&i.RetainedBytes,
+		&i.HasCounter,
+		&i.Active,
 	)
 	return i, err
-}
-
-const catalogServiceUsageActive = `-- name: CatalogServiceUsageActive :one
-SELECT EXISTS(SELECT 1 FROM artifact_catalog_uploads WHERE organization_id=$1 AND (($2::text='' AND binding_mode='hosted') OR service_id=$2) AND (reserved_bytes>0 OR retained_bytes>0))
-`
-
-type CatalogServiceUsageActiveParams struct {
-	OrganizationID tracker.OrganizationID
-	ServiceID      string
-}
-
-func (q *Queries) CatalogServiceUsageActive(ctx context.Context, arg CatalogServiceUsageActiveParams) (bool, error) {
-	row := q.db.QueryRow(ctx, catalogServiceUsageActive, arg.OrganizationID, arg.ServiceID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }
 
 const ensureCatalogServiceUsage = `-- name: EnsureCatalogServiceUsage :exec

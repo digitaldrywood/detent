@@ -1,5 +1,8 @@
 -- name: CatalogUsage :one
-SELECT * FROM artifact_catalog_usage WHERE organization_id=$1;
+SELECT COALESCE(q.reserved_bytes,0)::bigint AS reserved_bytes,COALESCE(q.retained_bytes,0)::bigint AS retained_bytes,
+ (q.organization_id IS NOT NULL)::boolean AS has_counter,
+ EXISTS(SELECT 1 FROM artifact_catalog_uploads u WHERE u.organization_id=sqlc.arg(organization_id) AND (u.reserved_bytes>0 OR u.retained_bytes>0)) AS active
+FROM (SELECT 1) seed LEFT JOIN artifact_catalog_usage q ON q.organization_id=sqlc.arg(organization_id);
 
 -- name: EnsureCatalogUsage :exec
 INSERT INTO artifact_catalog_usage(organization_id) VALUES($1) ON CONFLICT DO NOTHING;

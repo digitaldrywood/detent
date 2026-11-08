@@ -48,7 +48,15 @@ func (s *session) recordCatalogTraffic(ctx context.Context, arg CatalogTrafficRe
 	if err := s.queries.AddCatalogTraffic(ctx, pgquery.AddCatalogTrafficParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, ServiceID: arg.ServiceID, Minute: arg.Minute, UploadBytes: arg.UploadBytes, DownloadBytes: arg.DownloadBytes, Requests: arg.Requests}); err != nil {
 		return mapError(ctx, err)
 	}
-	for _, service := range []string{arg.ServiceID, ""} {
+	binding, err := s.CatalogPolicy(ctx, CatalogPolicyInput{OrganizationID: s.organization, ProjectID: arg.ProjectID, ID: arg.ServiceID})
+	if err != nil {
+		return err
+	}
+	services := []string{arg.ServiceID}
+	if binding.BindingMode == "hosted" && binding.HostedOptIn {
+		services = append(services, "")
+	}
+	for _, service := range services {
 		if err := s.queries.AddCatalogServiceTraffic(ctx, pgquery.AddCatalogServiceTrafficParams{OrganizationID: s.organization, ServiceID: service, Minute: arg.Minute, UploadBytes: arg.UploadBytes, DownloadBytes: arg.DownloadBytes, Requests: arg.Requests}); err != nil {
 			return mapError(ctx, err)
 		}

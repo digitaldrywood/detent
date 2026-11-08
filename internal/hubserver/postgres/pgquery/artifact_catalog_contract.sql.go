@@ -672,13 +672,28 @@ func (q *Queries) CatalogUploadByKey(ctx context.Context, arg CatalogUploadByKey
 }
 
 const catalogUsage = `-- name: CatalogUsage :one
-SELECT organization_id, reserved_bytes, retained_bytes FROM artifact_catalog_usage WHERE organization_id=$1
+SELECT COALESCE(q.reserved_bytes,0)::bigint AS reserved_bytes,COALESCE(q.retained_bytes,0)::bigint AS retained_bytes,
+ (q.organization_id IS NOT NULL)::boolean AS has_counter,
+ EXISTS(SELECT 1 FROM artifact_catalog_uploads u WHERE u.organization_id=$1 AND (u.reserved_bytes>0 OR u.retained_bytes>0)) AS active
+FROM (SELECT 1) seed LEFT JOIN artifact_catalog_usage q ON q.organization_id=$1
 `
 
-func (q *Queries) CatalogUsage(ctx context.Context, organizationID tracker.OrganizationID) (ArtifactCatalogUsage, error) {
+type CatalogUsageRow struct {
+	ReservedBytes int64
+	RetainedBytes int64
+	HasCounter    bool
+	Active        bool
+}
+
+func (q *Queries) CatalogUsage(ctx context.Context, organizationID tracker.OrganizationID) (CatalogUsageRow, error) {
 	row := q.db.QueryRow(ctx, catalogUsage, organizationID)
-	var i ArtifactCatalogUsage
-	err := row.Scan(&i.OrganizationID, &i.ReservedBytes, &i.RetainedBytes)
+	var i CatalogUsageRow
+	err := row.Scan(
+		&i.ReservedBytes,
+		&i.RetainedBytes,
+		&i.HasCounter,
+		&i.Active,
+	)
 	return i, err
 }
 

@@ -2,9 +2,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -17,17 +14,13 @@ func (s *session) CatalogServiceUsage(ctx context.Context, arg CatalogServiceUsa
 		return CatalogUsage{}, err
 	}
 	row, err := s.queries.CatalogServiceUsage(ctx, arg)
-	if errors.Is(err, pgx.ErrNoRows) {
-		active, err := s.queries.CatalogServiceUsageActive(ctx, pgquery.CatalogServiceUsageActiveParams(arg))
-		if err != nil {
-			return CatalogUsage{}, mapError(ctx, err)
-		}
-		if active {
-			return CatalogUsage{}, artifact.ErrIntegrity
-		}
-		return CatalogUsage{OrganizationID: s.organization}, nil
+	if err != nil {
+		return CatalogUsage{}, mapError(ctx, err)
 	}
-	return CatalogUsage{OrganizationID: row.OrganizationID, RetainedBytes: row.RetainedBytes, ReservedBytes: row.ReservedBytes}, mapError(ctx, err)
+	if !row.HasCounter && row.Active {
+		return CatalogUsage{}, artifact.ErrIntegrity
+	}
+	return CatalogUsage{OrganizationID: s.organization, RetainedBytes: row.RetainedBytes, ReservedBytes: row.ReservedBytes}, nil
 }
 
 func (s *session) ensureCatalogServiceUsage(ctx context.Context, service string) (CatalogUsage, error) {
