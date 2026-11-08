@@ -423,6 +423,7 @@ func RunNativeSourceResumesWithoutPreviousRuntime(t *testing.T, factories Constr
 			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "checkpointed"); err != nil {
 				t.Fatal(err)
 			}
+			h.restart()
 			if tc.loseWorkspace {
 				if err := os.Rename(firstWorkspace, firstWorkspace+"-unavailable"); err != nil {
 					t.Fatal(err)
