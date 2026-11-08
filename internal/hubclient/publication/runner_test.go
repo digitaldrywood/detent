@@ -1,15 +1,24 @@
 package publication_test
 
 import (
+	"context"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
 )
 
-func TestMain(m *testing.M) { os.Exit(testsupport.RunMain(m, scenariotest.ClosePostgres)) }
+func TestMain(m *testing.M) {
+	os.Exit(testsupport.RunMain(m, func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return errors.Join(scenariotest.ClosePostgres(), testsupport.CloseNativeChangePostgres(ctx), testsupport.CloseDispatchPostgres(ctx))
+	}))
+}
 func TestRunnerPublication(t *testing.T) {
 	scenariotest.Run(t, []scenariotest.Scenario{
 		{Name: "held publication reconciles lost create through new Runner lease", Publication: "lost_create", Rework: true, Formal: true},

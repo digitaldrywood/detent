@@ -25,9 +25,6 @@ func isolatedPostgresBinaries(scratch string) error {
 		}
 		quoted := "'" + strings.ReplaceAll(binary, "'", "'\"'\"'") + "'"
 		body := "#!/bin/sh\nexec " + quoted + " " + options + " \"$@\"\n"
-		if name == "postgres" {
-			body = "#!/bin/sh\nstop_postgres() {\ntrap '' INT TERM QUIT\nkill -INT \"$postgres_pid\" 2>/dev/null\nwait \"$postgres_pid\"\nexit \"$?\"\n}\ntrap stop_postgres INT TERM QUIT\n" + quoted + " " + options + " \"$@\" &\npostgres_pid=$!\nwait \"$postgres_pid\"\nexit \"$?\"\n"
-		}
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o700); err != nil {
 			return err
 		}
