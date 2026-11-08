@@ -57,9 +57,6 @@ func (s *session) PruneCatalogTraffic(ctx context.Context, before time.Time, lim
 	if err := checkPage(limit); err != nil {
 		return err
 	}
-	if _, err := s.lockCatalogUsage(ctx); err != nil {
-		return err
-	}
 	if _, err := s.queries.PruneCatalogTraffic(ctx, pgquery.PruneCatalogTrafficParams{OrganizationID: s.organization, Minute: before, Limit: int32(limit)}); err != nil {
 		return mapError(ctx, err)
 	}

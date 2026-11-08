@@ -1,19 +1,25 @@
 package postgres_test
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
@@ -478,5 +484,116 @@ func TestArtifactCatalogPendingAdmission(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type catalogPruneProbe struct {
+	pgquery.DBTX
+	statement string
+	args      []any
+}
+
+func (p *catalogPruneProbe) Exec(ctx context.Context, statement string, args ...any) (pgconn.CommandTag, error) {
+	p.statement, p.args = statement, args
+	return p.DBTX.Exec(ctx, statement, args...)
+}
+
+func TestArtifactCatalogTrafficPruneSeeksBoundedHistoryPages(t *testing.T) {
+	admin, repository, pool, now := artifactCatalogFixture(t)
+	minute := now.UTC().Truncate(time.Minute)
+	for _, statement := range []string{
+		`INSERT INTO artifact_catalog_traffic(organization_id,project_id,service_id,minute,upload_bytes,download_bytes,requests)
+   SELECT organization_id,project_id,id,$1::timestamptz + n * interval '1 minute',1,2,1 FROM artifact_services CROSS JOIN generate_series(1,10000) n`,
+		`INSERT INTO artifact_catalog_traffic_receipts(organization_id,project_id,service_id,id,minute,upload_bytes,download_bytes,requests)
+   SELECT organization_id,project_id,id,'traffic_'||n,$1::timestamptz + n * interval '1 minute',1,2,1 FROM artifact_services CROSS JOIN generate_series(1,10000) n`,
+	} {
+		if _, err := admin.ExecContext(t.Context(), statement, minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := admin.ExecContext(t.Context(), "ANALYZE artifact_catalog_traffic, artifact_catalog_traffic_receipts"); err != nil {
+		t.Fatal(err)
+	}
+	const page = 7
+	before := minute.Add(5000 * time.Minute)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(t.Context())
+			if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, true)", string(org)); err != nil {
+				t.Fatal(err)
+			}
+			for _, probeCase := range []struct {
+				table, index string
+				prune        func(*pgquery.Queries) (int64, error)
+			}{
+				{"artifact_catalog_traffic", "artifact_catalog_traffic_expiry", func(q *pgquery.Queries) (int64, error) {
+					return q.PruneCatalogTraffic(t.Context(), pgquery.PruneCatalogTrafficParams{OrganizationID: org, Minute: before, Limit: page})
+				}},
+				{"artifact_catalog_traffic_receipts", "artifact_catalog_traffic_receipt_expiry", func(q *pgquery.Queries) (int64, error) {
+					return q.PruneCatalogTrafficReceipts(t.Context(), pgquery.PruneCatalogTrafficReceiptsParams{OrganizationID: org, Minute: before, Limit: page})
+				}},
+			} {
+				probe := &catalogPruneProbe{DBTX: tx}
+				affected, err := probeCase.prune(pgquery.New(probe))
+				if err != nil || affected != page {
+					t.Fatalf("%s page affected=%d: %v", probeCase.table, affected, err)
+				}
+				var raw []byte
+				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("%s: %s", probeCase.table, raw)
+				var plans []struct{ Plan searchPlanNode }
+				if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+					t.Fatalf("plan: %v", err)
+				}
+				if !plans[0].Plan.usesIndex(probeCase.index) || strings.Contains(string(raw), `"Node Type": "Sort"`) {
+					t.Fatalf("%s prune does not seek expiry index: %s", probeCase.table, raw)
+				}
+				var visits func(searchPlanNode) float64
+				visits = func(node searchPlanNode) float64 {
+					var work float64
+					if node.Relation == probeCase.table {
+						work = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+					}
+					for _, child := range node.Plans {
+						work += visits(child)
+					}
+					return work
+				}
+				if work := visits(plans[0].Plan); work > 3*page {
+					t.Fatalf("%s prune visited %.0f history rows for page %d", probeCase.table, work, page)
+				}
+			}
+		})
+	}
+	if err := repository.WriteArtifactCatalog(t.Context(), "org_first", corestore.Background, func(w postgres.ArtifactCatalogWriter) error { return w.PruneCatalogTraffic(t.Context(), before, page) }); err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []string{"org_first", "org_second"} {
+		for _, table := range []string{"artifact_catalog_traffic", "artifact_catalog_traffic_receipts"} {
+			var count int
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE organization_id=$1", org).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			want := 40000
+			if org == "org_first" {
+				want -= page
+			}
+			if count != want {
+				t.Errorf("%s %s retained=%d want=%d", org, table, count, want)
+			}
+			var expired int
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE organization_id=$1 AND minute >= $2", org, before).Scan(&expired); err != nil {
+				t.Fatal(err)
+			}
+			if expired != 20004 {
+				t.Errorf("%s %s current boundary rows=%d want=20004", org, table, expired)
+			}
+		}
 	}
 }
