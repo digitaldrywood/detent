@@ -70,6 +70,9 @@ func (r *Repository) ImportCorePolicies(ctx context.Context, source CorePolicyIm
 	var result CorePolicyImportResult
 	if source.BundlePath != "" {
 		err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
+			if err := validateNeutralCoreSourceSchema(bundle, "policy_revisions", "project_policies", "change_review_policies", "monthly_budget_policies"); err != nil {
+				return err
+			}
 			source.neutral = bundle
 			if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 				return err
@@ -233,6 +236,9 @@ func (r *Repository) ImportCoreMonthlyBudgetFacts(ctx context.Context, source Co
 	var result CoreMonthlyBudgetFactsResult
 	if source.BundlePath != "" {
 		err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
+			if err := validateNeutralCoreSourceSchema(bundle, "issues", "leases", "monthly_budget_admissions", "monthly_budget_leases"); err != nil {
+				return err
+			}
 			source.neutral = bundle
 			if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 				return err

@@ -51,6 +51,9 @@ func (r *Repository) PinVerifiedNeutralImport(ctx context.Context, source *Verif
 func (r *Repository) importNeutralCoreProjects(ctx context.Context, source CoreProjectImportSource) (int64, error) {
 	var count int64
 	err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
+		if err := validateNeutralCoreSourceSchema(bundle, "projects", "repositories"); err != nil {
+			return err
+		}
 		keys, err := bundle.TableKey("projects")
 		if err != nil || !slices.Equal(keys, []NeutralImportKey{{Column: "id", Kind: "text"}}) {
 			return ErrNeutralImport

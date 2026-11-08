@@ -34,7 +34,8 @@ func coreProjectCopy(t *testing.T, org tracker.OrganizationID) string {
 		}
 		records = append(records, record)
 	}
-	directory, _ := writeNeutralFixture(t, org, []postgres.NeutralImportTable{table}, map[string][]postgres.NeutralImportRow{"projects": records})
+	repositories := neutralFixtureTable(t, "repositories", []postgres.NeutralImportKey{{Column: "id", Kind: "integer"}})
+	directory, _ := writeNeutralFixture(t, org, []postgres.NeutralImportTable{table, repositories}, map[string][]postgres.NeutralImportRow{"projects": records})
 	return directory
 }
 
@@ -99,7 +100,7 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 					return err
 				}
 				expected := fmt.Sprintf("%x", sha256.Sum256([]byte("historical source")))
-				if saved.Identity.SourceSHA256 != expected || saved.Identity.OrganizationID != org || saved.Version != 1 || len(saved.Tables) != 1 {
+				if saved.Identity.SourceSHA256 != expected || saved.Identity.OrganizationID != org || saved.Version != 1 || len(saved.Tables) != 2 || saved.Tables[0].Name != "projects" || saved.Tables[1].Name != "repositories" {
 					t.Fatalf("source manifest provenance lost: %+v", saved.Identity)
 				}
 				return nil
