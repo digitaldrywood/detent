@@ -4006,7 +4006,7 @@ func TestBoardSnapshotRendersActiveLaneAgeFooter(t *testing.T) {
 	}
 }
 
-func TestBoardSnapshotRendersLocalSQLiteProductionLaneAgeFooter(t *testing.T) {
+func TestBoardSnapshotRendersProductionLaneAgeFooter(t *testing.T) {
 	now := time.Date(2026, 7, 9, 15, 0, 0, 0, time.UTC)
 	stageUpdatedAt := time.Date(2026, 7, 9, 14, 17, 33, 936728130, time.UTC)
 	data := DashboardData{

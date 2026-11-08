@@ -371,13 +371,8 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		t.Fatal("runtimeUpdateIdle() with empty registry = false, want true")
 	}
 	t.Run("pending admission maintenance does not block idle adoption", func(t *testing.T) {
-		backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = backend.Close() })
 		lookedUp := make(chan struct{}, 1)
-		attempts := &pendingAdmissionMaintenanceStore{Store: backend, lookedUp: lookedUp}
+		attempts := &pendingAdmissionMaintenanceStore{lookedUp: lookedUp}
 		cfg := workflowconfig.Default()
 		cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 		tracked, err := projectfixture.New(project.Config{
@@ -548,7 +543,7 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 }
 
 type pendingAdmissionMaintenanceStore struct {
-	store.Store
+	configurationAttemptFixture
 	lookedUp chan struct{}
 }
 

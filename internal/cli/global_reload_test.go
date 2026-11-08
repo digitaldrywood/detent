@@ -223,15 +223,8 @@ func TestGlobalConfigReloaderConvergesWhenFileChangesDuringReconciliation(t *tes
 	if err := globalconfig.Write(path, current); err != nil {
 		t.Fatalf("Write(current) error = %v", err)
 	}
-	settings, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "settings.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = settings.Close() })
-	if _, err := settings.InitializeLocalConfiguration(t.Context(), current, nil); err != nil {
-		t.Fatal(err)
-	}
-	current, err = readRuntimeConfiguration(t.Context(), settings, path)
+	settings := &reloadConfigurationFixture{projects: append([]globalconfig.Project(nil), current.Projects...)}
+	current, err := readRuntimeConfiguration(t.Context(), settings, path)
 	if err != nil {
 		t.Fatalf("Read(current) error = %v", err)
 	}
@@ -906,4 +899,14 @@ func TestStartupManagerConfigBoundsTokenRefresh(t *testing.T) {
 	if config.RuntimeCredentialVersion != runtimeGitHubTokenVersion("") {
 		t.Fatalf("RuntimeCredentialVersion = %q, want the unresolved token version", config.RuntimeCredentialVersion)
 	}
+}
+
+type reloadConfigurationFixture struct {
+	store.LocalConfigurationStore
+	projects []globalconfig.Project
+}
+
+func (f *reloadConfigurationFixture) LocalConfiguration(ctx context.Context, cfg globalconfig.Config) (globalconfig.Config, error) {
+	cfg.Projects = append([]globalconfig.Project(nil), f.projects...)
+	return cfg, ctx.Err()
 }

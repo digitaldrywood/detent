@@ -3,7 +3,6 @@ package web_test
 import (
 	"context"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -168,8 +167,6 @@ func newLocalIssueDetailTestServer(t *testing.T) *web.Server {
 
 	workflow := workflowconfig.Default()
 	workflow.Tracker.Kind = workflowconfig.TrackerHubNative
-	workflow.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
-	workflow.Tracker.LocalSQLite.ProjectID = "video"
 	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
 	workflow.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflow.Tracker.TerminalStates = []string{"Done"}

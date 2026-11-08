@@ -631,7 +631,7 @@ func TestLoopbackPeerReadTrustPreservesLoopbackBindAccess(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
-	deps.Store = openWebTestStore(t)
+	deps.Store = loopbackReadStoreFixture{}
 	deps.Refresher = &refreshProbe{}
 	server, err := newServerWithLaneWriter(web.Config{
 		ServerAddress: "127.0.0.1:0",
@@ -693,7 +693,7 @@ func TestLoopbackPeerReadTrustLiveReload(t *testing.T) {
 func TestLoopbackPeerReadTrustHonorsStaticTokenAndRejectsSuppliedFailures(t *testing.T) {
 	t.Parallel()
 
-	backend := openWebTestStore(t)
+	backend := &authKeyStoreFixture{keys: make(map[string]store.APIKey)}
 	deps := testDeps(t)
 	deps.Store = backend
 	server, err := newServerWithLaneWriter(web.Config{
@@ -1530,7 +1530,7 @@ func newDashboardHTMXAuthFixture(t *testing.T) dashboardHTMXAuthFixture {
 func newAPIKeyDashboardHTMXTestServer(t *testing.T, apiToken string) (*web.Server, store.Store) {
 	t.Helper()
 
-	backend := openWebTestStore(t)
+	backend := &authKeyStoreFixture{keys: make(map[string]store.APIKey)}
 	deps := testDeps(t)
 	deps.Store = backend
 	cfg := web.Config{
@@ -1579,7 +1579,7 @@ func newAPIKeyDashboardSession(t *testing.T, handler http.Handler, host string, 
 	}
 }
 
-func TestWorkItemAPICreatesLocalSQLiteItem(t *testing.T) {
+func TestWorkItemAPICreatesNativeItem(t *testing.T) {
 	t.Parallel()
 
 	server, conn, refresher := newWorkItemAPITestServer(t, "detent_test_token")
@@ -1739,7 +1739,7 @@ func TestWorkItemAPIRejectsUnsupportedTracker(t *testing.T) {
 func TestAPIKeyManagementAndScopedWorkItemAccess(t *testing.T) {
 	t.Parallel()
 
-	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t, openWebTestStore(t))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
@@ -1805,7 +1805,7 @@ func TestAPIKeyManagementAndScopedWorkItemAccess(t *testing.T) {
 func TestAPIKeyCreateFormRejectsEmptyProjectSelection(t *testing.T) {
 	t.Parallel()
 
-	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t, &authKeyStoreFixture{keys: make(map[string]store.APIKey)})
 	form := url.Values{}
 	form.Set("name", "Video Studio")
 	form.Add("scopes", "write")
@@ -1838,7 +1838,7 @@ func TestAPIKeyCreateFormRejectsEmptyProjectSelection(t *testing.T) {
 func TestAPIKeyRevokeExpireRotateAndRateLimit(t *testing.T) {
 	t.Parallel()
 
-	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t, &authKeyStoreFixture{keys: make(map[string]store.APIKey)})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -1943,7 +1943,7 @@ func TestAPIKeyRevokeExpireRotateAndRateLimit(t *testing.T) {
 func TestAPIUsageLogRecordsReturnedHTTPErrorStatus(t *testing.T) {
 	t.Parallel()
 
-	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t, openWebTestStore(t))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
@@ -1971,7 +1971,7 @@ func TestAPIUsageLogRecordsReturnedHTTPErrorStatus(t *testing.T) {
 func TestAPIUsageWritesDrainOnShutdown(t *testing.T) {
 	t.Parallel()
 
-	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t, openWebTestStore(t))
 	token, keyID := createAPIKeyThroughHTTP(t, server, `{
 		"name": "Shutdown drain",
 		"scopes": ["read"],
@@ -4019,7 +4019,7 @@ func TestKanbanCommentEditAndDeleteLocalComments(t *testing.T) {
 	deps := testDeps(t)
 	createdAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	actionConnector := &kanbanActionConnector{
-		name: "local_sqlite",
+		name: "hub_native",
 		issueComments: map[string][]connector.IssueComment{
 			"I_kw1": {{
 				ID:          "1",
@@ -4273,7 +4273,7 @@ func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 		},
 	}
 	actionConnector := &kanbanActionConnector{
-		name: "local_sqlite",
+		name: "hub_native",
 		issueComments: map[string][]connector.IssueComment{
 			"I_kw1": {
 				{
@@ -11904,7 +11904,7 @@ func TestServerUsageAPIRejectsInvalidParameters(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
-	deps.Store = openWebTestStore(t)
+	deps.Store = storeProbe{}
 	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -12178,17 +12178,12 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 
 func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *fakehub.Connector, *refreshProbe) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("durable local SQLite integration")
-	}
-
 	conn := fakehub.New(fakehub.Config{
 		Stateful: true,
 	})
 
 	workflowCfg := workflowconfig.Default()
 	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	workflowCfg.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
 	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
 	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflowCfg.Tracker.TerminalStates = []string{"Done"}
@@ -12224,17 +12219,15 @@ func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *fake
 	return server, conn, refresher
 }
 
-func newAPIKeyWorkItemTestServer(t *testing.T) (*web.Server, store.Store, *fakehub.Connector, *refreshProbe) {
+func newAPIKeyWorkItemTestServer(t *testing.T, backend store.Store) (*web.Server, store.Store, *fakehub.Connector, *refreshProbe) {
 	t.Helper()
 
-	backend := openWebTestStore(t)
 	conn := fakehub.New(fakehub.Config{
 		Stateful: true,
 	})
 
 	workflowCfg := workflowconfig.Default()
 	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	workflowCfg.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
 	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
 	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflowCfg.Tracker.TerminalStates = []string{"Done"}
@@ -13230,7 +13223,7 @@ func (p storeProbe) RuntimeEvidence(ctx context.Context, query store.RuntimeEvid
 		return p.runtimeEvidence(ctx, query)
 	}
 	return store.RuntimeEvidence{
-		Backend:         store.BackendSQLite,
+		Backend:         "memory",
 		Healthy:         true,
 		MigrationStatus: "applied through 0",
 		Tables: []store.RuntimeTableEvidence{
@@ -14289,4 +14282,114 @@ func TestStateAndHealthCandidateCompleteness(t *testing.T) {
 			}
 		})
 	}
+}
+
+type loopbackReadStoreFixture struct {
+	storeProbe
+}
+
+func (loopbackReadStoreFixture) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
+	return nil, ctx.Err()
+}
+
+type authKeyStoreFixture struct {
+	storeProbe
+	mu   sync.Mutex
+	keys map[string]store.APIKey
+}
+
+func (f *authKeyStoreFixture) CreateAPIKey(ctx context.Context, attrs store.APIKeyCreate) (store.APIKey, error) {
+	if err := ctx.Err(); err != nil {
+		return store.APIKey{}, err
+	}
+	key := store.APIKey{ID: attrs.ID, Name: attrs.Name, PrefixLast4: attrs.PrefixLast4, KeyHash: attrs.KeyHash, Scopes: slices.Clone(attrs.Scopes), ProjectIDs: slices.Clone(attrs.ProjectIDs), CreatedAt: attrs.CreatedAt, ExpiresAt: attrs.ExpiresAt}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.keys[key.ID]; exists {
+		return store.APIKey{}, errors.New("duplicate key ID")
+	}
+	f.keys[key.ID] = key
+	return key, nil
+}
+
+func (f *authKeyStoreFixture) APIKey(ctx context.Context, id string) (store.APIKey, error) {
+	if err := ctx.Err(); err != nil {
+		return store.APIKey{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key, ok := f.keys[id]
+	if !ok {
+		return store.APIKey{}, store.ErrNotFound
+	}
+	return key, nil
+}
+
+func (f *authKeyStoreFixture) APIKeyByHash(ctx context.Context, hash string) (store.APIKey, error) {
+	keys, err := f.ListAPIKeys(ctx)
+	if err != nil {
+		return store.APIKey{}, err
+	}
+	for _, key := range keys {
+		if key.KeyHash == hash {
+			return key, nil
+		}
+	}
+	return store.APIKey{}, store.ErrNotFound
+}
+
+func (f *authKeyStoreFixture) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	keys := make([]store.APIKey, 0, len(f.keys))
+	for _, key := range f.keys {
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, func(a, b store.APIKey) int { return strings.Compare(a.ID, b.ID) })
+	return keys, nil
+}
+
+func (f *authKeyStoreFixture) CountActiveAPIKeys(ctx context.Context) (int64, error) {
+	keys, err := f.ListAPIKeys(ctx)
+	var count int64
+	for _, key := range keys {
+		if key.RevokedAt == nil && (key.ExpiresAt == nil || key.ExpiresAt.After(time.Now())) {
+			count++
+		}
+	}
+	return count, err
+}
+
+func (f *authKeyStoreFixture) mutate(ctx context.Context, id string, apply func(*store.APIKey)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key, ok := f.keys[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	apply(&key)
+	f.keys[id] = key
+	return nil
+}
+
+func (f *authKeyStoreFixture) SetAPIKeyExpiresAt(ctx context.Context, id string, at time.Time) error {
+	return f.mutate(ctx, id, func(key *store.APIKey) { key.ExpiresAt = &at })
+}
+
+func (f *authKeyStoreFixture) RevokeAPIKey(ctx context.Context, id string, at time.Time) error {
+	return f.mutate(ctx, id, func(key *store.APIKey) { key.RevokedAt = &at })
+}
+
+func (f *authKeyStoreFixture) MarkAPIKeyLastUsed(ctx context.Context, id string, at time.Time) error {
+	return f.mutate(ctx, id, func(key *store.APIKey) { key.LastUsedAt = &at })
+}
+
+func (*authKeyStoreFixture) RecordAPIUsageLog(ctx context.Context, _ store.APIUsageLog) error {
+	return ctx.Err()
 }

@@ -232,17 +232,9 @@ func TestDeliverStalenessWarningsBoundsWorkPerTick(t *testing.T) {
 }
 
 func TestHumanGateConditionNeverDelivers(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
-	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = backend.Close() })
+	backend := &stalenessReminderRecorder{}
 	cfg := normalizeConfig(Config{Staleness: staleness.Config{
 		Enabled:        true,
 		HumanGateRearm: 24 * time.Hour,
@@ -603,4 +595,25 @@ type stalenessNotifierFunc func(context.Context, staleness.Warning) error
 
 func (fn stalenessNotifierFunc) Notify(ctx context.Context, warning staleness.Warning) error {
 	return fn(ctx, warning)
+}
+
+type stalenessReminderRecorder struct {
+	store.StalenessWarningStore
+	states []store.StalenessWarningState
+}
+
+func (r *stalenessReminderRecorder) ListStalenessWarningStates(ctx context.Context, _ string) ([]store.StalenessWarningState, error) {
+	return slices.Clone(r.states), ctx.Err()
+}
+
+func (r *stalenessReminderRecorder) ReconcileStalenessWarningStates(ctx context.Context, projectID string, _ []string, _, _ time.Time) ([]store.StalenessWarningState, error) {
+	return r.ListStalenessWarningStates(ctx, projectID)
+}
+
+func (r *stalenessReminderRecorder) RecordStalenessWarningReminder(ctx context.Context, projectID, warningID string, at time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.states = append(r.states, store.StalenessWarningState{ProjectID: projectID, WarningID: warningID, RemindedAt: &at})
+	return nil
 }
