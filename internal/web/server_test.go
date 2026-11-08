@@ -2040,12 +2040,8 @@ func TestDemoScenarioHeadersAreGatedToScreenshotsMode(t *testing.T) {
 func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	t.Parallel()
 
-	backend := openWebTestStore(t)
-	if err := demofixtures.SeedUsageEvents(context.Background(), backend); err != nil {
-		t.Fatalf("SeedUsageEvents() error = %v", err)
-	}
 	deps := testDeps(t)
-	deps.Store = backend
+	deps.Store = storeProbe{usageReport: usageChartReportFixture}
 	server, err := newServerWithLaneWriter(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)

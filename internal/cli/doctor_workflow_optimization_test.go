@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1662,20 +1664,16 @@ func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 }
 
 func TestDoctorWorkflowOptimizationStrictFailsOnAdvisoryFindings(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
-	paths := seedDoctorWorkflowOptimizationFixture(t)
+	paths := writeDoctorWorkflowOptimizationFixture(t)
 	configPath := filepath.Join(paths.dir, "global.yaml")
 	global := doctorWorkflowOptimizationGlobal(paths)
 	global.Path = configPath
 
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = workflowconfig.LoadWorkflow
-	deps.openSQLiteReadOnly = openDoctorSQLiteReadOnly
+	deps.openSQLiteReadOnly = openEmptyDoctorTelemetry
 
 	configFlag := configPath
 	envFlag := ""
@@ -2011,25 +2009,11 @@ Prompt
 }
 
 func TestDoctorWorkflowOptimizationUsesRuntimeGitHubToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "detent.db")
-	backend, err := store.Open(ctx, store.Config{
-		Backend: store.BackendSQLite,
-		Path:    dbPath,
-	})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	if err := backend.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
+	dbPath := filepath.Join(dir, "telemetry-source")
 
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	if err := os.WriteFile(workflowPath, []byte(`---
@@ -2042,13 +2026,10 @@ Prompt
 		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
 	}
 
-	db, err := openDoctorSQLiteReadOnly(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
-	}
+	db := sql.OpenDB(emptyDoctorTelemetryConnector{})
 	t.Cleanup(func() {
 		if err := db.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
+			t.Fatal(err)
 		}
 	})
 
@@ -2083,10 +2064,9 @@ type doctorWorkflowOptimizationFixturePaths struct {
 	workflow string
 }
 
-func seedDoctorWorkflowOptimizationFixture(t *testing.T) doctorWorkflowOptimizationFixturePaths {
+func writeDoctorWorkflowOptimizationFixture(t *testing.T) doctorWorkflowOptimizationFixturePaths {
 	t.Helper()
 
-	ctx := context.Background()
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	if err := os.WriteFile(workflowPath, []byte(`---
@@ -2134,7 +2114,15 @@ Prompt
 		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
 	}
 
-	dbPath := filepath.Join(dir, "detent.db")
+	return doctorWorkflowOptimizationFixturePaths{dir: dir, db: filepath.Join(dir, "detent.db"), workflow: workflowPath}
+}
+
+func seedDoctorWorkflowOptimizationFixture(t *testing.T) doctorWorkflowOptimizationFixturePaths {
+	t.Helper()
+	ctx := t.Context()
+	paths := writeDoctorWorkflowOptimizationFixture(t)
+
+	dbPath := paths.db
 	backend, err := store.Open(ctx, store.Config{
 		Backend: store.BackendSQLite,
 		Path:    dbPath,
@@ -2284,11 +2272,7 @@ Prompt
 	if err := backend.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	return doctorWorkflowOptimizationFixturePaths{
-		dir:      dir,
-		db:       dbPath,
-		workflow: workflowPath,
-	}
+	return paths
 }
 
 func doctorWorkflowOptimizationGlobal(paths doctorWorkflowOptimizationFixturePaths) globalconfig.Config {
@@ -2452,4 +2436,65 @@ func (c *blockedDoctorProposalConnector) UpdateIssueState(_ context.Context, iss
 		CurrentState: "Done",
 		TargetState:  state,
 	}
+}
+
+type emptyDoctorTelemetryConnector struct{}
+
+func (emptyDoctorTelemetryConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return emptyDoctorTelemetryConnection{}, nil
+}
+
+func (emptyDoctorTelemetryConnector) Driver() driver.Driver {
+	return emptyDoctorTelemetryDriver{}
+}
+
+type emptyDoctorTelemetryDriver struct{}
+
+func (emptyDoctorTelemetryDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("telemetry fixture requires a connector")
+}
+
+type emptyDoctorTelemetryConnection struct{}
+
+func (emptyDoctorTelemetryConnection) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("telemetry fixture requires context queries")
+}
+
+func (emptyDoctorTelemetryConnection) Close() error {
+	return nil
+}
+
+func (emptyDoctorTelemetryConnection) Begin() (driver.Tx, error) {
+	return nil, errors.New("telemetry fixture is read only")
+}
+
+func (emptyDoctorTelemetryConnection) QueryContext(ctx context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return emptyDoctorTelemetryRows{}, nil
+}
+
+type emptyDoctorTelemetryRows struct{}
+
+func (emptyDoctorTelemetryRows) Columns() []string {
+	return nil
+}
+
+func (emptyDoctorTelemetryRows) Close() error {
+	return nil
+}
+
+func (emptyDoctorTelemetryRows) Next([]driver.Value) error {
+	return io.EOF
+}
+
+func openEmptyDoctorTelemetry(ctx context.Context, _ string) (doctorTelemetryStore, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return sql.OpenDB(emptyDoctorTelemetryConnector{}), nil
 }

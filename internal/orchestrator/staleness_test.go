@@ -74,19 +74,16 @@ func TestRefreshStalenessWarningsRecordsDiagnosticWithoutDelivery(t *testing.T) 
 }
 
 func TestRefreshStalenessWarningLifecycle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name string
-		run  func(*testing.T, *Orchestrator, *State, store.Store)
+		name    string
+		durable bool
+		run     func(*testing.T, *Orchestrator, *State, store.StalenessWarningStore)
 	}{
 		{
 			name: "human review age remains visible as a review queue condition",
-			run: func(t *testing.T, orch *Orchestrator, state *State, _ store.Store) {
+			run: func(t *testing.T, orch *Orchestrator, state *State, _ store.StalenessWarningStore) {
 				enteredAt := now.Add(-4 * time.Hour)
 				issue := connector.Issue{ID: "issue-human", Identifier: "corp#74", State: "Human Review"}
 				state.BoardIssues = []connector.Issue{issue}
@@ -113,7 +110,7 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 		},
 		{
 			name: "human review condition survives a sparse refresh cadence",
-			run: func(t *testing.T, orch *Orchestrator, state *State, _ store.Store) {
+			run: func(t *testing.T, orch *Orchestrator, state *State, _ store.StalenessWarningStore) {
 				enteredAt := now.Add(-4 * time.Hour)
 				issue := connector.Issue{ID: "issue-human", Identifier: "corp#74", State: "Human Review"}
 				state.BoardIssues = []connector.Issue{issue}
@@ -127,8 +124,9 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 			},
 		},
 		{
-			name: "acknowledgement survives recompute and clears on lane reentry",
-			run: func(t *testing.T, orch *Orchestrator, state *State, backend store.Store) {
+			name:    "acknowledgement survives recompute and clears on lane reentry",
+			durable: true,
+			run: func(t *testing.T, orch *Orchestrator, state *State, backend store.StalenessWarningStore) {
 				firstEntry := now.Add(-4 * time.Hour)
 				issue := connector.Issue{ID: "issue-ack", Identifier: "detent#1926", State: "Merging"}
 				state.BoardIssues = []connector.Issue{issue}
@@ -165,11 +163,18 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
-			if err != nil {
-				t.Fatalf("store.Open() error = %v", err)
+			var backend store.StalenessWarningStore = &stalenessReminderRecorder{}
+			if tt.durable {
+				if testing.Short() {
+					t.Skip("durable SQLite integration")
+				}
+				opened, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
+				if err != nil {
+					t.Fatalf("store.Open() error = %v", err)
+				}
+				t.Cleanup(func() { _ = opened.Close() })
+				backend = opened
 			}
-			t.Cleanup(func() { _ = backend.Close() })
 			cfg := normalizeConfig(Config{
 				Staleness: staleness.Config{
 					Enabled:        true,

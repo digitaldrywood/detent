@@ -139,8 +139,8 @@
       "sqlite_open": 3
     },
     "internal/cli/doctor_workflow_optimization_test.go": {
-      "backend_sqlite": 8,
-      "sqlite_open": 11
+      "backend_sqlite": 7,
+      "sqlite_open": 10
     },
     "internal/cli/fix_worker_processes.go": {
       "backend_sqlite": 1,
