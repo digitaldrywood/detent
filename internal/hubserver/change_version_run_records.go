@@ -18,6 +18,7 @@ type preparedChangeVersionRun struct {
 	authority NativeRunEventAuthority
 	attempt   leasestore.Attempt
 	event     eventstore.Event
+	diff      *leasestore.AttemptDiff
 	lease     leasestore.Lease
 	workItem  corestore.WorkItem
 	diff      *leasestore.AttemptDiff
@@ -47,8 +48,9 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		if prepared.attempt.ID != request.AttemptID || prepared.attempt.IssueID != prepared.workItem.ID || prepared.attempt.RunID != request.RunID || prepared.attempt.Status != "succeeded" && prepared.attempt.Status != "running" || prepared.attempt.DispatchGeneration < 0 {
-			return nativeExecutionConflict("Version source must identify the persisted attempt for this work item")
+		publishing := prepared.attempt.Status == "running" && scope.credential.Scope == apiScopeWorker && scope.credential.Runner.RunnerID != ""
+		if prepared.attempt.ID != request.AttemptID || prepared.attempt.IssueID != prepared.workItem.ID || prepared.attempt.RunID != request.RunID || prepared.attempt.Status != "succeeded" && !publishing || prepared.attempt.DispatchGeneration < 0 {
+			return nativeExecutionConflict("Version source must identify the current publishing or successful attempt for this work item")
 		}
 		prepared.lease, err = r.Lease(ctx, prepared.attempt.LeaseID)
 		if err != nil {
@@ -64,18 +66,16 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		terminalEvent := prepared.attempt.Status == "succeeded" && event.Type == "run.finished"
-		runningEvent := prepared.attempt.Status == "running" && (event.Type == "run.started" || event.Type == "run.checkpointed" || event.Type == "run.observed")
-		if !terminalEvent && !runningEvent || event.AttemptID != request.AttemptID || event.RunID != request.RunID || event.ProjectID != scope.project || event.WorkItemID != change.WorkItemID {
-			return nativeExecutionConflict("Version source must bind to the persisted run event")
+		if event.Type != "run.finished" && !publishing || event.AttemptID != request.AttemptID || event.RunID != request.RunID || event.ProjectID != scope.project || event.WorkItemID != change.WorkItemID {
+			return nativeExecutionConflict("Version source must bind to its persisted run event")
 		}
-		if prepared.attempt.Status == "running" {
+		if publishing {
 			diff, err := r.LatestAttemptDiff(ctx, scope.project, request.AttemptID, tracker.DiffSourceAttempt)
 			if err != nil {
 				return err
 			}
-			if diff.OrganizationID != scope.organization || diff.WorkItemID != change.WorkItemID || diff.AttemptID != request.AttemptID || diff.BaseSHA != request.BaseSHA || diff.HeadSHA != request.HeadSHA || diff.Producer.LeaseID != request.LeaseID || diff.Producer.FencingToken != request.FencingToken || diff.Generation.Seq < prepared.attempt.Sequence || diff.Generation.Seq > prepared.attempt.Sequence+1 {
-				return nativeExecutionConflict("Version source must match the current fenced attempt diff")
+			if diff.OrganizationID != scope.organization || diff.AttemptID != request.AttemptID || diff.WorkItemID != change.WorkItemID || diff.IssueID != prepared.workItem.ID || diff.BaseSHA != request.BaseSHA || diff.HeadSHA != request.HeadSHA || (diff.Generation.Seq < prepared.attempt.Sequence || diff.Generation.Seq > prepared.attempt.Sequence+1) || diff.Producer.ID != request.AttemptID || diff.Producer.RunnerID != scope.credential.Runner.RunnerID || diff.Producer.LeaseID != request.LeaseID || diff.Producer.FencingToken != request.FencingToken {
+				return nativeExecutionConflict("Version source must match the publishing attempt's persisted final diff")
 			}
 			prepared.diff = &diff
 		}
@@ -88,8 +88,8 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope
 	if err != nil {
 		return nil, err
 	}
-	if payload.Data.Run == nil || payload.Type != event.Type || payload.ProjectID != scope.project || payload.AggregateID != change.WorkItemID || payload.Data.Run.AttemptID != request.AttemptID || payload.Data.Run.RunID != request.RunID || string(payload.Data.Run.LeaseID) != prepared.lease.LeaseID || int64(payload.Data.Run.FencingToken) != prepared.lease.FencingToken || payload.Data.Run.PolicyID != request.PolicyID || (prepared.attempt.Status == "succeeded" && payload.Data.Run.Outcome != "succeeded" || prepared.attempt.Status == "running" && payload.Data.Run.Outcome != "") {
-		return nil, nativeExecutionConflict("Persisted run event does not match the requested version source")
+	if payload.Data.Run == nil || payload.Type != event.Type || payload.ProjectID != scope.project || payload.AggregateID != change.WorkItemID || payload.Data.Run.AttemptID != request.AttemptID || payload.Data.Run.RunID != request.RunID || string(payload.Data.Run.LeaseID) != prepared.lease.LeaseID || int64(payload.Data.Run.FencingToken) != prepared.lease.FencingToken || payload.Data.Run.PolicyID != request.PolicyID || prepared.diff == nil && payload.Data.Run.Outcome != "succeeded" || prepared.diff != nil && payload.Data.Run.Outcome != "" {
+		return nil, nativeExecutionConflict("Persisted event does not match the requested version source")
 	}
 	prepared.event = event
 	prepared.authority = NativeRunEventAuthority{

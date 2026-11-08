@@ -56,6 +56,7 @@ type SettlementScenario struct {
 	FailDiff                bool
 	FailDetail              bool
 	FailVersion             bool
+	VersionDiffMismatch     bool
 	DropVersion             bool
 	VersionCode             string
 	DiffCode                string
@@ -851,6 +852,25 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 			h.failChanges.failDiffs.Store(test.FailDiff)
 			h.failChanges.failDetails.Store(test.FailDetail)
 			h.failChanges.failVersions.Store(test.FailVersion)
+			if test.VersionDiffMismatch {
+				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") {
+						var version tracker.PublishChangeVersion
+						if err := json.NewDecoder(request.Body).Decode(&version); err != nil {
+							return nil, err
+						}
+						version.BaseSHA, version.MergeBaseSHA = nativeChangeFixtureHead("b"), nativeChangeFixtureHead("b")
+						version.Source, version.SourceBundle = nil, nil
+						raw, err := json.Marshal(version)
+						if err != nil {
+							return nil, err
+						}
+						request = request.Clone(request.Context())
+						request.Body, request.ContentLength = io.NopCloser(bytes.NewReader(raw)), int64(len(raw))
+					}
+					return h.failChanges.RoundTrip(request)
+				}))
+			}
 			h.failChanges.dropVersions.Store(test.DropVersion)
 			if test.VersionCode != "" || test.DiffCode != "" {
 				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -1089,7 +1109,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				if err := owner.Finish(guarded, test.Outcome); err == nil {
 					t.Fatal("stale or ambiguous publication was persisted as success")
 				}
-				evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+				evidence, err := h.latestRuntimeEvidence(t, item)
 				if err != nil || evidence.Attempt == nil || evidence.Attempt.Finalization != nil {
 					t.Fatalf("refused publication leaked into finalization reads: %+v, %v", evidence, err)
 				}
@@ -1340,7 +1360,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 						t.Fatal(err)
 					}
-					evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+					evidence, err := h.latestRuntimeEvidence(t, item)
 					if err != nil || evidence.Attempt == nil {
 						t.Fatalf("reading integrated finalization: %v", err)
 					}
@@ -1732,7 +1752,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				}
 			}
 
-			evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+			evidence, err := h.latestRuntimeEvidence(t, item)
 			if err != nil || evidence.Attempt == nil {
 				t.Fatalf("finalizer projection unavailable: %+v, %v", evidence, err)
 			}
@@ -1778,7 +1798,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 					t.Fatal(err)
 				}
-				evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+				evidence, err := h.latestRuntimeEvidence(t, item)
 				if err != nil || evidence.CurrentLease != nil || evidence.Attempt == nil || evidence.Attempt.Current || evidence.Attempt.ClaimReleasedAt == nil || evidence.Attempt.Status != "succeeded" || !reflect.DeepEqual(evidence.Attempt.Disposition, test.Disposition) {
 					t.Fatalf("released blocked attempt represented as active: %+v, %v", evidence, err)
 				}
@@ -1824,7 +1844,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 					t.Fatalf("history lost the transition reason: %#v", history.Items)
 				}
 				if test.TransitionReason != "" {
-					evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+					evidence, err := h.latestRuntimeEvidence(t, item)
 					if err != nil {
 						t.Fatal(err)
 					}
