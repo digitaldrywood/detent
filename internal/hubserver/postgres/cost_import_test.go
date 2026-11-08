@@ -74,7 +74,7 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 				sourceCopy.add(t, "usage_cost_observations", map[string]any{"organization_id": organization, "project_id": "project_example", "provider": o.Provider, "provider_account": o.ProviderAccount, "resource_id": o.ResourceID, "bucket": o.Bucket, "metric": o.Metric, "source_id": sourceID, "period_start": from.Format(time.RFC3339Nano), "period_end": o.To.Format(time.RFC3339Nano), "revision": revision, "observation_json": string(raw), "received_at": from.Add(time.Hour).Format(time.RFC3339Nano), "voided": voided})
 			}
 		}
-		copies[organization] = sourceCopy.seal(t)
+		copies[organization] = sourceCopy.seal(t, 1)
 	}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, organization)

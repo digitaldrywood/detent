@@ -78,7 +78,11 @@ func (i *costImporter) step(ctx context.Context, limit int) (CostImportProgress,
 		if len(rows) > 0 {
 			next.after, next.hasAfter = rows[len(rows)-1].key, true
 		}
-		if len(rows) < limit {
+		exhausted := len(rows) < limit
+		if i.source.neutral != nil && checkpoint.phase == 0 {
+			exhausted = len(rows) == 0
+		}
+		if exhausted {
 			next.phase++
 			next.after = [7]string{}
 			next.hasAfter = false

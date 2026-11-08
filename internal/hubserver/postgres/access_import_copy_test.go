@@ -133,6 +133,10 @@ func accessNeutralBundle(t *testing.T, source postgres.AccessImportSource, inclu
 		}
 		tables = append(tables, table)
 	}
-	path, _ := writeNeutralFixture(t, tracker.OrganizationID(source.Source.OrganizationID), tables, records)
+	pageSize := 100
+	if includeSecond {
+		pageSize = 1
+	}
+	path, _ := writeNeutralFixture(t, tracker.OrganizationID(source.Source.OrganizationID), tables, records, pageSize)
 	return path
 }

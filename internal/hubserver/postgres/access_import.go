@@ -257,7 +257,11 @@ func (i *AccessImporter) Step(ctx context.Context, limit int) (AccessImportProgr
 			next.after = rows[len(rows)-1].keyValues
 			next.hasAfter = true
 		}
-		if len(rows) < limit {
+		exhausted := len(rows) < limit
+		if i.source.neutral != nil {
+			exhausted = len(rows) == 0
+		}
+		if exhausted {
 			next.stage++
 			next.after = [3]string{}
 			next.hasAfter = false

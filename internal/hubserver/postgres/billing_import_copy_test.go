@@ -71,8 +71,8 @@ func (f *neutralBillingFixture) add(t *testing.T, name string, values map[string
 	}
 	t.Fatal("missing fixture table")
 }
-func (f *neutralBillingFixture) seal(t *testing.T) string {
+func (f *neutralBillingFixture) seal(t *testing.T, pageSizes ...int) string {
 	t.Helper()
-	directory, _ := writeNeutralFixture(t, f.organization, f.tables, f.records)
+	directory, _ := writeNeutralFixture(t, f.organization, f.tables, f.records, pageSizes...)
 	return directory
 }

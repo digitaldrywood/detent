@@ -98,8 +98,15 @@ func neutralFixtureRow(t *testing.T, table postgres.NeutralImportTable, values m
 	}
 	return row
 }
-func writeNeutralFixture(t *testing.T, organization tracker.OrganizationID, tables []postgres.NeutralImportTable, records map[string][]postgres.NeutralImportRow) (string, postgres.NeutralImportManifest) {
+func writeNeutralFixture(t *testing.T, organization tracker.OrganizationID, tables []postgres.NeutralImportTable, records map[string][]postgres.NeutralImportRow, pageSizes ...int) (string, postgres.NeutralImportManifest) {
 	t.Helper()
+	pageSize := 100
+	if len(pageSizes) > 0 {
+		pageSize = pageSizes[0]
+	}
+	if pageSize < 1 || pageSize > 100 {
+		t.Fatal("invalid neutral fixture page size")
+	}
 	directory := t.TempDir()
 	manifest := postgres.NeutralImportManifest{Version: 1, Identity: postgres.NeutralImportIdentity{SourceID: "example-source", SourceSHA256: artifact.Digest([]byte("historical source")), OrganizationID: organization, SchemaVersion: 1}}
 	for _, table := range tables {
@@ -133,13 +140,13 @@ func writeNeutralFixture(t *testing.T, organization tracker.OrganizationID, tabl
 			return 0
 		})
 		table.Pages = nil
-		for offset := 0; offset < len(rows); offset += 100 {
-			page := rows[offset:min(offset+100, len(rows))]
+		for offset := 0; offset < len(rows); offset += pageSize {
+			page := rows[offset:min(offset+pageSize, len(rows))]
 			raw, err := json.Marshal(page)
 			if err != nil {
 				t.Fatal(err)
 			}
-			file := fmt.Sprintf("%s_%d.json", table.Name, offset/100)
+			file := fmt.Sprintf("%s_%d.json", table.Name, offset/pageSize)
 			if err := os.WriteFile(filepath.Join(directory, file), raw, 0400); err != nil {
 				t.Fatal(err)
 			}
