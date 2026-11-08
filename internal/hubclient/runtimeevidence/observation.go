@@ -12,6 +12,7 @@ import (
 )
 
 func Merge(previous *tracker.NativeRuntimeObservation, observation tracker.NativeRuntimeObservation) tracker.NativeRuntimeObservation {
+	nativeSessionActivity := observation.Activity != nil && observation.Activity.SessionID > 0 && observation.Activity.AttemptID == 0
 	if previous != nil {
 		if observation.WorkerLaunch == nil {
 			observation.WorkerLaunch = previous.WorkerLaunch
@@ -46,7 +47,7 @@ func Merge(previous *tracker.NativeRuntimeObservation, observation tracker.Nativ
 		if observation.GitHub == nil {
 			observation.GitHub = previous.GitHub
 		}
-		if observation.LocalAttemptID == 0 {
+		if observation.LocalAttemptID == 0 && !nativeSessionActivity {
 			observation.LocalAttemptID = previous.LocalAttemptID
 			observation.Generation = previous.Generation
 		}
