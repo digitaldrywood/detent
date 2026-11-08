@@ -25,8 +25,8 @@ WITH advanced_issue AS (
  ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=project_event_cursors.sequence+1
  RETURNING sequence
 )
-INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome)
-VALUES ($1, $2, $3, $4, (SELECT event_sequence FROM advanced_issue), (SELECT sequence FROM advanced_project), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33) RETURNING organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome
+INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent)
+VALUES ($1, $2, $3, $4, (SELECT event_sequence FROM advanced_issue), (SELECT sequence FROM advanced_project), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37) RETURNING organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent
 `
 
 type CommandAppendRunEventParams struct {
@@ -63,6 +63,10 @@ type CommandAppendRunEventParams struct {
 	PushExternalEffect   string
 	PushEffectState      string
 	SchedulerOutcome     string
+	ActorEnvelopeKnown   bool
+	ActorViaKey          string
+	ActorDisplayName     string
+	ActorAgent           string
 }
 
 func (q *Queries) CommandAppendRunEvent(ctx context.Context, arg CommandAppendRunEventParams) (CollaborationEvent, error) {
@@ -100,6 +104,10 @@ func (q *Queries) CommandAppendRunEvent(ctx context.Context, arg CommandAppendRu
 		arg.PushExternalEffect,
 		arg.PushEffectState,
 		arg.SchedulerOutcome,
+		arg.ActorEnvelopeKnown,
+		arg.ActorViaKey,
+		arg.ActorDisplayName,
+		arg.ActorAgent,
 	)
 	var i CollaborationEvent
 	err := row.Scan(
@@ -138,6 +146,10 @@ func (q *Queries) CommandAppendRunEvent(ctx context.Context, arg CommandAppendRu
 		&i.PushExternalEffect,
 		&i.PushEffectState,
 		&i.SchedulerOutcome,
+		&i.ActorEnvelopeKnown,
+		&i.ActorViaKey,
+		&i.ActorDisplayName,
+		&i.ActorAgent,
 	)
 	return i, err
 }
@@ -243,17 +255,17 @@ func (q *Queries) RecordChangePriorApproval(ctx context.Context, arg RecordChang
 
 const recordChangePublicationCheckpoints = `-- name: RecordChangePublicationCheckpoints :many
 WITH matching AS (
- SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=$2
+ SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome, e.actor_envelope_known, e.actor_via_key, e.actor_display_name, e.actor_agent FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=$2
  AND e.work_item_id=$3 AND e.type='run.checkpointed'
  AND e.push_change_id=$4 AND e.push_version_id=$5 AND e.push_head_sha=$6
  AND e.push_external_effect='git_push' AND e.push_effect_state='confirmed'
  ORDER BY e.sequence DESC LIMIT 1
 ), unprojected AS (
- SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=$2
+ SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome, e.actor_envelope_known, e.actor_via_key, e.actor_display_name, e.actor_agent FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=$2
  AND e.work_item_id=$3 AND e.type='run.checkpointed' AND NOT e.push_known
  AND e.sequence>COALESCE((SELECT sequence FROM matching),0) ORDER BY e.sequence DESC LIMIT 201
 )
-SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome FROM collaboration_events e
+SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome, e.actor_envelope_known, e.actor_via_key, e.actor_display_name, e.actor_agent FROM collaboration_events e
 JOIN (SELECT sequence FROM matching UNION ALL SELECT sequence FROM unprojected) candidates ON candidates.sequence=e.sequence
 WHERE e.organization_id=$1 AND e.project_id=$2 AND e.work_item_id=$3
 ORDER BY e.sequence DESC
@@ -320,6 +332,10 @@ func (q *Queries) RecordChangePublicationCheckpoints(ctx context.Context, arg Re
 			&i.PushExternalEffect,
 			&i.PushEffectState,
 			&i.SchedulerOutcome,
+			&i.ActorEnvelopeKnown,
+			&i.ActorViaKey,
+			&i.ActorDisplayName,
+			&i.ActorAgent,
 		); err != nil {
 			return nil, err
 		}
@@ -585,7 +601,7 @@ func (q *Queries) RecordGetCollaborationVersions(ctx context.Context, arg Record
 }
 
 const recordGetEvent = `-- name: RecordGetEvent :one
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4
 `
 
 type RecordGetEventParams struct {
@@ -639,6 +655,10 @@ func (q *Queries) RecordGetEvent(ctx context.Context, arg RecordGetEventParams) 
 		&i.PushExternalEffect,
 		&i.PushEffectState,
 		&i.SchedulerOutcome,
+		&i.ActorEnvelopeKnown,
+		&i.ActorViaKey,
+		&i.ActorDisplayName,
+		&i.ActorAgent,
 	)
 	return i, err
 }
@@ -1266,8 +1286,8 @@ func (q *Queries) RecordInsertCollaborationVersion(ctx context.Context, arg Reco
 }
 
 const recordInsertEvent = `-- name: RecordInsertEvent :one
-INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35) RETURNING organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome
+INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39) RETURNING organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent
 `
 
 type RecordInsertEventParams struct {
@@ -1306,6 +1326,10 @@ type RecordInsertEventParams struct {
 	PushExternalEffect   string
 	PushEffectState      string
 	SchedulerOutcome     string
+	ActorEnvelopeKnown   bool
+	ActorViaKey          string
+	ActorDisplayName     string
+	ActorAgent           string
 }
 
 func (q *Queries) RecordInsertEvent(ctx context.Context, arg RecordInsertEventParams) (CollaborationEvent, error) {
@@ -1345,6 +1369,10 @@ func (q *Queries) RecordInsertEvent(ctx context.Context, arg RecordInsertEventPa
 		arg.PushExternalEffect,
 		arg.PushEffectState,
 		arg.SchedulerOutcome,
+		arg.ActorEnvelopeKnown,
+		arg.ActorViaKey,
+		arg.ActorDisplayName,
+		arg.ActorAgent,
 	)
 	var i CollaborationEvent
 	err := row.Scan(
@@ -1383,6 +1411,10 @@ func (q *Queries) RecordInsertEvent(ctx context.Context, arg RecordInsertEventPa
 		&i.PushExternalEffect,
 		&i.PushEffectState,
 		&i.SchedulerOutcome,
+		&i.ActorEnvelopeKnown,
+		&i.ActorViaKey,
+		&i.ActorDisplayName,
+		&i.ActorAgent,
 	)
 	return i, err
 }
@@ -1872,10 +1904,10 @@ func (q *Queries) RecordLatestChangesByWorkItems(ctx context.Context, arg Record
 }
 
 const recordLatestCheckpointEvents = `-- name: RecordLatestCheckpointEvents :many
-SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id, latest.sequence, latest.type, latest.schema_version, latest.actor_kind, latest.actor_principal_id, latest.event_revision, latest.change_id, latest.version_id, latest.head_sha, latest.run_id, latest.attempt_id, latest.from_state, latest.to_state, latest.recorded_at, latest.payload_object_key, latest.payload_sha256, latest.payload_bytes, latest.payload_content_bytes, latest.payload_format_version, latest.landing_waiting, latest.landing_change_id, latest.landing_version_id, latest.landing_head_sha, latest.project_sequence, latest.push_known, latest.push_change_id, latest.push_version_id, latest.push_head_sha, latest.push_external_effect, latest.push_effect_state, latest.scheduler_outcome
+SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id, latest.sequence, latest.type, latest.schema_version, latest.actor_kind, latest.actor_principal_id, latest.event_revision, latest.change_id, latest.version_id, latest.head_sha, latest.run_id, latest.attempt_id, latest.from_state, latest.to_state, latest.recorded_at, latest.payload_object_key, latest.payload_sha256, latest.payload_bytes, latest.payload_content_bytes, latest.payload_format_version, latest.landing_waiting, latest.landing_change_id, latest.landing_version_id, latest.landing_head_sha, latest.project_sequence, latest.push_known, latest.push_change_id, latest.push_version_id, latest.push_head_sha, latest.push_external_effect, latest.push_effect_state, latest.scheduler_outcome, latest.actor_envelope_known, latest.actor_via_key, latest.actor_display_name, latest.actor_agent
 FROM unnest($1::text[]) AS requested(attempt_id)
 CROSS JOIN LATERAL (
-  SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events
+  SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events
   WHERE organization_id=$2 AND project_id=$3
     AND work_item_id=$4 AND attempt_id=requested.attempt_id
     AND type='run.checkpointed'
@@ -1940,6 +1972,10 @@ func (q *Queries) RecordLatestCheckpointEvents(ctx context.Context, arg RecordLa
 			&i.PushExternalEffect,
 			&i.PushEffectState,
 			&i.SchedulerOutcome,
+			&i.ActorEnvelopeKnown,
+			&i.ActorViaKey,
+			&i.ActorDisplayName,
+			&i.ActorAgent,
 		); err != nil {
 			return nil, err
 		}
@@ -1952,7 +1988,7 @@ func (q *Queries) RecordLatestCheckpointEvents(ctx context.Context, arg RecordLa
 }
 
 const recordLatestRunEvent = `-- name: RecordLatestRunEvent :one
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events
 WHERE organization_id=$1 AND project_id=$2
 AND attempt_id=$3
 ORDER BY sequence DESC LIMIT 1
@@ -2003,15 +2039,19 @@ func (q *Queries) RecordLatestRunEvent(ctx context.Context, arg RecordLatestRunE
 		&i.PushExternalEffect,
 		&i.PushEffectState,
 		&i.SchedulerOutcome,
+		&i.ActorEnvelopeKnown,
+		&i.ActorViaKey,
+		&i.ActorDisplayName,
+		&i.ActorAgent,
 	)
 	return i, err
 }
 
 const recordLatestRunEventsByAttempts = `-- name: RecordLatestRunEventsByAttempts :many
-SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id, latest.sequence, latest.type, latest.schema_version, latest.actor_kind, latest.actor_principal_id, latest.event_revision, latest.change_id, latest.version_id, latest.head_sha, latest.run_id, latest.attempt_id, latest.from_state, latest.to_state, latest.recorded_at, latest.payload_object_key, latest.payload_sha256, latest.payload_bytes, latest.payload_content_bytes, latest.payload_format_version, latest.landing_waiting, latest.landing_change_id, latest.landing_version_id, latest.landing_head_sha, latest.project_sequence, latest.push_known, latest.push_change_id, latest.push_version_id, latest.push_head_sha, latest.push_external_effect, latest.push_effect_state, latest.scheduler_outcome
+SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id, latest.sequence, latest.type, latest.schema_version, latest.actor_kind, latest.actor_principal_id, latest.event_revision, latest.change_id, latest.version_id, latest.head_sha, latest.run_id, latest.attempt_id, latest.from_state, latest.to_state, latest.recorded_at, latest.payload_object_key, latest.payload_sha256, latest.payload_bytes, latest.payload_content_bytes, latest.payload_format_version, latest.landing_waiting, latest.landing_change_id, latest.landing_version_id, latest.landing_head_sha, latest.project_sequence, latest.push_known, latest.push_change_id, latest.push_version_id, latest.push_head_sha, latest.push_external_effect, latest.push_effect_state, latest.scheduler_outcome, latest.actor_envelope_known, latest.actor_via_key, latest.actor_display_name, latest.actor_agent
 FROM unnest($1::text[]) AS requested(attempt_id)
 CROSS JOIN LATERAL (
-  SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events
+  SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events
   WHERE organization_id=$2 AND project_id=$3
     AND attempt_id=requested.attempt_id
     AND attempt_id<>''
@@ -2071,6 +2111,10 @@ func (q *Queries) RecordLatestRunEventsByAttempts(ctx context.Context, arg Recor
 			&i.PushExternalEffect,
 			&i.PushEffectState,
 			&i.SchedulerOutcome,
+			&i.ActorEnvelopeKnown,
+			&i.ActorViaKey,
+			&i.ActorDisplayName,
+			&i.ActorAgent,
 		); err != nil {
 			return nil, err
 		}
@@ -2083,7 +2127,7 @@ func (q *Queries) RecordLatestRunEventsByAttempts(ctx context.Context, arg Recor
 }
 
 const recordLatestSchedulerDecision = `-- name: RecordLatestSchedulerDecision :one
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='scheduler.decision' ORDER BY sequence DESC LIMIT 1
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='scheduler.decision' ORDER BY sequence DESC LIMIT 1
 `
 
 type RecordLatestSchedulerDecisionParams struct {
@@ -2131,12 +2175,16 @@ func (q *Queries) RecordLatestSchedulerDecision(ctx context.Context, arg RecordL
 		&i.PushExternalEffect,
 		&i.PushEffectState,
 		&i.SchedulerOutcome,
+		&i.ActorEnvelopeKnown,
+		&i.ActorViaKey,
+		&i.ActorDisplayName,
+		&i.ActorAgent,
 	)
 	return i, err
 }
 
 const recordLatestVersionLandingEvent = `-- name: RecordLatestVersionLandingEvent :one
-SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome,COALESCE(w.from_state,e.from_state)::text AS landing_from_state,COALESCE(w.to_state,'')::text AS landing_target_state
+SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome, e.actor_envelope_known, e.actor_via_key, e.actor_display_name, e.actor_agent,COALESCE(w.from_state,e.from_state)::text AS landing_from_state,COALESCE(w.to_state,'')::text AS landing_target_state
 FROM collaboration_events e
 LEFT JOIN LATERAL (
  SELECT from_state,to_state FROM collaboration_events transition
@@ -2212,6 +2260,10 @@ func (q *Queries) RecordLatestVersionLandingEvent(ctx context.Context, arg Recor
 		&i.CollaborationEvent.PushExternalEffect,
 		&i.CollaborationEvent.PushEffectState,
 		&i.CollaborationEvent.SchedulerOutcome,
+		&i.CollaborationEvent.ActorEnvelopeKnown,
+		&i.CollaborationEvent.ActorViaKey,
+		&i.CollaborationEvent.ActorDisplayName,
+		&i.CollaborationEvent.ActorAgent,
 		&i.LandingFromState,
 		&i.LandingTargetState,
 	)
@@ -2219,7 +2271,7 @@ func (q *Queries) RecordLatestVersionLandingEvent(ctx context.Context, arg Recor
 }
 
 const recordLatestWorkflowTransition = `-- name: RecordLatestWorkflowTransition :one
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events
 WHERE organization_id=$1 AND project_id=$2
  AND work_item_id=$3 AND type='workflow.transitioned'
 ORDER BY sequence DESC LIMIT 1
@@ -2270,6 +2322,10 @@ func (q *Queries) RecordLatestWorkflowTransition(ctx context.Context, arg Record
 		&i.PushExternalEffect,
 		&i.PushEffectState,
 		&i.SchedulerOutcome,
+		&i.ActorEnvelopeKnown,
+		&i.ActorViaKey,
+		&i.ActorDisplayName,
+		&i.ActorAgent,
 	)
 	return i, err
 }
@@ -2337,7 +2393,7 @@ func (q *Queries) RecordListChange(ctx context.Context, arg RecordListChangePara
 }
 
 const recordListEvent = `-- name: RecordListEvent :many
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence>$4 ORDER BY sequence LIMIT $5
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence>$4 ORDER BY sequence LIMIT $5
 `
 
 type RecordListEventParams struct {
@@ -2399,6 +2455,10 @@ func (q *Queries) RecordListEvent(ctx context.Context, arg RecordListEventParams
 			&i.PushExternalEffect,
 			&i.PushEffectState,
 			&i.SchedulerOutcome,
+			&i.ActorEnvelopeKnown,
+			&i.ActorViaKey,
+			&i.ActorDisplayName,
+			&i.ActorAgent,
 		); err != nil {
 			return nil, err
 		}
@@ -2411,7 +2471,7 @@ func (q *Queries) RecordListEvent(ctx context.Context, arg RecordListEventParams
 }
 
 const recordListEventBefore = `-- name: RecordListEventBefore :many
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence<$4 ORDER BY sequence DESC LIMIT $5
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence<$4 ORDER BY sequence DESC LIMIT $5
 `
 
 type RecordListEventBeforeParams struct {
@@ -2473,6 +2533,10 @@ func (q *Queries) RecordListEventBefore(ctx context.Context, arg RecordListEvent
 			&i.PushExternalEffect,
 			&i.PushEffectState,
 			&i.SchedulerOutcome,
+			&i.ActorEnvelopeKnown,
+			&i.ActorViaKey,
+			&i.ActorDisplayName,
+			&i.ActorAgent,
 		); err != nil {
 			return nil, err
 		}
@@ -2997,7 +3061,7 @@ func (q *Queries) RecordSetViewedFile(ctx context.Context, arg RecordSetViewedFi
 }
 
 const recordUnprojectedChangePushes = `-- name: RecordUnprojectedChangePushes :many
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events WHERE organization_id=$1 AND type='run.checkpointed' AND NOT push_known
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events WHERE organization_id=$1 AND type='run.checkpointed' AND NOT push_known
 ORDER BY project_id,work_item_id,sequence DESC LIMIT $2
 `
 
@@ -3051,6 +3115,10 @@ func (q *Queries) RecordUnprojectedChangePushes(ctx context.Context, arg RecordU
 			&i.PushExternalEffect,
 			&i.PushEffectState,
 			&i.SchedulerOutcome,
+			&i.ActorEnvelopeKnown,
+			&i.ActorViaKey,
+			&i.ActorDisplayName,
+			&i.ActorAgent,
 		); err != nil {
 			return nil, err
 		}

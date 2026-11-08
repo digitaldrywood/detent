@@ -632,6 +632,10 @@ type CollaborationEvent struct {
 	PushExternalEffect   string
 	PushEffectState      string
 	SchedulerOutcome     string
+	ActorEnvelopeKnown   bool
+	ActorViaKey          string
+	ActorDisplayName     string
+	ActorAgent           string
 }
 
 type CollaborationVersion struct {

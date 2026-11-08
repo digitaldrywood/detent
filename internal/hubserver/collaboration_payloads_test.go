@@ -121,7 +121,9 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 					data.Run = &run
 
 				}
-				raw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: kind, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: f.service.config.now(), Data: data})
+				actor := scope.actor()
+				actor.ViaKey, actor.DisplayName, actor.Agent = "example_key", "Example operator", "Example assistant"
+				raw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: data})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -175,6 +177,9 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 						if len(result.Items) != 2 {
 							t.Fatalf("history items=%d, want 2", len(result.Items))
 						}
+						if result.Items[1].Actor != actor {
+							t.Fatalf("history actor=%+v want %+v", result.Items[1].Actor, actor)
+						}
 						suppressed := view == "timeline" && strings.HasPrefix(kind, "run.")
 						if suppressed {
 							if targetRead || !reflect.DeepEqual(result.Items[1].Data, tracker.CollaborationData{}) {
@@ -182,6 +187,66 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 							}
 						} else if reads == 0 || !targetRead {
 							t.Fatal("history did not hydrate object payload")
+						}
+					})
+				}
+				if kind == "run.started" && size == 16 {
+					for _, field := range []string{"key", "name", "agent"} {
+						t.Run("actor projection "+field, func(t *testing.T) {
+							changed := event
+							switch field {
+							case "key":
+								changed.ActorViaKey = "other_key"
+							case "name":
+								changed.ActorDisplayName = "Other operator"
+							case "agent":
+								changed.ActorAgent = "Other assistant"
+							}
+							if _, err := content.Event(t.Context(), changed); !errors.Is(err, artifact.ErrIntegrity) {
+								t.Fatalf("actor projection mismatch error=%v", err)
+							}
+						})
+					}
+					t.Run("historical actor recovery and replay", func(t *testing.T) {
+						tx, err := admin.BeginTx(t.Context(), nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer tx.Rollback()
+						if _, err := tx.ExecContext(t.Context(), "SET LOCAL session_replication_role=replica"); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET actor_envelope_known=false,actor_via_key='',actor_display_name='',actor_agent='' WHERE organization_id=$1 AND id=$2", scope.organization, event.ID); err != nil {
+							t.Fatal(err)
+						}
+						if err := tx.Commit(); err != nil {
+							t.Fatal(err)
+						}
+						if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+							replayed, err := w.AppendEvent(t.Context(), prepared)
+							if err == nil && (replayed.ID != event.ID || replayed.Sequence != event.Sequence || replayed.ActorEnvelopeKnown) {
+								return errors.New("historical replay changed the event")
+							}
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						original := f.service.config.RunDetails
+						read := false
+						f.service.config.RunDetails = &changeReadInterceptionStore{DetailStore: original, key: event.PayloadObjectKey, afterRead: func(context.Context) error {
+							read = true
+							if repository.Stats().AcquiredConns() != 0 {
+								return errors.New("historical actor I/O holds database connections")
+							}
+							return nil
+						}}
+						defer func() { f.service.config.RunDetails = original }()
+						recovered, err := f.service.readHistory(f.service.freshRunDetailContext(t.Context()), scope, string(issue.WorkItemID), url.Values{"view": {"timeline"}})
+						if err != nil || !read || len(recovered.Items) != 2 {
+							t.Fatalf("historical actor read=%v rows=%d error=%v", read, len(recovered.Items), err)
+						}
+						if recovered.Items[1].Actor != actor || !reflect.DeepEqual(recovered.Items[1].Data, tracker.CollaborationData{}) {
+							t.Fatalf("historical timeline event=%+v", recovered.Items[1])
 						}
 					})
 				}

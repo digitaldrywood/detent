@@ -27,6 +27,10 @@ type Event struct {
 	SchemaVersion        int64
 	ActorKind            string
 	ActorPrincipalID     string
+	ActorEnvelopeKnown   bool
+	ActorViaKey          string
+	ActorDisplayName     string
+	ActorAgent           string
 	EventRevision        int64
 	ChangeID             string
 	VersionID            string

@@ -12,11 +12,11 @@ import (
 )
 
 const claimVersionLandingObservations = `-- name: ClaimVersionLandingObservations :many
-SELECT q.request_index::bigint AS request_index,e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome,
+SELECT q.request_index::bigint AS request_index,e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.scheduler_outcome, e.actor_envelope_known, e.actor_via_key, e.actor_display_name, e.actor_agent,
 COALESCE(w.from_state,e.from_state)::text AS landing_from_state,COALESCE(w.to_state,'')::text AS landing_target_state
 FROM unnest($1::text[]) WITH ORDINALITY q(work_item_id,request_index)
 CROSS JOIN LATERAL (
- SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM collaboration_events e
+ SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events e
  WHERE e.organization_id=$2 AND e.project_id=$3 AND e.work_item_id=q.work_item_id
  AND e.landing_change_id=($4::text[])[q.request_index] AND e.landing_version_id=($5::text[])[q.request_index] AND e.landing_head_sha=($6::text[])[q.request_index]
  AND e.landing_version_id<>'' ORDER BY e.sequence DESC LIMIT 1
@@ -100,6 +100,10 @@ func (q *Queries) ClaimVersionLandingObservations(ctx context.Context, arg Claim
 			&i.CollaborationEvent.PushExternalEffect,
 			&i.CollaborationEvent.PushEffectState,
 			&i.CollaborationEvent.SchedulerOutcome,
+			&i.CollaborationEvent.ActorEnvelopeKnown,
+			&i.CollaborationEvent.ActorViaKey,
+			&i.CollaborationEvent.ActorDisplayName,
+			&i.CollaborationEvent.ActorAgent,
 			&i.LandingFromState,
 			&i.LandingTargetState,
 		); err != nil {

@@ -155,6 +155,7 @@ func (c *Content) PrepareEvent(ctx context.Context, organization tracker.Organiz
 	if value.Data.Decision != nil {
 		row.SchedulerOutcome = value.Data.Decision.Outcome
 	}
+	row.ActorEnvelopeKnown, row.ActorViaKey, row.ActorDisplayName, row.ActorAgent = true, value.Actor.ViaKey, value.Actor.DisplayName, value.Actor.Agent
 	row = ProjectChangePush(row, value)
 	if value.Data.Run != nil {
 		row.RunID = value.Data.Run.RunID
@@ -178,6 +179,10 @@ func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEv
 	if err == nil {
 		if value.ID != row.ID || value.OrganizationID != row.OrganizationID || value.ProjectID != row.ProjectID || value.AggregateID != row.WorkItemID || value.Type != row.Type || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID {
 			return value, fmt.Errorf("validate event identity: %w", artifact.ErrIntegrity)
+		}
+
+		if row.ActorEnvelopeKnown && (value.Actor.ViaKey != row.ActorViaKey || value.Actor.DisplayName != row.ActorDisplayName || value.Actor.Agent != row.ActorAgent) {
+			return value, fmt.Errorf("validate event actor projection: %w", artifact.ErrIntegrity)
 		}
 		if row.SchedulerOutcome != "" && (value.Data.Decision == nil || value.Data.Decision.Outcome != row.SchedulerOutcome) {
 			return value, fmt.Errorf("validate scheduler outcome: %w", artifact.ErrIntegrity)

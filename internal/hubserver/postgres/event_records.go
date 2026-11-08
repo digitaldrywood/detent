@@ -375,7 +375,7 @@ func (s *session) CollaborationVersions(ctx context.Context, keys []eventstore.C
 }
 
 func (s *session) insertRecordEvent(ctx context.Context, record eventstore.Event) (eventstore.Event, error) {
-	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{SchedulerOutcome: record.SchedulerOutcome, PushKnown: record.PushKnown, PushChangeID: record.PushChangeID, PushVersionID: record.PushVersionID, PushHeadSha: record.PushHeadSHA, PushExternalEffect: record.PushExternalEffect, PushEffectState: record.PushEffectState, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, ProjectSequence: record.ProjectSequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
+	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{SchedulerOutcome: record.SchedulerOutcome, PushKnown: record.PushKnown, PushChangeID: record.PushChangeID, PushVersionID: record.PushVersionID, PushHeadSha: record.PushHeadSHA, PushExternalEffect: record.PushExternalEffect, PushEffectState: record.PushEffectState, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, ProjectSequence: record.ProjectSequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ActorEnvelopeKnown: record.ActorEnvelopeKnown, ActorViaKey: record.ActorViaKey, ActorDisplayName: record.ActorDisplayName, ActorAgent: record.ActorAgent, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
 	if err != nil {
 		return eventstore.Event{}, mapError(ctx, err)
 	}
@@ -454,6 +454,7 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 		if requested.RecordedAt.IsZero() || recordTime(requested.RecordedAt).Equal(previous.RecordedAt) {
 			requested.RecordedAt = previous.RecordedAt
 		}
+		requested = replayEventActor(requested, eventRecord(previous))
 		if !reflect.DeepEqual(eventRecord(previous), requested) {
 			return eventstore.Event{}, corestore.ErrRevisionConflict
 		}
@@ -816,4 +817,11 @@ func (s *session) PutPRPublication(ctx context.Context, record eventstore.Native
 func (s *session) LatestSchedulerDecision(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.Event, error) {
 	row, err := s.queries.RecordLatestSchedulerDecision(ctx, pgquery.RecordLatestSchedulerDecisionParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item})
 	return eventRecord(row), mapError(ctx, err)
+}
+
+func replayEventActor(requested, previous eventstore.Event) eventstore.Event {
+	if !previous.ActorEnvelopeKnown {
+		requested.ActorEnvelopeKnown, requested.ActorViaKey, requested.ActorDisplayName, requested.ActorAgent = false, previous.ActorViaKey, previous.ActorDisplayName, previous.ActorAgent
+	}
+	return requested
 }
