@@ -88,13 +88,6 @@ func TestRunnerRepositoryList(t *testing.T) {
 
 func TestRepositoryDiscoveryIsNotStarvedByGitHubIntake(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
-		defer cancel()
-		if err := testsupport.CloseDispatchPostgres(ctx); err != nil {
-			t.Error(err)
-		}
-	})
 	config := testsupport.DispatchPostgresConfig(t, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Content: newHubContentStore(), RunDetails: &repodiscDetails{}})
 	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
