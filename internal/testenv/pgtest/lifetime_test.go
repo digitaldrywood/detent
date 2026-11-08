@@ -30,13 +30,27 @@ type binaryLifetime struct {
 func TestBinaryLifetime(t *testing.T) {
 	if mode := os.Getenv("DETENT_PGTEST_LIFETIME"); mode != "" {
 		if strings.HasSuffix(mode, "initializer cleanup") || mode == "failed initializer" {
+			var scratch, data string
 			t.Run("initializer", func(t *testing.T) {
-				t.Setenv("TMPDIR", t.TempDir())
-				processTemplate.Database(t)
+				scratch = t.TempDir()
+				t.Setenv("TMPDIR", scratch)
+				db := processTemplate.Database(t)
+				if err := db.QueryRowContext(t.Context(), "SHOW data_directory").Scan(&data); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(data); err != nil {
+					t.Fatalf("data directory before initializer cleanup: %v", err)
+				}
 				if mode == "failed initializer" {
 					t.Fatal("intentional initializer failure")
 				}
 			})
+			if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("initializer temporary directory was not removed: %v", err)
+			}
+			if _, err := os.Stat(data); err != nil {
+				t.Fatalf("data directory after initializer cleanup: %v", err)
+			}
 		} else if err := processTemplate.initialize(t.Context(), "binary"); err != nil {
 			t.Fatal(err)
 		}
