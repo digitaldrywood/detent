@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -43,6 +44,11 @@ type nativeWebFixture struct {
 }
 
 func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
+	t.Helper()
+	return newNativeWebServerWithBackend(t, &authKeyStoreFixture{keys: make(map[string]store.APIKey)})
+}
+
+func newNativeWebServerWithBackend(t *testing.T, backend store.Store) (*web.Server, *nativeWebFixture) {
 	t.Helper()
 	fixture := &nativeWebFixture{issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_example", Revision: 7, Profile: "native", Number: 1}, Title: "Native collaboration", Body: "Full native body <script>unsafe()</script>", State: "Todo"}}
 	hubHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,10 +166,15 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return nativeWebServerWithClient(t, native, fixture), fixture
+	return nativeWebServerWithBackend(t, native, fixture, backend), fixture
 }
 
 func nativeWebServerWithClient(t *testing.T, native *hubclient.NativeClient, fixture *nativeWebFixture) *web.Server {
+	t.Helper()
+	return nativeWebServerWithBackend(t, native, fixture, &authKeyStoreFixture{keys: make(map[string]store.APIKey)})
+}
+
+func nativeWebServerWithBackend(t *testing.T, native *hubclient.NativeClient, fixture *nativeWebFixture, backend store.Store) *web.Server {
 	t.Helper()
 	source, err := hubclient.NewNativeConnector(native)
 	if err != nil {
@@ -179,7 +190,6 @@ func nativeWebServerWithClient(t *testing.T, native *hubclient.NativeClient, fix
 	if err := deps.Registry.Set(tracked); err != nil {
 		t.Fatal(err)
 	}
-	backend := openWebTestStore(t)
 	deps.Connector, deps.Store = source, backend
 	fixture.keys = map[string]string{}
 	for _, scope := range []string{"read", "write"} {

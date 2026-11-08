@@ -13,7 +13,7 @@ import (
 
 func TestOperatorNativeClientReads(t *testing.T) {
 	// Catch daemon adapters dropping requested bounds or exporting UI form data.
-	server, fixture := newNativeWebServer(t)
+	server, fixture := newNativeWebServerWithBackend(t, openWebTestStore(t))
 	// A broader connector credential must not leak foreign project relations
 	// through current detail, lists, saved versions, history or exports.
 	fixture.issue.Dependencies = []tracker.NativeWorkItemID{"wi_hidden", "wi_visible"}
