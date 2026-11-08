@@ -990,16 +990,21 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			return nil
 		}
 
-		owner, ok := writer.(conversationstore.AttachmentWriter)
-		if !ok {
-			return conversationUnsupported("Conversation attachment owner is unavailable")
-		}
-		if err := s.authorizeConversationAttachmentPG(ctx, writer, scope, storedConversation, true); err != nil {
-			return err
-		}
-		attachments, err := loadCommandAttachmentsPG(ctx, writer, scope, id, command.Attachments, s.config.now())
-		if err != nil {
-			return err
+		var owner conversationstore.AttachmentWriter
+		var attachments []conversationAttachmentRecord
+		if len(command.Attachments) > 0 {
+			var ok bool
+			owner, ok = writer.(conversationstore.AttachmentWriter)
+			if !ok {
+				return conversationUnsupported("Conversation attachment owner is unavailable")
+			}
+			if err := s.authorizeConversationAttachmentPG(ctx, writer, scope, storedConversation, true); err != nil {
+				return err
+			}
+			attachments, err = loadCommandAttachmentsPG(ctx, writer, scope, id, command.Attachments, s.config.now())
+			if err != nil {
+				return err
+			}
 		}
 		pending, err := writer.PendingUserMessages(ctx, id)
 		if err != nil {
