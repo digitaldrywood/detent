@@ -322,7 +322,16 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				t.Setenv("MAKEFLAGS", "")
 				t.Setenv("MFLAGS", "")
 				source := initRunnerSourceRepo(t)
-				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh"} {
+				policyPath := filepath.Join(source, "internal", "invariants", "sqlite_policy.json")
+				if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(policyPath, []byte("{\"files\":{},\"modules\":{}}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, source, "add", "internal/invariants/sqlite_policy.json")
+				runRunnerGit(t, source, "commit", "-m", "initialize storage policy")
+				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py"} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
 					if err != nil {
 						t.Fatal(err)
