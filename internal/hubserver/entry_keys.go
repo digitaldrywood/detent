@@ -193,7 +193,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		return entryKeyHasDefinition(definitions, name), err
 	case operatortool.ExplainItem, operatortool.BoardState, operatortool.Dashboard:
 		return catalog.credential.HostedRole != "account", nil
-	case operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate:
+	case operatortool.Reports, operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerHost, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate:
 		definitions, err := (hubFleetExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
 	case "set_project_icon", "set_organization_logo", "approve_project_policy", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics:
@@ -286,6 +286,8 @@ func entryKeyToolSupported(name string) bool {
 		return true
 	}
 	switch name {
+	case operatortool.Reports, operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerHost, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity:
+		return true
 	case operatortool.BoardState, operatortool.Dashboard, operatortool.StopRun, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.VerifyFix:
 		return true
 	case operatortool.OrganizationSession, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationEdit, operatortool.InvitationResend, operatortool.MemberRole, operatortool.MemberGrant:

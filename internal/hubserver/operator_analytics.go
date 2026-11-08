@@ -127,6 +127,35 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 	if s.database == nil || s.config.Hosted == nil {
 		return operatortool.Result{}, errHubOperatorUnavailable
 	}
+	if s.config.TenantRepository != nil && call.Name == operatortool.Reports {
+		projects, _, err := s.reportsReadableProjects(ctx, credential, reportsAllProjects)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		if r.ProjectID != "" {
+			projects = filterProductivityProjects(projects, []string{r.ProjectID})
+		}
+		projects = filterProductivityProjects(projects, r.Projects)
+		if r.Range != "" {
+			w, err = reportsWindow(url.Values{"range": {r.Range}}, s.config.now())
+			if err != nil {
+				return operatortool.Result{}, err
+			}
+		}
+		filter := reportsFilter{Labels: r.Labels, Priorities: r.Priorities, Types: r.Types, FiledBy: r.FiledBy, Runners: r.Runners}
+		if r.Scope == "organization" {
+			report, err := s.readOrganizationProductivity(ctx, projects, w, filter)
+			if err != nil {
+				return operatortool.Result{}, err
+			}
+			return hubOperatorResult(report)
+		}
+		report, err := s.readPostgresHostedReport(ctx, credential, projects, w, filter, true)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		return hubOperatorResult(report)
+	}
 	if call.Name == operatortool.Reports && r.Scope == "organization" {
 		if r.Range != "" {
 			w, err = reportsWindow(url.Values{"range": {r.Range}}, s.config.now())

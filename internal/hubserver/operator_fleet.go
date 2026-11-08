@@ -14,6 +14,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -451,8 +455,8 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		a.CurrentState = strconv.FormatInt(urgent.Revision, 10)
 		a.MaterialChange = true
 	case operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.RevokeRunnerIdentity:
-		runner, err := readRunnerWithClock(ctx, e.service.database.reader, tracker.OrganizationID(org), r.RunnerID, e.service.config.now)
-		if errors.Is(err, sql.ErrNoRows) {
+		runner, err := e.service.readRunnerRouting(ctx, nativeScope{organization: tracker.OrganizationID(org), credential: credential}, r.RunnerID)
+		if errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
 			return a, &operatortool.RequestError{Code: "not_found", Message: "runner_id: no runner with this ID exists in this organization"}
 		}
 		if err != nil {
@@ -501,24 +505,34 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		if operatortool.DecodeArguments(r.Change, &change) != nil || strings.TrimSpace(change.DisplayName) == "" || len(change.DisplayName) > 200 || strings.ContainsAny(change.DisplayName, "\r\n\x00") {
 			return a, operatortool.ErrInvalidArguments
 		}
-		// Ownership and exact revision use the same host read backing runner views.
-		var revision int64
-		var capacity int
-		if e.service.database.reader.QueryRowContext(ctx, "SELECT routing_revision, capacity FROM machines WHERE organization_id=? AND id=?", org, r.MachineID).Scan(&revision, &capacity) != nil || revision != change.ExpectedRevision {
-			return a, errHubOperatorUnavailable
+		var machine leasestore.Machine
+		err := e.service.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(org), corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			machine, err = reader.Machine(ctx, r.MachineID)
+			return err
+		})
+		if err != nil {
+			return a, safeHubOperatorError(err)
 		}
-		a.IssueID = r.MachineID
-		a.Identifier = r.MachineID
-		a.CurrentState = strconv.FormatInt(revision, 10)
-		a.MaterialChange = capacity != change.Capacity
+		a.IssueID, a.Identifier = r.MachineID, r.MachineID
+		a.CurrentState = strconv.FormatInt(change.ExpectedRevision, 10)
+		a.MaterialChange = machine.Capacity != int64(change.Capacity)
 	case operatortool.RevokeRunnerEnrollment:
-		var expires string
-		if e.service.database.reader.QueryRowContext(ctx, "SELECT expires_at FROM runner_enrollments WHERE organization_id=? AND id=? AND revoked_at IS NULL AND redeemed_at IS NULL", org, r.EnrollmentID).Scan(&expires) != nil {
+		var enrollment runnerstore.Enrollment
+		err := e.service.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(org), corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			enrollment, err = reader.RunnerEnrollment(ctx, r.EnrollmentID)
+			return err
+		})
+		if err != nil {
+			return a, safeHubOperatorError(err)
+		}
+		if enrollment.RevokedAt != nil || enrollment.RedeemedAt != nil {
 			return a, errHubOperatorUnavailable
 		}
-		a.IssueID = r.EnrollmentID
-		a.Identifier = r.EnrollmentID
-		a.CurrentState = expires
+		a.IssueID, a.Identifier = r.EnrollmentID, r.EnrollmentID
+		a.CurrentState = formatHubTime(enrollment.ExpiresAt)
+
 	case operatortool.CreateRunnerEnrollment:
 		if !r.Enrollment.Valid() && !r.Enrollment.Unbound() || !runnerauth.ValidOperations(r.Enrollment.Operations) {
 			return a, operatortool.ErrInvalidArguments
