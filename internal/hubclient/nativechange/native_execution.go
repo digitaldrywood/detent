@@ -335,7 +335,9 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 			e.data.Outcome = ""
 			observation := &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: e.scheduler.now().UTC()}
 			if e.data.Runtime != nil && e.data.Runtime.Landing != nil && e.data.Runtime.Landing.Waiting {
-				observation.Landing = e.data.Runtime.Landing
+				landing := *e.data.Runtime.Landing
+				landing.FromState, landing.TargetState = "", ""
+				observation.Landing = &landing
 			}
 			e.data.Runtime = observation
 			e.data.Finalization = nil
