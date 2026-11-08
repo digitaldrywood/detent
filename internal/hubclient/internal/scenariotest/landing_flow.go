@@ -3,7 +3,6 @@ package scenariotest
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +24,8 @@ import (
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -64,7 +65,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		{name: "direct landing capacity wait resumes on another machine", github: true, refusal: "direct_capacity_wait"},
 		{name: "SSH native landing", ssh: true},
 		{name: "landing and coding in one refresh", batch: true},
-		{name: "local reviewed head stays on its source machine", otherMachine: "unpushed"},
+		{name: "retained unpushed source remains available across machines", otherMachine: "unpushed"},
 		{name: "published reviewed head remains available across machines", otherMachine: "clean"},
 		{name: "non-gate policy approval preserves landing", policyChange: func(p *policy.Descriptor) {
 			p.ConfigDigest = policy.Digest([]byte("new non-gate configuration"))
@@ -311,6 +312,10 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := h.admin.IntakeSource(t.Context(), created.WorkItemID, tracker.GitHubIntake{Mutation: nativeMutationKey(), Snapshot: backend.snapshot(hubserver.GitHubImportRequest{Stage: "issue"})}); err != nil {
+			t.Fatal(err)
+		}
+		confirmIssueContract(t, h.admin, string(created.WorkItemID))
 		for _, state := range []string{"Todo", "In Progress"} {
 			if err := h.connector.UpdateIssueState(t.Context(), string(created.WorkItemID), state); err != nil {
 				t.Fatal(err)
@@ -440,29 +445,25 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		}
 	}
 	if otherMachine != "" {
-		other, err := newTestScheduler(h.scheduler.Transport(), SchedulerConfig{
+		otherClient, otherHost := hubclientEnrolledRunner(t, h.admin.Transport(), h.organization, h.project, fixtureClient(h.native.Transport()).httpClient.Transport)
+		other, err := newTestScheduler(otherClient, SchedulerConfig{
 			OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
-			Machine: Machine{ID: "other-machine", Hostname: "other", Capacity: 1, Version: "test"}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second,
+			Machine: otherHost, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		candidates, err := other.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Merging"}})
-		want := 0
-		if otherMachine == "clean" {
-			want = 1
-		}
+		want := 1
 		if err != nil || len(candidates) != want {
 			t.Fatalf("landing candidates for head availability %s: candidates=%v want=%d err=%v", otherMachine, candidates, want, err)
 		}
-		if otherMachine == "clean" {
-			if err := other.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
-				t.Fatal(err)
-			}
+		if err := other.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
+			t.Fatal(err)
 		}
 		if otherMachine == "unpushed" {
-			if _, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: item, MachineID: "other-machine", SessionID: "wrong-host", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}); err == nil {
-				t.Fatal("direct claim bypassed reviewed head ownership")
+			if _, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: item, MachineID: otherHost.ID, SessionID: "wrong-host", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}); err == nil {
+				t.Fatal("direct claim accepted another runner's machine identity")
 			}
 		}
 	}
@@ -597,12 +598,21 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		resumeLanding = func(machine string) (runner.Execution, context.Context, func()) {
 			t.Helper()
 			stop()
+			claim, found := h.scheduler.ExecutionClaim(issue.ID)
+			if !found {
+				t.Fatal("replacement fixture lost the prior fenced claim")
+			}
 			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
 				t.Fatalf("releasing direct waiting claim: %v", err)
 			}
-			other, err := newTestScheduler(h.scheduler.Transport(), SchedulerConfig{
+			if err := claim.Source.NativeClient().Release(t.Context(), claim.Lease, "released"); err != nil && !api.ClaimLost(err) {
+				t.Fatalf("relinquishing interrupted runner authority: %v", err)
+			}
+			otherClient, otherHost := hubclientEnrolledRunner(t, h.admin.Transport(), h.organization, h.project, fixtureClient(h.native.Transport()).httpClient.Transport)
+			otherHost.Hostname = machine
+			other, err := newTestScheduler(otherClient, SchedulerConfig{
 				OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
-				Machine: Machine{ID: tracker.MachineID(machine), Hostname: machine, Capacity: 1, Version: "test"}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second,
+				Machine: otherHost, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -685,7 +695,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if reconnectErr == nil || !interrupted {
 			t.Fatalf("live-lease reconnect did not interrupt at committed receipt: %v", reconnectErr)
 		}
-		current, err := h.admin.Issue(t.Context(), item)
+		reconnected, err := h.admin.Recovery(t.Context(), item)
+		current := reconnected.Issue
 		if err != nil || current.ListChange == nil || !current.ListChange.LandingPending || current.ListChange.HeadSHA != head {
 			t.Fatalf("interrupted live-lease reconnect lost pending reviewed source: %+v, %v", current.ListChange, err)
 		}
@@ -810,12 +821,16 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if refusalKind == "conflict" || gateFailed {
 			target = "Rework"
 		}
-		transitionCtx := t.Context()
+		transitionCtx := guarded
 		if refusalKind == workspace.LandRefusalProtected {
 			target = "Blocked"
 			transitionCtx = connector.WithLaneTransitionReason(transitionCtx, "human_action", message)
 		}
-		if err := h.connector.UpdateIssueState(transitionCtx, issue.ID, target); err != nil {
+		workflowConnector, err := NewNativeConnector(h.native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := workflowConnector.UpdateIssueState(transitionCtx, issue.ID, target); err != nil {
 			t.Fatal(err)
 		}
 		evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
@@ -1068,12 +1083,7 @@ func testNativeLandingStaleAudit(t *testing.T, h *nativeChangeHub, issue connect
 		ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings",
 	}}
 	validator := gate.ValidatorResult{VersionID: change.VersionID, Repository: nativeChangeRepository, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA, SessionID: 43, Verdict: gate.ValidatorVerdictPass, Submitted: true, Summary: "Acceptance verified"}
-	h.reopen(func(path string) error {
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+	h.seed(func(w tenantstore.Writer) error {
 		for _, review := range []tracker.ChangeReview{
 			{ID: "review_audit_example", VersionID: change.VersionID, Decision: "approved", SecurityAudit: &audit, Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: now},
 			{ID: "review_validator_example", VersionID: change.VersionID, Decision: "approved", Validator: &validator, Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: now},
@@ -1082,7 +1092,11 @@ func testNativeLandingStaleAudit(t *testing.T, h *nativeChangeHub, issue connect
 			if err != nil {
 				return err
 			}
-			if _, err := db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, ?, 'review', ?, ?)", change.ChangeID, change.VersionID, review.ID, string(raw)); err != nil {
+			row, err := h.prepareEvidence(eventstore.Evidence{OrganizationID: h.organization, ChangeID: change.ChangeID, VersionID: new(change.VersionID), Kind: "review", SourceKey: new(review.ID)}, raw)
+			if err != nil {
+				return err
+			}
+			if _, err := w.AppendEvidence(t.Context(), row); err != nil {
 				return err
 			}
 		}
