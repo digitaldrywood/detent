@@ -21,12 +21,13 @@ func (s *Service) loadGitHubBatchRecord(ctx context.Context, scope nativeScope) 
 			return err
 		}
 		var err error
-		row, err = r.(projectstore.IntakeBatchReader).ProjectIntakeBatch(ctx, scope.project)
+		intakeBatchReader, ok := r.(projectstore.IntakeBatchReader)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		row, err = intakeBatchReader.ProjectIntakeBatch(ctx, scope.project)
 		return err
 	})
-	if errors.Is(err, corestore.ErrNotFound) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +65,11 @@ func (s *Service) saveGitHubBatchRecord(ctx context.Context, scope nativeScope, 
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		return w.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(ctx, row, expected)
+		intakeBatchWriter, ok := w.(projectstore.IntakeBatchWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		return intakeBatchWriter.SaveProjectIntakeBatch(ctx, row, expected)
 	})
 }
 
@@ -84,6 +89,9 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope nativeScop
 		return nil, err
 	}
 	batch, err := s.loadGitHubBatchRecord(ctx, scope)
+	if errors.Is(err, corestore.ErrNotFound) {
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +129,11 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope nativeScop
 			return nil, err
 		}
 		actor := scope.actor()
-		batch = &tracker.GitHubBatch{ID: newNativeID("intake"), Revision: expected, HubOwned: true, Automatic: request.Action == "start", RequestedBy: &actor, Limit: 1000, Discovery: tracker.GitHubDiscovery{Repository: strings.ToLower(repository), Snapshots: true, Labels: request.Labels, IncludeClosed: request.IncludeClosed, ProjectV2: request.ProjectV2}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}}
+		limit, err := s.githubBatchRecordLimit(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		batch = &tracker.GitHubBatch{ID: newNativeID("intake"), Revision: expected, HubOwned: true, Automatic: request.Action == "start", RequestedBy: &actor, Limit: limit, Discovery: tracker.GitHubDiscovery{Repository: strings.ToLower(repository), Snapshots: true, Labels: request.Labels, IncludeClosed: request.IncludeClosed, ProjectV2: request.ProjectV2}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}}
 		if request.Action == "start" {
 			if err := configureBatchRecordDestination(project.States, batch, request); err != nil {
 				return nil, err
@@ -188,7 +200,11 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope nativeScop
 		if current.Settings.Revision != project.Settings.Revision {
 			return corestore.ErrRevisionConflict
 		}
-		return w.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(ctx, row, expected)
+		intakeBatchWriter, ok := w.(projectstore.IntakeBatchWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		return intakeBatchWriter.SaveProjectIntakeBatch(ctx, row, expected)
 	})
 }
 
@@ -253,13 +269,14 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 	if batch.Status != "discovering" && batch.Status != "importing" {
 		return nil
 	}
+	scope.githubIntakeRevision = &githubIntakeRevision{batchID: batch.ID, revision: batch.Revision}
 	if batch.Status == "discovering" {
 		page, fetchErr := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: batch.Discovery.Repository, Stage: "batch", Discovery: &batch.Discovery})
 		if fetchErr != nil {
 			batch.Error = "GitHub source page is unavailable"
 			return errors.Join(fetchErr, s.saveGitHubBatchRecord(ctx, scope, batch))
 		}
-		if page.BatchPage == nil || len(page.BatchPage.Issues) > 100 || len(batch.Page.Issues)+len(page.BatchPage.Issues) > batchLimit(batch) {
+		if page.BatchPage == nil || len(page.BatchPage.Issues) > githubBatchMaintenanceLimit || len(batch.Page.Issues)+len(page.BatchPage.Issues) > batchLimit(batch) {
 			return nativePublicInvalid("GitHub discovery exceeded its page budget")
 		}
 		for _, preview := range page.BatchPage.Issues {
@@ -279,6 +296,7 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 		if err := s.saveGitHubBatchRecord(ctx, scope, batch); err != nil {
 			return err
 		}
+		scope.githubIntakeRevision.revision = batch.Revision
 	}
 	if !batch.Automatic && batch.Status == "preview" {
 		return nil
@@ -293,7 +311,7 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 		if item.Status != "pending" {
 			continue
 		}
-		if processed >= 100 {
+		if processed >= githubBatchMaintenanceLimit {
 			break
 		}
 		processed++
@@ -320,6 +338,8 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 		}
 		item.WorkItemID, item.Status = issue.WorkItemID, "completed"
 		item.UnmappedProjectStatus = batchUnmappedProjectStatus(batch, preview)
+		batch.Page.Issues[index].Body = ""
+		batch.Page.Issues[index].Snapshot = nil
 	}
 	if !slices.ContainsFunc(batch.Items, func(i tracker.GitHubBatchItem) bool { return i.Status == "pending" }) {
 		if batch.Automatic && batch.Page.NextCursor != "" && len(batch.Page.Issues) < batchLimit(batch) {
@@ -329,4 +349,24 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 		}
 	}
 	return s.saveGitHubBatchRecord(ctx, scope, batch)
+}
+
+func (s *Service) githubBatchRecordLimit(ctx context.Context, scope nativeScope) (int, error) {
+	if s.database.plans() == nil {
+		return 1000, nil
+	}
+	var entitlement HostedEntitlement
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		entitlement, err = s.database.hostedEntitlementRecord(ctx, r, s.config.now())
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	limit := int(min(entitlement.Allowances["unarchived_issues"], 50000))
+	if limit <= 0 {
+		return 0, intakeInvalid("The plan does not allow issue import")
+	}
+	return limit, nil
 }

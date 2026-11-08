@@ -957,6 +957,14 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		}
 
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if scope.integrationRepository != "" || scope.scheduledRepair != nil {
+				if err := w.LockAccessOrganization(ctx); err != nil {
+					return err
+				}
+				if err := s.requireGitHubPolicyRecord(ctx, w, scope); err != nil {
+					return err
+				}
+			}
 			if plan.relationship != nil {
 				if err := w.LockRelationshipGraph(ctx); err != nil {
 					return err

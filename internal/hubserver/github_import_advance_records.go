@@ -78,6 +78,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		}
 		intakeScope := scope
 		intakeScope.integrationRepository = integration.Repository
+		intakeScope.githubIntakeRevision = &githubIntakeRevision{importID: current.ID, revision: int64(current.Revision)}
 		intakeScope.sourceActor = nativeIntegrationActor("github")
 		if current.Stage == "issue" {
 			if page.Issue == nil || page.Issue.Number != current.IssueNumber {
@@ -170,7 +171,10 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		if latestProject.Settings.Revision != project.Settings.Revision {
 			return corestore.ErrRevisionConflict
 		}
-		owner := w.(projectstore.GitHubImportWriter)
+		owner, ok := w.(projectstore.GitHubImportWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
 		latest, err := owner.GitHubImport(ctx, scope.project, id)
 		if err != nil {
 			return err
@@ -187,7 +191,11 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 			latest.SourceUpdatedAt = &value
 		}
 		for _, record := range records {
-			if err := w.(projectstore.GitHubImportRecordWriter).CreateGitHubImportRecord(ctx, record); err != nil {
+			gitHubImportRecordWriter, ok := w.(projectstore.GitHubImportRecordWriter)
+			if !ok {
+				return ErrPostgresFeatureUnavailable
+			}
+			if err := gitHubImportRecordWriter.CreateGitHubImportRecord(ctx, record); err != nil {
 				return err
 			}
 		}
@@ -203,7 +211,11 @@ func (s *Service) fetchGitHubImportRecordPage(ctx context.Context, scope nativeS
 		var source projectstore.GitHubImportRecord
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			source, err = r.(projectstore.GitHubImportRecordReader).GitHubImportEditSource(ctx, scope.project, job.ID, job.EditSequence)
+			gitHubImportRecordReader, ok := r.(projectstore.GitHubImportRecordReader)
+			if !ok {
+				return ErrPostgresFeatureUnavailable
+			}
+			source, err = gitHubImportRecordReader.GitHubImportEditSource(ctx, scope.project, job.ID, job.EditSequence)
 			return err
 		})
 		if errors.Is(err, corestore.ErrNotFound) {

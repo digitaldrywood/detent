@@ -57,7 +57,37 @@ func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader
 		if project.Core.DeletedAt != nil || project.Core.Profile != "native" || !strings.EqualFold(project.Settings.Repository, scope.integrationRepository) && !strings.EqualFold(project.Settings.CheckoutRepository, scope.integrationRepository) {
 			return accessstore.ErrDenied
 		}
-		return nil
+		if fence := scope.githubIntakeRevision; fence != nil {
+			if fence.batchID != "" {
+				owner, ok := r.(projectstore.IntakeBatchReader)
+				if !ok {
+					return accessstore.ErrDenied
+				}
+				batch, err := owner.ProjectIntakeBatch(ctx, scope.project)
+				if err != nil {
+					return err
+				}
+				if batch.ID != fence.batchID || batch.Revision != fence.revision || batch.Status != "discovering" && batch.Status != "importing" {
+					return corestore.ErrRevisionConflict
+				}
+			}
+			if fence.importID != "" {
+				owner, ok := r.(projectstore.GitHubImportReader)
+				if !ok {
+					return accessstore.ErrDenied
+				}
+				job, err := owner.GitHubImport(ctx, scope.project, fence.importID)
+				if err != nil {
+					return err
+				}
+				if job.Revision != fence.revision {
+					return corestore.ErrRevisionConflict
+				}
+			}
+		}
+		if scope.integrationOwned {
+			return nil
+		}
 	}
 	if s.config.Hosted != nil && scope.organization != s.accessOrganization() {
 		return auth.ErrHostedIdentity

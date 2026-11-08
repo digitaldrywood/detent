@@ -40,7 +40,15 @@ import (
 const nativeBase = "/api/v2/organizations/:organization/projects/:project"
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
+type githubIntakeRevision struct {
+	batchID  string
+	importID string
+	revision int64
+}
+
 type nativeScope struct {
+	integrationOwned      bool
+	githubIntakeRevision  *githubIntakeRevision
 	integrationRepository string
 	duplicateSearch       *nativeDuplicateSearch
 	action                string

@@ -321,14 +321,10 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	var summary *projectstore.GitHubOutbound
-	if !stale {
-		summary, err = s.prepareGitHubSummaryRecord(ctx, scope, issue)
-		if err != nil {
-			return nil, err
-		}
-	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
+			return err
+		}
 		if err := s.requireGitHubPolicyRecord(ctx, w, scope); err != nil {
 			return err
 		}
@@ -413,11 +409,6 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 				return err
 			}
 			if _, err := w.AppendEvent(ctx, issueEvent); err != nil {
-				return err
-			}
-		}
-		if summary != nil {
-			if err := w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(ctx, *summary); err != nil {
 				return err
 			}
 		}

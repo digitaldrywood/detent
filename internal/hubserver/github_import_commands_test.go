@@ -3,11 +3,13 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -19,6 +21,8 @@ func TestPostgresImportStarts(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	service := &Service{localOrganization: "org", database: &database{now: time.Now}, config: Config{ImportBackend: gitHubLifecycleImporter{}, TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now}}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org", Name: "Example", Slug: "example"})
+	service.config.Hosted = &HostedConfig{OrganizationID: "org"}
+	service.database.hostedOrganization = "org"
 	for _, project := range []tracker.ProjectID{"first", "second"} {
 		err := repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
 			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org", ID: project, Name: string(project), Profile: "native"}, States: nativeTriageStates(nativeFixtureStates())})
@@ -74,6 +78,19 @@ func TestPostgresImportStarts(t *testing.T) {
 		if job.Status != "retrieved" || job.WorkItemID == "" {
 			t.Fatalf("finished=%+v", job)
 		}
+		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			owner, ok := w.(projectstore.GitHubOutboxWriter)
+			if !ok {
+				return ErrPostgresFeatureUnavailable
+			}
+			_, err := owner.ClaimGitHubOutbound(t.Context(), time.Now(), time.Now().Add(time.Minute), "unexpected")
+			if !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("private source intake queued an external write: %v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 		issue, err := service.readWorkItem(t.Context(), scope, job.WorkItemID)
 		if err != nil {
 			t.Fatal(err)
@@ -93,6 +110,67 @@ func TestPostgresImportStarts(t *testing.T) {
 		if err != nil || len(secondPage.Records) != 1 || secondPage.NextCursor != "" {
 			t.Fatalf("operator next=%+v err=%v", secondPage, err)
 		}
+		sourceScope := scope
+		sourceScope.integrationRepository = "example-org/" + string(project)
+		staleScope := sourceScope
+		staleScope.githubIntakeRevision = &githubIntakeRevision{importID: job.ID, revision: int64(job.Revision) - 1}
+		revokedScope := sourceScope
+		revokedScope.credential = apiCredential{ID: "revoked_" + string(project), Scope: apiScopeOperator, Hash: apikey.HashToken("example-revoked-" + string(project))}
+		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: scope.organization, ID: revokedScope.credential.ID, Name: "Example revoked " + string(project), Hash: revokedScope.credential.Hash, Scope: "operator", KeyScope: "write", ProjectAccess: "all", Kind: "service", CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+				return err
+			}
+			return w.RevokeAccessCredential(t.Context(), revokedScope.credential.ID, time.Now())
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct {
+			name  string
+			scope nativeScope
+			want  error
+		}{
+			{"current manual authority", sourceScope, nil},
+			{"stale import revision", staleScope, corestore.ErrRevisionConflict},
+			{"revoked manual authority", revokedScope, accessstore.ErrDenied},
+		} {
+			t.Run(string(project)+"/"+test.name, func(t *testing.T) {
+				err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					return service.authorizeAccessScope(t.Context(), r, test.scope, true)
+				})
+				if !errors.Is(err, test.want) {
+					t.Fatalf("authority error=%v want=%v", err, test.want)
+				}
+			})
+		}
+		batch := &tracker.GitHubBatch{ID: "batch_" + string(project), Revision: 1, Status: "importing", HubOwned: true}
+		row, err := service.prepareGitHubBatchRecord(t.Context(), scope, batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(t.Context(), row, 0)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		batch.Revision, batch.Status = 2, "cancelled"
+		row, err = service.prepareGitHubBatchRecord(t.Context(), scope, batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(t.Context(), row, 1)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		backgroundScope := sourceScope
+		backgroundScope.integrationOwned = true
+		backgroundScope.githubIntakeRevision = &githubIntakeRevision{batchID: batch.ID, revision: 1}
+		if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			return service.authorizeAccessScope(t.Context(), r, backgroundScope, true)
+		}); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("cancelled batch authorization=%v", err)
+		}
+
 		if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			comments, err := r.SelectComments(t.Context(), scope.project, issue.WorkItemID, 0, false, 10)
 			if err != nil {
