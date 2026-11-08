@@ -412,6 +412,9 @@ func reuseIncompleteIsolation(current, cached isolation.Report, problems []runne
 }
 
 func (s *Scheduler) reserveNativeClaim() (func(), bool) {
+	if s.controlPaused.Load() {
+		return nil, false
+	}
 	if s.client != nil && s.client.Enrolled() {
 		draining := s.client.Draining()
 		if draining {
@@ -434,6 +437,17 @@ func (s *Scheduler) claimNative(ctx context.Context, source *NativeConnector, re
 	}
 	defer release()
 	lease, err := source.NativeClient().Claim(ctx, request)
+	if err == nil && (s.controlPaused.Load() || ctx.Err() != nil) {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if releaseErr := source.NativeClient().Release(cleanupCtx, lease, "released"); releaseErr != nil && !nativeLeaseLost(releaseErr) {
+			return tracker.NativeLease{}, errors.Join(ctx.Err(), releaseErr), true
+		}
+		if err := ctx.Err(); err != nil {
+			return tracker.NativeLease{}, err, true
+		}
+		return tracker.NativeLease{}, nil, false
+	}
 	return lease, err, true
 }
 

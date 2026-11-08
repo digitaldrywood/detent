@@ -34,6 +34,87 @@ type executionTransport struct {
 	down atomic.Bool
 }
 
+func TestControllerRetirementSettlesUnstartedClaim(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		execution bool
+	}{
+		{name: "accepted candidate"},
+		{name: "admitted execution", execution: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Return the unstarted claim")
+			h.claim(t, issue.ID)
+			lease := h.scheduler.nativeClaims[issue.ID].lease
+			if test.execution {
+				h.scheduler.RunExecution(issue.ID)
+			}
+			resume := h.scheduler.PauseController()
+			defer resume()
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			if err := h.scheduler.ReleaseClaim(ctx, issue.ID, "dispatch_deferred"); err != nil {
+				t.Fatalf("retirement stranded an unstarted lease: %v", err)
+			}
+			if _, err := h.native.Renew(t.Context(), lease, 60); !nativeLeaseLost(err) {
+				t.Fatalf("unstarted lease remains renewable after retirement: %v", err)
+			}
+			if _, exists := h.scheduler.nativeClaims[issue.ID]; exists {
+				t.Fatal("released candidate remains locally owned")
+			}
+		})
+	}
+}
+
+func TestRetiredControllerCannotClaim(t *testing.T) {
+	for _, phase := range []string{"before claim", "accepted response", "resumed"} {
+		t.Run(phase, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Claim only from the active controller")
+			if err := h.scheduler.ensureNativeMachine(t.Context(), h.connector); err != nil {
+				t.Fatal(err)
+			}
+			resume := func() {}
+			if phase == "accepted response" {
+				transport := fixtureClient(h.native.Transport()).requests.Load()
+				var retired atomic.Bool
+				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					response, err := transport.RoundTrip(request)
+					if err == nil && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/claims") && response.StatusCode == http.StatusOK && retired.CompareAndSwap(false, true) {
+						resume = h.scheduler.PauseController()
+						t.Cleanup(resume)
+					}
+					return response, err
+				}))
+			} else {
+				resume := h.scheduler.PauseController()
+				if phase == "resumed" {
+					resume()
+				} else {
+					defer resume()
+				}
+			}
+			candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"In Progress"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if phase == "resumed" && (len(candidates) != 1 || candidates[0].ID != issue.ID) || phase != "resumed" && len(candidates) != 0 {
+				t.Fatalf("retired controller acquired work: phase=%s candidate_count=%d", phase, len(candidates))
+			}
+			if phase == "accepted response" {
+				if candidates := h.candidates(t); len(candidates) != 0 {
+					t.Fatal("retired controller reacquired the returned claim")
+				}
+				resume()
+				if candidates := h.candidates(t); len(candidates) != 1 || candidates[0].ID != issue.ID {
+					t.Fatal("replacement cannot immediately reclaim the returned lease")
+				}
+			}
+		})
+	}
+}
+
 func TestControllerRetirementWaitsForOldMachineReport(t *testing.T) {
 	t.Parallel()
 	entered, release := make(chan struct{}), make(chan struct{})

@@ -501,12 +501,18 @@ func TestControllerAdoptionPreservesWorkerAndClaimsOnNewBuild(t *testing.T) {
 	default:
 	}
 	second := create("Render second source")
+	if got := call(oldAddress, "/candidate"); got != second.ID {
+		t.Fatalf("old controller pending claim = %q, want %q", got, second.ID)
+	}
 	if got := call(oldAddress, "/adopt?binary="+url.QueryEscape(binaries["updated"])); got != "adopted" {
 		t.Fatalf("busy replacement = %q", got)
 	}
 	newAddress := target.Load().String()
 	if newAddress == oldAddress || call(newAddress, "/health") != "1.0.1" {
 		t.Fatal("health did not adopt the applied build")
+	}
+	if got := call(oldAddress, "/release-candidate"); got != "released" {
+		t.Fatalf("retired controller stranded the pending claim: %q", got)
 	}
 	if got := call(newAddress, "/claim"); got != second.ID {
 		t.Fatalf("new controller failed to claim while first attempt runs: %q", got)
@@ -599,6 +605,7 @@ func TestControllerAdoptionProcess(t *testing.T) {
 	run := built.(*sshRunner)
 	run.artifacts = artifacts
 	var issue connector.Issue
+	var candidate connector.Issue
 	var attempt int64
 	var mu sync.Mutex
 	var workers sync.WaitGroup
@@ -635,6 +642,22 @@ func TestControllerAdoptionProcess(t *testing.T) {
 			} else {
 				fmt.Fprint(w, "declined")
 			}
+		case "/candidate":
+			issues, err := source.FetchCandidateIssues(ctx, orchestrator.SchedulingRequest{ProjectID: "local", Policy: fixture.Workflow.Config.Policy, WorkflowStates: []string{"Todo"}, CandidateLimit: 1})
+			if err != nil || len(issues) != 1 {
+				fail(fmt.Errorf("reserve candidate %d: %w", len(issues), err))
+				return
+			}
+			candidate = issues[0]
+			fmt.Fprint(w, candidate.ID)
+		case "/release-candidate":
+			cleanupCtx, stop := context.WithCancel(ctx)
+			stop()
+			if err := source.ReleaseClaim(cleanupCtx, candidate.ID, "dispatch_deferred"); err != nil {
+				fail(err)
+				return
+			}
+			fmt.Fprint(w, "released")
 		case "/claim":
 			issues, err := source.FetchCandidateIssues(ctx, orchestrator.SchedulingRequest{ProjectID: "local", Policy: fixture.Workflow.Config.Policy, WorkflowStates: []string{"Todo"}, CandidateLimit: 1})
 			if err != nil || len(issues) != 1 {

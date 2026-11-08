@@ -445,6 +445,8 @@ func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now
 }
 
 func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	issueID = strings.TrimSpace(issueID)
 	s.mu.Lock()
 	native, isNative := s.nativeClaims[issueID]
