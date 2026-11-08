@@ -4894,3 +4894,46 @@ type WorkspaceItem struct {
 	CreatedAt      time.Time
 	ClosedAt       *time.Time
 }
+
+type WorkspaceOccupancy struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkspaceID    string
+	RunnerID       string
+	StartedAt      time.Time
+	EndedAt        *time.Time
+}
+
+type WorkspaceSession struct {
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	ID                 string
+	SubjectWorkItemID  string
+	AttemptID          string
+	Ref                string
+	HeadSHA            string
+	RunnerID           string
+	MachineID          string
+	LeaseID            string
+	FencingToken       int64
+	State              string
+	Reason             string
+	Requires           []string
+	Capabilities       []string
+	Isolation          string
+	Worktree           string
+	MachineHostname    string
+	WorktreePath       string
+	ReadOnly           bool
+	IdleTimeoutSeconds int32
+	ExpiresAt          time.Time
+	RequestedExpiresAt time.Time
+	OpenedAt           *time.Time
+	LastActivityAt     *time.Time
+	LastHeartbeatAt    *time.Time
+	RebindDeadline     *time.Time
+	CreatedBy          string
+	Revision           int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
