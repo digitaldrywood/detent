@@ -118,6 +118,17 @@ func (s *Service) stopNativeRunCommand(ctx context.Context, scope nativeScope, r
 	if request.ProjectID != string(scope.project) || request.LeaseID == "" || !slices.Contains([]string{"Blocked", "Backlog", "Cancelled", "Todo"}, request.Destination) || len(request.Reason) > 280 || request.Priority != nil && (*request.Priority < 1 || *request.Priority > 4) {
 		return nil, operatortool.ErrInvalidArguments
 	}
+	if s.config.TenantRepository != nil {
+		raw, err := s.transitionNativeIssueTenantWithStop(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: tracker.MutationForContext(ctx, requestID).IdempotencyKey, LeaseID: request.LeaseID, FencingToken: request.FencingToken}, ExpectedRevision: request.ExpectedRevision, State: request.Destination, Reason: "user_requested", ReasonDetail: strings.TrimSpace(request.Reason)}, &request)
+		if err != nil {
+			return nil, err
+		}
+		var issue tracker.NativeIssue
+		if err := json.Unmarshal(raw, &issue); err != nil {
+			return nil, err
+		}
+		return json.Marshal(nativeStopRunReceipt{LeaseID: request.LeaseID, FencingToken: request.FencingToken, Destination: request.Destination, WorkItemID: issue.WorkItemID, Revision: issue.Revision, State: issue.State})
+	}
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+request.Identifier+"/stop-run"), Item: request.Identifier, Feature: "collaboration"}
 	raw, err := s.executeNativeMutation(ctx, scope, options, tracker.MutationForContext(ctx, requestID), request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, internalID, err := readNativeIssue(ctx, tx, scope, request.Identifier)

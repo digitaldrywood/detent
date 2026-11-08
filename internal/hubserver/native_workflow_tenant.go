@@ -33,6 +33,10 @@ import (
 )
 
 func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
+	return s.transitionNativeIssueTenantWithStop(ctx, scope, item, request, nil)
+}
+
+func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope nativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments) (json.RawMessage, error) {
 	human := (scope.credential.Scope == apiScopeOperator || scope.credential.Scope == apiScopeAdmin) && scope.credential.Runner.RunnerID == "" && scope.actor().Kind == "human"
 	if !human && (scope.credential.Scope != apiScopeWorker || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil) {
 		return nil, runnerUnauthorized()
@@ -53,12 +57,19 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		return nil, operatortool.ErrAccessDenied
 	}
 	scope.action = operatortool.MoveItem
+	if stop != nil {
+		scope.action = operatortool.StopRun
+	}
 	scope.actionItem, scope.actionTarget = item, request.State
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, http.MethodPost, "/work-items/"+item+"/workflow"), Item: item, RequireLease: true, Feature: "collaboration"}
+	if stop != nil {
+		options.OperationID = nativeOperation(scope, http.MethodPost, "/work-items/"+item+"/stop-run")
+	}
 	payload := struct {
 		tracker.Transition
-		ConversationID string `json:"conversation_id,omitempty"`
-	}{Transition: request}
+		ConversationID string                       `json:"conversation_id,omitempty"`
+		Stop           *coordinatorStopRunArguments `json:"stop,omitempty"`
+	}{Transition: request, Stop: stop}
 	hash, err := nativeCommandHash(payload)
 	if err != nil {
 		return nil, err
@@ -140,6 +151,9 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		previousState := issue.State
 		now := s.config.now().UTC().Truncate(time.Microsecond)
 		awaitsFiler := false
+		if stop != nil && stop.Priority != nil {
+			issue.Priority = new(*stop.Priority - 1)
+		}
 		issue.State = request.State
 		issue.Revision = tracker.Revision(row.Revision + 1)
 		issue.UpdatedAt = now
@@ -177,11 +191,14 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		if err != nil {
 			return nil, err
 		}
+		if stop != nil {
+			stopState = request.State
+		}
 		currentContract, err := json.Marshal(issue.IssueContract)
 		if err != nil {
 			return nil, err
 		}
-		unchanged := human && previousState == request.State && bytes.Equal(previousContract, currentContract)
+		unchanged := human && stop == nil && previousState == request.State && bytes.Equal(previousContract, currentContract)
 		if unchanged {
 			issue.Revision = tracker.Revision(row.Revision)
 			issue.UpdatedAt, issue.LastActivityAt = previousUpdatedAt, previousActivityAt
@@ -330,8 +347,11 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 						return tracker.ErrStaleFencingToken
 					}
 				}
+				if stop != nil && (leaseErr != nil || lease.ReleasedAt != nil || !lease.ExpiresAt.After(s.config.now().UTC())) {
+					return tracker.ErrLeaseConflict
+				}
 				activeLease = leaseErr == nil && lease.ReleasedAt == nil && lease.ExpiresAt.After(s.config.now().UTC()) && cancellation == nil
-				if leaseErr == nil && !unchanged {
+				if leaseErr == nil && (!unchanged || stop != nil) {
 					if err := s.settleHumanWorkflowLease(ctx, w, scope, lease, request, cancellation, stopState); err != nil {
 						return err
 					}
@@ -411,7 +431,7 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 					return err
 				}
 			}
-			if human && !activeLease && previousState != request.State && dispatchableProjectState(currentProject, request.State) {
+			if human && !activeLease && (previousState != request.State || stop != nil) && dispatchableProjectState(currentProject, request.State) {
 				if s.config.ConversationDispatch == nil {
 					return conversationDispatchUnavailable()
 				}
