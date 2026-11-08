@@ -126,116 +126,114 @@ func TestWakeSpriteRunners(t *testing.T) {
 		{name: "project without a Sprites token", heartbeatAgo: time.Minute, dispatchable: true, spriteStatus: http.StatusOK},
 		{name: "host is not a Sprite in this organization", heartbeatAgo: time.Minute, dispatchable: true, storeToken: true, spriteStatus: http.StatusNotFound, wantWakeCalls: 1},
 	} {
-		for _, typed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/typed=%t", tt.name, typed), func(t *testing.T) {
-				t.Parallel()
-				var mu sync.Mutex
-				var calls []*http.Request
-				client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
-					mu.Lock()
-					calls = append(calls, request.Clone(request.Context()))
-					mu.Unlock()
-					return spritesTestResponse(`{"type":"complete"}`, tt.spriteStatus), nil
-				})}
-				f, scope, runners := newSpriteWakeFixture(t, client, tt.storeToken, tt.heartbeatAgo, "customer-host")
-				if tt.organizationScope {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var calls []*http.Request
+			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
+				mu.Lock()
+				calls = append(calls, request.Clone(request.Context()))
+				mu.Unlock()
+				return spritesTestResponse(`{"type":"complete"}`, tt.spriteStatus), nil
+			})}
+			f, scope, runners := newSpriteWakeFixture(t, client, tt.storeToken, tt.heartbeatAgo, "customer-host")
+			if tt.organizationScope {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), runners[0].binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					identity.Scope = "organization"
+					if err := w.UpdateRunnerRouting(t.Context(), identity.Revision, identity); err != nil {
+						return err
+					}
+					grants, err := w.AccessTokenGrants(t.Context(), identity.TokenID, "", 200)
+					if err != nil {
+						return err
+					}
+					for _, grant := range grants {
+						if err := w.DeleteAccessTokenGrant(t.Context(), identity.TokenID, grant.ProjectID); err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.organizationToken {
+				token := spritesSecretSentinel
+				if tt.wrongOrganizationToken && tt.storeToken {
+					token = "detent-test/other/token/value"
+				}
+				storeOrganizationSpritesSecret(t, f, token)
+				if tt.wrongOrganizationToken && !tt.storeToken {
 					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-						identity, err := w.RunnerIdentity(t.Context(), runners[0].binding.RunnerID)
-						if err != nil {
-							return err
-						}
-						identity.Scope = "organization"
-						if err := w.UpdateRunnerRouting(t.Context(), identity.Revision, identity); err != nil {
-							return err
-						}
-						grants, err := w.AccessTokenGrants(t.Context(), identity.TokenID, "", 200)
-						if err != nil {
-							return err
-						}
-						for _, grant := range grants {
-							if err := w.DeleteAccessTokenGrant(t.Context(), identity.TokenID, grant.ProjectID); err != nil {
-								return err
-							}
-						}
-						return nil
+						return w.DeleteAccessSecret(t.Context(), "", flySpritesToken, accessstore.SecretAudit{OrganizationID: scope.organization, Actor: "fixture", Kind: flySpritesToken, Event: "delete", RecordedAt: f.service.config.now()})
 					}); err != nil {
 						t.Fatal(err)
 					}
-				}
-				if tt.organizationToken {
-					token := spritesSecretSentinel
-					if tt.wrongOrganizationToken && tt.storeToken {
-						token = "detent-test/other/token/value"
+					organization := tracker.OrganizationID("org_foreign")
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Other Sprite organization", Slug: "other-sprites", CreatedAt: f.service.config.now()})
+					}); err != nil {
+						t.Fatal(err)
 					}
-					storeOrganizationSpritesSecret(t, f, token)
-					if tt.wrongOrganizationToken && !tt.storeToken {
-						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-							return w.DeleteAccessSecret(t.Context(), "", flySpritesToken, accessstore.SecretAudit{OrganizationID: scope.organization, Actor: "fixture", Kind: flySpritesToken, Event: "delete", RecordedAt: f.service.config.now()})
-						}); err != nil {
-							t.Fatal(err)
-						}
-						organization := tracker.OrganizationID("org_foreign")
-						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-							return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Other Sprite organization", Slug: "other-sprites", CreatedAt: f.service.config.now()})
-						}); err != nil {
-							t.Fatal(err)
-						}
-						foreign := nativeFixture{service: f.service, project: tracker.NativeProject{OrganizationID: organization}}
-						storeOrganizationSpritesSecret(t, foreign, token)
-					}
+					foreign := nativeFixture{service: f.service, project: tracker.NativeProject{OrganizationID: organization}}
+					storeOrganizationSpritesSecret(t, foreign, token)
 				}
-				state := ""
-				for _, candidate := range f.project.States {
-					if (candidate.Dispatchable && !candidate.Terminal) == tt.dispatchable {
-						state = candidate.Name
-						break
-					}
+			}
+			state := ""
+			for _, candidate := range f.project.States {
+				if (candidate.Dispatchable && !candidate.Terminal) == tt.dispatchable {
+					state = candidate.Name
+					break
 				}
-				if state == "" {
-					t.Fatalf("fixture project has no state with dispatchable=%t", tt.dispatchable)
-				}
-				assertSpritePostgresFacts(t, f)
-				beforeWake := f.service.config.now()
-				woken, err := f.service.wakeSpriteRunners(t.Context(), scope, state)
-				if err != nil {
-					t.Fatal(err)
-				}
+			}
+			if state == "" {
+				t.Fatalf("fixture project has no state with dispatchable=%t", tt.dispatchable)
+			}
+			assertSpritePostgresFacts(t, f)
+			beforeWake := f.service.config.now()
+			woken, err := f.service.wakeSpriteRunners(t.Context(), scope, state)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-				afterWake := f.service.config.now()
-				wakeTimeInRange := func(value *string) bool {
-					at, err := parseTimeValue(spriteFactValue(value))
-					return err == nil && !at.Before(beforeWake) && !at.After(afterWake)
+			afterWake := f.service.config.now()
+			wakeTimeInRange := func(value *string) bool {
+				at, err := parseTimeValue(spriteFactValue(value))
+				return err == nil && !at.Before(beforeWake) && !at.After(afterWake)
+			}
+			if tt.wantWakeCalls > 0 {
+				facts, err := f.service.spriteWakeFactsRecord(t.Context(), scope.organization, runners[0].binding.RunnerID)
+				if err != nil || spriteFactValue(facts.Name) != "customer-host" {
+					t.Fatalf("wake lost Sprite identity: %+v, %v", facts, err)
 				}
-				if tt.wantWakeCalls > 0 {
-					facts, err := f.service.spriteWakeFactsRecord(t.Context(), scope.organization, runners[0].binding.RunnerID)
-					if err != nil || spriteFactValue(facts.Name) != "customer-host" {
-						t.Fatalf("wake lost Sprite identity: %+v, %v", facts, err)
-					}
-					if tt.wantWoken > 0 && (!wakeTimeInRange(facts.WokenAt) || spriteFactValue(facts.WakeFailedAt) != "") {
-						t.Fatalf("successful wake facts=%+v", facts)
-					}
-					if tt.wantWoken == 0 && !wakeTimeInRange(facts.WakeFailedAt) {
-						t.Fatalf("failed wake facts=%+v", facts)
-					}
+				if tt.wantWoken > 0 && (!wakeTimeInRange(facts.WokenAt) || spriteFactValue(facts.WakeFailedAt) != "") {
+					t.Fatalf("successful wake facts=%+v", facts)
 				}
-				if woken != tt.wantWoken {
-					t.Fatalf("woken = %d, want %d", woken, tt.wantWoken)
+				if tt.wantWoken == 0 && !wakeTimeInRange(facts.WakeFailedAt) {
+					t.Fatalf("failed wake facts=%+v", facts)
 				}
-				mu.Lock()
-				defer mu.Unlock()
-				if len(calls) != tt.wantWakeCalls {
-					t.Fatalf("wake calls = %d, want %d", len(calls), tt.wantWakeCalls)
+			}
+			if woken != tt.wantWoken {
+				t.Fatalf("woken = %d, want %d", woken, tt.wantWoken)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls) != tt.wantWakeCalls {
+				t.Fatalf("wake calls = %d, want %d", len(calls), tt.wantWakeCalls)
+			}
+			for _, call := range calls {
+				if call.Method != http.MethodPost || call.URL.String() != "https://api.sprites.dev/v1/sprites/customer-host/services/detent-runner/start?duration=30s" {
+					t.Fatalf("wake request = %s %s", call.Method, call.URL)
 				}
-				for _, call := range calls {
-					if call.Method != http.MethodPost || call.URL.String() != "https://api.sprites.dev/v1/sprites/customer-host/services/detent-runner/start?duration=30s" {
-						t.Fatalf("wake request = %s %s", call.Method, call.URL)
-					}
-					if call.Header.Get("Authorization") != "Bearer "+spritesSecretSentinel {
-						t.Fatal("wake request did not carry the project's Sprites token")
-					}
+				if call.Header.Get("Authorization") != "Bearer "+spritesSecretSentinel {
+					t.Fatal("wake request did not carry the project's Sprites token")
 				}
-			})
-		}
+			}
+		})
 	}
 }
 
