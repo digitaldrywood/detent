@@ -379,7 +379,7 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 }
 
 func (s *Service) servePostgresAppShell(c echo.Context, path string) error {
-	content, err := fs.ReadFile(conversationClientFS, conversationClientShell)
+	content, err := fs.ReadFile(s.config.staticFiles(), conversationClientShell)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			s.config.Logger.Error("application client shell could not be read", "error", err)

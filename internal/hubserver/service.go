@@ -222,7 +222,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		boardRefresh:       make(chan struct{}, 1),
 		reconcileCancel:    reconcileCancel,
 		reconcileDone:      make(chan struct{}),
-		clientBuild:        conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
+		clientBuild:        conversationClientIdentity(cfg.staticFiles(), cfg.Version, cfg.now()),
 		pullRequests:       newPullRequestCache(),
 	}
 	if database.postgres != nil && !cfg.CredentialMaintenance {

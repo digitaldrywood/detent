@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -102,6 +103,53 @@ func TestPostgresOrganizationPageUsesGrantedProjects(t *testing.T) {
 			body := response.Body.String()
 			if !strings.Contains(body, "Browser collaboration") || strings.Contains(body, "Owner private project") != test.private {
 				t.Fatalf("organization page lost project authorization: %s", body)
+			}
+		})
+	}
+}
+
+func TestPostgresAppAssetsUseDeclaredFiles(t *testing.T) {
+	useAppClientFS(t, fstest.MapFS{})
+	type fixture struct {
+		organization string
+		browser      *browserHostedFixture
+		script       string
+		missing      bool
+	}
+	var fixtures []fixture
+	for _, organization := range []string{"org_first", "org_second", "org_missing"} {
+		files := fstest.MapFS{}
+		script := "console.log('" + organization + "');"
+		missing := organization == "org_missing"
+		if !missing {
+			body := strings.Replace(appShellTestBody, `<div id="root"></div>`, `<div id="root">`+organization+`</div>`, 1)
+			files[conversationClientShell] = &fstest.MapFile{Data: []byte(body)}
+			files[conversationClientEntry] = &fstest.MapFile{Data: []byte(script)}
+		}
+		browser := newPostgresBrowserHostedOrganizationFixture(t, true, organization, func(cfg *Config) { cfg.StaticFS = files })
+		fixtures = append(fixtures, fixture{organization, browser, script, missing})
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.organization, func(t *testing.T) {
+			response := fixture.browser.appRequest(t, "owner", http.MethodGet, "/settings/billing")
+			if fixture.missing {
+				if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"client_unavailable"`) {
+					t.Fatalf("missing declared client status=%d", response.Code)
+				}
+				return
+			}
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `<div id="root">`+fixture.organization+`</div>`) {
+				t.Errorf("shell ignored instance files: status=%d", response.Code)
+			}
+			if fixture.browser.service.clientBuild.Build != sha256Hex(fixture.script) {
+				t.Error("client identity ignored instance files")
+			}
+			if !strings.HasSuffix(fixture.browser.service.hostedBillingReturn(false), "/settings/billing") {
+				t.Error("billing return ignored declared client")
+			}
+			asset := fixture.browser.appRequest(t, "", http.MethodGet, "/static/"+conversationClientEntry)
+			if asset.Code != http.StatusOK || asset.Body.String() != fixture.script {
+				t.Errorf("static asset ignored instance files: status=%d bytes=%d", asset.Code, asset.Body.Len())
 			}
 		})
 	}

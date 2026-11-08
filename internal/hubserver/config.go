@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -64,6 +65,7 @@ type Config struct {
 	Clock                          func() time.Time
 	dashboardDelivery              *dashboardDeliveryConfig
 	ArchiveReader                  entryauthority.ArchiveReader
+	StaticFS                       fs.FS
 	Content                        entryauthority.ContentHandler
 	RunDetails                     attachment.DetailStore
 	Icons                          attachment.IconStore

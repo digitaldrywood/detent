@@ -16,7 +16,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/staticasset"
@@ -119,7 +118,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 		e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
 	}
 	e.GET("/health", s.health, s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(s.config.staticFiles()))))
 	s.registerNativeRoutes(e)
 	s.registerProjectSecretRoutes(e)
 	s.registerRunnerRoutes(e)

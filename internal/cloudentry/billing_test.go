@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
@@ -112,6 +113,10 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) {
 		a.Prices = []hubserver.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}
 	}, func(f *provisioningFixture) {
+		f.launcher.clientFS = fstest.MapFS{
+			"app/conversation/index.html": {Data: []byte(`<!doctype html><html><head><script src="/static/app/conversation/app.js"></script></head><body><div id="root"></div></body></html>`)},
+			"app/conversation/app.js":     {Data: []byte(`console.log("billing fixture");`)},
+		}
 		f.launcher.plans = plans
 		f.launcher.billing = func() *hubserver.HostedBillingConfig {
 			return &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte(testWebhookSecret),

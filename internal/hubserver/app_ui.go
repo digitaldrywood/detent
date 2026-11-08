@@ -38,6 +38,13 @@ import (
 // a variable so tests can substitute an empty filesystem.
 var conversationClientFS fs.FS = detent.StaticFS()
 
+func (c *Config) staticFiles() fs.FS {
+	if c.StaticFS != nil {
+		return c.StaticFS
+	}
+	return conversationClientFS
+}
+
 const conversationClientShell = "app/conversation/index.html"
 
 // conversationClientEntry is the bundle whose bytes identify a client build.
@@ -159,7 +166,7 @@ func (s *Service) appShell(c echo.Context) error {
 			return c.Redirect(http.StatusPermanentRedirect, target)
 		}
 	}
-	content, err := fs.ReadFile(conversationClientFS, conversationClientShell)
+	content, err := fs.ReadFile(s.config.staticFiles(), conversationClientShell)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			s.config.Logger.Error("application client shell could not be read", "error", err)
