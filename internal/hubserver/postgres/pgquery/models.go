@@ -148,6 +148,122 @@ type ArchiveUsageCounter struct {
 	CompressedBytes int64
 }
 
+type ArtifactCatalogManifest struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	ServiceID           string
+	UploadID            string
+	Revision            int64
+	ID                  string
+	State               string
+	Sha256              string
+	BodyObjectKey       string
+	BodyBytes           int64
+	TotalBytes          int64
+	Objects             int32
+	RetentionPolicyID   string
+	CaptureBase         string
+	CaptureHead         string
+	CaptureMergeBase    string
+	CaptureContextLines int32
+	CaptureFileContext  string
+	CaptureWorkingTree  bool
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+	ObservedAt          time.Time
+}
+
+type ArtifactCatalogObject struct {
+	OrganizationID          tracker.OrganizationID
+	ProjectID               tracker.ProjectID
+	ServiceID               string
+	UploadID                string
+	Sequence                int32
+	ID                      string
+	MediaType               string
+	Size                    int64
+	Sha256                  string
+	Path                    string
+	Side                    string
+	ByteOffset              int64
+	StorageVersion          string
+	VerifiedAt              *time.Time
+	DiscardedAt             *time.Time
+	DiscardReceiptObjectKey *string
+}
+
+type ArtifactCatalogPublication struct {
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	ServiceID       string
+	ManifestID      string
+	Outcome         string
+	ExternalReceipt string
+	UpdatedAt       time.Time
+}
+
+type ArtifactCatalogTraffic struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ServiceID      string
+	Minute         time.Time
+	UploadBytes    int64
+	DownloadBytes  int64
+	Requests       int64
+}
+
+type ArtifactCatalogTrafficReceipt struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ServiceID      string
+	ID             string
+	Minute         time.Time
+	UploadBytes    int64
+	DownloadBytes  int64
+	Requests       int64
+}
+
+type ArtifactCatalogTrafficSetting struct {
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	ServiceID        string
+	WindowSeconds    int64
+	RetentionSeconds int64
+}
+
+type ArtifactCatalogUpload struct {
+	OrganizationID           tracker.OrganizationID
+	ProjectID                tracker.ProjectID
+	ServiceID                string
+	ID                       string
+	IdempotencyKey           string
+	RequestHash              string
+	WorkItemID               string
+	RunID                    string
+	AttemptID                string
+	VersionID                string
+	Kind                     string
+	LeaseID                  string
+	FencingToken             int64
+	RequestedBytes           int64
+	PartLimit                int64
+	State                    string
+	ReservedBytes            int64
+	RetainedBytes            int64
+	ManifestRevision         int64
+	CreatedAt                time.Time
+	UploadDeadline           time.Time
+	ExpiresAt                time.Time
+	DeletedAt                *time.Time
+	DeletionReceiptObjectKey *string
+}
+
+type ArtifactCatalogUsage struct {
+	OrganizationID tracker.OrganizationID
+	ReservedBytes  int64
+	RetainedBytes  int64
+}
+
 type ArtifactGrant struct {
 	OrganizationID    tracker.OrganizationID
 	ProjectID         tracker.ProjectID

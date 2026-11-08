@@ -232,6 +232,7 @@ OR EXISTS(SELECT 1 FROM project_sprite_allocations a WHERE a.organization_id=$1 
 OR EXISTS(SELECT 1 FROM onboarding_issue_intake b WHERE b.organization_id=$1 AND b.project_id=$2 AND b.hub_owned AND b.batch_status IN ('discovering','importing'))
 OR EXISTS(SELECT 1 FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND a.project_id=$2 AND a.expires_at>$3)
 OR EXISTS(SELECT 1 FROM health_finding_projects p JOIN health_slack_deliveries d ON d.organization_id=p.organization_id AND d.finding_id=p.finding_id WHERE p.organization_id=$1 AND p.project_id=$2 AND d.completed_at IS NULL)
+OR EXISTS(SELECT 1 FROM artifact_catalog_uploads u WHERE u.organization_id=$1 AND u.project_id=$2 AND u.state IN ('uploading','deletion_pending'))
 `
 
 type ProjectHasActiveWorkParams struct {
