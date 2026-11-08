@@ -178,8 +178,8 @@ WITH selected AS MATERIALIZED (
  CROSS JOIN LATERAL (
   SELECT e.sequence FROM change_evidence e
   WHERE e.organization_id=$1 AND e.change_id=$2 AND e.version_id=$3
-  AND e.kind='review' AND NOT e.review_landing AND e.review_kind=roles.review_kind AND (e.review_kind,e.sequence)<=(roles.review_kind,$5::bigint)
-  ORDER BY e.sequence DESC LIMIT 1
+  AND e.kind='review' AND NOT e.review_landing AND e.review_kind>=roles.review_kind AND e.review_kind<=roles.review_kind AND e.sequence<=$5::bigint
+  ORDER BY e.review_kind,e.sequence DESC LIMIT 1
  ) latest
  UNION ALL
  SELECT h.evidence_sequence FROM current_change_reviews h

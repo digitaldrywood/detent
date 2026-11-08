@@ -1230,7 +1230,7 @@ $6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generat
 				missing bool
 				want    []int64
 			}{
-				{through: 1}, {through: 4, want: []int64{4}}, {through: 30001, want: []int64{30001}},
+				{through: 0}, {through: 1}, {through: 4, want: []int64{4}}, {through: 30001, want: []int64{30001}},
 				{through: 60001, want: []int64{30001, 60001}}, {through: 90001, want: []int64{30001, 60001, 80001}}, {through: 90001, missing: true},
 			} {
 				t.Run(fmt.Sprintf("%s/analyzed=%t/through=%d/missing=%t", org, analyzed, test.through, test.missing), func(t *testing.T) {

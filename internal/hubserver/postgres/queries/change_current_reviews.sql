@@ -12,8 +12,8 @@ WITH selected AS MATERIALIZED (
  CROSS JOIN LATERAL (
   SELECT e.sequence FROM change_evidence e
   WHERE e.organization_id=sqlc.arg(organization_id) AND e.change_id=sqlc.arg(change_id) AND e.version_id=sqlc.arg(version_id)
-  AND e.kind='review' AND NOT e.review_landing AND e.review_kind=roles.review_kind AND (e.review_kind,e.sequence)<=(roles.review_kind,sqlc.arg(through)::bigint)
-  ORDER BY e.sequence DESC LIMIT 1
+  AND e.kind='review' AND NOT e.review_landing AND e.review_kind>=roles.review_kind AND e.review_kind<=roles.review_kind AND e.sequence<=sqlc.arg(through)::bigint
+  ORDER BY e.review_kind,e.sequence DESC LIMIT 1
  ) latest
  UNION ALL
  SELECT h.evidence_sequence FROM current_change_reviews h
