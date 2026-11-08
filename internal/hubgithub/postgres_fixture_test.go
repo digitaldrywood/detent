@@ -104,6 +104,14 @@ func (d *githubDetails) ReadDetail(_ context.Context, organization string, ref a
 }
 
 func openGitHubService(t *testing.T, cfg hubserver.Config) (*hubserver.Service, error) {
+	cfg, err := gitHubServiceConfig(t, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return hubserver.Open(t.Context(), cfg)
+}
+
+func gitHubServiceConfig(t *testing.T, cfg hubserver.Config) (hubserver.Config, error) {
 	t.Helper()
 	db := githubTemplate.Database(t)
 	role := "example_" + uuid.NewString()
@@ -125,16 +133,16 @@ func openGitHubService(t *testing.T, cfg hubserver.Config) (*hubserver.Service, 
 		return ""
 	})
 	if err != nil {
-		return nil, err
+		return hubserver.Config{}, err
 	}
 	cfg.SecretKeys = keys
 	envelope, err := keys.Seal(bytes.Repeat([]byte{0x5a}, 32), accessstore.SecretAAD("org_example", "", accessstore.NativeCursorKeyKind))
 	if err != nil {
-		return nil, err
+		return hubserver.Config{}, err
 	}
 	repository, err := postgres.Open(t.Context(), *cfg.Postgres, os.DirFS("../hubserver/postgres/migrations"))
 	if err != nil {
-		return nil, err
+		return hubserver.Config{}, err
 	}
 	now := time.Now().UTC()
 	err = repository.WriteTenant(t.Context(), "org_example", corestore.Serving, func(w tenantstore.Writer) error {
@@ -156,7 +164,7 @@ func openGitHubService(t *testing.T, cfg hubserver.Config) (*hubserver.Service, 
 		return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: "org_example", UserID: "user_example", MembershipID: "member_example", Role: "owner", Active: true, PrincipalID: "example_admin", CreatedAt: now, UpdatedAt: now})
 	})
 	if err := errors.Join(err, repository.Close()); err != nil {
-		return nil, err
+		return hubserver.Config{}, err
 	}
-	return hubserver.Open(t.Context(), cfg)
+	return cfg, nil
 }
