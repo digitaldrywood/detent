@@ -486,6 +486,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			runErr = errors.Join(runErr, err)
 		}
 	}
+	sourceUnavailable := errors.Is(runErr, ErrNativeRecoveryRequired) && errors.Is(runErr, connector.ErrTrackerUnavailable)
 	if prepared, ok := req.Execution.(CompletionExecution); ok {
 		prepareCtx, prepareCancel := finishCtx, func() {}
 		if outcome == "succeeded" {
@@ -515,6 +516,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		} else if outcome == "succeeded" && !sourceReviewed {
 			if err := r.validateNativeChange(guarded, req); err != nil {
 				runErr = errors.Join(runErr, err)
+				sourceUnavailable = errors.Is(err, ErrNativeRecoveryRequired) && errors.Is(err, connector.ErrTrackerUnavailable)
 				outcome = "failed"
 				var reviewErr *NativeImplementationReviewError
 				if errors.As(err, &reviewErr) {
@@ -548,7 +550,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		runErr = errors.Join(runErr, cause)
 		outcome = "interrupted"
 	}
-	if !req.DeferExecutionFinish || !prepared {
+	if (!req.DeferExecutionFinish || !prepared) && (!sourceUnavailable || executionCancellation(req) != nil || context.Cause(guarded) != nil) {
 		finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
 		defer finalCancel()
 		if err := req.Execution.Finish(finalCtx, outcome); err != nil {

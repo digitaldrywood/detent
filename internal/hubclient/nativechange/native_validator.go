@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/validation"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -72,7 +73,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change != nil && e.change.Error != "" {
-		return runner.NativeValidation{}, fmt.Errorf("native source publication: %w", ErrUnavailable)
+		return runner.NativeValidation{}, connector.NewTrackerAvailabilityError(connector.TrackerAvailabilityScope{Connector: "hub", Operation: "native_source_publication"}, connector.TrackerAvailabilityClassTransport, errors.Join(runner.ErrNativeRecoveryRequired, ErrUnavailable))
 	}
 	if e.change != nil && e.change.NoChange != nil {
 		return e.noChangeValidation(ctx, stage)
