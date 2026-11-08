@@ -460,7 +460,16 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 				}
 
 				if want == "cancelled" && !test.hold {
-					h.claim(t, issue.ID)
+					candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
+						Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"},
+						CandidateReady: func(_ context.Context, candidate connector.Issue) bool { return candidate.ID == issue.ID },
+					})
+					if err != nil || len(candidates) != 1 || candidates[0].ID != issue.ID {
+						t.Fatalf("retained source was not claimable: candidates=%+v error=%v", candidates, err)
+					}
+					if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], h.clock()); err != nil {
+						t.Fatal(err)
+					}
 					resumed := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 					recovered := resumed.Recovery().SourceAttempt()
 					if recovered == nil || recovered.AttemptID != execution.CompletionData().AttemptID || recovered.Checkpoint.Change.VersionID != retained.Change.CurrentVersion || resumed.claim.lease.FencingToken <= original.FencingToken {
