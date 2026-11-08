@@ -3682,7 +3682,7 @@ func TestDoctorReportFailurePredicates(t *testing.T) {
 		{
 			name: "fail checks fail by default",
 			report: doctorReport{Checks: []doctorCheck{{
-				Name:   "SQLite database",
+				Name:   "Hub connection",
 				Status: doctorFail,
 			}}},
 			want:       true,
@@ -4504,69 +4504,6 @@ func TestExpandDoctorWorkspacePath(t *testing.T) {
 	want := filepath.Join(home, "repo")
 	if got != want {
 		t.Fatalf("expandDoctorWorkspacePath() = %q, want %q", got, want)
-	}
-}
-
-func TestCheckDoctorSQLite(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		path       string
-		openErr    error
-		closeErr   error
-		want       doctorStatus
-		wantDetail string
-	}{
-		{
-			name:       "missing config path",
-			want:       doctorFail,
-			wantDetail: "global config path is unavailable",
-		},
-		{
-			name:       "open fails",
-			path:       "/tmp/detent/global.yaml",
-			openErr:    errors.New("readonly"),
-			want:       doctorFail,
-			wantDetail: "readonly",
-		},
-		{
-			name:       "close fails",
-			path:       "/tmp/detent/global.yaml",
-			closeErr:   errors.New("close failed"),
-			want:       doctorFail,
-			wantDetail: "close failed",
-		},
-		{
-			name:       "database reachable",
-			path:       "/tmp/detent/global.yaml",
-			want:       doctorOK,
-			wantDetail: "detent.db is reachable",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := checkDoctorSQLite(context.Background(), globalconfig.PathResolution{Path: tt.path}, doctorDeps{
-				openSQLite: func(_ context.Context, path string) (doctorStore, error) {
-					if tt.openErr != nil {
-						return nil, tt.openErr
-					}
-					if got := filepath.Base(path); got != "detent.db" {
-						t.Fatalf("store path base = %q, want detent.db", got)
-					}
-					return fakeDoctorStore{closeErr: tt.closeErr}, nil
-				},
-			})
-			if got.Status != tt.want {
-				t.Fatalf("Status = %s, want %s", got.Status, tt.want)
-			}
-			if !strings.Contains(got.Detail, tt.wantDetail) {
-				t.Fatalf("Detail = %q, want containing %q", got.Detail, tt.wantDetail)
-			}
-		})
 	}
 }
 
@@ -6147,9 +6084,6 @@ func successfulDoctorDeps() doctorDeps {
 		listen: func(string, string) (net.Listener, error) {
 			return fakeDoctorListener{addr: fakeDoctorAddr("127.0.0.1:49152")}, nil
 		},
-		openSQLite: func(context.Context, string) (doctorStore, error) {
-			return fakeDoctorStore{}, nil
-		},
 		gitWorkTree: func(context.Context, string) error {
 			return nil
 		},
@@ -6174,14 +6108,6 @@ func successfulDoctorDeps() doctorDeps {
 		},
 		now: time.Now,
 	}
-}
-
-type fakeDoctorStore struct {
-	closeErr error
-}
-
-func (s fakeDoctorStore) Close() error {
-	return s.closeErr
 }
 
 type fakeDoctorListener struct {

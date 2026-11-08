@@ -264,42 +264,6 @@ func doctorPathDirectoryReady(path string) error {
 	return nil
 }
 
-func checkDoctorSQLite(ctx context.Context, resolution globalconfig.PathResolution, deps doctorDeps) doctorCheck {
-	if strings.TrimSpace(resolution.Path) == "" {
-		return doctorCheck{
-			Name:   "SQLite database",
-			Status: doctorFail,
-			Detail: "global config path is unavailable",
-			Hint:   "Fix config resolution, then rerun detent doctor.",
-		}
-	}
-
-	dbPath := filepath.Join(filepath.Dir(resolution.Path), "detent.db")
-	db, err := deps.openSQLite(ctx, dbPath)
-	if err != nil {
-		return doctorCheck{
-			Name:   "SQLite database",
-			Status: doctorFail,
-			Detail: fmt.Sprintf("%s: %v", dbPath, err),
-			Hint:   "Check directory permissions and remove any corrupt runtime database.",
-		}
-	}
-	if err := db.Close(); err != nil {
-		return doctorCheck{
-			Name:   "SQLite database",
-			Status: doctorFail,
-			Detail: fmt.Sprintf("%s close failed: %v", dbPath, err),
-			Hint:   "Check for filesystem or SQLite errors, then rerun detent doctor.",
-		}
-	}
-
-	return doctorCheck{
-		Name:   "SQLite database",
-		Status: doctorOK,
-		Detail: dbPath + " is reachable",
-	}
-}
-
 func checkDoctorInstanceLock(resolution globalconfig.PathResolution) doctorCheck {
 	const name = "Instance lock"
 	if strings.TrimSpace(resolution.Path) == "" {

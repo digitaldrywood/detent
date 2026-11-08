@@ -266,7 +266,6 @@ type doctorDeps struct {
 	ghAuthToken          func(context.Context) (string, error)
 	ghAuthStatus         func(context.Context) (string, error)
 	listen               func(string, string) (net.Listener, error)
-	openSQLite           func(context.Context, string) (doctorStore, error)
 	openSQLiteReadOnly   func(context.Context, string) (doctorTelemetryStore, error)
 	gitWorkTree          func(context.Context, string) error
 	gitWorktrees         func(context.Context, string) ([]doctorGitWorktree, error)
@@ -581,12 +580,6 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "Instance lock",
 			Run: func(_ context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorInstanceLock(resolution)}
-			},
-		},
-		doctorCheckJob{
-			Name: "SQLite database",
-			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorSQLite(jobCtx, resolution, deps)}
 			},
 		},
 		doctorCheckJob{
@@ -1287,9 +1280,6 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.listen == nil {
 		d.listen = defaults.listen
 	}
-	if d.openSQLite == nil {
-		d.openSQLite = defaults.openSQLite
-	}
 	if d.openSQLiteReadOnly == nil {
 		d.openSQLiteReadOnly = defaults.openSQLiteReadOnly
 	}
@@ -1361,7 +1351,6 @@ func defaultDoctorDeps() doctorDeps {
 		ghAuthToken:          defaultGHAuthToken,
 		ghAuthStatus:         func(ctx context.Context) (string, error) { return defaultCommandRunner(ctx, "gh", "auth", "status") },
 		listen:               net.Listen,
-		openSQLite:           openDoctorSQLite,
 		openSQLiteReadOnly:   openDoctorSQLiteReadOnly,
 		gitWorkTree:          defaultGitWorkTree,
 		gitWorktrees:         defaultDoctorGitWorktrees,
@@ -1382,26 +1371,6 @@ func defaultDoctorDeps() doctorDeps {
 func defaultDoctorHTTPDo(req *http.Request) (*http.Response, error) {
 	client := http.Client{Timeout: doctorCommandTimeout}
 	return client.Do(req)
-}
-
-func openDoctorSQLite(ctx context.Context, path string) (doctorStore, error) {
-	if strings.TrimSpace(path) == "" {
-		return nil, errors.New("sqlite path is required")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create sqlite directory: %w", err)
-	}
-
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite database: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-
-	if err := db.PingContext(ctx); err != nil {
-		return nil, doctorSQLitePingError(err, db.Close())
-	}
-	return db, nil
 }
 
 func doctorSQLitePingError(err, closeErr error) error {
