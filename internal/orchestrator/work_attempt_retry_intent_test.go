@@ -295,15 +295,14 @@ func TestRecoveryJournalFailureLeavesHoldsIntact(t *testing.T) {
 }
 
 func TestRecoveryIntentDoesNotReviveHistoricalPark(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, cause := range []string{"human_action", workpadBlockedUnactionedReason} {
 		t.Run(cause, func(t *testing.T) {
-			db := openWorkAttemptRecoveryStore(t, t.Context())
-			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+			journal := &autoPromoteWorkflowMetricsRecorder{}
+			host, err := New(workAttemptRecoveryTestConfig(), Dependencies{Connector: &recoveryTestConnector{}, WorkAttempts: &recordingWorkAttemptStore{}, WorkflowMetrics: journal})
+			if err != nil {
+				t.Fatal(err)
+			}
 			issue := recoveryTestIssue()
 			now := time.Now().UTC().Truncate(time.Second)
 			oldPark := workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: "repeated_failure_circuit_breaker", CauseFingerprint: "same-fingerprint"}
@@ -312,7 +311,7 @@ func TestRecoveryIntentDoesNotReviveHistoricalPark(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{ProjectID: "detent", IssueID: issue.ID, PhaseType: store.WorkflowPhaseTypeRecovery, PhaseName: workAttemptRetryIntentPhase, Status: "queued", StartedAt: now, FinishedAt: now, MetadataJSON: string(data)}); err != nil {
+			if _, err := journal.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{ProjectID: "detent", IssueID: issue.ID, PhaseType: store.WorkflowPhaseTypeRecovery, PhaseName: workAttemptRetryIntentPhase, Status: "queued", StartedAt: now, FinishedAt: now, MetadataJSON: string(data)}); err != nil {
 				t.Fatal(err)
 			}
 			newPark := oldPark
@@ -410,10 +409,6 @@ func (r recoveryCapacityResolver) DispatchCapacity(context.Context, runpkg.RunRe
 }
 
 func TestRecoveryRevalidatesConfigurationBeforeRecordingIntent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
@@ -424,12 +419,11 @@ func TestRecoveryRevalidatesConfigurationBeforeRecordingIntent(t *testing.T) {
 		{name: "catalog outage", err: errors.New("catalog unavailable"), code: WorkAttemptRecoveryUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openWorkAttemptRecoveryStore(t, t.Context())
-			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
-			host.providerCapacity = recoveryCapacityResolver{err: tc.err}
 			issue := recoveryTestIssue()
 			now := time.Now().UTC()
-			attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-time.Hour))
+			started := now.Add(-time.Hour)
+			host, attemptID := newWorkAttemptRecoveryLogicOrchestrator(t, issue, started.Add(time.Minute))
+			host.providerCapacity = recoveryCapacityResolver{err: tc.err}
 			state := newState(host.cfg)
 			request := WorkAttemptRecoveryRequest{AttemptID: attemptID, Action: WorkAttemptRecoveryRetryFresh}
 			_, err := host.handleWorkAttemptRecovery(t.Context(), &state, request, now)
