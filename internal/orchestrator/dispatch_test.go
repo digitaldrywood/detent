@@ -4083,8 +4083,8 @@ func receiveWorkerHostRunRequest(t *testing.T, requests <-chan RunRequest) RunRe
 	select {
 	case request := <-requests:
 		return request
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for worker host run request")
+	case <-t.Context().Done():
+		t.Fatal("test ended before the worker host run request arrived")
 	}
 
 	return RunRequest{}
