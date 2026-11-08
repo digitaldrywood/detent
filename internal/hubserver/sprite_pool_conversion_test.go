@@ -5,15 +5,128 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestPromoteSpritesToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
+func TestSpritePromotionPreservesTenantOverridesAfterReopen(t *testing.T) {
+	var poolConfig *pgxpool.Config
+	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	keys := secretTestKeys(t, "1", "1")
+	services := map[tracker.OrganizationID]*Service{}
+	scopes := map[tracker.OrganizationID]nativeScope{}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		actor := "admin_" + string(organization)
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: string(organization), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: actor, Hash: actor, Name: "Administrator", Kind: "service", Scope: "admin", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			for rank, project := range []tracker.ProjectID{"first", "second"} {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Profile: "native", SchedulingRank: int64(rank)}, States: nativeFixtureStates()}); err != nil {
+					return err
+				}
+				envelope, err := keys.Seal([]byte(string(organization)+":"+string(project)), accessstore.SecretAAD(organization, project, flySpritesToken))
+				if err != nil {
+					return err
+				}
+				if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, ProjectID: project, Kind: flySpritesToken, OrganizationSlug: "example", Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, ProjectID: project, Actor: actor, Kind: flySpritesToken, Event: "set", KeyVersion: envelope.Version, RecordedAt: now}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		services[organization] = &Service{config: Config{TenantRepository: repository, AccessRepository: repository, SecretKeys: keys, Hosted: &HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}}
+		scopes[organization] = nativeScope{organization: organization, credential: apiCredential{ID: actor, Hash: actor, Scope: apiScopeAdmin}}
 	}
+	first, _, _, err := services["org_first"].firstProjectSpritesTokenRecord(t.Context(), scopes["org_first"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := services["org_second"].promoteSpritesTokenRecord(t.Context(), scopes["org_second"], first); err == nil {
+		t.Fatal("foreign preview promoted another tenant token")
+	}
+	foreign := scopes["org_first"]
+	foreign.organization = "org_second"
+	if _, _, _, err := services["org_first"].firstProjectSpritesTokenRecord(t.Context(), foreign); err == nil {
+		t.Fatal("foreign tenant preview was authorized")
+	}
+	for organization, service := range services {
+		change, _, _, err := service.firstProjectSpritesTokenRecord(t.Context(), scopes[organization])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if change.ProjectID != "first" {
+			t.Fatalf("selected source=%s", change.ProjectID)
+		}
+		if err := service.promoteSpritesTokenRecord(t.Context(), scopes[organization], change); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.promoteSpritesTokenRecord(t.Context(), scopes[organization], change); err == nil {
+			t.Fatal("promotion overwrote its existing organization token")
+		}
+	}
+	if err := repository.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	reopened, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := reopened.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			for _, project := range []tracker.ProjectID{"", "first", "second"} {
+				secret, err := r.AccessSecret(t.Context(), project, flySpritesToken)
+				if err != nil {
+					return err
+				}
+				plain, err := keys.Open(secret.Envelope, accessstore.SecretAAD(organization, project, flySpritesToken))
+				if err != nil {
+					return err
+				}
+				want := string(organization) + ":" + string(project)
+				if project == "" {
+					want = string(organization) + ":first"
+				}
+				matches := string(plain) == want
+				clear(plain)
+				if !matches {
+					t.Fatal("promotion lost a tenant token or project override")
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestPromoteSpritesToken(t *testing.T) {
 	for _, test := range []struct {
 		name                                       string
 		changed, existing, ranked, revoked, rewrap bool
@@ -23,7 +136,7 @@ func TestPromoteSpritesToken(t *testing.T) {
 		{name: "authority revoked after preview", revoked: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1")})
+			f := newSpriteNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1")})
 			storeSpriteWakeSecret(t, f, spritesSecretSentinel)
 			promotedToken := spritesSecretSentinel
 			sourceProject := f.project.ID
@@ -31,15 +144,32 @@ func TestPromoteSpritesToken(t *testing.T) {
 				second := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
 				storeSpriteWakeSecret(t, second, "ranked-token")
 				promotedToken, sourceProject = "ranked-token", second.project.ID
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=CASE WHEN id=? THEN 0 ELSE 2 END WHERE organization_id=?", sourceProject, f.project.OrganizationID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					projects, err := w.Projects(t.Context(), "", 100)
+					if err != nil {
+						return err
+					}
+					for _, project := range projects {
+						project.SchedulingRank = 2
+						if project.ID == sourceProject {
+							project.SchedulingRank = 0
+						}
+						if _, err := w.UpdateProject(t.Context(), project); err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, credential: apiCredential{Scope: apiScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE token_hash=?", scope.credential.Hash).Scan(&scope.credential.ID); err != nil {
-				t.Fatal(err)
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+			if err != nil || status != 200 {
+				t.Fatalf("fixture authority=%d %v", status, err)
 			}
-			change, _, _, err := firstProjectSpritesToken(t.Context(), f.service.database.db, scope)
+			scope := nativeScope{organization: f.project.OrganizationID, credential: credential}
+			f.service.config.Hosted = &HostedConfig{OrganizationID: string(scope.organization)}
+			change, _, _, err := f.service.firstProjectSpritesTokenRecord(t.Context(), scope)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,7 +188,7 @@ func TestPromoteSpritesToken(t *testing.T) {
 				<-f.service.secretRewrapDone
 				f.service.config.SecretKeys = secretTestKeys(t, "2", "1", "2")
 				f.service.rewrapSecrets(t.Context())
-				current, _, envelope, err := firstProjectSpritesToken(t.Context(), f.service.database.reader, scope)
+				current, _, envelope, err := f.service.firstProjectSpritesTokenRecord(t.Context(), scope)
 				if err != nil || current.Fingerprint != change.Fingerprint || envelope.Version != 2 {
 					t.Fatalf("preview changed after rewrap: %v", err)
 				}
@@ -70,7 +200,9 @@ func TestPromoteSpritesToken(t *testing.T) {
 				storeOrganizationSpritesSecret(t, f, "existing")
 			}
 			if test.revoked {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(f.service.config.now()), scope.credential.ID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.RevokeAccessCredential(t.Context(), scope.credential.ID, f.service.config.now())
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -87,7 +219,7 @@ func TestPromoteSpritesToken(t *testing.T) {
 				if strings.Contains(result.Message, spritesSecretSentinel) {
 					t.Fatal("result exposed token")
 				}
-				resolved, _, envelope, err := resolveSpritesSecret(t.Context(), f.service.database.db, scope)
+				resolved, _, envelope, err := f.service.resolveSpritesSecret(t.Context(), nil, scope)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -102,7 +234,7 @@ func TestPromoteSpritesToken(t *testing.T) {
 			}
 			projectScope := scope
 			projectScope.project = f.project.ID
-			_, _, envelope, err := resolveSpritesSecret(t.Context(), f.service.database.db, projectScope)
+			_, _, envelope, err := f.service.resolveSpritesSecret(t.Context(), nil, projectScope)
 			if err != nil {
 				t.Fatal(err)
 			}
