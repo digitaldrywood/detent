@@ -29,7 +29,7 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 		bind    int
 	}{
 		{name: "conversations enabled", billing: previewBillingProvider{}, bind: http.StatusOK},
-		{name: "conversations disabled", bind: http.StatusServiceUnavailable},
+		{name: "conversations disabled", bind: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := newSpacesFixture(t, false)
@@ -135,9 +135,12 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 				want int
 			}{
 				{name: "bearer bind", got: p.machine(t, http.MethodPost, item+"/conversation/bind", credential, bind), want: test.bind},
-				{name: "bearer unregistered route", got: p.machine(t, http.MethodPost, item+"/unregistered", credential, bind), want: http.StatusServiceUnavailable},
+				{name: "bearer unregistered route", got: p.machine(t, http.MethodPost, item+"/unregistered", credential, bind), want: http.StatusNotFound},
 				{name: "browser bind without CSRF", got: owner.json(http.MethodPost, item+"/conversation/bind", "", bind), want: http.StatusForbidden},
 			} {
+				if request.want == http.StatusNotFound && !strings.Contains(request.got.body, `"code":"not_found"`) {
+					t.Errorf("%s missing typed route refusal: %s", request.name, request.got.body)
+				}
 				if strings.Contains(request.got.body, "invalid_csrf") != (request.want == http.StatusForbidden) || request.got.status != request.want {
 					t.Errorf("%s = %d %.300s, want %d", request.name, request.got.status, request.got.body, request.want)
 				}

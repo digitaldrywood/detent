@@ -192,7 +192,7 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
 				t.Fatalf("status after the key set recovered = %d, want 200", response.StatusCode)
 			}
-			if response, body := alice.get(html.UnescapeString(link[1])); response.StatusCode != http.StatusPermanentRedirect || response.Header.Get("Location") == "" {
+			if response, body := alice.get(html.UnescapeString(link[1])); response.StatusCode != http.StatusOK || !strings.Contains(body, "Your organization") || !strings.Contains(body, "/organizations/org_alpha/") {
 				t.Fatalf("browser retry = %d: %s", response.StatusCode, body)
 			}
 			if response, body := alice.get("/organizations"); response.StatusCode != http.StatusOK || !strings.Contains(body, `/organizations/org_alpha/organization`) {
