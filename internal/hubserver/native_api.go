@@ -315,6 +315,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerAttemptDiffBodyRoutes(e)
 	s.registerIntegrationRoutes(e)
 	s.registerChangeRoutes(e)
+	s.registerBudgetOverrideRoutes(e)
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	e.GET(nativeBase+"/runner-spend", s.getRunnerSpend, read)
 	e.POST(nativeBase+"/work-items/:item/attempts/:attempt/token-accounting", s.accountRunnerUsage, s.requireNativeScope(apiScopeOperator))

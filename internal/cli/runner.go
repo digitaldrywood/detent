@@ -146,7 +146,7 @@ func withRunnerFactoryWithProjectTokens(
 				if !found {
 					return nil, errors.New("Hub session owner is unavailable for the runner project")
 				}
-				projectSessionStore = api.NewRunnerSessions(client)
+				projectSessionStore = newHubBudgetSessionStore(client, cfg.ID)
 			}
 		}
 		if preparation, ok := deps.Scheduling.(interface {

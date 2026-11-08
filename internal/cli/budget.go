@@ -2,11 +2,12 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
-	"path/filepath"
+	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/project"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type budgetOverrideResult struct {
@@ -175,47 +178,152 @@ func newBudgetOverrideClearCommand(configPath *string, opts options) *cobra.Comm
 }
 
 func openBudgetOverrideContext(ctx context.Context, configPath string, projectID string, opts options) (budget.OverrideWriter, workflowconfig.Workflow, func(), error) {
-	resolution, err := resolveConfigPathResolution(configPath, opts)
+	owner, err := openHubBudgetOverrideStore(configPath, opts)
 	if err != nil {
 		return nil, workflowconfig.Workflow{}, func() {}, err
 	}
-	cfg, _, err := opts.readProject(resolution.Path, strings.TrimSpace(projectID))
+	native, err := owner.project(projectID)
 	if err != nil {
 		return nil, workflowconfig.Workflow{}, func() {}, err
 	}
-	if len(cfg.Projects) != 1 {
-		return nil, workflowconfig.Workflow{}, func() {}, projectNotFoundError(projectID, cfg.Projects)
+	record, err := native.Project(ctx)
+	if err != nil {
+		return nil, workflowconfig.Workflow{}, func() {}, err
 	}
-	workflow, err := project.LoadWorkflowContext(ctx, cfg.Projects[0])
+	workflow, err := workflowconfig.ParseWorkflow([]byte(record.WorkflowMarkdown))
 	if err != nil {
 		return nil, workflowconfig.Workflow{}, func() {}, fmt.Errorf("load project workflow: %w", err)
 	}
-	writer, closeStore, err := openBudgetOverrideStoreAt(ctx, filepath.Join(filepath.Dir(resolution.Path), "detent.db"))
-	return writer, workflow, closeStore, err
+	return owner, workflow, func() {}, nil
 }
 
-func openBudgetOverrideStore(ctx context.Context, configPath string, opts options) (budget.OverrideWriter, func(), error) {
+func openBudgetOverrideStore(_ context.Context, configPath string, opts options) (budget.OverrideWriter, func(), error) {
+	owner, err := openHubBudgetOverrideStore(configPath, opts)
+	return owner, func() {}, err
+}
+
+func openHubBudgetOverrideStore(configPath string, opts options) (*hubBudgetOverrideStore, error) {
 	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
-		return nil, func() {}, err
+		return nil, err
 	}
-	return openBudgetOverrideStoreAt(ctx, filepath.Join(filepath.Dir(resolution.Path), "detent.db"))
+	settings, err := globalconfig.Read(resolution.Path)
+	if err != nil {
+		return nil, err
+	}
+	config := settings.Client.Normalized()
+	if !config.Configured() || len(config.NativeProjects) == 0 {
+		return nil, errors.New("budget overrides require configured Hub projects")
+	}
+	client, err := api.New(api.Config{URL: config.URL, IdentityFile: config.IdentityFile, TokenSource: func() string { return opts.lookupEnv(config.TokenEnvironment) }, HTTPClient: &http.Client{Transport: auditTransport{do: opts.httpDo}, Timeout: config.RequestTimeout()}})
+	if err != nil {
+		return nil, err
+	}
+	return &hubBudgetOverrideStore{client: client, organization: tracker.OrganizationID(config.OrganizationID), projects: config.NativeProjects}, nil
 }
 
-func openBudgetOverrideStoreAt(ctx context.Context, path string) (budget.OverrideWriter, func(), error) {
-	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
+type hubBudgetOverrideStore struct {
+	client       *api.Client
+	organization tracker.OrganizationID
+	projects     map[string]string
+}
+
+func (s *hubBudgetOverrideStore) project(id string) (*api.NativeClient, error) {
+	nativeID := s.projects[strings.TrimSpace(id)]
+	if nativeID == "" {
+		return nil, errors.New("project is not configured for the Hub runner")
+	}
+	return s.client.Native(s.organization, tracker.ProjectID(nativeID))
+}
+
+func budgetOverrideHubError(err error) error {
+	var failure *api.APIError
+	if errors.As(err, &failure) && failure.Status == http.StatusNotFound {
+		return errors.Join(store.ErrNotFound, err)
+	}
+	return err
+}
+
+func (s *hubBudgetOverrideStore) ActiveBudgetOverride(ctx context.Context, id string, at time.Time) (store.BudgetOverride, error) {
+	native, err := s.project(id)
 	if err != nil {
-		return nil, func() {}, err
+		return store.BudgetOverride{}, err
 	}
-	writer, ok := backend.(budget.OverrideWriter)
-	if !ok {
-		return nil, func() {}, errors.Join(errors.New("runtime store does not support budget overrides"), backend.Close())
+	return readHubBudgetOverride(ctx, native, id, at)
+}
+
+type hubBudgetSessionStore struct {
+	*api.RunnerSessions
+	projectID string
+}
+
+func newHubBudgetSessionStore(native *api.NativeClient, projectID string) *hubBudgetSessionStore {
+	return &hubBudgetSessionStore{RunnerSessions: api.NewRunnerSessions(native), projectID: projectID}
+}
+
+func (s *hubBudgetSessionStore) ActiveBudgetOverride(ctx context.Context, id string, at time.Time) (store.BudgetOverride, error) {
+	if id != s.projectID {
+		return store.BudgetOverride{}, errors.New("budget project differs from the runner project")
 	}
-	return writer, func() {
-		if err := backend.Close(); err != nil {
-			slog.Warn("close budget override store", "error", err)
+	return readHubBudgetOverride(ctx, s.NativeClient, id, at)
+}
+
+func readHubBudgetOverride(ctx context.Context, native *api.NativeClient, id string, at time.Time) (store.BudgetOverride, error) {
+	var result budgetOverrideResult
+	if err := native.Transport().Request(ctx, http.MethodGet, native.Scope()+"/budget-override", nil, &result); err != nil {
+		return store.BudgetOverride{}, budgetOverrideHubError(err)
+	}
+	if !result.ExpiresAt.After(at) {
+		return store.BudgetOverride{}, store.ErrNotFound
+	}
+	return store.BudgetOverride{ProjectID: id, PerDayMaxUSD: result.PerDayMaxUSD, PerIssueMaxUSD: result.PerIssueMaxUSD, CreatedAt: result.CreatedAt, ExpiresAt: result.ExpiresAt, Reason: result.Reason}, nil
+}
+
+func (s *hubBudgetOverrideStore) ListActiveBudgetOverrides(ctx context.Context, at time.Time) ([]store.BudgetOverride, error) {
+	ids := make([]string, 0, len(s.projects))
+	for id := range s.projects {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	result := make([]store.BudgetOverride, 0, len(ids))
+	for _, id := range ids {
+		value, err := s.ActiveBudgetOverride(ctx, id, at)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
 		}
-	}, nil
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, value)
+	}
+	return result, nil
+}
+
+func (s *hubBudgetOverrideStore) SetBudgetOverride(ctx context.Context, value store.BudgetOverride) (store.BudgetOverride, error) {
+	native, err := s.project(value.ProjectID)
+	if err != nil {
+		return store.BudgetOverride{}, err
+	}
+	request := struct {
+		tracker.Mutation
+		PerDayMaxUSD   *float64  `json:"per_day_max_usd"`
+		PerIssueMaxUSD *float64  `json:"per_issue_max_usd"`
+		ExpiresAt      time.Time `json:"expires_at"`
+		Reason         string    `json:"reason"`
+	}{tracker.Mutation{IdempotencyKey: rand.Text()}, value.PerDayMaxUSD, value.PerIssueMaxUSD, value.ExpiresAt, value.Reason}
+	var result budgetOverrideResult
+	if err := native.Transport().Request(ctx, http.MethodPut, native.Scope()+"/budget-override", request, &result); err != nil {
+		return store.BudgetOverride{}, budgetOverrideHubError(err)
+	}
+	return store.BudgetOverride{ProjectID: value.ProjectID, PerDayMaxUSD: result.PerDayMaxUSD, PerIssueMaxUSD: result.PerIssueMaxUSD, ExpiresAt: result.ExpiresAt, CreatedAt: result.CreatedAt, Reason: result.Reason}, nil
+}
+
+func (s *hubBudgetOverrideStore) ClearBudgetOverride(ctx context.Context, id string) error {
+	native, err := s.project(id)
+	if err != nil {
+		return err
+	}
+	return budgetOverrideHubError(native.Transport().Request(ctx, http.MethodDelete, native.Scope()+"/budget-override", tracker.Mutation{IdempotencyKey: rand.Text()}, nil))
 }
 
 func markFlagRequired(cmd *cobra.Command, name string) {

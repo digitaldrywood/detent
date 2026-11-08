@@ -53,10 +53,6 @@
     "internal/cli/artifact_test.go": {
       "database_path": 1
     },
-    "internal/cli/budget.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
     "internal/cli/cli_test.go": {
       "sqlite_open": 2
     },
@@ -81,13 +77,6 @@
     },
     "internal/cli/doctor_backend_capacity_test.go": {
       "sqlite_open": 3
-    },
-    "internal/cli/doctor_budget.go": {
-      "sqlite_open": 1
-    },
-    "internal/cli/doctor_budget_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
     },
     "internal/cli/doctor_dependency.go": {
       "sqlite_open": 1

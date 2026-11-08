@@ -227,6 +227,11 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 			OrganizationID: "org_example", WorkOSOrganizationID: "provider_org_example", PublicURL: "https://hub.example.test", Provider: provider,
 		}}
 	for _, option := range options {
+		if option.details != nil {
+			config.RunDetails = hubmaintenance.LimitDetails(option.details)
+		}
+	}
+	for _, option := range options {
 		if option.config != nil {
 			*option.config = config
 		}
@@ -308,6 +313,7 @@ func (s *clihangDetails) read(ctx context.Context, key string) ([]byte, error) {
 }
 
 type clihangPostgresOptions struct {
-	seed   func(*postgres.Repository) error
-	config *hubserver.Config
+	details attachment.DetailStore
+	seed    func(*postgres.Repository) error
+	config  *hubserver.Config
 }

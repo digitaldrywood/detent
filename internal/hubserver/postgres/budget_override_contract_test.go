@@ -77,6 +77,27 @@ func TestBudgetOverrideContractScopesCapsExpiryAndOriginalLifetime(t *testing.T)
 			}
 		})
 	}
+	if err := repository.WriteBudgetOverrides(t.Context(), "org_first", corestore.Serving, func(w postgres.BudgetOverrideWriter) error {
+		commands := w.(postgres.BudgetOverrideCommandWriter)
+		if _, err := commands.CompareAndSetBudgetOverride(t.Context(), base, policy, 0); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("absent-revision replacement error=%v", err)
+		}
+		unchanged := base
+		unchanged.ExpiresAt = now.Add(48 * time.Hour)
+		changed, err := commands.CompareAndSetBudgetOverride(t.Context(), unchanged, policy, 1)
+		if err != nil {
+			return err
+		}
+		if changed.Revision != 2 || !changed.CreatedAt.Equal(now) {
+			t.Fatalf("revision update=%+v", changed)
+		}
+		if _, err := commands.CompareAndSetBudgetOverride(t.Context(), base, policy, 1); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("concurrent replacement error=%v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
