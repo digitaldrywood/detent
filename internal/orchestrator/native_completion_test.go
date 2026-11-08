@@ -1655,11 +1655,23 @@ func TestNativeCompletionComment(t *testing.T) {
 
 func TestNativePublicationRetryRetainsRecordedWorkProduct(t *testing.T) {
 	for _, test := range []struct {
-		name, currentChange, sourceState, wantState string
+		name, currentChange, sourceState, wantState                    string
+		version, sourceVersion, head, recoveryVersion, recoveryAttempt string
+		gateFailed                                                     bool
+		direct                                                         bool
 	}{
-		{"pending Change", "change_pending", "In Progress", "Rework"},
-		{"pending Change in Rework", "change_pending", "Rework", "Rework"},
-		{"unrelated Change", "change_other", "In Progress", "Todo"},
+		{name: "pending Change", currentChange: "change_pending", sourceState: "In Progress", wantState: "Rework"},
+		{name: "pending Change in Rework", currentChange: "change_pending", sourceState: "Rework", wantState: "Rework"},
+		{name: "unrelated Change", currentChange: "change_other", sourceState: "In Progress", wantState: "Todo"},
+		{name: "published result in Rework", currentChange: "change_pending", sourceState: "Rework", wantState: "Rework", version: "version_current", sourceVersion: "version_current", direct: true},
+		{name: "published receipt in Rework", currentChange: "change_pending", sourceState: "Rework", wantState: "Rework", version: "version_current", sourceVersion: "version_current"},
+		{name: "published receipt returns to Rework", currentChange: "change_pending", sourceState: "In Progress", wantState: "Rework", version: "version_current", sourceVersion: "version_current"},
+		{name: "stale version is not current source", currentChange: "change_pending", sourceState: "Rework", wantState: "Todo", version: "version_current", sourceVersion: "version_old"},
+		{name: "different published head is not current source", currentChange: "change_pending", sourceState: "Rework", wantState: "Todo", version: "version_current", sourceVersion: "version_current", head: strings.Repeat("c", 40)},
+		{name: "failed gate is not passed work product", currentChange: "change_pending", sourceState: "Rework", wantState: "Todo", version: "version_current", sourceVersion: "version_current", gateFailed: true},
+		{name: "foreign published Change is not work product", currentChange: "change_other", sourceState: "Rework", wantState: "Todo", version: "version_current", sourceVersion: "version_current"},
+		{name: "replaced recovery source version", currentChange: "change_pending", sourceState: "Rework", wantState: "Todo", version: "version_current", sourceVersion: "version_current", recoveryVersion: "version_replaced"},
+		{name: "unrelated recovery source attempt", currentChange: "change_pending", sourceState: "Rework", wantState: "Todo", version: "version_current", sourceVersion: "version_current", recoveryAttempt: "attempt_other"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			issue := connector.Issue{ID: "issue", State: test.sourceState}
@@ -1678,19 +1690,31 @@ func TestNativePublicationRetryRetainsRecordedWorkProduct(t *testing.T) {
 			running := Running{Issue: issue, Mode: RunModeImplement, Attempt: 1, WorkAttemptID: 42, Generation: 7}
 			state.Running[issue.ID], state.Claimed[issue.ID] = running, Claimed{Issue: issue}
 			execution := &nativeLandingJourneyExecution{recovery: tracker.NativeRecovery{
-				ChangeDetail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: test.currentChange}},
+				SourceVersionID: test.recoveryVersion, SourceAttemptID: test.recoveryAttempt,
+				ChangeDetail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: test.currentChange, CurrentVersion: test.version}},
 				Attempts: []tracker.NativeAttempt{{Status: "failed", NativeRunData: tracker.NativeRunData{Finalization: &tracker.NativeFinalization{
-					Changed: true, ChangeID: "change_pending", BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), VersionCode: "run_sequence_conflict",
+					Changed: true, ChangeID: "change_pending", VersionID: test.sourceVersion, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), VersionCode: "run_sequence_conflict",
 				}}}},
 			}}
+			if test.version != "" {
+				head := firstNonBlank(test.head, strings.Repeat("b", 40))
+				exit := 0
+				if test.gateFailed {
+					exit = 1
+				}
+				execution.recovery.ChangeDetail.Versions = []tracker.ChangeVersion{{ID: test.version, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: strings.Repeat("a", 40), HeadSHA: head, Validation: &gate.CommandResult{Command: "make check", ExitCode: exit, HeadSHA: head, TreeSHA: strings.Repeat("d", 40)}}}}
+			}
 			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Err: errors.New("native execution identity changed during an attempt"), Request: runpkg.RunRequest{Execution: execution}}
+			if test.direct {
+				event.Result.NativeChange = &runpkg.NativeChange{Changed: true, ChangeID: "change_pending", VersionID: test.version, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40)}
+			}
 			if !orch.completeNativeChangeRun(t.Context(), &state, event, running, runpkg.FinalStateFailed) {
 				t.Fatal("failed retry lost completion ownership")
 			}
 			if retry := state.Retry[issue.ID]; retry.Issue.State != test.wantState || len(attempts.completions) != 1 || len(state.Completed) != 0 {
 				t.Fatalf("retry state=%s want=%s receipts=%d completed=%d", retry.Issue.State, test.wantState, len(attempts.completions), len(state.Completed))
 			}
-			if test.currentChange == "change_pending" {
+			if test.wantState == "Rework" {
 				for _, reason := range native.reasonCodes {
 					if reason == terminalAttemptWithoutWorkProductReason {
 						t.Fatal("recorded Change was classified as without work product")

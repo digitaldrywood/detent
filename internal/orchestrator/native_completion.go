@@ -79,19 +79,36 @@ func (o *Orchestrator) completeNativeChangeRun(
 	retryReason := terminalAttemptWithoutWorkProductReason
 	retryErrorClass := terminalAttemptWithoutWorkProductReason
 	retryMessage := noWorkProductMessage
-	unpublishedWorkProduct := change != nil && change.Changed && change.ChangeID != "" && change.VersionID == "" && change.HeadSHA != ""
-	if !unpublishedWorkProduct && event.Err != nil && event.Request.Execution != nil {
+	recordedWorkProduct := change != nil && (change.VersionID != "" || change.Changed && change.ChangeID != "" && change.HeadSHA != "")
+	if !recordedWorkProduct && event.Err != nil && event.Request.Execution != nil {
 		recovery := event.Request.Execution.Recovery()
-		if current := recovery.ChangeDetail; current != nil && current.Change.ID != "" && current.Change.CurrentVersion == "" {
+		if current := recovery.ChangeDetail; current != nil && current.Change.ID != "" && (recovery.SourceVersionID == "" || recovery.SourceVersionID == current.Change.CurrentVersion) {
+			var published *tracker.ChangeVersion
+			for i := range current.Versions {
+				if current.Versions[i].ID == current.Change.CurrentVersion {
+					published = &current.Versions[i]
+					break
+				}
+			}
 			for _, attempt := range recovery.Attempts {
-				if source := attempt.Finalization; source != nil && source.Changed && source.ChangeID == current.Change.ID && source.BaseSHA != "" && source.HeadSHA != "" {
-					unpublishedWorkProduct = true
+				source := attempt.Finalization
+				if source == nil || !source.Changed || source.ChangeID != current.Change.ID || source.BaseSHA == "" || source.HeadSHA == "" || recovery.SourceAttemptID != "" && recovery.SourceAttemptID != attempt.AttemptID {
+					continue
+				}
+				if current.Change.CurrentVersion == "" && source.VersionID == "" {
+					recordedWorkProduct = true
+					break
+				}
+				if published != nil && published.ID == source.VersionID && published.BaseSHA == source.BaseSHA && published.HeadSHA == source.HeadSHA && published.Validation != nil && published.Validation.ExitCode == 0 && published.Validation.HeadSHA == published.HeadSHA {
+					recordedWorkProduct = true
+				}
+				if recordedWorkProduct {
 					break
 				}
 			}
 		}
 	}
-	if unpublishedWorkProduct || change != nil && (change.VersionID != "" || change.NoChange != nil) {
+	if recordedWorkProduct || change != nil && change.NoChange != nil {
 		retryReason = "state_transition"
 		retryErrorClass = ""
 		retryMessage = "published source requires further work"
@@ -118,7 +135,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 				return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))
 			}
 		} else {
-			if running.DiffStats.RecoveryStateAvailable || unpublishedWorkProduct {
+			if running.DiffStats.RecoveryStateAvailable || recordedWorkProduct && dispatchableState(states, cfg.ReworkState) {
 				target = cfg.ReworkState
 			}
 			target, allowed = nativeRetryLane(states, issue.State, target)
