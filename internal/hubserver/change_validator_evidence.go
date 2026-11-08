@@ -186,7 +186,7 @@ func validateValidatorReviewEvidence(scope nativeScope, change tracker.ChangeReq
 	if current.Runtime != nil && current.Runtime.Activity != nil {
 		currentSession = current.Runtime.Activity.SessionID
 	}
-	validSession := current.Identity != nil && (current.Identity.Role == "code" || current.Identity.Role == "rework") && currentSession != result.SessionID
+	validSession := current.Identity != nil && (current.Identity.Role == "code" || current.Identity.Role == "rework") && (audit || currentSession != result.SessionID)
 	if landingAudit {
 		validSession = current.Identity != nil && current.Identity.Role == "merge"
 	}
