@@ -28,7 +28,7 @@ type GitHubIntakeWriter interface {
 	CreateGitHubWebhook(context.Context, GitHubWebhook) (bool, error)
 	UpdateGitHubWebhook(context.Context, GitHubWebhook, tracker.ProjectID, int64) error
 	PurgeGitHubWebhookPayloads(context.Context, time.Time, int) error
-	DeferGitHubIntake(context.Context, tracker.ProjectID, time.Time) error
+	DeferGitHubIntake(context.Context, tracker.ProjectID, time.Time, float64) error
 }
 
 type GitHubOutbound struct {

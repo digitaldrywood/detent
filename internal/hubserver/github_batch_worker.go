@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -37,17 +38,18 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 		return err
 	}
 	scope, err := s.gitHubIntegrationScope(ctx, organization, project)
-	if err != nil {
-		return err
+	if err == nil {
+		err = s.advanceGitHubBatchRecord(ctx, scope)
 	}
-	err = s.advanceGitHubBatchRecord(ctx, scope)
 	if err != nil {
-		retryErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		retryErr := s.config.TenantRepository.WriteTenant(cleanup, organization, corestore.Background, func(w tenantstore.Writer) error {
 			gitHubIntakeWriter, ok := w.(projectstore.GitHubIntakeWriter)
 			if !ok {
 				return ErrPostgresFeatureUnavailable
 			}
-			return gitHubIntakeWriter.DeferGitHubIntake(ctx, project, s.config.now())
+			return gitHubIntakeWriter.DeferGitHubIntake(cleanup, project, s.config.now(), s.config.jitter())
 		})
 		return errors.Join(err, retryErr)
 	}

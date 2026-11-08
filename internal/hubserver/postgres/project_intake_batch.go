@@ -12,7 +12,7 @@ import (
 
 func (s *session) ProjectIntakeBatch(ctx context.Context, project tracker.ProjectID) (projectstore.IntakeBatch, error) {
 	row, err := s.queries.ProjectIntakeBatch(ctx, pgquery.ProjectIntakeBatchParams{OrganizationID: s.organization, ProjectID: project})
-	return projectstore.IntakeBatch{ProjectID: row.ProjectID, ID: row.ID, Revision: row.Revision, Status: row.BatchStatus, HubOwned: row.HubOwned, Payload: eventstore.Receipt{OrganizationID: row.OrganizationID, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes}}, mapError(ctx, err)
+	return projectstore.IntakeBatch{ProjectID: row.ProjectID, ID: row.ID, Revision: row.Revision, Status: row.BatchStatus, HubOwned: row.HubOwned, Attempts: row.Attempts, NextAttemptAt: row.NextAttemptAt, Payload: eventstore.Receipt{OrganizationID: row.OrganizationID, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes}}, mapError(ctx, err)
 }
 
 func (s *session) SaveProjectIntakeBatch(ctx context.Context, row projectstore.IntakeBatch, expected int64) error {

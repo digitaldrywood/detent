@@ -85,7 +85,7 @@ func (s *session) PurgeGitHubWebhookPayloads(ctx context.Context, now time.Time,
 	return mapError(ctx, err)
 }
 
-func (s *session) DeferGitHubIntake(ctx context.Context, project tracker.ProjectID, now time.Time) error {
-	_, err := s.db.Exec(ctx, `UPDATE onboarding_issue_intake SET attempts=attempts+1,next_attempt_at=$3+(LEAST(256,power(2,LEAST(attempts+1,8)))*interval '1 second') WHERE organization_id=$1 AND project_id=$2 AND hub_owned AND batch_status IN ('discovering','importing')`, s.organization, project, now)
+func (s *session) DeferGitHubIntake(ctx context.Context, project tracker.ProjectID, now time.Time, jitter float64) error {
+	_, err := s.db.Exec(ctx, `UPDATE onboarding_issue_intake SET attempts=attempts+1,next_attempt_at=$3::timestamptz+(LEAST(256,power(2,LEAST(attempts+1,8)))*(0.5+0.5*GREATEST(0,LEAST(1,$4::double precision)))*interval '1 second') WHERE organization_id=$1 AND project_id=$2 AND hub_owned AND batch_status IN ('discovering','importing')`, s.organization, project, now, jitter)
 	return mapError(ctx, err)
 }

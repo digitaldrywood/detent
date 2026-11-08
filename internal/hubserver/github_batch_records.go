@@ -276,8 +276,7 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 	if batch.Status == "discovering" {
 		page, fetchErr := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: batch.Discovery.Repository, Stage: "batch", Discovery: &batch.Discovery})
 		if fetchErr != nil {
-			batch.Error = "GitHub source page is unavailable"
-			return errors.Join(fetchErr, s.saveGitHubBatchRecord(ctx, scope, batch))
+			return fetchErr
 		}
 		if page.BatchPage == nil || len(page.BatchPage.Issues) > githubBatchMaintenanceLimit || len(batch.Page.Issues)+len(page.BatchPage.Issues) > batchLimit(batch) {
 			return nativePublicInvalid("GitHub discovery exceeded its page budget")

@@ -172,10 +172,12 @@ func (s *Service) processGitHubWebhookRecord(ctx context.Context, row projectsto
 	if err == nil && len(projects) < 2 {
 		row.Status = "completed"
 	}
-	row.Attempts++
 	row.NextAttemptAt = s.config.now()
 	if err != nil {
-		row.NextAttemptAt = row.NextAttemptAt.Add(time.Second * time.Duration(1<<min(row.Attempts, 6)))
+		row.Attempts++
+		row.NextAttemptAt = row.NextAttemptAt.Add(gitHubRetryDelay(row.Attempts, 2*time.Second, 64*time.Second, s.config.jitter()))
+	} else {
+		row.Attempts = 0
 	}
 	writeErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		gitHubIntakeWriter, ok := w.(projectstore.GitHubIntakeWriter)
