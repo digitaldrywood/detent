@@ -109,7 +109,7 @@ type SettlementScenario struct {
 func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Constructors, checks SettlementChecks) {
 	newNativeChangeHub := func(t *testing.T, memory ...bool) *nativeChangeHub { return newScenarioHub(t, factories, memory...) }
 	newNativeChangeHubTransport := func(t *testing.T, review string, states []tracker.NativeState, memory bool) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	}
 
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
@@ -514,7 +514,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 					h.repolicy(t)
 				}
 			}
-			if test.Reviewer && !test.RequiredPR && !test.MergeResolution {
+			if test.Reviewer && !test.RequiredPR {
 				rules := tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
 				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: rules}); err != nil {
 					t.Fatal(err)
