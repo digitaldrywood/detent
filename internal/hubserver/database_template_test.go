@@ -167,10 +167,7 @@ func nativeFixtureStates() []tracker.NativeState {
 
 func newDefaultNativeFixture(t *testing.T, cfg Config) nativeFixture {
 	t.Helper()
-	if cfg.DatabasePath == "" {
-		cfg.DatabasePath = filepath.Join(t.TempDir(), "hub.db")
-	}
-	return newPostgresDefaultNativeFixture(t, cfg)
+	return newNativeFixture(t, newClockedPostgresNativeService(t, cfg), "", "Example project")
 }
 
 func TestNativeDatabaseTemplateIsolation(t *testing.T) {

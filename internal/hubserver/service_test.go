@@ -21,8 +21,7 @@ func TestHealthEndpoint(t *testing.T) {
 	t.Parallel()
 
 	service := openTestService(t, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
-		Version:      "v-test",
+		Version: "v-test",
 	})
 
 	schemaVersion, err := postgres.LatestSchemaVersion()
@@ -99,7 +98,7 @@ func TestHealthEndpoint(t *testing.T) {
 func TestServeShutsDownGracefully(t *testing.T) {
 	t.Parallel()
 
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	service := openTestService(t, Config{})
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -110,7 +109,9 @@ func TestServeShutsDownGracefully(t *testing.T) {
 		serveResult <- service.Serve(listener)
 	}()
 
-	client := &http.Client{Timeout: 2 * time.Second}
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+listener.Addr().String()+"/health", nil)
 	if err != nil {
 		t.Fatalf("NewRequestWithContext() error = %v", err)
@@ -146,17 +147,13 @@ func TestServeShutsDownGracefully(t *testing.T) {
 func TestServeRequiresListener(t *testing.T) {
 	t.Parallel()
 
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	service := openTestService(t, Config{})
 	if err := service.Serve(nil); err == nil {
 		t.Fatal("Serve(nil) error = nil")
 	}
 }
 
 func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
-	if testing.Short() {
-		t.Skip("service lifecycle integration")
-	}
-
 	t.Parallel()
 
 	admin := postgresStartupTemplate.Database(t)

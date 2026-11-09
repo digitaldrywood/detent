@@ -29,30 +29,38 @@ func privateSocketDirectory(t *testing.T) string {
 }
 
 func TestRunServesPrivateUnixSocket(t *testing.T) {
-	if testing.Short() {
-		t.Skip("hub boot integration")
-	}
-
 	t.Parallel()
 	directory := privateSocketDirectory(t)
 	socket := filepath.Join(directory, "t.sock")
 	if len(socket) >= len(syscall.RawSockaddrUnix{}.Path) {
 		t.Skip("worker-owned absolute socket path exceeds the platform Unix socket limit")
 	}
+	seed := openTestService(t, Config{})
+	cfg := seed.config
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ListenAddress = "unix:" + socket
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
+	joined := make(chan struct{})
 	go func() {
-		done <- Run(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), ListenAddress: "unix:" + socket})
+		defer close(joined)
+		done <- Run(ctx, cfg)
 	}()
-	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	t.Cleanup(func() { cancel(); <-joined })
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var dialer net.Dialer
 		return dialer.DialContext(ctx, "unix", socket)
-	}}}
+	}}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport}
 	testenv.WaitUntil(t, t.Context(), func() error {
 		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://hub/health", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
+		authorizeHubTestRequest(request)
 		response, err := client.Do(request)
 		if err != nil {
 			select {
@@ -62,7 +70,12 @@ func TestRunServesPrivateUnixSocket(t *testing.T) {
 			}
 			return fmt.Errorf("socket never served: %w", err)
 		}
-		_ = response.Body.Close()
+		if err := response.Body.Close(); err != nil {
+			return err
+		}
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("socket health status = %d", response.StatusCode)
+		}
 		return nil
 	})
 	info, err := os.Stat(socket)

@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -19,13 +20,17 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
 )
 
 const (
@@ -73,6 +78,9 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
 	if cfg.Content == nil && cfg.RunDetails == nil && (cfg.Hosted == nil || cfg.Hosted.SharedEntry == nil || cfg.Hosted.SharedEntry.Content == nil && cfg.Hosted.SharedEntry.RunDetails == nil) {
 		objectKey := cfg.DatabasePath
+		if objectKey == "" {
+			objectKey = t.Name()
+		}
 		value, loaded := testChangeObjects.LoadOrStore(objectKey, &changeObjectFixture{})
 		if !loaded {
 			t.Cleanup(func() { testChangeObjects.Delete(objectKey) })
@@ -120,12 +128,17 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			}
 		}
 	}
+	var fixtureAdmin *sql.DB
 	if cfg.Postgres == nil {
 		admin := postgresStartupTemplate.Database(t)
+		fixtureAdmin = admin
 		defaults := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 		cfg.DatabaseBackend = DatabasePostgres
 		cfg.DatabasePath = ""
 		cfg.Postgres = defaults.Postgres
+		if cfg.now != nil || cfg.Clock != nil {
+			cfg.Postgres.LeaseClock = cfg.normalized().now
+		}
 		if cfg.Hosted == nil {
 			cfg.Hosted = defaults.Hosted
 		}
@@ -156,11 +169,118 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
+	if fixtureAdmin != nil {
+		projectRecordDatabases.Store(service.database.postgres, fixtureAdmin)
+		t.Cleanup(func() { projectRecordDatabases.Delete(service.database.postgres) })
+	}
 	t.Cleanup(func() {
 		if err := service.Close(); err != nil {
 			t.Fatalf("Close() error = %v", err)
 		}
 	})
+	return service
+}
+
+func hubPostgresRepository(t *testing.T, maxConnections int) (*postgres.Repository, *sql.DB) {
+	t.Helper()
+	admin := postgresStartupTemplate.Database(t)
+	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	cfg.Postgres.Pool = postgres.PoolConfig{MaxConnections: maxConnections, ServingConnections: maxConnections - 1, BackgroundConnections: 1}
+	store, err := openPostgresDatabase(t.Context(), *cfg.Postgres)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := store.postgres
+	projectRecordDatabases.Store(repository, admin)
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+		projectRecordDatabases.Delete(repository)
+	})
+	return repository, admin
+}
+
+func readPostgresTestRunner(ctx context.Context, service *Service, organization tracker.OrganizationID, runnerID string, now time.Time) (runnerauth.Runner, error) {
+	var runner runnerauth.Runner
+	err := service.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		routing, ok := reader.(runnerstore.RoutingReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		record, err := routing.RunnerRoutingRecord(ctx, runnerID, now)
+		if err != nil {
+			return err
+		}
+		urgent, err := reader.RunnerUrgentUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		runner = runnerFromRoutingRecord(record, now, urgent)
+		return nil
+	})
+	return runner, err
+}
+
+func newClockedPostgresNativeService(t *testing.T, cfg Config) *Service {
+	t.Helper()
+	if cfg.Hosted != nil {
+		return newPostgresNativeService(t, cfg)
+	}
+	if cfg.SecretKeys == nil {
+		cfg.SecretKeys = secretTestKeys(t, "1", "1")
+	}
+	service := openTestService(t, cfg)
+	service.workerCancel()
+	<-service.workerDone
+	<-service.secretRewrapDone
+	service.config.Hosted = nil
+	service.echo = echo.New()
+	service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
+	service.registerNativeRoutes(service.echo)
+	service.registerRunnerRoutes(service.echo)
+	service.registerOperatorTools(service.echo)
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
+	primary := tracker.OrganizationID("org_first")
+	for _, organization := range []tracker.OrganizationID{primary, primary + "_second"} {
+		seedPostgresHubAdmin(t, service.config.TenantRepository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
+		key := bytes.Repeat([]byte{0x5a}, 32)
+		envelope, err := service.config.SecretKeys.Seal(key, accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := service.config.now().UTC().Truncate(time.Microsecond)
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: key}); err != nil {
+				return err
+			}
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service.database.hostedOrganization = primary
+	service.localOrganization = string(primary)
+	service.requestMetrics.organization = primary
+	return service
+}
+
+func reopenPostgresNativeService(t *testing.T, previous *Service) *Service {
+	t.Helper()
+	admin := usagePostgresAdmin(t, previous)
+	cfg := previous.config
+	store, err := openPostgresDatabase(t.Context(), *cfg.Postgres)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := store.postgres
+	projectRecordDatabases.Store(repository, admin)
+	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
+	cfg.Hosted = startupConfig(cfg.Postgres.Connection).Hosted
+	service := openLocalPostgresHubTestService(t, repository, cfg)
+	service.database.hostedOrganization = previous.database.hostedOrganization
+	service.localOrganization = previous.localOrganization
+	service.requestMetrics.organization = previous.requestMetrics.organization
 	return service
 }
 

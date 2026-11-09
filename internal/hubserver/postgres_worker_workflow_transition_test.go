@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -22,10 +21,10 @@ import (
 )
 
 func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, _ := hubPostgresRepository(t, 3)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
+		RunDetails: &memoryRunDetails{}, Clock: clock.Now,
 		SecretKeys: secretTestKeys(t, "1", "1"),
 	})
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
@@ -143,10 +142,9 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	originalDB, originalReader := service.database.db, service.database.reader
-	t.Cleanup(func() { service.database.db = originalDB; service.database.reader = originalReader })
-	service.database.db = nil
-	service.database.reader = nil
+	if service.database.postgres == nil || service.database.db != nil || service.database.reader != nil {
+		t.Fatal("worker workflow fixture must use PostgreSQL without legacy handles")
+	}
 	projectGetPath := strings.Replace(nativeBase, ":organization", string(organization.ID), 1)
 	projectGetPath = strings.Replace(projectGetPath, ":project", string(project.ID), 1)
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, projectGetPath+"/policy", testHubAdminToken, nil), http.StatusOK)

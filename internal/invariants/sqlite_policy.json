@@ -348,7 +348,7 @@
       "database_path": 4
     },
     "internal/hubserver/database_template_test.go": {
-      "database_path": 4,
+      "database_path": 2,
       "sqlite_open": 1
     },
     "internal/hubserver/database_test.go": {
@@ -1455,9 +1455,6 @@
     "internal/hubserver/policy_test.go": {
       "database_path": 6
     },
-    "internal/hubserver/postgres_worker_workflow_transition_test.go": {
-      "database_path": 1
-    },
     "internal/hubserver/project_configuration.go": {
       "sql_julianday": 4
     },
@@ -1558,9 +1555,6 @@
     "internal/hubserver/runtime_capacity.go": {
       "sql_julianday": 8
     },
-    "internal/hubserver/saved_work_views_test.go": {
-      "database_path": 1
-    },
     "internal/hubserver/scale_soak_test.go": {
       "database_path": 1
     },
@@ -1580,12 +1574,6 @@
     },
     "internal/hubserver/service.go": {
       "sql_pragma": 1
-    },
-    "internal/hubserver/service_test.go": {
-      "database_path": 3
-    },
-    "internal/hubserver/service_unix_test.go": {
-      "database_path": 1
     },
     "internal/hubserver/slack_delivery.go": {
       "sql_insert_or": 2,

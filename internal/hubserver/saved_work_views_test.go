@@ -97,10 +97,10 @@ func TestSavedWorkViews(t *testing.T) {
 		t.Fatalf("grantless shared list = %+v", got)
 	}
 	requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, savedWorkView{ProjectIDs: []string{project}, Name: "Denied", Scope: "personal", ProjectID: &project, State: state}), http.StatusForbidden)
-	otherRepository := projectRecordPostgres(t)
+	otherRepository, _ := hubPostgresRepository(t, 3)
 	provider := newHostedSecurityProvider()
 	second := hostedSecurityFixture{provider: provider, service: openTestService(t, Config{
-		DatabasePath: hostedTestDatabasePath(t), TenantRepository: otherRepository, AccessRepository: otherRepository,
+		TenantRepository: otherRepository, AccessRepository: otherRepository,
 		Hosted: &HostedConfig{OrganizationID: "org_other", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider},
 	})}
 	if err := otherRepository.WriteTenant(t.Context(), "org_other", corestore.Serving, func(w tenantstore.Writer) error {
@@ -424,7 +424,8 @@ type postgresWorkViewFixture struct {
 
 func newPostgresWorkViewFixture(t *testing.T) postgresWorkViewFixture {
 	t.Helper()
-	repository, fixture, _, admin := newChangePolicyPostgresFixtureWithAdmin(t, 4)
+	repository, admin := hubPostgresRepository(t, 4)
+	fixture, _ := newChangePolicyPostgresTenantFixture(t, repository, "org_security", &memoryRunDetails{})
 	fixture.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{fixture.service}, chat.WithClock(fixture.service.config.now))
 	if err := fixture.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
