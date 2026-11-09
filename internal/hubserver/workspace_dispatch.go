@@ -104,33 +104,6 @@ func joinWords(values []string) string {
 // ensureWorkspaceItem creates the native issue that dispatches a workspace and
 // records the association. Both commit in the caller's transaction, so a
 // refused request leaves no orphaned issue behind.
-func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, scope nativeScope, record workspaceRecord, now time.Time) (string, error) {
-	project, err := readNativeProject(ctx, tx, scope)
-	if err != nil {
-		return "", fmt.Errorf("read project for workspace item: %w", err)
-	}
-	state, found := firstDispatchableState(project)
-	if !found {
-		return "", nativePublicInvalid("The project has no dispatchable workflow state for a workspace session")
-	}
-	issue, err := createNativeIssueTx(allowWorkspaceLabel(ctx), tx, scope, tracker.CreateIssue{
-		Title:  workspaceItemTitle(record.ID),
-		Body:   workspaceItemBody(record),
-		State:  state,
-		Labels: []string{workspaceItemLabel},
-	}, now)
-	if err != nil {
-		return "", err
-	}
-	item := string(issue.WorkItemID)
-	if err := insertWorkspaceItem(ctx, tx, workspaceItemRecord{
-		WorkItemID: item, WorkspaceID: record.ID, OrganizationID: record.OrganizationID,
-		ProjectID: record.ProjectID, CreatedAt: now,
-	}); err != nil {
-		return "", err
-	}
-	return item, nil
-}
 
 // closeWorkspaceDispatchItem ends the workspace's dispatch issue when the
 // workspace reaches a terminal state: the issue moves to the project's first
@@ -144,46 +117,10 @@ func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, 
 // the attempt's artifacts, which this does not touch. A project with no
 // terminal state keeps the issue where it is, exactly as closeCoordinatorItem
 // does; the association closes regardless.
-func (w *workspaceService) closeWorkspaceDispatchItem(ctx context.Context, tx *sql.Tx, record workspaceRecord, now time.Time) error {
-	item, found, err := readWorkspaceItemByWorkspace(ctx, tx, record.ID)
-	if err != nil {
-		return err
-	}
-	if !found || item.ClosedAt != nil {
-		// Either the workspace never got an item, or an earlier terminal
-		// transition already closed it. Closing twice must not move an issue
-		// somebody has since reopened.
-		return closeWorkspaceItem(ctx, tx, record.ID, now)
-	}
-	scope := nativeScope{organization: record.OrganizationID, project: record.ProjectID}
-	project, err := readNativeProject(ctx, tx, scope)
-	if err != nil {
-		return fmt.Errorf("read project for workspace item: %w", err)
-	}
-	terminal, found := firstTerminalState(project)
-	if !found {
-		w.logger.Warn("workspace.item_not_terminated", "workspace_id", record.ID, "work_item_id", item.WorkItemID,
-			"reason", "the project has no terminal workflow state")
-		return closeWorkspaceItem(ctx, tx, record.ID, now)
-	}
-	issue, _, err := readNativeIssue(ctx, tx, scope, item.WorkItemID)
-	if err != nil {
-		return fmt.Errorf("read workspace issue: %w", err)
-	}
-	if issue.State != terminal {
-		from := issue.State
-		issue.State = terminal
-		if _, err := persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned",
-			tracker.CollaborationData{FromState: from, ToState: terminal, Reason: "worker_progress"}, now); err != nil {
-			return fmt.Errorf("close workspace issue: %w", err)
-		}
-	}
-	if err := closeWorkspaceItem(ctx, tx, record.ID, now); err != nil {
-		return err
-	}
-	w.logger.Info("workspace.item_closed", "workspace_id", record.ID, "work_item_id", item.WorkItemID, "state", terminal)
-	return nil
-}
+
+// Either the workspace never got an item, or an earlier terminal
+// transition already closed it. Closing twice must not move an issue
+// somebody has since reopened.
 
 // runnerWorkspaceCapabilities reads what a runner reported it can serve, and
 // whether the report is fresh. A runner with no identity, a stale heartbeat or
@@ -408,27 +345,6 @@ func prepareRunnerWorkspaceReport(capabilities *workspacesession.Capabilities) (
 		return "", fmt.Errorf("encode runner workspace capabilities: %w", err)
 	}
 	return string(encoded), nil
-}
-
-func updateRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, capabilities *workspacesession.Capabilities, isolation string) error {
-	raw, err := prepareRunnerWorkspaceReport(capabilities)
-	if err != nil {
-		return err
-	}
-	return storeEncodedRunnerWorkspaceReport(ctx, tx, scope, raw, isolation)
-}
-
-func storeEncodedRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, raw string, isolation string) error {
-	if raw == "" {
-		return nil
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE runner_identities SET workspace_capabilities_json = ?, workspace_isolation = ?
-WHERE id = ? AND token_id = ? AND organization_id = ?`, raw, isolation,
-		scope.credential.Runner.RunnerID, scope.credential.ID, scope.organization)
-	if err != nil {
-		return fmt.Errorf("store runner workspace capabilities: %w", err)
-	}
-	return requireRunnerUpdate(result, nil)
 }
 
 // firstTerminalState reports the project's first terminal workflow state, the

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,8 +15,10 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -106,14 +107,13 @@ func withGit(fixture *relayFixture) { fixture.git = true }
 
 func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture {
 	t.Helper()
-	fixture := &relayFixture{clock: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}
+	fixture := &relayFixture{clock: time.Now().UTC().Truncate(time.Microsecond)}
 	for _, option := range options {
 		option(fixture)
 	}
 	recording := !fixture.noRecording
-	f := newDefaultNativeFixture(t, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
-		Workspace: &WorkspaceConfig{Enabled: true,
+	f := newWorkspaceDefaultFixture(t, Config{
+		Workspace: &WorkspaceConfig{Enabled: true, maintenanceTicks: make(chan time.Time),
 			Terminal: WorkspaceTerminalConfig{
 				Enabled: fixture.terminal && !fixture.terminalDisabled,
 				Record:  &recording,
@@ -152,8 +152,8 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 		// running. The flag is what the relay reads, and
 		// setting it here is the shortest honest way to reach that state
 		// without a second attempt's whole lifecycle in the fixture.
-		if _, err := service.database.db.ExecContext(t.Context(),
-			"UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", fixture.workspace); err != nil {
+		if _, err := workspaceTestDB(t, service).ExecContext(t.Context(),
+			"UPDATE workspace_sessions SET read_only = true WHERE id = $1", fixture.workspace); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -177,8 +177,8 @@ func (f *relayFixture) capabilities() workspacesession.Capabilities {
 // be an attempt, a lease and a dispatch to assert one boolean.
 func (f *relayFixture) markReadOnly(t *testing.T) {
 	t.Helper()
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", f.workspace); err != nil {
+	if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+		"UPDATE workspace_sessions SET read_only = true WHERE id = $1", f.workspace); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -187,7 +187,7 @@ func (f *relayFixture) markReadOnly(t *testing.T) {
 // are tested against the database rather than over a socket.
 func (f *relayFixture) record(t *testing.T) workspaceRecord {
 	t.Helper()
-	record, err := readWorkspaceByID(t.Context(), f.service.database.db, f.workspace)
+	record, err := workspaceTestRecord(t, f.service, f.workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func (f *relayFixture) reportCapabilities(t *testing.T, capabilities workspacese
 	response := performHubAPIRequest(t, f.service, http.MethodPost,
 		f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential,
 		map[string]any{
-			"display_name": "runner", "capacity": 8, "version": "test",
+			"display_name": "runner", "capacity": 8, "version": "test", "capacity_configuration": workspaceTestCapacity(8, f.at()),
 			"provider_reports": []providercapacity.Report{report}, "workspace_capabilities": capabilities,
 			"workspace_isolation": workspacesession.IsolationContainer,
 		})
@@ -236,8 +236,8 @@ func (f *relayFixture) open(t *testing.T, body map[string]any) string {
 func (f *relayFixture) dispatchItem(t *testing.T) string {
 	t.Helper()
 	var item string
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT work_item_id FROM workspace_items WHERE workspace_id = ?", f.workspace).Scan(&item); err != nil {
+	if err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+		"SELECT work_item_id FROM workspace_items WHERE workspace_id = $1", f.workspace).Scan(&item); err != nil {
 		t.Fatal(err)
 	}
 	return item
@@ -352,8 +352,8 @@ func (f *relayFixture) awaitAttached(t *testing.T, before uint64) {
 func (f *relayFixture) advanceServing(t *testing.T, d time.Duration) {
 	t.Helper()
 	f.advance(d)
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE workspace_sessions SET last_heartbeat_at = ? WHERE id = ?", formatHubTime(f.at()), f.workspace); err != nil {
+	if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+		"UPDATE workspace_sessions SET last_heartbeat_at = $1 WHERE id = $2", formatHubTime(f.at()), f.workspace); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -866,8 +866,8 @@ func TestWorkspaceRelayWritesAnAuditRowForEveryPersonConnection(t *testing.T) {
 
 	waitFor(t, func() bool {
 		var rows int
-		if err := f.service.database.db.QueryRowContext(t.Context(),
-			"SELECT count(*) FROM workspace_relay_sessions WHERE workspace_id = ?", f.workspace).Scan(&rows); err != nil {
+		if err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+			"SELECT count(*) FROM workspace_relay_sessions WHERE workspace_id = $1", f.workspace).Scan(&rows); err != nil {
 			return false
 		}
 		return rows == 1
@@ -876,8 +876,8 @@ func TestWorkspaceRelayWritesAnAuditRowForEveryPersonConnection(t *testing.T) {
 	waitFor(t, func() bool {
 		var closed, bytesIn int64
 		var reason string
-		err := f.service.database.db.QueryRowContext(t.Context(),
-			"SELECT count(closed_at), coalesce(max(bytes_in),0), coalesce(max(close_reason),'') FROM workspace_relay_sessions WHERE workspace_id = ?",
+		err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+			"SELECT count(closed_at), coalesce(max(bytes_in),0), coalesce(max(close_reason),'') FROM workspace_relay_sessions WHERE workspace_id = $1",
 			f.workspace).Scan(&closed, &bytesIn, &reason)
 		return err == nil && closed == 1 && bytesIn > 0 && reason != ""
 	})
@@ -944,7 +944,7 @@ func (f *relayFixture) queuedRun(t *testing.T, action workspacesession.Action) s
 // only prove what was forwarded.
 func (f *relayFixture) runRow(t *testing.T, runID string) actionRunRecord {
 	t.Helper()
-	run, err := readProjectActionRunByID(t.Context(), f.service.database.db, runID)
+	run, err := workspaceTestRun(t, f.service, runID)
 	if err != nil {
 		t.Fatalf("read run %s: %v", runID, err)
 	}
@@ -1274,8 +1274,8 @@ func TestWorkspaceRelayRefusesARunFrameItMayNotStart(t *testing.T) {
 	// run of another workspace does not exist for it.
 	other := f.open(t, map[string]any{"idempotency_key": "ws-other",
 		"work_item_id": string(f.create(t, "other-subject").WorkItemID), "requires": []string{"files"}})
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE project_action_runs SET workspace_id = ? WHERE id = ?", other, run); err != nil {
+	if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+		"UPDATE project_action_runs SET workspace_id = $1 WHERE id = $2", other, run); err != nil {
 		t.Fatal(err)
 	}
 	person.send(execRunFrame(run, action))
@@ -1532,26 +1532,10 @@ func TestWorkspaceRelayCarriesAGitFailureWithItsStderr(t *testing.T) {
 // cannot say which of the three a case means.
 func (f *relayFixture) seedHostedMember(t *testing.T, name, role, grant string) *relayConnection {
 	t.Helper()
-	now := formatHubTime(f.at())
 	principal := "hosted_" + name
 	subject := "user_" + name
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO api_tokens
- (id,name,token_hash,token_fingerprint,scope,created_at,updated_at) VALUES (?,?,?,?,'operator',?,?)`,
-		principal, principal, apikey.HashToken(principal), principal[:8], now, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_members
- (user_id,email,membership_id,role,active,principal_id,created_at,updated_at) VALUES (?,?,?,?,1,?,?,?)`,
-		subject, name+"@example.test", "membership_"+name, role, principal, now, now); err != nil {
-		t.Fatal(err)
-	}
-	if grant != "" {
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_project_grants
- (user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,?,0)`,
-			subject, string(f.project.OrganizationID), string(f.project.ID), grant == "write"); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedWorkspaceMember(t, f, principal, subject, name+"@example.test", role, grant != "", grant == "write", false)
+
 	return &relayConnection{
 		id: "relayconn_" + name, workspaceID: f.workspace, principalID: principal,
 		subject: subject, sessionHash: "session_hash_" + name,
@@ -1799,36 +1783,26 @@ func TestWorkspaceRelayRunnerStreamFencesSupersededRunners(t *testing.T) {
 // newHostedWorkspaceFixture is the hosted security fixture with workspaces and
 // the terminal turned on, so a hosted member's cookie session can reach the
 // workspace routes.
-func newHostedWorkspaceFixture(t *testing.T) hostedSecurityFixture {
+type hostedWorkspaceFixture struct{ hostedSecurityFixture }
+
+func newHostedWorkspaceFixture(t *testing.T) hostedWorkspaceFixture {
 	t.Helper()
 	provider := newHostedSecurityProvider()
-	service := openTestService(t, Config{
-		DatabasePath: hostedTestDatabasePath(t),
-		Workspace:    &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: true}},
-		Hosted: &HostedConfig{
-			OrganizationID:       "org_security",
-			WorkOSOrganizationID: "org_provider",
-			BootstrapSubject:     "user_owner",
-			PublicURL:            "http://127.0.0.1:7777",
-			Provider:             provider,
-		},
-	})
-	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
-	raw, err := json.Marshal(states)
-	if err != nil {
-		t.Fatal(err)
-	}
+	plans := pilotHostedPlans()
+	content := &changeObjectFixture{}
+	service := openTestService(t, Config{Content: content.call, RunDetails: &memoryRunDetails{}, Workspace: &WorkspaceConfig{Enabled: true, maintenanceTicks: make(chan time.Time), Terminal: WorkspaceTerminalConfig{Enabled: true}}, Hosted: &HostedConfig{Plans: &plans, OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "http://127.0.0.1:7777", Provider: provider}})
 	project := tracker.ProjectID("prj_security")
-	now := formatHubTime(time.Now())
-	if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) VALUES (?,?,'workspace-project','native',?,?,0)", project, service.config.Hosted.OrganizationID, string(raw), now); err != nil {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: project, Name: "Example project", Profile: "native", CreatedAt: service.config.now()}, States: nativeFixtureStates()})
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, state := range states {
-		if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", project, state.Name, state.Name, state.Terminal, state.Dispatchable, now, now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
+	return hostedWorkspaceFixture{hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}}
+}
+func (f hostedWorkspaceFixture) seedIssue(t *testing.T, number int) tracker.NativeWorkItemID {
+	t.Helper()
+	return workspaceTestIssue(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: "test_hub_admin", Scope: apiScopeAdmin}}, "Example subject", "Example body")
 }
 
 // A relay ticket is a read: the relay upgrade checks project read, and the
@@ -1845,7 +1819,7 @@ func TestWorkspaceRelayTicketNeedsOnlyRead(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusCreated)
 	var session workspacesession.Session
 	decodeHubResponse(t, response, &session)
-	record, err := readWorkspaceByID(t.Context(), f.service.database.db, session.ID)
+	record, err := workspaceTestRecord(t, f.service, session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1975,8 +1949,8 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newRelayFixture(t)
-			if _, err := f.service.database.db.ExecContext(t.Context(),
-				"UPDATE workspace_sessions SET state = ? WHERE id = ?", test.state, f.workspace); err != nil {
+			if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+				"UPDATE workspace_sessions SET state = $1 WHERE id = $2", test.state, f.workspace); err != nil {
 				t.Fatal(err)
 			}
 			connection := &relayConnection{

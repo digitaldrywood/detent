@@ -2,12 +2,12 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -15,7 +15,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -60,27 +61,13 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
 	var record workspaceRecord
-	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		found, err := service.readWorkspaceForActor(ctx, tx, scope, c.Param("workspace"))
-		if err != nil {
-			return err
-		}
-		if workspacesession.Terminal(found.State) {
-			return nativeStaleExecution("The workspace has ended")
-		}
-		redeemed, err := redeemRelayTicket(ctx, tx, ticket, found.ID, now)
-		if err != nil {
-			return err
-		}
-		// The ticket is bound to the session that minted it, so a ticket
-		// carried to a different browser buys nothing: the connection must
-		// present both.
-		if redeemed.SessionID != principal.sessionID || redeemed.PrincipalID != principal.principalID {
-			return nativeNotFound()
-		}
-		record = found
-		return nil
-	})
+
+	record, err = s.redeemRelayTicketRecord(ctx, scope, c.Param("workspace"), ticket, principal)
+
+	// The ticket is bound to the session that minted it, so a ticket
+	// carried to a different browser buys nothing: the connection must
+	// present both.
+
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -103,6 +90,7 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 	// when the principal does, and a principal change closes the connection
 	// (revalidatePerson), so a per-frame lookup would be a database read per
 	// keystroke that could never return a different answer.
+	connection.scope = scope
 	connection.actor = s.relayActor(ctx, connection, principal)
 	return service.servePerson(c, scope, record, connection, principal)
 }
@@ -137,24 +125,31 @@ func (s *Service) relayActor(ctx context.Context, connection *relayConnection, p
 	// which is the only correct answer, because attributing the commit to the
 	// person being stood in for would put a name in the repository's history
 	// that never typed it.
-	var email string
-	err := s.database.reader.QueryRowContext(ctx,
-		"SELECT email FROM hosted_members WHERE user_id = ? AND active = 1", principal.subject).Scan(&email)
-	switch {
-	case err == nil:
-		actor.Email = strings.TrimSpace(email)
-		actor.Name = relayActorName(actor.Email)
-	case !errors.Is(err, sql.ErrNoRows):
-		// A missing row is the support actor's expected answer, so only a
-		// real failure is worth a line. Either way the connection opens: a
-		// status is a read and must not depend on an author line.
-		s.config.Logger.Warn("workspace.relay_actor_unresolved",
-			"connection_id", connection.id, "error", err)
+
+	organization := connection.scope.organization
+	if organization == "" {
+		organization = s.workspaces.organization()
+	}
+	lookupErr := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		member, err := r.AccessMember(ctx, principal.subject)
+		if err == nil && member.Active {
+			actor.Email = strings.TrimSpace(member.Email)
+			actor.Name = relayActorName(actor.Email)
+		}
+		return err
+	})
+	if lookupErr != nil && !errors.Is(lookupErr, corestore.ErrNotFound) {
+		s.config.Logger.Warn("workspace.relay_actor_unresolved", "connection_id", connection.id, "error", lookupErr)
 	}
 	if actor.Name == "" {
 		actor.Name = principal.subject
 	}
 	return actor
+
+	// A missing row is the support actor's expected answer, so only a
+	// real failure is worth a line. Either way the connection opens: a
+	// status is a read and must not depend on an author line.
+
 }
 
 // relayActorName derives the display name a commit is authored under from the
@@ -205,6 +200,7 @@ func relayActorName(email string) string {
 // servePerson runs one person connection for its whole life: the audit row, the
 // writer, the authority re-check and the read loop.
 func (w *workspaceService) servePerson(c echo.Context, scope nativeScope, record workspaceRecord, connection *relayConnection, principal relayPrincipal) error {
+	connection.scope = scope
 	ctx := c.Request().Context()
 	if err := w.openRelayAudit(ctx, record, connection, principal); err != nil {
 		// The upgrade already happened, so there is no HTTP response left to
@@ -230,14 +226,17 @@ func (w *workspaceService) servePerson(c echo.Context, scope nativeScope, record
 	w.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go connection.writeLoop(socketCtx)
-	go w.watchPersonAuthority(socketCtx, c, scope, record, connection)
-	go func() {
+	var workers sync.WaitGroup
+	workers.Go(func() { connection.writeLoop(socketCtx) })
+	workers.Go(func() { w.watchPersonAuthority(socketCtx, c, scope, record, connection) })
+	workers.Go(func() {
 		<-connection.done
 		cancel()
-	}()
+	})
 	w.readPerson(socketCtx, connection, record)
 	connection.close("client_closed")
+	cancel()
+	workers.Wait()
 	w.relay.detachPerson(ctx, connection, w.now())
 	reason := connection.reason()
 	w.closeRelayAudit(context.WithoutCancel(ctx), connection, reason)
@@ -284,15 +283,16 @@ func relayCloseText(reason string) string {
 // with the re-check on every person-originated frame it is how a membership,
 // role, grant or session change closes a connection.
 func (w *workspaceService) watchPersonAuthority(ctx context.Context, c echo.Context, scope nativeScope, record workspaceRecord, connection *relayConnection) {
-	ticker := time.NewTicker(workspacesession.AuthorityRecheckInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(workspaceTickInterval(workspacesession.AuthorityRecheckInterval))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-connection.done:
 			return
-		case <-ticker.C:
+		case <-timer.C:
+			timer.Reset(workspaceTickInterval(workspacesession.AuthorityRecheckInterval))
 			if err := w.revalidatePerson(ctx, c, scope, record, connection); err != nil {
 				connection.revoke()
 				return
@@ -318,20 +318,10 @@ func (w *workspaceService) revalidatePerson(ctx context.Context, c echo.Context,
 	}
 	current := scope
 	current.credential = principal.credential
-	if err := w.server.requireHostedProject(ctx, w.server.database.reader, current, false); err != nil {
-		return err
-	}
-	live, err := readWorkspaceByID(ctx, w.server.database.reader, record.ID)
-	if err != nil {
-		return err
-	}
-	if workspacesession.Terminal(live.State) {
-		return errors.New("the workspace has ended")
-	}
-	if _, _, err := readNativeIssue(ctx, w.server.database.reader, current, live.SubjectWorkItemID); err != nil {
-		return err
-	}
-	return nil
+
+	_, err = w.server.readWorkspaceRecord(ctx, current, record.ID)
+	return err
+
 }
 
 // revalidatePersonLocally is the per-frame half of the relay protocol's authority
@@ -346,65 +336,17 @@ func (w *workspaceService) revalidatePerson(ctx context.Context, c echo.Context,
 // session was revoked, the membership row was deactivated, the grant was
 // withdrawn, the workspace ended, or the runner lost its lease.
 func (w *workspaceService) revalidatePersonLocally(ctx context.Context, record workspaceRecord, connection *relayConnection) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	live, err := readWorkspaceByID(ctx, w.server.database.reader, record.ID)
-	if err != nil {
-		return fmt.Errorf("read workspace: %w", err)
-	}
-	if !workspacesession.Bound(live.State) {
-		return errors.New("the workspace is no longer bound to a runner")
-	}
-	if live.LeaseID != "" {
-		var fencing tracker.FencingToken
-		var expires string
-		var released sql.NullString
-		err := w.server.database.reader.QueryRowContext(ctx,
-			"SELECT fencing_token, expires_at, released_at FROM leases WHERE lease_id = ?",
-			live.LeaseID).Scan(&fencing, &expires, &released)
-		if err != nil {
-			return fmt.Errorf("read workspace lease: %w", err)
-		}
-		expiresAt, err := parseTimeValue(expires)
-		if err != nil {
-			return fmt.Errorf("decode workspace lease expiry: %w", err)
-		}
-		if released.Valid || fencing != live.FencingToken || !expiresAt.After(w.now()) {
-			// The workspace tuple no longer names the current lease, so
-			// anything this frame asked for would run under a dead
-			// generation.
-			return errors.New("the workspace lease is no longer current")
-		}
-	}
-	if connection.sessionHash == "" {
-		// A token principal has no hosted session row; its authority is the
-		// token, which the middleware already proved on the upgrade and which
-		// is revoked by deleting it rather than by a row this check can read.
-		return nil
-	}
-	var active int
-	err = w.server.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions s
-JOIN hosted_members m ON m.user_id = ? AND m.active = 1
-WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday(?)`,
-		connection.subject, connection.sessionHash, formatHubTime(w.now())).Scan(&active)
-	if err != nil {
-		return fmt.Errorf("read hosted session: %w", err)
-	}
-	if active == 0 {
-		return errors.New("the hosted session or membership is no longer active")
-	}
-	var granted int
-	err = w.server.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g
-JOIN hosted_members m ON m.user_id = g.user_id AND m.active = 1
-WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ?`,
-		connection.subject, live.OrganizationID, live.ProjectID).Scan(&granted)
-	if err != nil {
-		return fmt.Errorf("read project grant: %w", err)
-	}
-	if granted == 0 {
-		return errors.New("the project grant has been withdrawn")
-	}
-	return nil
+
+	return w.revalidateRelayRecord(ctx, record, connection, false, false)
+
+	// The workspace tuple no longer names the current lease, so
+	// anything this frame asked for would run under a dead
+	// generation.
+
+	// A token principal has no hosted session row; its authority is the
+	// token, which the middleware already proved on the upgrade and which
+	// is revoked by deleting it rather than by a row this check can read.
+
 }
 
 // refuseTerminal is the terminal's whole per-frame authority,
@@ -495,29 +437,22 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		// audit row and on the recording already; this is the other half.
 		return workspacesession.CodeForbidden
 	}
-	var count int
-	err := w.server.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g
-JOIN hosted_members m ON m.user_id = g.user_id AND m.active = 1
-WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ?
- AND g.can_write = 1 AND g.manage_runner = 1 AND m.role != 'viewer'`,
-		connection.subject, record.OrganizationID, record.ProjectID).Scan(&count)
-	if err != nil {
-		// The grant cannot be read, so neither `write` nor the runners flag can
-		// be proved. Forwarding would be handing out a shell on an authority
-		// nobody established, so the refusal stands and the failure is logged
-		// rather than resolved in the person's favour.
-		w.logger.Warn("workspace.relay_terminal_grant_unreadable", "workspace_id", record.ID,
-			"connection_id", connection.id, "error", err)
-		return workspacesession.CodeForbidden
-	}
-	if count == 0 {
-		// Either the grant is read-only, or it lacks the runners flag, or the
-		// role is viewer. The viewer half mirrors requireHostedProject: a role
-		// demotion must not be survivable by holding an old grant row, and
-		// the terminal contract says outright that viewers never get a terminal.
+
+	if err := w.relayGrantRecord(ctx, record, connection, true); err != nil {
 		return workspacesession.CodeForbidden
 	}
 	return ""
+
+	// The grant cannot be read, so neither `write` nor the runners flag can
+	// be proved. Forwarding would be handing out a shell on an authority
+	// nobody established, so the refusal stands and the failure is logged
+	// rather than resolved in the person's favour.
+
+	// Either the grant is read-only, or it lacks the runners flag, or the
+	// role is viewer. The viewer half mirrors requireHostedProject: a role
+	// demotion must not be survivable by holding an old grant row, and
+	// the terminal contract says outright that viewers never get a terminal.
+
 }
 
 // decodeTerminalOpen reads an open frame's window and working directory.
@@ -576,28 +511,22 @@ func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspac
 		// is forwarded and the runner's own lease check is the next gate.
 		return ""
 	}
-	var count int
-	err := w.server.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g
-JOIN hosted_members m ON m.user_id = g.user_id AND m.active = 1
-WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ? AND g.can_write = 1 AND m.role != 'viewer'`,
-		connection.subject, record.OrganizationID, record.ProjectID).Scan(&count)
-	if err != nil {
-		// The grant cannot be read, so `write` cannot be proved. Forwarding
-		// the frame would be writing to a repository on an authority nobody
-		// established, so the refusal stands and the failure is logged rather
-		// than resolved in the person's favour.
-		w.logger.Warn("workspace.relay_write_grant_unreadable", "workspace_id", record.ID,
-			"connection_id", connection.id, "error", err)
-		return workspacesession.CodeForbidden
-	}
-	if count == 0 {
-		// The grant is read-only, or the role is viewer. The viewer half
-		// mirrors requireHostedProject, which refuses a write to a viewer
-		// however generous the grant row is: a role demotion must not be
-		// survivable by holding an old can_write row.
+
+	if err := w.relayGrantRecord(ctx, record, connection, false); err != nil {
 		return workspacesession.CodeForbidden
 	}
 	return ""
+
+	// The grant cannot be read, so `write` cannot be proved. Forwarding
+	// the frame would be writing to a repository on an authority nobody
+	// established, so the refusal stands and the failure is logged rather
+	// than resolved in the person's favour.
+
+	// The grant is read-only, or the role is viewer. The viewer half
+	// mirrors requireHostedProject, which refuses a write to a viewer
+	// however generous the grant row is: a role demotion must not be
+	// survivable by holding an old can_write row.
+
 }
 
 // readPerson is the person side's read loop.
@@ -925,11 +854,12 @@ func relayCodeMessage(code string) string {
 // shortens a workspace's life by nothing a person would notice, and failing a
 // frame over it would be worse.
 func (w *workspaceService) touchWorkspace(ctx context.Context, workspaceID string) {
-	now := w.now()
-	if _, err := w.server.database.db.ExecContext(ctx, `UPDATE workspace_sessions SET last_activity_at = ?
-WHERE id = ? AND state IN `+openWorkspaceStates, formatHubTime(now), workspaceID); err != nil {
+
+	if err := w.touchWorkspaceRecord(ctx, workspaceID); err != nil {
 		w.logger.Warn("workspace.activity_not_recorded", "workspace_id", workspaceID, "error", err)
 	}
+	return
+
 }
 
 // The runner side.
@@ -949,20 +879,22 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
 	var record workspaceRecord
-	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		found, _, err := service.loadWorkspaceForWorker(ctx, tx, scope, c.Param("workspace"), identity, now)
+
+	err = s.workspaceWorkerWrite(ctx, scope, func(writer workspaceWriter, now time.Time) error {
+		var err error
+		record, _, err = loadWorkspaceWorkerRecord(ctx, writer, scope, c.Param("workspace"), identity, now)
 		if err != nil {
 			return err
 		}
-		if !workspacesession.Bound(found.State) {
-			return nativeStaleExecution("The workspace is not bound to a runner")
+		if record.LeaseID != identity.LeaseID || record.FencingToken != identity.FencingToken || record.RunnerID != scope.credential.Runner.RunnerID {
+			return nativeStaleExecution("The workspace owner changed")
 		}
-		if found.RunnerID != scope.credential.Runner.RunnerID {
-			return nativeStaleExecution("The workspace belongs to another runner")
+		if !workspacesession.Bound(record.State) {
+			return nativeStaleExecution("The workspace is no longer bound")
 		}
-		record = found
 		return nil
 	})
+
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -972,6 +904,7 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 	}
 	connection := &relayConnection{
 		id: newNativeID("relayrunner"), workspaceID: record.ID, socket: socket, runner: true,
+		scope: scope, owner: record.owner(),
 		principalID: scope.credential.ID, sessionID: string(record.LeaseID),
 		out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
 	}
@@ -993,13 +926,16 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 	service.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go connection.writeLoop(socketCtx)
-	go func() {
+	var workers sync.WaitGroup
+	workers.Go(func() { connection.writeLoop(socketCtx) })
+	workers.Go(func() {
 		<-connection.done
 		cancel()
-	}()
+	})
 	service.readRunner(socketCtx, connection)
 	connection.close("runner_closed")
+	cancel()
+	workers.Wait()
 	// detachRunner fails whatever runs this connection was still serving, so a
 	// runner that went away mid-build leaves a failed run rather than one that
 	// says running for ever.
@@ -1110,58 +1046,20 @@ var errExecRunRefused = errors.New("the exec run frame was refused")
 // handed, and this is the check that makes "the action it was handed" mean the
 // project's command rather than one a client composed.
 func (w *workspaceService) startExecRun(ctx context.Context, connection, runner *relayConnection, record workspaceRecord, stream *relayStream, frame workspacesession.Frame) string {
-	var payload workspacesession.ExecRun
-	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
-		return workspacesession.CodeInvalidFrame
-	}
-	code := ""
-	var started actionRunRecord
-	err := w.server.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		run, err := readProjectActionRunByID(ctx, tx, strings.TrimSpace(payload.RunID))
-		if errors.Is(err, sql.ErrNoRows) {
-			code = workspacesession.CodeNotFound
-			return errExecRunRefused
-		}
-		if err != nil {
-			return err
-		}
-		if run.WorkspaceID != record.ID {
-			// A run of another workspace does not exist for this connection,
-			// the same answer a stream it does not own gets.
-			code = workspacesession.CodeNotFound
-			return errExecRunRefused
-		}
-		if run.ActionID != strings.TrimSpace(payload.ActionID) || run.Command != payload.Command {
-			code = workspacesession.CodeForbidden
-			return errExecRunRefused
-		}
-		// The claim is what decides, and it decides once. A run the hub's own
-		// dispatch already handed to this workspace's runner is refused here
-		// with already_running rather than started a second time, so one row is
-		// never two processes in one worktree. The claimant is
-		// the stream, here and in that dispatch, so claimed_by always names the
-		// thing actually carrying the run's frames rather than a connection for
-		// one of them and a stream for the other.
-		started, err = claimActionRun(ctx, tx, run, stream.id, now)
-		if errors.Is(err, errActionRunClaimed) {
-			code = workspacesession.CodeAlreadyRunning
-			return errExecRunRefused
-		}
-		return err
-	})
-	if errors.Is(err, errExecRunRefused) {
-		return code
-	}
-	if err != nil {
-		w.logger.Warn("action_run.not_started", "workspace_id", record.ID, "run_id", payload.RunID, "error", err)
-		return workspacesession.CodeStaleExecution
-	}
-	if !w.relay.beginExecRun(connection.workspaceID, stream.id, started.ID, started.ActionID, runner) {
-		w.failExecRuns(ctx, []*execRunState{{runID: started.ID, actionID: started.ActionID}}, workspacesession.RunReasonStreamClosed)
-		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
-		return workspacesession.CodeStaleExecution
-	}
-	return ""
+
+	return w.startExecRunRecord(ctx, connection, runner, record, stream, frame)
+
+	// A run of another workspace does not exist for this connection,
+	// the same answer a stream it does not own gets.
+
+	// The claim is what decides, and it decides once. A run the hub's own
+	// dispatch already handed to this workspace's runner is refused here
+	// with already_running rather than started a second time, so one row is
+	// never two processes in one worktree. The claimant is
+	// the stream, here and in that dispatch, so claimed_by always names the
+	// thing actually carrying the run's frames rather than a connection for
+	// one of them and a stream for the other.
+
 }
 
 // recordExecFrame reads one runner-originated exec frame into the run's
@@ -1230,72 +1128,35 @@ func (w *workspaceService) failExecRuns(ctx context.Context, states []*execRunSt
 // race for the same run -- the person's socket closing while the workspace
 // ends -- and the first answer is the true one.
 func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunState, status string, exitCode *int, reason string) {
-	if state == nil {
-		return
-	}
-	var finished actionRunRecord
-	err := w.server.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		run, err := readProjectActionRunByID(ctx, tx, state.runID)
-		if err != nil {
-			return err
+
+	if state != nil {
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
+		defer cancel()
+		if err := w.finishActionRunRecord(writeCtx, state, status, exitCode, reason); err != nil {
+			w.logger.Warn("action_run.not_recorded", "run_id", state.runID, "error", err)
 		}
-		if workspacesession.TerminalRunStatus(run.Status) {
-			return nil
-		}
-		run.Status = status
-		run.ExitCode = exitCode
-		run.Reason = reason
-		run.FinishedAt = &now
-		if run.StartedAt == nil {
-			run.StartedAt = &now
-		}
-		run.Output = string(state.output)
-		run.OutputBytes = int64(len(state.output))
-		run.Truncated = state.truncated
-		finished, err = applyActionRunStatus(ctx, tx, run, now)
-		return err
-	})
-	if err != nil {
-		w.logger.Warn("action_run.not_recorded", "run_id", state.runID, "status", status, "error", err)
-		return
 	}
-	if finished.ID == "" {
-		return
-	}
-	w.logger.Info("action_run.finished", "run_id", finished.ID, "action_id", finished.ActionID,
-		"workspace_id", finished.WorkspaceID, "status", finished.Status, "reason", finished.Reason,
-		"output_bytes", finished.OutputBytes, "truncated", finished.Truncated)
+	return
+
 }
 
 // Audit rows.
 
 // openRelayAudit writes the connection's workspace_relay_sessions row.
 func (w *workspaceService) openRelayAudit(ctx context.Context, record workspaceRecord, connection *relayConnection, principal relayPrincipal) error {
-	connection.auditID = newNativeID("relaysession")
-	channels, err := json.Marshal([]string{})
-	if err != nil {
-		return fmt.Errorf("encode relay session channels: %w", err)
-	}
-	_, err = w.server.database.db.ExecContext(ctx, `INSERT INTO workspace_relay_sessions
- (id, workspace_id, organization_id, principal_id, subject, connection_id, channels_json, opened_at, support_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, connection.auditID, record.ID, record.OrganizationID,
-		principal.principalID, principal.subject, connection.id, string(channels),
-		formatHubTime(w.now()), principal.supportReason)
-	if err != nil {
-		return fmt.Errorf("open relay session audit: %w", err)
-	}
-	return nil
+
+	return w.openRelayAuditRecord(ctx, record, connection, principal)
+
 }
 
 // closeRelayAudit completes the row with the reason and the byte counters.
 func (w *workspaceService) closeRelayAudit(ctx context.Context, connection *relayConnection, reason string) {
-	if connection.auditID == "" {
-		return
-	}
-	in, out := connection.counters()
-	if _, err := w.server.database.db.ExecContext(ctx, `UPDATE workspace_relay_sessions
-SET closed_at = ?, close_reason = ?, bytes_in = ?, bytes_out = ? WHERE id = ?`,
-		formatHubTime(w.now()), reason, in, out, connection.auditID); err != nil {
+
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
+	defer cancel()
+	if err := w.closeRelayAuditRecord(writeCtx, connection, reason); err != nil {
 		w.logger.Warn("workspace.relay_audit_not_closed", "connection_id", connection.id, "error", err)
 	}
+	return
+
 }

@@ -13,6 +13,7 @@ import (
 // unused workspace lives, how many may be open at once, and how much of the
 // hub process the relay may hold.
 type WorkspaceConfig struct {
+	maintenanceTicks <-chan time.Time
 	// Enabled mounts the workspace endpoints and the relay. With it off the
 	// surfaces stay disabled with their reason and no workspace
 	// work item is ever created.

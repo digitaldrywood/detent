@@ -37,6 +37,22 @@ func (s *Service) actionRecords(ctx context.Context, scope nativeScope) ([]actio
 	return records, projectRecordError(err)
 }
 
+func (s *Service) actionRecord(ctx context.Context, scope nativeScope, id string) (workspacesession.Action, error) {
+	var record actionstore.Record
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		var err error
+		record, err = r.(actionstore.Reader).ProjectAction(ctx, scope.project, id)
+		return err
+	})
+	if err != nil {
+		return workspacesession.Action{}, projectRecordError(err)
+	}
+	return s.hydrateActionRecord(ctx, scope, record)
+}
+
 func (s *Service) hydrateActionRecord(ctx context.Context, scope nativeScope, r actionstore.Record) (workspacesession.Action, error) {
 	if r.Command.Validate(string(scope.organization)) != nil {
 		return workspacesession.Action{}, artifact.ErrIntegrity
@@ -71,12 +87,20 @@ func normalizeActionRecord(a *workspacesession.Action) error {
 	fields := []struct {
 		value     *string
 		normalize func(string) (string, error)
+		refusal   string
 	}{
-		{&a.Name, workspacesession.NormalizeActionName}, {&a.Command, workspacesession.NormalizeActionCommand}, {&a.Keybinding, workspacesession.NormalizeActionKeybinding}, {&a.Icon, workspacesession.NormalizeActionIcon}, {&a.PreviewURL, workspacesession.NormalizeActionPreviewURL},
+		{&a.Name, workspacesession.NormalizeActionName, ""},
+		{&a.Command, workspacesession.NormalizeActionCommand, ""},
+		{&a.Keybinding, workspacesession.NormalizeActionKeybinding, ""},
+		{&a.Icon, workspacesession.NormalizeActionIcon, "Unprocessable Entity: invalid request"},
+		{&a.PreviewURL, workspacesession.NormalizeActionPreviewURL, ""},
 	}
 	for _, f := range fields {
 		value, err := f.normalize(*f.value)
 		if err != nil {
+			if f.refusal != "" {
+				return nativePublicInvalid(f.refusal)
+			}
 			return nativePublicInvalid(err.Error())
 		}
 		*f.value = value

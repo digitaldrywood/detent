@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -156,7 +154,7 @@ func relayTicketRequest(c echo.Context) bool {
 
 // mintWorkspaceRelayTicket implements POST .../workspaces/:workspace/relay-tickets.
 func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
-	service, err := s.requireWorkspaces()
+	_, err := s.requireWorkspaces()
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -173,24 +171,9 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		record, err := service.readWorkspaceForActor(ctx, tx, scope, c.Param("workspace"))
-		if err != nil {
-			return err
-		}
-		if workspacesession.Terminal(record.State) {
-			return nativeStaleExecution("The workspace has ended")
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO workspace_relay_tickets
- (digest, workspace_id, session_id, principal_id, subject, support_reason, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, relayTicketDigest(ticket), record.ID, principal.sessionID,
-			principal.principalID, principal.subject, principal.supportReason,
-			formatHubTime(now), formatHubTime(now.Add(workspacesession.TicketLifetime)))
-		if err != nil {
-			return fmt.Errorf("store relay ticket: %w", err)
-		}
-		return nil
-	})
+
+	err = s.mintRelayTicketRecord(ctx, scope, c.Param("workspace"), ticket, principal)
+
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -211,43 +194,12 @@ type redeemedRelayTicket struct {
 // redeemRelayTicket spends a ticket exactly once. The update is the check: a
 // second connection presenting the same ticket changes no rows and is refused,
 // with no window between reading and marking it spent.
-func redeemRelayTicket(ctx context.Context, tx *sql.Tx, ticket, workspaceID string, now time.Time) (redeemedRelayTicket, error) {
-	digest := relayTicketDigest(ticket)
-	result, err := tx.ExecContext(ctx, `UPDATE workspace_relay_tickets SET redeemed_at = ?
-WHERE digest = ? AND workspace_id = ? AND redeemed_at IS NULL AND julianday(expires_at) > julianday(?)`,
-		formatHubTime(now), digest, workspaceID, formatHubTime(now))
-	if err != nil {
-		return redeemedRelayTicket{}, fmt.Errorf("redeem relay ticket: %w", err)
-	}
-	spent, err := result.RowsAffected()
-	if err != nil {
-		return redeemedRelayTicket{}, fmt.Errorf("count redeemed relay ticket: %w", err)
-	}
-	if spent != 1 {
-		return redeemedRelayTicket{}, nativeNotFound()
-	}
-	var redeemed redeemedRelayTicket
-	err = tx.QueryRowContext(ctx, `SELECT workspace_id, session_id, principal_id, subject, support_reason
-FROM workspace_relay_tickets WHERE digest = ?`, digest).Scan(&redeemed.WorkspaceID, &redeemed.SessionID,
-		&redeemed.PrincipalID, &redeemed.Subject, &redeemed.SupportReason)
-	if errors.Is(err, sql.ErrNoRows) {
-		return redeemedRelayTicket{}, nativeNotFound()
-	}
-	if err != nil {
-		return redeemedRelayTicket{}, fmt.Errorf("read redeemed relay ticket: %w", err)
-	}
-	return redeemed, nil
-}
 
 // sweepRelayTickets drops spent and expired tickets. A ticket is worth 30
 // seconds, so the table is only ever a handful of rows; the sweep is here so
 // that stays true on a hub nobody restarts.
 func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time) error {
-	cutoff := formatHubTime(now.Add(-workspacesession.TicketLifetime))
-	if _, err := w.server.database.db.ExecContext(ctx, `DELETE FROM workspace_relay_tickets
-WHERE julianday(expires_at) <= julianday(?) OR (redeemed_at IS NOT NULL AND julianday(redeemed_at) <= julianday(?))`,
-		formatHubTime(now), cutoff); err != nil {
-		return fmt.Errorf("sweep relay tickets: %w", err)
-	}
-	return nil
+
+	return w.pruneRelayTicketRecords(ctx, now)
+
 }

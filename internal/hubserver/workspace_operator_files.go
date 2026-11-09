@@ -47,6 +47,7 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 	identity := operatortool.ConnectionIdentity(ctx)
 	connection := &relayConnection{
 		id: newNativeID("relayperson"), workspaceID: record.ID,
+		scope:       scope,
 		principalID: identity.PrincipalID, sessionID: identity.SessionID,
 		sessionHash: scope.credential.SessionHash, hostedRole: scope.credential.HostedRole,
 		out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
@@ -106,7 +107,7 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 		if err := w.revalidatePersonLocally(ctx, record, connection); err != nil {
 			return result("unavailable", workspacesession.CodeStaleExecution, nil)
 		}
-		live, err := readWorkspaceByID(ctx, s.database.reader, record.ID)
+		live, err := w.readWorkspaceForActor(ctx, s.database.reader, scope, record.ID)
 		if err != nil || live.LeaseID != record.LeaseID || live.FencingToken != record.FencingToken || live.RunnerID != record.RunnerID || live.AttemptID != record.AttemptID || live.SubjectWorkItemID != record.SubjectWorkItemID || !w.channelPermitted(live, workspacesession.ChannelFiles) {
 			return result("unavailable", workspacesession.CodeStaleExecution, nil)
 		}

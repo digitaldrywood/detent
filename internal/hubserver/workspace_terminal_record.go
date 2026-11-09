@@ -137,39 +137,17 @@ func (w *workspaceService) finishTerminalRecordings(ctx context.Context, states 
 // finishTerminalRecording writes one recording and points the relay session's
 // recording_artifact at where it may be read.
 func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *terminalStreamState) {
-	now := w.now()
-	record := terminalRecordingRecord{
-		TerminalRecording: TerminalRecording{
-			ID: state.id, WorkspaceID: state.workspaceID, StreamID: state.streamID,
-			RelaySessionID: state.relaySessionID, PrincipalID: state.principalID,
-			Subject: state.subject, Isolation: state.isolation, SupportReason: state.supportReason,
-			StartedAt: state.startedAt, FinishedAt: &now, Cols: state.cols, Rows: state.rows,
-			Bytes: int64(state.recording.Bytes()), Truncated: state.recording.Truncated(),
-		},
-		OrganizationID: state.organizationID, ProjectID: state.projectID,
-		Cast: state.recording.Cast(),
+
+	if err := w.finishTerminalRecordingRecord(ctx, state); err != nil {
+		w.logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.workspaceID, "error", err)
 	}
-	if err := writeTerminalRecording(ctx, w.server.database.db, record, now); err != nil {
-		w.logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.workspaceID,
-			"stream", state.streamID, "error", err)
-		return
-	}
-	w.logger.Info("workspace.terminal_recorded", "workspace_id", state.workspaceID,
-		"stream", state.streamID, "recording_id", state.id, "bytes", record.Bytes,
-		"truncated", record.Truncated, "isolation", record.Isolation)
+	return
+
 	// The relay session row references the recording, which is the reference
 	// the terminal contract asks for. It is written once and left alone: a connection
 	// that opened several terminals gets one reference to the listing that
 	// covers all of them, because one column cannot name several recordings.
-	if state.relaySessionID == "" {
-		return
-	}
-	if _, err := w.server.database.db.ExecContext(ctx,
-		`UPDATE workspace_relay_sessions SET recording_artifact = ? WHERE id = ? AND recording_artifact = ''`,
-		relaySessionRecordingReference(state), state.relaySessionID); err != nil {
-		w.logger.Warn("workspace.relay_recording_not_referenced",
-			"relay_session_id", state.relaySessionID, "error", err)
-	}
+
 }
 
 // relaySessionRecordingReference is the path a relay session row points at.

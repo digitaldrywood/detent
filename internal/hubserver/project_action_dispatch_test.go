@@ -129,8 +129,8 @@ func TestWorkspaceHubDispatchLeavesARunAlone(t *testing.T) {
 				// A workspace can become the one an attempt is editing after a
 				// run was queued on it, and a command must not write into a
 				// worktree a model is using.
-				if _, err := f.service.database.db.ExecContext(t.Context(),
-					"UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", f.workspace); err != nil {
+				if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+					"UPDATE workspace_sessions SET read_only = true WHERE id = $1", f.workspace); err != nil {
 					t.Fatal(err)
 				}
 				f.waitedOutTheGrace()
@@ -142,8 +142,8 @@ func TestWorkspaceHubDispatchLeavesARunAlone(t *testing.T) {
 			prepare: func(t *testing.T, f *relayFixture, action workspacesession.Action) string {
 				t.Helper()
 				run := f.queuedRun(t, action)
-				if _, err := f.service.database.db.ExecContext(t.Context(),
-					"UPDATE workspace_sessions SET state = 'closing' WHERE id = ?", f.workspace); err != nil {
+				if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+					"UPDATE workspace_sessions SET state = 'closing' WHERE id = $1", f.workspace); err != nil {
 					t.Fatal(err)
 				}
 				f.waitedOutTheGrace()

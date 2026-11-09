@@ -16,12 +16,14 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -44,8 +46,7 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not on PATH")
 	}
-	service := openTestService(t, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
+	service := newWorkspaceNativeService(t, Config{
 		Workspace: &WorkspaceConfig{Enabled: true, PersonMaxOpen: 10, PlanMaxOpen: 10,
 			Terminal: WorkspaceTerminalConfig{Enabled: true}},
 	})
@@ -58,9 +59,21 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	f.runner = prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate,
 		runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	f.runner.enroll(t)
+	identityDirectory := t.TempDir()
+	if err := os.Chmod(identityDirectory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	identityPath := filepath.Join(identityDirectory, "runner.json")
+	identity, err := json.Marshal(runnerauth.File{Schema: 1, HubURL: f.server.URL, Identity: f.runner.identity, Credential: f.runner.redemption.Credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identityPath, identity, 0600); err != nil {
+		t.Fatal(err)
+	}
 	client, err := hubclient.New(hubclient.Config{
 		URL: f.server.URL, HTTPClient: f.server.Client(),
-		TokenSource: func() string { return f.runner.redemption.Credential },
+		IdentityFile: identityPath,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -70,8 +83,10 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 		t.Fatal(err)
 	}
 	support := workspacerunner.Support{Terminal: true}
+	capacity := workspaceTestCapacity(4, service.config.now())
 	if err := native.HeartbeatMachine(t.Context(), hubclient.Machine{
 		ID: f.runner.binding.MachineID, Hostname: "runner-host", DisplayName: "runner", Capacity: 4, Version: "test",
+		CapacityConfig:        &capacity,
 		WorkspaceCapabilities: workspacerunner.Capabilities(support), WorkspaceIsolation: workspacesession.IsolationUser,
 	}); err != nil {
 		t.Fatalf("heartbeat machine: %v", err)
@@ -265,11 +280,27 @@ func awaitCounter(t *testing.T, path string) {
 
 func requireCounterStopped(t *testing.T, path string) {
 	t.Helper()
-	before := readCounter(t, path)
-	time.Sleep(time.Second)
-	if after := readCounter(t, path); after != before {
-		t.Fatalf("the shell is still running after the session ended: counter %d -> %d", before, after)
+	process := counterProcess(t, path)
+	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("the terminal process still exists after its session ended: %v", err)
 	}
+}
+
+func counterProcess(t *testing.T, path string) *os.Process {
+	t.Helper()
+	raw, err := os.ReadFile(path + ".pid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid terminal process identity: %q", raw)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return process
 }
 
 func terminalAvailable() bool {
@@ -288,9 +319,25 @@ func startCounter(t *testing.T, person *relayClient) string {
 	counter := filepath.Join(t.TempDir(), "counter")
 	person.send(terminalOpenFrame())
 	opened := receiveType(t, person, workspacesession.TypeTerminalOpened)
-	command := fmt.Sprintf("i=0; while :; do i=$((i+1)); echo $i > %s; sleep 0.1; done\n", counter)
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+	script := fmt.Sprintf("printf '%%s\\n' \"$$\" > %s; i=0; while :; do i=$((i+1)); echo $i > %s; sleep 0.1; done", quote(counter+".pid"), quote(counter))
+	command := "/bin/sh -c " + quote(script) + "\n"
 	person.send(terminalFrameOf(t, workspacesession.TypeTerminalInput, opened.Stream, workspacesession.TerminalInput{Data: command}))
 	awaitCounter(t, counter)
+	identity, err := procgroup.Inspect(&exec.Cmd{Process: counterProcess(t, counter)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+		defer cancel()
+		if _, err := procgroup.Terminate(ctx, identity, time.Second); err != nil {
+			t.Errorf("clean terminal fixture process: %v", err)
+		}
+	})
 	return counter
 }
 
@@ -343,8 +390,8 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 		counter = startCounter(t, person)
 	}
 
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE leases SET expires_at = ? WHERE released_at IS NULL", formatHubTime(time.Now().Add(-time.Minute))); err != nil {
+	if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+		"UPDATE leases SET acquired_at = LEAST(acquired_at, $1::timestamptz - interval '1 second'), renewed_at = LEAST(renewed_at, $1::timestamptz - interval '1 second'), expires_at = $1 WHERE released_at IS NULL", formatHubTime(time.Now().Add(-time.Minute))); err != nil {
 		t.Fatal(err)
 	}
 	f.awaitLaneIdle(t)
@@ -383,8 +430,8 @@ func TestWorkspaceLaneUnbindsWhenTheWorkspaceIsClosed(t *testing.T) {
 		t.Fatalf("the session worktree %s remains after close: %v", ready.WorktreePath, err)
 	}
 	var open int
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT COUNT(*) FROM leases WHERE released_at IS NULL AND machine_id = ?", string(f.runner.binding.MachineID)).Scan(&open); err != nil {
+	if err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+		"SELECT COUNT(*) FROM leases WHERE released_at IS NULL AND machine_id = $1", string(f.runner.binding.MachineID)).Scan(&open); err != nil {
 		t.Fatal(err)
 	}
 	if open != 0 {
@@ -405,9 +452,13 @@ func TestNativeCapabilitiesAdvertiseWorkspaceSessionsOnlyWhenServed(t *testing.T
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Workspace: test.workspace})
+			service := newWorkspaceNativeService(t, Config{Workspace: test.workspace})
 			f := newNativeFixture(t, service, "", "capabilities")
-			response := performHubAPIRequest(t, service, http.MethodGet, "/api/v2/capabilities", f.token, nil)
+			request := httptest.NewRequest(http.MethodGet, "/api/v2/capabilities", nil)
+			request.Header.Set("Authorization", "Bearer "+f.token)
+			request.Header.Set("X-Detent-Organization", string(f.project.OrganizationID))
+			response := httptest.NewRecorder()
+			service.echo.ServeHTTP(response, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var document struct {
 				Features []string `json:"features"`

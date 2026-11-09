@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
 
@@ -54,16 +53,10 @@ const actionRunDispatchGrace = time.Second
 // and a timer per run would be one goroutine per row for a deadline the tick
 // already visits.
 func (w *workspaceService) dispatchQueuedActionRuns(ctx context.Context) {
-	now := w.now()
-	runs, err := readDispatchableActionRuns(ctx, w.server.database.reader,
-		now.Add(-actionRunDispatchGrace), actionRunDispatchBatch)
-	if err != nil {
-		w.logger.Warn("action_run.dispatch_failed", "error", err)
-		return
-	}
-	for _, run := range runs {
-		w.dispatchActionRun(ctx, run)
-	}
+
+	w.dispatchActionRunRecords(ctx)
+	return
+
 }
 
 // dispatchActionRun claims one queued run for the hub and sends its run frame
@@ -96,20 +89,18 @@ func (w *workspaceService) dispatchActionRun(ctx context.Context, run actionRunR
 		return
 	}
 	var claimed actionRunRecord
-	err := w.server.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		// The row is re-read inside the transaction: the listing that chose it
-		// is a snapshot, and the person who queued it may have opened the exec
-		// channel for it in between.
-		current, err := readProjectActionRunByID(ctx, tx, run.ID)
-		if err != nil {
-			return err
-		}
-		// claimed_by holds the stream, so an operator reading the row can find
-		// the frames in the relay's own log. It can never collide with a
-		// person's connection id, because hubStreamOwner is not one.
-		claimed, err = claimActionRun(ctx, tx, current, stream.id, now)
-		return err
-	})
+	var err error
+
+	claimed, err = w.claimActionRunRecord(ctx, nativeScope{organization: run.OrganizationID, project: run.ProjectID}, run.ID, stream.id, runner)
+
+	// The row is re-read inside the transaction: the listing that chose it
+	// is a snapshot, and the person who queued it may have opened the exec
+	// channel for it in between.
+
+	// claimed_by holds the stream, so an operator reading the row can find
+	// the frames in the relay's own log. It can never collide with a
+	// person's connection id, because hubStreamOwner is not one.
+
 	if err != nil {
 		w.relay.closeStream(ctx, run.WorkspaceID, stream.id)
 		if !errors.Is(err, errActionRunClaimed) {

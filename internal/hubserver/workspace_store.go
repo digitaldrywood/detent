@@ -180,45 +180,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 // write is conditional on the revision the caller read, so two concurrent
 // transitions cannot both believe they applied: the loser writes nothing and
 // is told to read again.
-func updateWorkspace(ctx context.Context, tx *sql.Tx, record workspaceRecord, expected int64) error {
-	requires, err := json.Marshal(record.Requires)
-	if err != nil {
-		return fmt.Errorf("encode workspace requires: %w", err)
-	}
-	var capabilities any
-	if record.Capabilities != nil {
-		encoded, err := json.Marshal(record.Capabilities)
-		if err != nil {
-			return fmt.Errorf("encode workspace capabilities: %w", err)
-		}
-		capabilities = string(encoded)
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE workspace_sessions SET attempt_id = ?, ref = ?, head_sha = ?,
- runner_id = ?, machine_id = ?, machine_hostname = ?, worktree_path = ?,
- lease_id = ?, fencing_token = ?, state = ?, reason = ?, requires_json = ?,
- capabilities_json = ?, isolation = ?, worktree = ?, read_only = ?, idle_timeout_seconds = ?, expires_at = ?,
- requested_expires_at = ?, opened_at = ?, last_activity_at = ?, last_heartbeat_at = ?, rebind_deadline = ?,
- revision = ?, updated_at = ?
-WHERE id = ? AND revision = ?`,
-		record.AttemptID, record.Ref, record.HeadSHA, record.RunnerID, record.MachineID,
-		record.MachineHostname, record.WorktreePath, record.LeaseID,
-		record.FencingToken, record.State, record.Reason, string(requires), capabilities, record.Isolation,
-		record.Worktree, record.ReadOnly, record.IdleTimeoutSeconds, formatHubTime(record.ExpiresAt),
-		formatHubTime(record.RequestedExpiresAt), nullTime(record.OpenedAt), nullTime(record.LastActivityAt),
-		nullTime(record.LastHeartbeatAt), nullTime(record.RebindDeadline), record.Revision,
-		formatHubTime(record.UpdatedAt), record.ID, expected)
-	if err != nil {
-		return fmt.Errorf("update workspace: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("count workspace update: %w", err)
-	}
-	if changed != 1 {
-		return nativeConflict(tracker.Revision(expected))
-	}
-	return nil
-}
 
 // readWorkspaceRow reads one workspace by id inside a scope. It is the raw
 // read: the caller applies the issue's read rule on top.
@@ -235,38 +196,6 @@ func readWorkspaceByID(ctx context.Context, query nativeQueryer, id string) (wor
 
 // listWorkspaceRows reads the workspaces of a project, newest first, optionally
 // filtered by subject work item and state.
-func listWorkspaceRows(ctx context.Context, query nativeQueryer, scope nativeScope, item, state string, limit int) ([]workspaceRecord, error) {
-	statement := `SELECT ` + workspaceColumns + ` FROM workspace_sessions
-WHERE organization_id = ? AND project_id = ?`
-	args := []any{scope.organization, scope.project}
-	if item != "" {
-		statement += ` AND subject_work_item_id = ?`
-		args = append(args, item)
-	}
-	if state != "" {
-		statement += ` AND state = ?`
-		args = append(args, state)
-	}
-	statement += ` ORDER BY created_at DESC, id DESC LIMIT ?`
-	args = append(args, limit)
-	rows, err := query.QueryContext(ctx, statement, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query workspaces: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	records := []workspaceRecord{}
-	for rows.Next() {
-		record, err := scanWorkspace(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate workspaces: %w", err)
-	}
-	return records, nil
-}
 
 // openWorkspaceStates is the state list an "open" workspace holds. It is spelt
 // out for SQL rather than derived from workspacesession.Open so the predicate
@@ -275,30 +204,10 @@ const openWorkspaceStates = `('requested', 'starting', 'ready', 'idle', 'unreach
 
 // readOpenWorkspaceForAttempt reports the workspace already open on an attempt,
 // which is what answers a second request with 409 workspace_exists.
-func readOpenWorkspaceForAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, attemptID string) (workspaceRecord, bool, error) {
-	record, err := scanWorkspace(tx.QueryRowContext(ctx, `SELECT `+workspaceColumns+` FROM workspace_sessions
-WHERE organization_id = ? AND project_id = ? AND attempt_id = ? AND state IN `+openWorkspaceStates,
-		scope.organization, scope.project, attemptID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return workspaceRecord{}, false, nil
-	}
-	if err != nil {
-		return workspaceRecord{}, false, err
-	}
-	return record, true, nil
-}
 
 // countOpenWorkspaces reports the organization's open workspaces and how many
 // of them one actor holds, in one read: the two limits of the workspace session contract are
 // checked together so a request cannot pass one and race past the other.
-func countOpenWorkspaces(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, actor string) (total, mine int, err error) {
-	row := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(CASE WHEN created_by = ? THEN 1 ELSE 0 END), 0)
-FROM workspace_sessions WHERE organization_id = ? AND state IN `+openWorkspaceStates, actor, organization)
-	if err := row.Scan(&total, &mine); err != nil {
-		return 0, 0, fmt.Errorf("count open workspaces: %w", err)
-	}
-	return total, mine, nil
-}
 
 // workspaceItemRecord associates a workspace with the native issue that
 // dispatches it.
@@ -312,35 +221,14 @@ type workspaceItemRecord struct {
 }
 
 // insertWorkspaceItem records the association.
-func insertWorkspaceItem(ctx context.Context, tx *sql.Tx, record workspaceItemRecord) error {
-	if _, err := tx.ExecContext(ctx, `INSERT INTO workspace_items (work_item_id, workspace_id, organization_id, project_id, created_at)
-VALUES (?, ?, ?, ?, ?)`, record.WorkItemID, record.WorkspaceID, record.OrganizationID, record.ProjectID,
-		formatHubTime(record.CreatedAt)); err != nil {
-		return fmt.Errorf("insert workspace item: %w", err)
-	}
-	return nil
-}
 
 // closeWorkspaceItem marks the association closed, which is what returns the
 // issue to ordinary history and lets the claim gate stop offering it.
-func closeWorkspaceItem(ctx context.Context, tx *sql.Tx, workspaceID string, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, `UPDATE workspace_items SET closed_at = ?
-WHERE workspace_id = ? AND closed_at IS NULL`, formatHubTime(now), workspaceID); err != nil {
-		return fmt.Errorf("close workspace item: %w", err)
-	}
-	return nil
-}
 
 // readWorkspaceItem resolves the workspace a work item carries.
-func readWorkspaceItem(ctx context.Context, query nativeQueryer, item string) (workspaceItemRecord, bool, error) {
-	return scanWorkspaceItem(query.QueryRowContext(ctx, workspaceItemQuery+` WHERE work_item_id = ?`, item))
-}
 
 // readWorkspaceItemByWorkspace resolves the dispatch issue a workspace was
 // given, which is the direction the close path reads it in.
-func readWorkspaceItemByWorkspace(ctx context.Context, query nativeQueryer, workspace string) (workspaceItemRecord, bool, error) {
-	return scanWorkspaceItem(query.QueryRowContext(ctx, workspaceItemQuery+` WHERE workspace_id = ?`, workspace))
-}
 
 // workspaceItemQuery selects one association row, without its filter.
 const workspaceItemQuery = `SELECT work_item_id, workspace_id, organization_id, project_id, created_at, closed_at
@@ -372,17 +260,6 @@ func scanWorkspaceItem(row *sql.Row) (workspaceItemRecord, bool, error) {
 }
 
 // readWorkspaceByItem resolves the workspace an issue dispatches, open or not.
-func readWorkspaceByItem(ctx context.Context, query nativeQueryer, item string) (workspaceRecord, bool, error) {
-	record, err := scanWorkspace(query.QueryRowContext(ctx, `SELECT `+prefixedWorkspaceColumns+` FROM workspace_sessions w
-JOIN workspace_items i ON i.workspace_id = w.id WHERE i.work_item_id = ?`, item))
-	if errors.Is(err, sql.ErrNoRows) {
-		return workspaceRecord{}, false, nil
-	}
-	if err != nil {
-		return workspaceRecord{}, false, err
-	}
-	return record, true, nil
-}
 
 // prefixedWorkspaceColumns is workspaceColumns qualified for a join. It is
 // written out rather than derived from workspaceColumns at run time: a query
@@ -458,70 +335,16 @@ func (p prefixedScanner) Scan(dest ...any) error {
 
 // openWorkspaceOccupancy writes the runner occupancy row for a workspace that
 // has just become starting.
-func openWorkspaceOccupancy(ctx context.Context, tx *sql.Tx, record workspaceRecord, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO workspace_occupancy
- (workspace_id, runner_id, organization_id, project_id, started_at) VALUES (?, ?, ?, ?, ?)`,
-		record.ID, record.RunnerID, record.OrganizationID, record.ProjectID, formatHubTime(now)); err != nil {
-		return fmt.Errorf("open workspace occupancy: %w", err)
-	}
-	return nil
-}
 
 // closeWorkspaceOccupancy ends every open occupancy row of a workspace at
 // endedAt. An unreachable workspace whose lease expires is ended at lease
 // expiry rather than at the moment the hub noticed, so a crashed runner does
 // not accrue time it was not serving.
-func closeWorkspaceOccupancy(ctx context.Context, tx *sql.Tx, workspaceID string, endedAt time.Time) error {
-	if _, err := tx.ExecContext(ctx, `UPDATE workspace_occupancy SET ended_at = ?
-WHERE workspace_id = ? AND ended_at IS NULL`, formatHubTime(endedAt), workspaceID); err != nil {
-		return fmt.Errorf("close workspace occupancy: %w", err)
-	}
-	return nil
-}
 
 // readWorkspaceRelaySessions reads a workspace's audit rows, newest first.
 // They are served to the workspace's creator and to owners and admins only,
 // which the caller decides: a row names who was inside a workspace, and that is
 // not part of the issue's read rule.
-func readWorkspaceRelaySessions(ctx context.Context, query nativeQueryer, workspaceID string) ([]workspacesession.RelaySession, error) {
-	rows, err := query.QueryContext(ctx, `SELECT id, workspace_id, principal_id, subject, connection_id, channels_json,
- opened_at, closed_at, close_reason, bytes_in, bytes_out, support_reason
-FROM workspace_relay_sessions WHERE workspace_id = ? ORDER BY opened_at DESC, id DESC LIMIT ?`,
-		workspaceID, workspaceRelaySessionPage)
-	if err != nil {
-		return nil, fmt.Errorf("query workspace relay sessions: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	sessions := []workspacesession.RelaySession{}
-	for rows.Next() {
-		var session workspacesession.RelaySession
-		var channels, opened string
-		var closed sql.NullString
-		if err := rows.Scan(&session.ID, &session.WorkspaceID, &session.PrincipalID, &session.Subject,
-			&session.ConnectionID, &channels, &opened, &closed, &session.CloseReason,
-			&session.BytesIn, &session.BytesOut, &session.SupportReason); err != nil {
-			return nil, fmt.Errorf("scan workspace relay session: %w", err)
-		}
-		if err := json.Unmarshal([]byte(channels), &session.Channels); err != nil {
-			return nil, fmt.Errorf("decode workspace relay session channels: %w", err)
-		}
-		if session.OpenedAt, err = parseTimeValue(opened); err != nil {
-			return nil, fmt.Errorf("decode workspace relay session opened_at: %w", err)
-		}
-		if closed.Valid {
-			parsed, err := parseTimeValue(closed.String)
-			if err != nil {
-				return nil, fmt.Errorf("decode workspace relay session closed_at: %w", err)
-			}
-			session.ClosedAt = &parsed
-		}
-		sessions = append(sessions, session)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate workspace relay sessions: %w", err)
-	}
-	return sessions, nil
-}
 
 // workspaceRelaySessionPage bounds the audit rows one resource carries. A
 // workspace with more connections than this has a full record in the table; the
@@ -531,21 +354,3 @@ const workspaceRelaySessionPage = 50
 // hostedRunnerGrants reports whether the member holds the runner grant on
 // every project named, or on any project in the organization when none is
 // named.
-func hostedRunnerGrants(ctx context.Context, query nativeQueryer, organization, user string, projects []tracker.ProjectID) bool {
-	const anyProject = `SELECT count(*) FROM hosted_project_grants g JOIN projects p ON p.id = g.project_id
-WHERE g.user_id = ? AND g.manage_runner = 1 AND p.organization_id = ?`
-	if len(projects) == 0 {
-		var granted int
-		if err := query.QueryRowContext(ctx, anyProject, user, organization).Scan(&granted); err != nil {
-			return false
-		}
-		return granted > 0
-	}
-	for _, project := range projects {
-		var granted int
-		if err := query.QueryRowContext(ctx, anyProject+" AND p.id = ?", user, organization, project).Scan(&granted); err != nil || granted == 0 {
-			return false
-		}
-	}
-	return true
-}

@@ -6,10 +6,13 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -46,19 +49,26 @@ func newWorkspaceFixture(t *testing.T, cfg *WorkspaceConfig) workspaceFixture {
 	if cfg == nil {
 		cfg = &WorkspaceConfig{Enabled: true}
 	}
-	f := newDefaultNativeFixture(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Workspace: cfg})
+	cfg.maintenanceTicks = make(chan time.Time)
+	f := newNativeFixture(t, newWorkspaceNativeService(t, Config{Workspace: cfg}), "", "Example project")
 	service := f.service
-	var ownerID string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", "operator-native").Scan(&ownerID); err != nil {
+	credential, _, err := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken,
-		map[string]any{"name": "operator-workspace-other", "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var token tokenResponse
-	decodeHubResponse(t, response, &token)
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken,
-		map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID}), http.StatusNoContent)
+	ownerID := credential.ID
+
+	token := tokenResponse{ID: newNativeID("credential"), Token: newNativeID("token")}
+	now := service.config.now()
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "Example operator", Hash: apikey.HashToken(token.Token), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: token.ID, ProjectID: f.project.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	descriptor := hubTestPolicy()
 	approveHubTestPolicy(t, service, f.base+"/policy", descriptor)
 	return workspaceFixture{nativeFixture: f, ownerID: ownerID, other: token.Token, otherID: token.ID,
@@ -103,8 +113,8 @@ func (f workspaceFixture) list(t *testing.T, query string) workspaceListResponse
 func (f workspaceFixture) item(t *testing.T, workspaceID string) string {
 	t.Helper()
 	var item string
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT work_item_id FROM workspace_items WHERE workspace_id = ?", workspaceID).Scan(&item); err != nil {
+	if err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+		"SELECT work_item_id FROM workspace_items WHERE workspace_id = $1", workspaceID).Scan(&item); err != nil {
 		t.Fatalf("read workspace item for %s: %v", workspaceID, err)
 	}
 	return item
@@ -113,8 +123,8 @@ func (f workspaceFixture) item(t *testing.T, workspaceID string) string {
 func (f workspaceFixture) itemClosed(t *testing.T, workspaceID string) bool {
 	t.Helper()
 	var closed sql.NullString
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT closed_at FROM workspace_items WHERE workspace_id = ?", workspaceID).Scan(&closed); err != nil {
+	if err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+		"SELECT closed_at FROM workspace_items WHERE workspace_id = $1", workspaceID).Scan(&closed); err != nil {
 		t.Fatalf("read workspace item closure for %s: %v", workspaceID, err)
 	}
 	return closed.Valid
@@ -125,8 +135,8 @@ func (f workspaceFixture) itemClosed(t *testing.T, workspaceID string) bool {
 // traffic, so a missing or never-ended row is a billing bug, not a detail.
 func (f workspaceFixture) occupancy(t *testing.T, workspaceID string) (rows int, open int) {
 	t.Helper()
-	result, err := f.service.database.db.QueryContext(t.Context(),
-		"SELECT ended_at FROM workspace_occupancy WHERE workspace_id = ?", workspaceID)
+	result, err := workspaceTestDB(t, f.service).QueryContext(t.Context(),
+		"SELECT ended_at FROM workspace_occupancy WHERE workspace_id = $1", workspaceID)
 	if err != nil {
 		t.Fatalf("read workspace occupancy: %v", err)
 	}
@@ -154,10 +164,13 @@ func (f workspaceFixture) occupancy(t *testing.T, workspaceID string) (rows int,
 func (f workspaceFixture) attempt(t *testing.T, name string, running bool) string {
 	t.Helper()
 	subject := f.create(t, "attempt-subject-"+name)
-	worker := f.worker(t, "workspace-"+name+"-worker")
-	machine := "machine-" + name
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker,
-		map[string]any{"id": machine, "hostname": "fixture", "display_name": "Fixture", "version": "test", "capacity": 4}), http.StatusOK)
+	runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	runner.redemption.Capacity = 4
+	runner.enroll(t)
+	worker := runner.redemption.Credential
+	machine := string(runner.binding.MachineID)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+machine+"/heartbeat", worker,
+		map[string]any{"display_name": "Runner", "capacity": 4, "version": "test", "capacity_configuration": workspaceTestCapacity(4, f.service.config.now())}), http.StatusOK)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker,
 		tracker.NativeClaim{PolicyID: f.policy, WorkItemID: subject.WorkItemID, MachineID: tracker.MachineID(machine),
 			SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
@@ -459,6 +472,7 @@ func newWorkspaceRunnerFixture(t *testing.T) *workspaceRunnerFixture {
 		map[string]any{"id": r.binding.MachineID, "hostname": "customer-host", "display_name": "Runner",
 			"backend_isolation": r.redemption.BackendIsolation, "capacity": 8, "version": "test", "workspace_capabilities": workspaceTestCapabilities,
 			"workspace_isolation": workspacesession.IsolationContainer}), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 8, "version": "test", "capacity_configuration": workspaceTestCapacity(8, f.service.config.now()), "workspace_capabilities": workspaceTestCapabilities, "workspace_isolation": workspacesession.IsolationContainer}), http.StatusOK)
 	return &workspaceRunnerFixture{workspaceFixture: f, runner: r}
 }
 
@@ -567,6 +581,31 @@ func TestWorkspaceWorkerBind(t *testing.T) {
 			workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: workspaceTestCapabilities})
 		requireNativeCode(t, response, http.StatusConflict, "stale_execution")
 	})
+
+	t.Run("restart preserves the fenced owner and occupancy on rebind", func(t *testing.T) {
+		f := newWorkspaceRunnerFixture(t)
+		bound, lease := f.bound(t)
+		previous := f.service.workspaces
+		previous.Stop()
+		f.service.workspaces = newWorkspaceService(f.service, previous.config)
+		if err := f.service.workspaces.start(t.Context()); err != nil {
+			close(f.service.workspaces.stopped)
+			t.Fatal(err)
+		}
+		if session := f.read(t, bound.Session.ID); session.State != workspacesession.StateRequested || session.Reason != workspacesession.ReasonHubRestarted {
+			t.Fatalf("restart state: %+v", session)
+		}
+		response := f.workerPost(t, bound.Session.ID, "bind", workspaceBindRequest{workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: workspaceTestCapabilities})
+		requireNativeStatus(t, response, http.StatusOK)
+		var rebound workspaceBindResponse
+		decodeHubResponse(t, response, &rebound)
+		if rebound.Owner != bound.Owner {
+			t.Fatalf("rebound owner=%+v want %+v", rebound.Owner, bound.Owner)
+		}
+		if rows, open := f.occupancy(t, bound.Session.ID); rows != 1 || open != 1 {
+			t.Fatalf("rebind occupancy rows=%d open=%d", rows, open)
+		}
+	})
 }
 
 // The heartbeat renews the lease and carries the runner's report. It is the
@@ -643,8 +682,8 @@ func (f *workspaceRunnerFixture) leaseWindow(t *testing.T, id tracker.LeaseID) (
 	t.Helper()
 	var expires string
 	var released sql.NullString
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT expires_at, released_at FROM leases WHERE lease_id = ?", id).Scan(&expires, &released); err != nil {
+	if err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+		"SELECT expires_at, released_at FROM leases WHERE lease_id = $1", id).Scan(&expires, &released); err != nil {
 		t.Fatal(err)
 	}
 	expiresAt, err := parseTimeValue(expires)
@@ -659,8 +698,8 @@ func (f *workspaceRunnerFixture) leaseWindow(t *testing.T, id tracker.LeaseID) (
 // for.
 func (f *workspaceRunnerFixture) setLeaseExpiry(t *testing.T, id tracker.LeaseID, at time.Time) {
 	t.Helper()
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE leases SET expires_at = ? WHERE lease_id = ?", formatHubTime(at), id); err != nil {
+	if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+		"UPDATE leases SET acquired_at = LEAST(acquired_at, $1::timestamptz - interval '1 second'), renewed_at = LEAST(renewed_at, $1::timestamptz - interval '1 second'), expires_at = $1 WHERE lease_id = $2", formatHubTime(at), id); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -788,8 +827,8 @@ func TestWorkspaceWorkerUnbind(t *testing.T) {
 		// closing is the hub asking the runner to let go; it is reached by a
 		// sweep or a delete, neither of which leaves it there long enough for
 		// a test to observe, so the row is put there directly.
-		if _, err := f.service.database.db.ExecContext(t.Context(),
-			"UPDATE workspace_sessions SET state = 'closing', reason = ? WHERE id = ?",
+		if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+			"UPDATE workspace_sessions SET state = 'closing', reason = $1 WHERE id = $2",
 			workspacesession.ReasonClosedByActor, bind.Session.ID); err != nil {
 			t.Fatal(err)
 		}
@@ -875,7 +914,7 @@ func TestWorkspaceRequestWithNoRunnerFailsWithTheReasonOnTheResource(t *testing.
 	t.Parallel()
 	// A request timeout short enough to expire between two lines, because no
 	// runner will ever claim this one: the fixture enrolls none.
-	f := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, RequestTimeout: time.Nanosecond})
+	f := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, RequestTimeout: time.Second})
 	opened := f.opened(t, f.token, map[string]any{
 		"work_item_id": string(f.issue.WorkItemID),
 		"requires":     []string{workspacesession.CapabilityFiles},
@@ -884,6 +923,7 @@ func TestWorkspaceRequestWithNoRunnerFailsWithTheReasonOnTheResource(t *testing.
 		t.Fatalf("a new workspace = %#v, want requested", opened)
 	}
 
+	f.service.config.now = func() time.Time { return opened.CreatedAt.Add(time.Second) }
 	f.service.workspaces.sweep(t.Context())
 
 	failed := f.read(t, opened.ID)
@@ -929,8 +969,8 @@ func TestWorkspaceRequestAfterThePreviousOneClosedIsAccepted(t *testing.T) {
 			name: "once the predecessor has expired and closed",
 			closeTo: func(t *testing.T, f *workspaceRunnerFixture, id string) string {
 				t.Helper()
-				if _, err := f.service.database.db.ExecContext(t.Context(),
-					"UPDATE workspace_sessions SET state = 'closed', reason = ? WHERE id = ?",
+				if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+					"UPDATE workspace_sessions SET state = 'closed', reason = $1 WHERE id = $2",
 					workspacesession.ReasonExpired, id); err != nil {
 					t.Fatal(err)
 				}
@@ -1164,8 +1204,8 @@ func TestWorkspaceItemsAreNotOrdinaryWork(t *testing.T) {
 	// Once the workspace has ended the association closes. Its issue is a
 	// spent dispatch record, so neither lane picks it up again: before the
 	// fix this was the state the dogfood runner found it in.
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE workspace_items SET closed_at = ? WHERE work_item_id = ?", formatHubTime(time.Now().UTC()), item); err != nil {
+	if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+		"UPDATE workspace_items SET closed_at = $1 WHERE work_item_id = $2", formatHubTime(time.Now().UTC()), item); err != nil {
 		t.Fatal(err)
 	}
 	if reclaimed := f.ordinaryClaim(t, item, "ordinary-closed"); reclaimed.Code == http.StatusOK {
@@ -1303,8 +1343,8 @@ func TestTerminalIsolationAllowed(t *testing.T) {
 // what is under test is the runner side, not who may ask for one.
 func (f *workspaceRunnerFixture) requireTerminal(t *testing.T, id string) {
 	t.Helper()
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		`UPDATE workspace_sessions SET requires_json = '["files","diff","terminal"]' WHERE id = ?`, id); err != nil {
+	if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+		`UPDATE workspace_sessions SET requires = '{files,diff,terminal}' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1313,9 +1353,9 @@ func (f *workspaceRunnerFixture) requireTerminal(t *testing.T, id string) {
 // and terminal isolation.
 func (f *workspaceRunnerFixture) reportRunner(t *testing.T, capacity int, capabilities workspacesession.Capabilities, isolation string) {
 	t.Helper()
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", f.runner.redemption.Credential,
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential,
 		map[string]any{"id": f.runner.binding.MachineID, "hostname": "customer-host", "display_name": "Runner",
-			"capacity": capacity, "version": "test", "workspace_capabilities": capabilities,
+			"capacity": capacity, "capacity_configuration": workspaceTestCapacity(capacity, f.service.config.now()), "version": "test", "workspace_capabilities": capabilities,
 			"workspace_isolation": isolation}), http.StatusOK)
 }
 
@@ -1430,7 +1470,7 @@ func (f *workspaceRunnerFixture) reportProviderCapacity(t *testing.T, capacity i
 		Models: []string{"gpt-6-astra"}, MaxConcurrent: 4, Availability: "available", ObservedAt: f.service.config.now().UTC()}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
 		f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential,
-		map[string]any{"display_name": "Runner", "capacity": capacity, "version": "test",
+		map[string]any{"display_name": "Runner", "capacity": capacity, "capacity_configuration": workspaceTestCapacity(capacity, f.service.config.now()), "version": "test",
 			"provider_reports": []providercapacity.Report{report}}), http.StatusOK)
 }
 
@@ -1438,8 +1478,8 @@ func (f *workspaceRunnerFixture) reportProviderCapacity(t *testing.T, capacity i
 func (f workspaceFixture) reservations(t *testing.T, lease tracker.LeaseID) int {
 	t.Helper()
 	var rows int
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT count(*) FROM provider_reservations WHERE lease_id = ?", lease).Scan(&rows); err != nil {
+	if err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+		"SELECT count(*) FROM provider_reservations WHERE lease_id = $1", lease).Scan(&rows); err != nil {
 		t.Fatalf("count provider reservations for %s: %v", lease, err)
 	}
 	return rows
@@ -1540,7 +1580,7 @@ func TestWorkspaceCloseEndsItsDispatchItem(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 			item := f.item(t, session.ID)
-			issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, item)
+			issue, err := f.service.readWorkItem(t.Context(), scope, item)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1551,7 +1591,7 @@ func TestWorkspaceCloseEndsItsDispatchItem(t *testing.T) {
 			if !f.itemClosed(t, session.ID) {
 				t.Fatal("closing the workspace left the association open")
 			}
-			closed, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, item)
+			closed, err := f.service.readWorkItem(t.Context(), scope, item)
 			if err != nil {
 				t.Fatal(err)
 			}

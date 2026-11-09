@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"sync"
 	"time"
@@ -68,7 +69,10 @@ type workspaceService struct {
 	stopOnce    sync.Once
 	// sweepInterval is how often the maintenance loop runs. It is a field so
 	// a test can drive the timeouts without waiting on wall clock.
-	sweepInterval time.Duration
+	sweepInterval  time.Duration
+	afterWorkspace string
+	afterActionRun string
+	restartAt      time.Time
 }
 
 // workspaceSweepInterval is how often the maintenance loop checks for expired
@@ -79,7 +83,7 @@ const workspaceSweepInterval = 5 * time.Second
 func newWorkspaceService(server *Service, cfg WorkspaceConfig) *workspaceService {
 	service := &workspaceService{
 		server:        server,
-		config:        cfg,
+		config:        cfg.normalized(),
 		logger:        server.config.Logger.With("component", "workspace"),
 		stop:          make(chan struct{}),
 		stopped:       make(chan struct{}),
@@ -95,6 +99,7 @@ func newWorkspaceService(server *Service, cfg WorkspaceConfig) *workspaceService
 // context of its own rather than inheriting one that is about to be cancelled
 // or Background, which nothing can interrupt.
 func (w *workspaceService) start(ctx context.Context) error {
+	w.restartAt = w.now()
 	if err := w.recoverOpenWorkspaces(ctx); err != nil {
 		return err
 	}
@@ -122,16 +127,24 @@ func (w *workspaceService) StopContext(ctx context.Context) {
 
 func (w *workspaceService) maintain(ctx context.Context) {
 	defer close(w.stopped)
-	ticker := time.NewTicker(w.sweepInterval)
-	defer ticker.Stop()
+	ticks := w.config.maintenanceTicks
+	var timer *time.Timer
+	if ticks == nil {
+		timer = time.NewTimer(workspaceTickInterval(w.sweepInterval))
+		defer timer.Stop()
+		ticks = timer.C
+	}
 	for {
 		select {
 		case <-w.stop:
 			return
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 			w.sweep(ctx)
+			if timer != nil {
+				timer.Reset(workspaceTickInterval(w.sweepInterval))
+			}
 		}
 	}
 }
@@ -140,57 +153,29 @@ func (w *workspaceService) maintain(ctx context.Context) {
 // drive every deadline.
 func (w *workspaceService) now() time.Time { return w.server.config.now().UTC() }
 
-// transition applies one move of the state machine inside the caller's
-// transaction: it validates the move, updates the row, keeps occupancy in
-// step and closes the dispatch association on a terminal state.
-//
-// It never closes relay connections itself. That has to happen after the
-// commit, so every caller ends with committed().
-func (w *workspaceService) transition(ctx context.Context, tx *sql.Tx, record workspaceRecord, to, reason string, now time.Time) (workspaceRecord, error) {
-	if !workspacesession.Transition(record.State, to) {
-		return record, nativeStaleExecution("A workspace cannot move from " + record.State + " to " + to)
-	}
-	if reason != "" && !workspacesession.ValidReason(reason) {
-		return record, nativeInvalid("Unknown workspace reason " + reason)
-	}
-	expected := record.Revision
-	previous := record.State
-	record.State = to
-	record.Reason = reason
-	record.Revision++
-	record.UpdatedAt = now
-	switch to {
-	case workspacesession.StateReady:
-		if record.OpenedAt == nil {
-			opened := now
-			record.OpenedAt = &opened
-		}
-		record.RebindDeadline = nil
-	case workspacesession.StateRequested:
-		// A re-request drops the runner's claim on the resource but keeps the
-		// tuple, because the original runner may still re-bind with it inside
-		// the grace window.
-		record.Capabilities = nil
-	}
-	if err := updateWorkspace(ctx, tx, record, expected); err != nil {
-		return record, err
-	}
-	switch {
-	case to == workspacesession.StateStarting:
-		if err := openWorkspaceOccupancy(ctx, tx, record, now); err != nil {
-			return record, err
-		}
-	case workspacesession.Terminal(to):
-		if err := closeWorkspaceOccupancy(ctx, tx, record.ID, now); err != nil {
-			return record, err
-		}
-		if err := w.closeWorkspaceDispatchItem(ctx, tx, record, now); err != nil {
+func (w *workspaceService) transition(ctx context.Context, _ *sql.Tx, record workspaceRecord, to, reason string, now time.Time) (workspaceRecord, error) {
+	scope := nativeScope{organization: record.OrganizationID, project: record.ProjectID}
+	var finish workspaceDispatchClose
+	var err error
+	if workspacesession.Terminal(to) {
+		finish, err = w.server.prepareWorkspaceDispatchClose(ctx, scope, record.ID)
+		if err != nil {
 			return record, err
 		}
 	}
-	w.logger.Info("workspace.transitioned", "workspace_id", record.ID, "from", previous, "to", to,
-		"reason", reason, "runner_id", record.RunnerID)
-	return record, nil
+	var moved workspaceRecord
+	err = w.server.workspaceWrite(ctx, scope, func(writer workspaceWriter, _ time.Time) error {
+		var err error
+		moved, err = w.transitionRecord(ctx, writer, record, to, reason, now)
+		if err != nil {
+			return err
+		}
+		if finish != nil {
+			return finish(writer)
+		}
+		return nil
+	})
+	return moved, err
 }
 
 // committed closes the relay connections of a workspace that
@@ -238,7 +223,11 @@ func relayEndReason(state string, servingRunner bool) (string, bool) {
 // the close ran after the attach and found the connection, or the attach ran
 // after the commit and this read sees the ended state.
 func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connection *relayConnection) {
-	record, err := readWorkspaceByID(ctx, w.server.database.reader, connection.workspaceID)
+	var record workspaceRecord
+	var err error
+
+	record, err = w.readWorkspaceIDRecord(ctx, connection.workspaceID)
+
 	if err != nil {
 		// The periodic authority re-check reads the same row and closes the
 		// connection when it can, so a failed read here is logged, not fatal.
@@ -255,40 +244,17 @@ func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connect
 // is the single exit the sweeps, the DELETE handler and the unbind path share,
 // so no caller has to know whether closing means closing → closed or a direct
 // move.
-func (w *workspaceService) endWorkspace(ctx context.Context, tx *sql.Tx, record workspaceRecord, terminal, reason string, now time.Time) (workspaceRecord, error) {
-	if workspacesession.Terminal(record.State) {
-		return record, nil
-	}
-	if workspacesession.Transition(record.State, terminal) {
-		return w.transition(ctx, tx, record, terminal, reason, now)
-	}
-	// Every non-terminal state either reaches the terminal one directly or
-	// reaches it through closing; there is no third shape.
-	moved, err := w.transition(ctx, tx, record, workspacesession.StateClosing, reason, now)
-	if err != nil {
-		return record, err
-	}
-	return w.transition(ctx, tx, moved, terminal, reason, now)
-}
+
+// Every non-terminal state either reaches the terminal one directly or
+// reaches it through closing; there is no third shape.
 
 // readWorkspaceForActor reads a workspace under the issue's read rule: the
 // subject issue is resolved in the caller's scope, so a reader who cannot see
 // the issue cannot see its workspace.
 func (w *workspaceService) readWorkspaceForActor(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (workspaceRecord, error) {
-	if err := workspacesession.ValidateID(id); err != nil {
-		return workspaceRecord{}, nativeNotFound()
-	}
-	record, err := readWorkspaceRow(ctx, query, scope, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return workspaceRecord{}, nativeNotFound()
-	}
-	if err != nil {
-		return workspaceRecord{}, err
-	}
-	if _, _, err := readNativeIssue(ctx, query, scope, record.SubjectWorkItemID); err != nil {
-		return workspaceRecord{}, err
-	}
-	return record, nil
+
+	return w.server.readWorkspaceRecord(ctx, scope, id)
+
 }
 
 // sweep enforces every deadline of the workspace session contract that no request would reach on
@@ -323,26 +289,9 @@ func (w *workspaceService) sweep(ctx context.Context) {
 // plan.workspaces.max_open bounds it per organization, so the sweep reads it
 // whole rather than encoding each deadline as a separate query.
 func (w *workspaceService) dueWorkspaces(ctx context.Context, now time.Time) ([]workspaceRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	rows, err := w.server.database.reader.QueryContext(ctx, `SELECT `+workspaceColumns+` FROM workspace_sessions
-WHERE state IN `+openWorkspaceStates+` ORDER BY created_at`)
-	if err != nil {
-		return nil, fmt.Errorf("query open workspaces: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	records := []workspaceRecord{}
-	for rows.Next() {
-		record, err := scanWorkspace(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate open workspaces: %w", err)
-	}
-	return records, nil
+
+	return w.activeWorkspaceRecords(ctx)
+
 }
 
 // workspaceDeadline is what the sweep decided about one workspace.
@@ -449,41 +398,12 @@ func workspaceIdleSince(record workspaceRecord) time.Time {
 
 // applyDeadline commits the decided transition.
 func (w *workspaceService) applyDeadline(ctx context.Context, record workspaceRecord, now time.Time) (workspaceRecord, bool, error) {
-	decision := decideDeadline(record, now)
-	if !decision.apply {
-		return record, false, nil
-	}
-	var moved workspaceRecord
-	err := w.server.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-		current, err := readWorkspaceByID(ctx, tx, record.ID)
-		if err != nil {
-			return err
-		}
-		if current.Revision != record.Revision {
-			// Something else moved it between the read and the write; the
-			// next sweep decides again from what is actually stored.
-			moved = current
-			return errWorkspaceUnchanged
-		}
-		switch {
-		case workspacesession.Terminal(decision.state):
-			moved, err = w.endWorkspace(ctx, tx, current, decision.state, decision.reason, now)
-			if err != nil {
-				return err
-			}
-			return closeWorkspaceOccupancy(ctx, tx, moved.ID, decision.endedAt)
-		default:
-			moved, err = w.transition(ctx, tx, current, decision.state, decision.reason, now)
-			return err
-		}
-	})
-	if errors.Is(err, errWorkspaceUnchanged) {
-		return moved, false, nil
-	}
-	if err != nil {
-		return record, false, err
-	}
-	return moved, true, nil
+
+	return w.applyDeadlineRecord(ctx, record, now)
+
+	// Something else moved it between the read and the write; the
+	// next sweep decides again from what is actually stored.
+
 }
 
 // errWorkspaceUnchanged aborts a sweep transaction that found the workspace
@@ -496,48 +416,13 @@ var errWorkspaceUnchanged = errors.New("workspace changed under the sweep")
 // owner keeps its tuple, because the grace exists precisely so that runner can
 // present it again.
 func (w *workspaceService) recoverOpenWorkspaces(ctx context.Context) error {
-	now := w.now()
-	records, err := w.dueWorkspaces(ctx, now)
-	if err != nil {
-		return err
-	}
-	recovered := 0
-	for _, record := range records {
-		if record.State == workspacesession.StateRequested && record.RebindDeadline == nil {
-			continue
-		}
-		var moved workspaceRecord
-		err := w.server.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-			current, err := readWorkspaceByID(ctx, tx, record.ID)
-			if err != nil {
-				return err
-			}
-			deadline := now.Add(workspacesession.RebindGrace)
-			current.RebindDeadline = &deadline
-			if current.State == workspacesession.StateRequested {
-				// Already requested and already inside a grace: extend it
-				// rather than move, so a restart loop cannot revoke a lease
-				// the runner never had a chance to present.
-				expected := current.Revision
-				current.Revision++
-				current.UpdatedAt = now
-				return updateWorkspace(ctx, tx, current, expected)
-			}
-			moved, err = w.transition(ctx, tx, current, workspacesession.StateRequested, workspacesession.ReasonHubRestarted, now)
-			return err
-		})
-		if err != nil {
-			return fmt.Errorf("recover workspace %s: %w", record.ID, err)
-		}
-		recovered++
-		if moved.ID != "" {
-			w.committed(ctx, moved)
-		}
-	}
-	if recovered > 0 {
-		w.logger.Info("workspace.restart_recovered", "workspaces", recovered, "grace_seconds", int(workspacesession.RebindGrace/time.Second))
-	}
-	return nil
+
+	return w.recoverWorkspaceRecords(ctx)
+
+	// Already requested and already inside a grace: extend it
+	// rather than move, so a restart loop cannot revoke a lease
+	// the runner never had a chance to present.
+
 }
 
 // workspaceReadOnly reports whether the subject attempt is still running, which
@@ -581,4 +466,12 @@ WHERE id = ? AND organization_id = ? AND project_id = ?`, attemptID, scope.organ
 		return "", time.Time{}, false, fmt.Errorf("decode workspace attempt updated_at: %w", err)
 	}
 	return execution.RunnerID, finished, true, nil
+}
+
+func workspaceTickInterval(base time.Duration) time.Duration {
+	if base <= 0 {
+		base = workspaceSweepInterval
+	}
+	spread := max(int64(base/5), 1)
+	return base - time.Duration(spread) + time.Duration(rand.N(2*spread))
 }

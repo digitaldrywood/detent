@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -74,10 +75,10 @@ func (f actionFixture) actions(t *testing.T) projectActionList {
 func (f actionFixture) requireRefusedAction(t *testing.T, method, actionID string, body map[string]any, reason string) {
 	t.Helper()
 	var logs bytes.Buffer
-	service := &Service{database: f.service.database, config: Config{
-		Hosted: &HostedConfig{}, Logger: slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)}), now: f.service.config.now,
-	}}
-	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	config := f.service.config
+	config.Logger = slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)})
+	service := &Service{database: f.service.database, config: config}
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,17 +329,21 @@ func TestProjectActionDeleteCascadesItsRuns(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet,
 		f.base+"/actions/"+action.ID+"/runs/"+run, f.token, nil), http.StatusNotFound)
 	var rows int
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT count(*) FROM project_action_runs WHERE id = ?", run).Scan(&rows); err != nil {
+	f.service.workspaces.sweepActionRuns(t.Context())
+	if err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+		"SELECT count(*) FROM project_action_runs WHERE id = $1", run).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if rows != 0 {
 		t.Fatalf("the action's runs survived it: %d rows", rows)
 	}
 
-	t.Run("deleting an action that is not there is not found", func(t *testing.T) {
+	t.Run("repeating deletion keeps the action absent", func(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete,
-			f.base+"/actions/"+action.ID, f.token, nil), http.StatusNotFound)
+			f.base+"/actions/"+action.ID, f.token, nil), http.StatusNoContent)
+		if listing := f.actions(t); len(listing.Items) != 0 {
+			t.Fatalf("repeat deletion restored actions: %+v", listing.Items)
+		}
 	})
 }
 
@@ -359,7 +364,7 @@ func TestProjectActionWriteGateRefusesAViewerAndAReadOnlyGrant(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newHostedSecurityFixture(t)
+			f := newHostedWorkspaceFixture(t)
 			user := f.user(t, test.role, test.role, test.role+"@example.test", test.grant, "")
 			requireNativeStatus(t, f.request(t, user, http.MethodGet, f.base+"/actions", nil), test.read)
 			requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/actions", map[string]any{

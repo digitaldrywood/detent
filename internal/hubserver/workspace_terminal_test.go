@@ -384,8 +384,8 @@ func TestWorkspaceRelayRecordsATerminalSession(t *testing.T) {
 	// The relay session row references the recording, which is what the terminal contract
 	// asks for.
 	var artifact string
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT recording_artifact FROM workspace_relay_sessions WHERE workspace_id = ? AND recording_artifact != ''",
+	if err := workspaceTestDB(t, f.service).QueryRowContext(t.Context(),
+		"SELECT recording_artifact FROM workspace_relay_sessions WHERE workspace_id = $1 AND recording_artifact != ''",
 		f.workspace).Scan(&artifact); err != nil {
 		t.Fatalf("read recording_artifact: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestTerminalRecordingAudience(t *testing.T) {
 // narrowed to one stream.
 func readTerminalRecordingsForTest(t *testing.T, f *relayFixture, stream string) []terminalRecordingRecord {
 	t.Helper()
-	recordings, err := readTerminalRecordings(t.Context(), f.service.database.db, f.workspace, "")
+	recordings, err := workspaceTestRecordings(t, f.service, f.workspace, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,31 +646,7 @@ func TestRefuseTerminalGrantMatrix(t *testing.T) {
 // the login.
 func seedTerminalGrant(t *testing.T, f *relayFixture, subject, role string, canWrite, runners bool) {
 	t.Helper()
-	now := formatHubTime(f.at())
-	// A member's principal is a token row, so one is written first: the schema
-	// keys a membership to the principal it acts as, and a seed that skipped it
-	// would be testing against a shape the hub cannot produce.
-	principal := "principal_" + subject
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		`INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'operator', ?, ?)`,
-		principal, "member-"+subject, terminalTestTokenHash(subject),
-		"fp_"+subject, now, now); err != nil {
-		t.Fatalf("seed principal: %v", err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		`INSERT INTO hosted_members (user_id, email, membership_id, role, active, principal_id, created_at, updated_at)
-VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
-		subject, subject+"@example.invalid", "membership_"+subject, role, principal, now, now); err != nil {
-		t.Fatalf("seed member: %v", err)
-	}
-	record := f.record(t)
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		`INSERT INTO hosted_project_grants (user_id, organization_id, project_id, can_write, manage_runner)
-VALUES (?, ?, ?, ?, ?)`,
-		subject, record.OrganizationID, record.ProjectID, boolToInt(canWrite), boolToInt(runners)); err != nil {
-		t.Fatalf("seed grant: %v", err)
-	}
+	seedWorkspaceMember(t, f, "principal_"+subject, subject, subject+"@example.test", role, true, canWrite, runners)
 }
 
 // terminalTestTokenHash builds the 64-character hash the token table checks

@@ -126,65 +126,11 @@ func scanTerminalRecording(scan func(...any) error) (terminalRecordingRecord, er
 // paths may reach one stream -- the person's socket closing while the workspace
 // ends -- and the second must correct the row rather than fail on the unique
 // index or leave two half-recordings of one shell.
-func writeTerminalRecording(ctx context.Context, exec nativeExecer, record terminalRecordingRecord, now time.Time) error {
-	_, err := exec.ExecContext(ctx, `INSERT INTO workspace_terminal_recordings
- (id, workspace_id, organization_id, project_id, relay_session_id, stream_id, principal_id, subject,
-  isolation, support_reason, started_at, finished_at, terminal_cols, terminal_rows, cast_text, cast_bytes, truncated,
-  created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(workspace_id, stream_id) DO UPDATE SET
- finished_at = excluded.finished_at, cast_text = excluded.cast_text,
- cast_bytes = excluded.cast_bytes, truncated = excluded.truncated,
- terminal_cols = excluded.terminal_cols, terminal_rows = excluded.terminal_rows,
- updated_at = excluded.updated_at`,
-		record.ID, record.WorkspaceID, record.OrganizationID, record.ProjectID, record.RelaySessionID,
-		record.StreamID, record.PrincipalID, record.Subject, record.Isolation, record.SupportReason,
-		formatHubTime(record.StartedAt), nullTime(record.FinishedAt), record.Cols, record.Rows,
-		record.Cast, record.Bytes, record.Truncated, formatHubTime(now), formatHubTime(now))
-	if err != nil {
-		return fmt.Errorf("write terminal recording: %w", err)
-	}
-	return nil
-}
 
 // readTerminalRecordings lists a workspace's recordings, newest first,
 // optionally narrowed to one relay session.
-func readTerminalRecordings(ctx context.Context, query nativeQueryer, workspaceID, relaySessionID string) ([]terminalRecordingRecord, error) {
-	statement := `SELECT ` + terminalRecordingColumns + ` FROM workspace_terminal_recordings
-WHERE workspace_id = ?`
-	arguments := []any{workspaceID}
-	if relaySessionID != "" {
-		statement += ` AND relay_session_id = ?`
-		arguments = append(arguments, relaySessionID)
-	}
-	statement += ` ORDER BY started_at DESC, id DESC LIMIT ?`
-	arguments = append(arguments, terminalRecordingPage)
-
-	rows, err := query.QueryContext(ctx, statement, arguments...)
-	if err != nil {
-		return nil, fmt.Errorf("query terminal recordings: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	recordings := []terminalRecordingRecord{}
-	for rows.Next() {
-		record, err := scanTerminalRecording(rows.Scan)
-		if err != nil {
-			return nil, err
-		}
-		recordings = append(recordings, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate terminal recordings: %w", err)
-	}
-	return recordings, nil
-}
 
 // readTerminalRecordingByID reads one recording inside a workspace.
-func readTerminalRecordingByID(ctx context.Context, query nativeQueryer, workspaceID, id string) (terminalRecordingRecord, error) {
-	row := query.QueryRowContext(ctx, `SELECT `+terminalRecordingColumns+` FROM workspace_terminal_recordings
-WHERE workspace_id = ? AND id = ?`, workspaceID, id)
-	return scanTerminalRecording(row.Scan)
-}
 
 // terminalRecordingPage bounds one listing.
 const terminalRecordingPage = 50

@@ -432,6 +432,25 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 		e.POST(nativeBase+"/workspaces/:workspace/worker/unbind", s.unbindWorkspaceWorker, worker)
 		e.POST(nativeBase+"/workspaces/:workspace/worker/action-runs", s.reportWorkspaceActionRun, worker)
 	}
+	if s.database.postgres != nil {
+		e.POST(nativeBase+"/workspaces", s.createWorkspace, write)
+		e.GET(nativeBase+"/workspaces", s.listWorkspaces, read)
+		e.GET(nativeBase+"/workspaces/:workspace", s.getWorkspace, read)
+		e.DELETE(nativeBase+"/workspaces/:workspace", s.deleteWorkspace, write)
+		e.GET(nativeBase+"/work-items/:item/workspace", s.workspaceForWorkItem, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/relay-tickets", s.mintWorkspaceRelayTicket, read)
+		e.GET(nativeBase+"/workspaces/:workspace/relay", s.openWorkspaceRelay, read)
+		e.GET(nativeBase+"/workspaces/:workspace/worker/relay", s.openWorkspaceWorkerRelay, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/worker/bind", s.bindWorkspaceWorker, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/worker/heartbeat", s.heartbeatWorkspaceWorker, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/worker/unbind", s.unbindWorkspaceWorker, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/worker/action-runs", s.reportWorkspaceActionRun, worker)
+	}
+	if s.database.postgres != nil {
+		e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings", s.listWorkspaceTerminalRecordings, read)
+		e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings/:recording", s.getWorkspaceTerminalRecording, read)
+	}
+
 	e.GET(nativeBase+"/actions", s.listProjectActions, read)
 	e.POST(nativeBase+"/actions", s.createProjectAction, write)
 	e.PATCH(nativeBase+"/actions/:action", s.patchProjectAction, write)

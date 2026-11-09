@@ -291,6 +291,19 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, closeStartupDatabase(err)
 		}
 	}
+	if cfg.Workspace != nil && cfg.Workspace.Enabled && database.postgres != nil && !cfg.CredentialMaintenance {
+		if err := cfg.Workspace.validate(); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, closeStartupDatabase(err)
+		}
+		service.workspaces = newWorkspaceService(service, *cfg.Workspace)
+		if err := service.workspaces.start(ctx); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, closeStartupDatabase(err)
+		}
+	}
 	e.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.registerRoutes(e)
 	if service.conversations != nil {

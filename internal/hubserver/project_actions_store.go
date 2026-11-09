@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -134,10 +133,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 
 // readProjectAction reads one action inside a scope, so an action of another
 // project is simply not found.
-func readProjectAction(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (actionRecord, error) {
-	return scanAction(query.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM project_actions
-WHERE id = ? AND organization_id = ? AND project_id = ?`, id, scope.organization, scope.project))
-}
 
 // Authoring order, which is also the order the run-on-worktree-creation set
 // runs in: an author who wants install before build writes install first, and
@@ -152,20 +147,11 @@ WHERE id = ? AND organization_id = ? AND project_id = ?`, id, scope.organization
 const projectActionOrder = ` ORDER BY created_at, id`
 
 // readProjectActions lists a project's whole catalogue.
-func readProjectActions(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, project tracker.ProjectID) ([]actionRecord, error) {
-	return scanActions(query.QueryContext(ctx, `SELECT `+actionColumns+` FROM project_actions
-WHERE organization_id = ? AND project_id = ?`+projectActionOrder, organization, project))
-}
 
 // readRunOnCreationActions lists the actions a fresh worktree runs. It is
 // written out rather than folded into readProjectActions behind a flag: the two
 // have different callers, different audiences -- one a person's menu, one the
 // bind response -- and a reader of either should see the whole predicate.
-func readRunOnCreationActions(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, project tracker.ProjectID) ([]actionRecord, error) {
-	return scanActions(query.QueryContext(ctx, `SELECT `+actionColumns+` FROM project_actions
-WHERE organization_id = ? AND project_id = ? AND run_on_worktree_creation = 1`+projectActionOrder,
-		organization, project))
-}
 
 func scanActions(rows *sql.Rows, queryErr error) ([]actionRecord, error) {
 	if queryErr != nil {
@@ -188,77 +174,20 @@ func scanActions(rows *sql.Rows, queryErr error) ([]actionRecord, error) {
 
 // countProjectActions reports how many actions a project holds, which is what
 // MaxActionsPerProject is applied to inside the create transaction.
-func countProjectActions(ctx context.Context, tx *sql.Tx, scope nativeScope) (int, error) {
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM project_actions
-WHERE organization_id = ? AND project_id = ?`, scope.organization, scope.project).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count project actions: %w", err)
-	}
-	return count, nil
-}
 
 // projectActionKeybindingOwner reports the action that already claims a chord
 // in this project, ignoring one id so a PATCH that keeps its own chord is not
 // a conflict with itself. An empty chord is never a conflict: it means the
 // action has no shortcut, and any number of actions may have none.
-func projectActionKeybindingOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, keybinding, except string) (actionRecord, bool, error) {
-	if keybinding == "" {
-		return actionRecord{}, false, nil
-	}
-	record, err := scanAction(tx.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM project_actions
-WHERE organization_id = ? AND project_id = ? AND keybinding = ? AND id <> ?`,
-		scope.organization, scope.project, keybinding, except))
-	if errors.Is(err, sql.ErrNoRows) {
-		return actionRecord{}, false, nil
-	}
-	if err != nil {
-		return actionRecord{}, false, err
-	}
-	return record, true, nil
-}
 
 // updateProjectActionRow rewrites every mutable column and bumps the revision.
 // The write is conditional on the revision the caller read, so two concurrent
 // edits cannot both believe they applied: the loser writes nothing and is told
 // to read again.
-func updateProjectActionRow(ctx context.Context, tx *sql.Tx, record actionRecord, expected int64) error {
-	result, err := tx.ExecContext(ctx, `UPDATE project_actions SET name = ?, command = ?, keybinding = ?,
- icon = ?, preview_url = ?, open_preview = ?, run_on_worktree_creation = ?, revision = ?, updated_at = ?
-WHERE id = ? AND revision = ?`,
-		record.Name, record.Command, record.Keybinding, record.Icon, record.PreviewURL,
-		record.OpenPreview, record.RunOnWorktreeCreation, record.Revision,
-		formatHubTime(record.UpdatedAt), record.ID, expected)
-	if err != nil {
-		return fmt.Errorf("update project action: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("count project action update: %w", err)
-	}
-	if changed != 1 {
-		return nativeConflict(tracker.Revision(expected))
-	}
-	return nil
-}
 
 // deleteProjectActionRow removes an action. Its runs go with it: the migration
 // declares ON DELETE CASCADE, because a run of an action nobody can name any
 // more is a row no surface could ever show.
-func deleteProjectActionRow(ctx context.Context, tx *sql.Tx, scope nativeScope, id string) error {
-	result, err := tx.ExecContext(ctx, `DELETE FROM project_actions
-WHERE id = ? AND organization_id = ? AND project_id = ?`, id, scope.organization, scope.project)
-	if err != nil {
-		return fmt.Errorf("delete project action: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("count project action delete: %w", err)
-	}
-	if changed != 1 {
-		return nativeNotFound()
-	}
-	return nil
-}
 
 const actionRunColumns = `id, action_id, organization_id, project_id, workspace_id, command, status,
  exit_code, reason, started_at, finished_at, output, output_bytes, output_artifact, truncated,
@@ -331,37 +260,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 }
 
 // readProjectActionRun reads one run of one action inside a scope.
-func readProjectActionRun(ctx context.Context, query nativeQueryer, scope nativeScope, actionID, runID string) (actionRunRecord, error) {
-	return scanActionRun(query.QueryRowContext(ctx, `SELECT `+actionRunColumns+` FROM project_action_runs
-WHERE id = ? AND action_id = ? AND organization_id = ? AND project_id = ?`,
-		runID, actionID, scope.organization, scope.project))
-}
 
 // readProjectActionRuns lists one action's runs, newest first. The filter and
 // the order are project_action_runs_action_idx's own, so the page is an index
 // scan; the scope columns are in the predicate as well, so a run of another
 // project cannot be reached through an action id guessed from elsewhere.
-func readProjectActionRuns(ctx context.Context, query nativeQueryer, scope nativeScope, actionID string, limit int) ([]actionRunRecord, error) {
-	rows, err := query.QueryContext(ctx, `SELECT `+actionRunColumns+` FROM project_action_runs
-WHERE action_id = ? AND organization_id = ? AND project_id = ?
-ORDER BY created_at DESC, id DESC LIMIT ?`, actionID, scope.organization, scope.project, limit)
-	if err != nil {
-		return nil, fmt.Errorf("query project action runs: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	records := []actionRunRecord{}
-	for rows.Next() {
-		record, err := scanActionRun(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate project action runs: %w", err)
-	}
-	return records, nil
-}
 
 // activeRunStatuses and terminalWorkspaceStates are spelt out for SQL rather
 // than derived from workspacesession.TerminalRunStatus and Terminal, so the
@@ -405,30 +308,6 @@ const actionRunDispatchBatch = 20
 // read_only is in the predicate for the same reason it is in the queue's own
 // refusal: a workspace can become the one an attempt is editing after a run was
 // queued on it, and a command must not write into a worktree a model is using.
-func readDispatchableActionRuns(ctx context.Context, query nativeQueryer, before time.Time, limit int) ([]actionRunRecord, error) {
-	rows, err := query.QueryContext(ctx, `SELECT `+actionRunColumns+`
-FROM project_action_runs
-WHERE status = 'queued' AND claimed_by = '' AND created_at <= ?
- AND workspace_id IN (SELECT id FROM workspace_sessions
-  WHERE state IN `+boundWorkspaceStates+` AND read_only = 0)
-ORDER BY created_at, id LIMIT ?`, formatHubTime(before), limit)
-	if err != nil {
-		return nil, fmt.Errorf("query dispatchable action runs: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	records := []actionRunRecord{}
-	for rows.Next() {
-		record, err := scanActionRun(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate dispatchable action runs: %w", err)
-	}
-	return records, nil
-}
 
 // orphanedActionRun is one run to fail and the reason its workspace ended.
 //
@@ -450,31 +329,6 @@ type orphanedActionRun struct {
 // no worktree, so no legitimate report can still arrive for one of its runs.
 // A long `bun test` on a healthy workspace is indistinguishable from a stuck
 // row by age alone, so an age heuristic here would fail live runs.
-func readOrphanedActionRuns(ctx context.Context, tx *sql.Tx, limit int) ([]orphanedActionRun, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT `+actionRunColumns+`,
- (SELECT reason FROM workspace_sessions WHERE id = project_action_runs.workspace_id)
-FROM project_action_runs
-WHERE status IN `+activeRunStatuses+`
- AND workspace_id IN (SELECT id FROM workspace_sessions WHERE state IN `+terminalWorkspaceStates+`)
-ORDER BY created_at, id LIMIT ?`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("query orphaned action runs: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	orphaned := []orphanedActionRun{}
-	for rows.Next() {
-		var reason sql.NullString
-		record, err := scanActionRun(trailingScanner{rows: rows, trailing: []any{&reason}})
-		if err != nil {
-			return nil, err
-		}
-		orphaned = append(orphaned, orphanedActionRun{run: record, workspaceReason: reason.String})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate orphaned action runs: %w", err)
-	}
-	return orphaned, nil
-}
 
 // trailingScanner binds the caller's own destinations after the ones a scan
 // function supplies, so one scan function serves a plain read and one that
@@ -502,33 +356,8 @@ FROM project_action_runs WHERE id = ?`, runID))
 // readWorkspaceActionRun reads one run of a workspace, which is the read the
 // worker report is fenced by: a runner may only move a run of the workspace it
 // currently holds.
-func readWorkspaceActionRun(ctx context.Context, tx *sql.Tx, workspaceID, runID string) (actionRunRecord, error) {
-	return scanActionRun(tx.QueryRowContext(ctx, `SELECT `+actionRunColumns+` FROM project_action_runs
-WHERE id = ? AND workspace_id = ?`, runID, workspaceID))
-}
 
 // updateProjectActionRunRow rewrites every mutable column and bumps the
 // revision, conditional on the revision the caller read. The receipt is
 // recomputed here rather than taken from the record, so no caller can store a
 // row whose output_artifact and output_bytes disagree.
-func updateProjectActionRunRow(ctx context.Context, tx *sql.Tx, record actionRunRecord, expected int64) error {
-	result, err := tx.ExecContext(ctx, `UPDATE project_action_runs SET status = ?, exit_code = ?,
- reason = ?, started_at = ?, finished_at = ?, output = ?, output_bytes = ?, output_artifact = ?,
- truncated = ?, claimed_by = ?, revision = ?, updated_at = ?
-WHERE id = ? AND revision = ?`,
-		record.Status, nullInt(record.ExitCode), record.Reason, nullTime(record.StartedAt),
-		nullTime(record.FinishedAt), record.Output, record.OutputBytes,
-		actionRunOutputPath(record), record.Truncated, record.ClaimedBy, record.Revision,
-		formatHubTime(record.UpdatedAt), record.ID, expected)
-	if err != nil {
-		return fmt.Errorf("update project action run: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("count project action run update: %w", err)
-	}
-	if changed != 1 {
-		return nativeConflict(tracker.Revision(expected))
-	}
-	return nil
-}

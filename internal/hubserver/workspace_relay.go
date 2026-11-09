@@ -9,6 +9,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -218,13 +219,17 @@ type relayBufferedFrame struct {
 
 // relayConnection is one socket, person or runner.
 type relayConnection struct {
-	id          string
-	workspaceID string
-	socket      *websocket.Conn
-	runner      bool
-	actor       workspacesession.Actor
-	principalID string
-	sessionID   string
+	scope          nativeScope
+	owner          workspacesession.Owner
+	organizationID tracker.OrganizationID
+	projectID      tracker.ProjectID
+	id             string
+	workspaceID    string
+	socket         *websocket.Conn
+	runner         bool
+	actor          workspacesession.Actor
+	principalID    string
+	sessionID      string
 	// supportReason is why a support actor is on this connection. The terminal contract
 	// lets a support session have a terminal only with a reason recorded and
 	// only at container isolation, so the reason is held here rather than
@@ -1040,7 +1045,7 @@ func (r *workspaceRelay) workspaceRunReason(ctx context.Context, workspaceID str
 	// already happened.
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
 	defer cancel()
-	record, err := readWorkspaceByID(readCtx, r.service.server.database.reader, workspaceID)
+	record, err := r.service.readWorkspaceIDRecord(readCtx, workspaceID)
 	if err != nil {
 		return workspacesession.RunReasonWorkspaceEnd
 	}

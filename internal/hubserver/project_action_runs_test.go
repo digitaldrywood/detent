@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -142,8 +143,8 @@ func TestProjectActionRunRefusals(t *testing.T) {
 		// A read-only workspace is one whose attempt is still running, and a
 		// command writes into the worktree the model is editing.
 		workspace := f.execWorkspace(t)
-		if _, err := f.service.database.db.ExecContext(t.Context(),
-			"UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", workspace); err != nil {
+		if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
+			"UPDATE workspace_sessions SET read_only = true WHERE id = $1", workspace); err != nil {
 			t.Fatal(err)
 		}
 		requireNativeCode(t, f.postRun(t, action.ID, map[string]any{"workspace_id": workspace}),
@@ -185,11 +186,10 @@ func TestProjectActionRunOutputEndpoint(t *testing.T) {
 	})
 
 	t.Run("the stored bytes come back as text and the receipt names this path", func(t *testing.T) {
-		if _, err := f.service.database.db.ExecContext(t.Context(),
-			`UPDATE project_action_runs SET output = ?, output_bytes = ?, output_artifact = ? WHERE id = ?`,
-			"ok\nPASS\n", len("ok\nPASS\n"), path, run); err != nil {
+		if err := f.service.workspaces.finishActionRunRecord(t.Context(), &execRunState{runID: run, output: []byte("ok\nPASS\n")}, workspacesession.RunSucceeded, nil, ""); err != nil {
 			t.Fatal(err)
 		}
+
 		response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		if got := response.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
@@ -374,13 +374,33 @@ func TestWorkspaceWorkerActionRunReport(t *testing.T) {
 		// But it is claimed, by the runner that started it. A run that is not
 		// queued and names no executor would read as one the hub's own dispatch
 		// could still hand out.
-		row, err := readProjectActionRunByID(t.Context(), f.service.database.db, run.ID)
+		row, err := workspaceTestRun(t, f.service, run.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.HasPrefix(row.ClaimedBy, "runner:") {
+		if row.ClaimedBy != "runner:"+f.runner.binding.RunnerID {
 			t.Fatalf("claimed_by = %q, want the runner that started it", row.ClaimedBy)
 		}
+
+		t.Run("a retry key creates one automatic run", func(t *testing.T) {
+			before := len(f.runListing(t, action.ID, "").Items)
+			request := workspaceActionRunReport{WorkspaceIdentity: workspaceIdentity(lease), ActionID: action.ID, IdempotencyKey: "automatic-start", Status: workspacesession.RunRunning}
+			var first workspacesession.Run
+			for index := range 2 {
+				response := f.workerPost(t, session.ID, "action-runs", request)
+				requireNativeStatus(t, response, http.StatusOK)
+				var current workspacesession.Run
+				decodeHubResponse(t, response, &current)
+				if index == 0 {
+					first = current
+				} else if current.ID != first.ID {
+					t.Fatalf("retry created another automatic run: %s %s", first.ID, current.ID)
+				}
+			}
+			if after := len(f.runListing(t, action.ID, "").Items); after != before+1 {
+				t.Fatalf("automatic retry added %d rows, want one", after-before)
+			}
+		})
 
 		t.Run("a second report moves the same run and records its output", func(t *testing.T) {
 			exit := 0
@@ -454,6 +474,13 @@ func TestWorkspaceWorkerActionRunReport(t *testing.T) {
 			if capped.OutputBytes != workspacesession.MaxExecOutputBytes || !capped.Truncated {
 				t.Fatalf("capped = %#v, want exactly %d bytes and truncated",
 					capped, workspacesession.MaxExecOutputBytes)
+			}
+			replay := f.workerPost(t, session.ID, "action-runs", workspaceActionRunReport{WorkspaceIdentity: workspaceIdentity(lease), ActionID: action.ID, RunID: capped.ID, Status: workspacesession.RunFailed})
+			requireNativeStatus(t, replay, http.StatusOK)
+			var retained workspacesession.Run
+			decodeHubResponse(t, replay, &retained)
+			if retained.OutputBytes != capped.OutputBytes || !retained.Truncated || retained.Revision != capped.Revision {
+				t.Fatalf("completion replay lost truncated output: %+v", retained)
 			}
 		})
 	})
@@ -575,6 +602,18 @@ func TestProjectActionRunSweepEndsRunsOfEndedWorkspaces(t *testing.T) {
 		// length, so the sweep stamps both.
 		if failed.StartedAt == nil || failed.FinishedAt == nil {
 			t.Fatalf("run = %#v, want both timestamps stamped", failed)
+		}
+	})
+
+	t.Run("canceled cleanup finishes an accepted run", func(t *testing.T) {
+		workspace := f.execWorkspace(t)
+		run := f.queueRun(t, action.ID, workspace)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		f.service.workspaces.finishExecRun(ctx, &execRunState{runID: run}, workspacesession.RunFailed, nil, workspacesession.RunReasonStreamClosed)
+		finished := f.readRun(t, action.ID, run)
+		if finished.Status != workspacesession.RunFailed || finished.Reason != workspacesession.RunReasonStreamClosed {
+			t.Fatalf("canceled cleanup left the accepted run unfinished: %+v", finished)
 		}
 	})
 }
