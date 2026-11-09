@@ -57,9 +57,9 @@ Select the server explicitly with `DETENT_TEST_POSTGRES`:
   explicit port and a role permitted to create databases. IPv6 loopback and
   `localhost` are supported. For a Unix socket, add `?host=/absolute/socket/path`.
   The helper leaves the attached server running.
-- Unset or empty: PostgreSQL tests skip with configuration instructions. They
+- Unset or empty: PostgreSQL tests fail with configuration instructions. They
   never use SQLite as a fallback. Invalid settings and incorrect server versions
-  fail instead of skipping.
+  also fail.
 
 Unset ambient `PG*` variables before using a configured server. The helper
 rejects them and constructs the driver configuration directly, without probing

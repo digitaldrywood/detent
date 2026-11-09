@@ -92,9 +92,6 @@ func (p *Template) Database(t *testing.T) *sql.DB {
 	ctx, cancel := testContext(t)
 	defer cancel()
 	p.once.Do(func() { p.err = p.initialize(ctx, os.Getenv(Environment)) })
-	if errors.Is(p.err, errNotConfigured) {
-		t.Skip(p.err)
-	}
 	if p.err != nil {
 		t.Fatalf("initialize PostgreSQL fixture: %v", p.err)
 	}

@@ -351,21 +351,89 @@ func TestFixtureAdmissionWaitsBeforeCancellation(t *testing.T) {
 	})
 }
 
-func TestUnconfiguredPostgresSkips(t *testing.T) {
-	t.Setenv(Environment, "")
-	t.Setenv("PATH", t.TempDir())
-	t.Setenv("PGHOST", "example.invalid")
-	var skipped bool
-	t.Run("fixture", func(t *testing.T) {
-		defer func() { skipped = t.Skipped() }()
+func TestUnconfiguredPostgresFails(t *testing.T) {
+	if os.Getenv("DETENT_TEST_UNCONFIGURED_CHILD") == "1" {
+		t.Setenv(Environment, "")
+		t.Setenv("PATH", t.TempDir())
+		t.Setenv("PGHOST", "example.invalid")
+		if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(os.Stdin, make([]byte, 1)); err != nil {
+			t.Fatal(err)
+		}
+		migrations := 0
+		defer func() { fmt.Fprintf(os.Stdout, "unconfigured migrations=%d\n", migrations) }()
 		NewTemplate(func(context.Context, *sql.DB) error {
+			migrations++
 			t.Error("unconfigured fixture ran migrations")
 			return nil
 		}).Database(t)
 		t.Error("unconfigured fixture returned a database")
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestUnconfiguredPostgresFails$", "-test.timeout="+flag.Lookup("test.timeout").Value.String())
+	cmd.Env = append(os.Environ(), "DETENT_TEST_UNCONFIGURED_CHILD=1", "GOCOVERDIR="+t.TempDir())
+	procgroup.Configure(t.Context(), cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			stdin.Close()
+			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Error(err)
+			}
+			if err := cmd.Wait(); err != nil {
+				t.Logf("stop unconfigured helper: %v", err)
+			}
+		}
 	})
-	if !skipped {
-		t.Fatal("unconfigured PostgreSQL fixture did not skip")
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "ready" {
+		t.Fatalf("unconfigured helper did not become ready: %v", scanner.Err())
+	}
+	if _, err := stdin.Write([]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	for scanner.Scan() {
+		fmt.Fprintln(&output, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Wait()
+	waited = true
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("unconfigured fixture exit=%v, want test failure; %s%s", err, output.String(), stderr.String())
+	}
+	for _, required := range []string{"initialize PostgreSQL fixture:", errNotConfigured.Error(), "unconfigured migrations=0"} {
+		if !strings.Contains(output.String(), required) {
+			t.Fatalf("unconfigured fixture omitted %q: %s%s", required, output.String(), stderr.String())
+		}
+	}
+	if strings.Contains(output.String(), "unconfigured fixture returned a database") {
+		t.Fatal("unconfigured fixture continued after initialization")
 	}
 }
 
@@ -823,9 +891,6 @@ func TestPostgresParallelIsolation(t *testing.T) {
 			})
 		}
 	})
-	if errors.Is(processTemplate.err, errNotConfigured) {
-		t.Skip(errNotConfigured)
-	}
 	if processTemplate.err != nil {
 		t.Fatal(processTemplate.err)
 	}
