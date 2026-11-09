@@ -25,10 +25,16 @@ import (
 )
 
 func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
-	for _, test := range []struct{ name, mode string }{
-		{"matching creation identity", "matching"},
-		{"foreign creation identity", "foreign"},
-		{"missing creation identity", "missing"},
+	for _, test := range []struct {
+		name, mode  string
+		retryStatus int
+	}{
+		{name: "matching creation identity", mode: "matching"},
+		{name: "foreign creation identity", mode: "foreign"},
+		{name: "missing creation identity", mode: "missing"},
+		{name: "original commits while retry collides", mode: "matching", retryStatus: http.StatusConflict},
+		{name: "original commits while retry reports name taken", mode: "matching", retryStatus: http.StatusBadRequest},
+		{name: "original commits while retry is refused billing", mode: "matching", retryStatus: http.StatusPaymentRequired},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var poolConfig *pgxpool.Config
@@ -41,6 +47,7 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 				Labels []string
 			}
 			resources := map[string]resourceRecord{}
+			pendingCreations := map[string]bool{}
 			var resourceKeys []string
 			creates := 0
 			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
@@ -55,17 +62,27 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 					}
 					name = body.Name
 					key := request.Header.Get("Authorization") + name
+					if _, exists := resources[key]; exists && test.retryStatus != 0 {
+						pendingCreations[key] = false
+						raw := `{"error":"Sprite name already exists"}`
+						if test.retryStatus == http.StatusPaymentRequired {
+							raw = `{"error":"billing is disabled"}`
+						}
+						return &http.Response{StatusCode: test.retryStatus, Body: io.NopCloser(strings.NewReader(raw)), Header: make(http.Header)}, nil
+					}
 					id := "resource-" + name
 					if test.mode == "foreign" {
 						id = "foreign-" + name
 					}
 					resources[key] = resourceRecord{ID: id, Labels: append([]string(nil), body.Labels...)}
+					pendingCreations[key] = test.retryStatus != 0
 					resourceKeys = append(resourceKeys, key)
 					creates++
 					return nil, errors.New("provider response was lost")
 				}
 				key := request.Header.Get("Authorization") + name
 				resource, exists := resources[key]
+				exists = exists && !pendingCreations[key]
 				status := http.StatusNotFound
 				raw := "{}"
 				if exists {
@@ -180,6 +197,35 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 						t.Fatalf("incomplete uncertain reservation: %+v", op)
 					}
 					seen[op.ProjectID] = true
+					if test.retryStatus != 0 {
+						if err := service.runSpriteOperation(t.Context(), op); err == nil {
+							t.Fatal("a rejected retry reported the earlier uncertain write committed")
+						}
+						if err := reopened.ReadSprite(t.Context(), organization, corestore.Serving, func(r postgres.SpriteReader) error {
+							current, err := r.SpriteOperation(t.Context(), op.IdempotencyKey)
+							if err != nil {
+								return err
+							}
+							if current.Outcome != "uncertain" || current.ProviderResourceID != "" || current.ReceiptObjectKey != nil || !current.NextAttemptAt.After(now) {
+								t.Fatalf("retry rejection discarded original uncertainty: %+v", current)
+							}
+							member, err := r.SpriteMember(t.Context(), op.Name)
+							if err != nil {
+								return err
+							}
+							if member.State != "bootstrapping" || member.EnrollmentID != op.TargetEnrollmentID {
+								t.Fatalf("retry rejection released the original reservation: %+v", member)
+							}
+							if _, err := r.SpriteOperation(t.Context(), "bootstrap:"+op.TargetEnrollmentID); !errors.Is(err, corestore.ErrNotFound) {
+								t.Fatalf("unknown creation received bootstrap intent: %v", err)
+							}
+							op = current
+							return nil
+						}); err != nil {
+							t.Fatal(err)
+						}
+						now = op.NextAttemptAt
+					}
 					err := service.runSpriteOperation(t.Context(), op)
 					if test.mode == "matching" && err != nil {
 						t.Fatal(err)

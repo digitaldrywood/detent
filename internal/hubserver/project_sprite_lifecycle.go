@@ -1153,6 +1153,7 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 		return s.completeSpriteOperation(ctx, op, spriteLifecycleReceipt{ResourceID: resource.ID}, "", request)
 	}
 	if op.Operation == "provision" {
+		reconciling := op.Outcome == "uncertain"
 		status, raw, err := s.spriteOperationHTTP(ctx, op, request, http.MethodGet, path, nil)
 		if err != nil {
 			return err
@@ -1178,6 +1179,9 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 				return err
 			}
 			if status != http.StatusCreated {
+				if reconciling {
+					return spritesResponseError(status)
+				}
 				if spriteNameCollision(status, raw) {
 					return errors.Join(errSpriteNameTaken, s.rejectSpriteOperationWithRetry(ctx, op, "Sprite name is already in use\n", false, false))
 				}
