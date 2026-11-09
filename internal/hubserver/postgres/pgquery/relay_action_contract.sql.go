@@ -730,65 +730,6 @@ func (q *Queries) LockActionRun(ctx context.Context, arg LockActionRunParams) (P
 	return i, err
 }
 
-const pendingActionRuns = `-- name: PendingActionRuns :many
-SELECT a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at, a.claimed_stream_id FROM workspace_sessions w JOIN LATERAL (SELECT a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at, a.claimed_stream_id FROM project_action_runs a WHERE a.organization_id=w.organization_id AND a.project_id=w.project_id AND a.workspace_id=w.id AND a.status='queued' AND a.created_at<=$2 AND EXISTS (SELECT 1 FROM project_actions d WHERE d.organization_id=a.organization_id AND d.project_id=a.project_id AND d.id=a.action_id AND d.deleted_at IS NULL) ORDER BY a.created_at,a.id LIMIT $3) a ON true WHERE w.organization_id=$1 AND w.state IN ('ready','idle') ORDER BY a.created_at,a.id LIMIT $3
-`
-
-type PendingActionRunsParams struct {
-	OrganizationID tracker.OrganizationID
-	CreatedAt      time.Time
-	Limit          int32
-}
-
-func (q *Queries) PendingActionRuns(ctx context.Context, arg PendingActionRunsParams) ([]ProjectActionRun, error) {
-	rows, err := q.db.Query(ctx, pendingActionRuns, arg.OrganizationID, arg.CreatedAt, arg.Limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ProjectActionRun{}
-	for rows.Next() {
-		var i ProjectActionRun
-		if err := rows.Scan(
-			&i.OrganizationID,
-			&i.ProjectID,
-			&i.ID,
-			&i.ActionID,
-			&i.WorkspaceID,
-			&i.CommandObjectKey,
-			&i.CommandSha256,
-			&i.CommandBytes,
-			&i.CommandContentBytes,
-			&i.Status,
-			&i.ExitCode,
-			&i.Reason,
-			&i.StartedAt,
-			&i.FinishedAt,
-			&i.OutputObjectKey,
-			&i.OutputSha256,
-			&i.OutputBytes,
-			&i.OutputContentBytes,
-			&i.OutputSequence,
-			&i.Truncated,
-			&i.ClaimedBy,
-			&i.LeaseID,
-			&i.FencingToken,
-			&i.CreatedBy,
-			&i.Revision,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.ClaimedStreamID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const pruneRelayTickets = `-- name: PruneRelayTickets :execrows
 DELETE FROM workspace_relay_tickets t WHERE t.organization_id=$1 AND t.digest IN (SELECT expired.digest FROM workspace_relay_tickets expired WHERE expired.organization_id=$1 AND expired.expires_at<=$2 ORDER BY expired.expires_at,expired.digest LIMIT $3)
 `

@@ -56,9 +56,6 @@ SELECT * FROM workspace_terminal_recordings WHERE organization_id=$1 AND project
 -- name: ActionRunByID :one
 SELECT * FROM project_action_runs WHERE organization_id=$1 AND id=$2;
 
--- name: PendingActionRuns :many
-SELECT a.* FROM workspace_sessions w JOIN LATERAL (SELECT a.* FROM project_action_runs a WHERE a.organization_id=w.organization_id AND a.project_id=w.project_id AND a.workspace_id=w.id AND a.status='queued' AND a.created_at<=$2 AND EXISTS (SELECT 1 FROM project_actions d WHERE d.organization_id=a.organization_id AND d.project_id=a.project_id AND d.id=a.action_id AND d.deleted_at IS NULL) ORDER BY a.created_at,a.id LIMIT $3) a ON true WHERE w.organization_id=$1 AND w.state IN ('ready','idle') ORDER BY a.created_at,a.id LIMIT $3;
-
 -- name: ActiveActionRunsAfter :many
 SELECT * FROM project_action_runs WHERE organization_id=$1 AND id>$2 AND status IN ('queued','running') ORDER BY id LIMIT $3;
 

@@ -54,7 +54,7 @@ const actionRunDispatchGrace = time.Second
 // already visits.
 func (w *workspaceService) dispatchQueuedActionRuns(ctx context.Context) {
 
-	w.dispatchActionRunRecords(ctx)
+	w.sweepActionRunRecords(ctx)
 	return
 
 }

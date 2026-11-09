@@ -22,7 +22,6 @@ type RelayActionLifecycleReader interface {
 	RecentTerminalRecordings(context.Context, TerminalRecordingsInput) ([]TerminalRecording, error)
 	RecentRelaySessions(context.Context, RelaySessionsInput) ([]RelaySession, error)
 	ActionRunByID(context.Context, string) (ActionRun, error)
-	PendingActionRuns(context.Context, time.Time, int) ([]ActionRun, error)
 	ActiveActionRunsAfter(context.Context, string, int) ([]ActionRun, error)
 	TerminalRecordingByID(context.Context, TerminalRecordingInput) (TerminalRecording, error)
 	DeletedProjectActions(context.Context, int) ([]DeletedProjectAction, error)
@@ -59,13 +58,6 @@ func (s *session) PurgeEmptyDeletedAction(ctx context.Context, project tracker.P
 func (s *session) ActionRunByID(ctx context.Context, id string) (ActionRun, error) {
 	row, err := s.queries.ActionRunByID(ctx, pgquery.ActionRunByIDParams{OrganizationID: s.organization, ID: id})
 	return row, mapError(ctx, err)
-}
-func (s *session) PendingActionRuns(ctx context.Context, before time.Time, limit int) ([]ActionRun, error) {
-	if err := checkPage(limit); err != nil {
-		return nil, err
-	}
-	rows, err := s.queries.PendingActionRuns(ctx, pgquery.PendingActionRunsParams{OrganizationID: s.organization, CreatedAt: before, Limit: int32(limit)})
-	return rows, mapError(ctx, err)
 }
 func (s *session) ActiveActionRunsAfter(ctx context.Context, after string, limit int) ([]ActionRun, error) {
 	if err := checkPage(limit); err != nil {

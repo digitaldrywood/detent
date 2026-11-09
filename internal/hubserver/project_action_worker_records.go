@@ -221,27 +221,12 @@ func (w *workspaceService) claimActionRunRecord(ctx context.Context, scope nativ
 	return claimed, nil
 }
 
-func (w *workspaceService) dispatchActionRunRecords(ctx context.Context) {
-	var runs []postgres.ActionRun
-	err := w.server.config.TenantRepository.ReadTenant(ctx, w.maintenanceOrganization(), corestore.Background, func(r tenantstore.Reader) error {
-		var err error
-		runs, err = r.(workspaceReader).PendingActionRuns(ctx, w.now().Add(-actionRunDispatchGrace), actionRunDispatchBatch)
-		return err
-	})
-	if err != nil {
-		w.logger.Warn("action_run.dispatch_failed", "error", err)
-		return
-	}
-	for _, row := range runs {
-		w.dispatchActionRun(ctx, actionRunFromRecord(row))
-	}
-}
-
 func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 	w.purgeDeletedActionRecords(ctx)
 	organization := w.maintenanceOrganization()
 	cursor := w.maintenanceCursors[organization]
-	var ended []postgres.ActionRun
+	cutoff := w.now().Add(-actionRunDispatchGrace)
+	var ended, queued []postgres.ActionRun
 	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner := reader.(workspaceReader)
 		rows, err := owner.ActiveActionRunsAfter(ctx, cursor.actionRun, workspaceMaintenanceBatch)
@@ -261,11 +246,16 @@ func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 			states[session.ID] = session.State
 		}
 		for _, row := range rows {
-			if workspacesession.Terminal(states[row.WorkspaceID]) {
+			state := states[row.WorkspaceID]
+			if workspacesession.Terminal(state) {
 				ended = append(ended, row)
+			} else if row.Status == workspacesession.RunQueued && (state == workspacesession.StateReady || state == workspacesession.StateIdle) && !row.CreatedAt.After(cutoff) && len(queued) < actionRunDispatchBatch {
+				queued = append(queued, row)
 			}
 		}
-		if len(rows) < workspaceMaintenanceBatch {
+		if len(queued) == actionRunDispatchBatch {
+			cursor.actionRun = queued[len(queued)-1].ID
+		} else if len(rows) < workspaceMaintenanceBatch {
 			cursor.actionRun = ""
 		} else {
 			cursor.actionRun = rows[len(rows)-1].ID
@@ -281,6 +271,9 @@ func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 		if err = w.finishActionRunRecord(ctx, &execRunState{organization: row.OrganizationID, runID: row.ID}, workspacesession.RunFailed, nil, workspacesession.RunReasonWorkspaceEnd); err != nil {
 			w.logger.Warn("action_run.sweep_transition_failed", "run_id", row.ID, "error", err)
 		}
+	}
+	for _, row := range queued {
+		w.dispatchActionRun(ctx, actionRunFromRecord(row))
 	}
 }
 
