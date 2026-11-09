@@ -95,8 +95,10 @@ func Prefix(organization tracker.OrganizationID, project tracker.ProjectID) stri
 	return "s" + hex.EncodeToString([]byte(organization)) + "z" + hex.EncodeToString([]byte(project)) + "_"
 }
 
+var vectorQuote = strings.NewReplacer("\\", "\\\\", "'", "''")
+
 func quote(value string) string {
-	return "'" + strings.NewReplacer("\\", "\\\\", "'", "''").Replace(value) + "'"
+	return "'" + vectorQuote.Replace(value) + "'"
 }
 
 func Expressions(organization tracker.OrganizationID, query Query) []string {
