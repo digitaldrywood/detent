@@ -382,6 +382,10 @@ func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker
 	if err != nil {
 		return err
 	}
+	return applyHealthEvents(ctx, now, events, snapshot)
+}
+
+func applyHealthEvents(ctx context.Context, now time.Time, events []healthTimeEvent, snapshot *healthSnapshot) error {
 	cycles := map[string]healthCycle{}
 	for _, event := range events {
 		id, project, item, kind, raw, observed := event.id, event.project, event.item, event.kind, event.raw, event.at

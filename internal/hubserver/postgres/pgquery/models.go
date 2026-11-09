@@ -1289,6 +1289,18 @@ type HealthFindingProject struct {
 	PageSequence   int64
 }
 
+type HealthScheduledReport struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Repository     string
+	RunID          string
+	RunAttempt     string
+	RunUrl         string
+	HeadSHA        string
+	Conclusion     string
+	RecordedAt     time.Time
+}
+
 type HealthSlackDelivery struct {
 	OrganizationID      tracker.OrganizationID
 	ID                  string

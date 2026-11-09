@@ -54,6 +54,7 @@ type Service struct {
 	readerWaited            atomic.Int64
 	requestMetrics          *tenantRequestMetrics
 	maintenance             *hubmaintenance.Scheduler
+	healthContracts         healthContractCache
 	runnerPublishedReleases sync.Map
 	tokenUse                sync.Map
 	tokenUseWork            sync.WaitGroup

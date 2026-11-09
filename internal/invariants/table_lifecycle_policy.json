@@ -99,6 +99,7 @@
     "go_test_receipt_attestations": {"class": "immutable_payload"},
     "go_test_receipts": {"class": "immutable_payload"},
     "health_detector_ticks": {"class": "derived_with_retention", "retention": "latest tick per detector"},
+    "health_scheduled_reports": {"class": "immutable_payload", "retention": "project lifetime; stable scheduled run receipts and health cadence history"},
     "health_finding_issues": {"class": "index"},
     "health_finding_projects": {"class": "index"},
     "health_findings": {"class": "derived_with_retention", "retention": "latest detector finding per subject; health retention"},
