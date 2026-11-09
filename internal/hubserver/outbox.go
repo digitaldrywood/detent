@@ -467,14 +467,12 @@ func processOutboxStep(ctx context.Context, slack, github func(context.Context) 
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	processed, err := slack(ctx)
-	if processed || err != nil || github == nil {
-		return processed, err
+	slackProcessed, slackErr := slack(ctx)
+	if github == nil || ctx.Err() != nil {
+		return slackProcessed, errors.Join(slackErr, ctx.Err())
 	}
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	return github(ctx)
+	githubProcessed, githubErr := github(ctx)
+	return slackProcessed || githubProcessed, errors.Join(slackErr, githubErr)
 }
 
 func (w *outboxWorker) signal() {

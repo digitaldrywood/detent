@@ -53,6 +53,11 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 		e.GET(hostedOrganizationBase+"/logo-metadata", s.getCurrentOrganizationLogoAttachment, s.hostedSessionOnly)
 		s.registerOrganizationVisibleRoutes(e)
 		s.registerHostedAccountPreferenceRoutes(e)
+		s.registerSlackRoutes(e)
+		e.GET("/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
+		if s.config.Hosted.SharedEntry != nil {
+			e.POST("/internal/v1/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
+		}
 		s.registerHostedMemberAndSecretRoutes(e)
 		s.registerOrganizationBudgetReadRoutes(e)
 		s.registerMonthlyBudgetWriteRoutes(e)

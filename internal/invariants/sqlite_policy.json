@@ -1570,8 +1570,7 @@
       "sql_pragma": 1
     },
     "internal/hubserver/slack_delivery.go": {
-      "sql_insert_or": 2,
-      "sql_julianday": 2
+      "sql_insert_or": 2
     },
     "internal/hubserver/sql_parameters_test.go": {
       "sqlite_open": 1

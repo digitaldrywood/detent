@@ -54,8 +54,16 @@ func TestSlackContractPersistsSettingsAndRetryReceipts(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+
+		err = repository.WriteSlack(t.Context(), org, corestore.Background, func(w postgres.SlackWriter) error {
+			_, err := w.ClaimSlackDelivery(t.Context(), postgres.ClaimSlackDeliveryInput{OrganizationID: org, ID: "first", ExpectedSettingsRevision: 2, ExpectedAttempts: 0, Now: now, NextAttemptAt: now.Add(time.Minute)})
+			return err
+		})
+		if !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("changed settings claim=%v", err)
+		}
 		if err := repository.WriteSlack(t.Context(), org, corestore.Background, func(w postgres.SlackWriter) error {
-			row, err := w.ClaimSlackDelivery(t.Context(), postgres.ClaimSlackDeliveryInput{OrganizationID: org, ID: "first", ExpectedAttempts: 0, Now: now, NextAttemptAt: now.Add(time.Minute)})
+			row, err := w.ClaimSlackDelivery(t.Context(), postgres.ClaimSlackDeliveryInput{ExpectedSettingsRevision: 1, OrganizationID: org, ID: "first", ExpectedAttempts: 0, Now: now, NextAttemptAt: now.Add(time.Minute)})
 			if err != nil {
 				return err
 			}
@@ -68,14 +76,14 @@ func TestSlackContractPersistsSettingsAndRetryReceipts(t *testing.T) {
 			t.Fatal(err)
 		}
 		err = repository.WriteSlack(t.Context(), org, corestore.Background, func(w postgres.SlackWriter) error {
-			_, err := w.ClaimSlackDelivery(t.Context(), postgres.ClaimSlackDeliveryInput{OrganizationID: org, ID: "first", ExpectedAttempts: 1, Now: now, NextAttemptAt: now.Add(time.Minute)})
+			_, err := w.ClaimSlackDelivery(t.Context(), postgres.ClaimSlackDeliveryInput{ExpectedSettingsRevision: 1, OrganizationID: org, ID: "first", ExpectedAttempts: 1, Now: now, NextAttemptAt: now.Add(time.Minute)})
 			return err
 		})
 		if !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("early retry=%v", err)
 		}
 		if err := repository.WriteSlack(t.Context(), org, corestore.Background, func(w postgres.SlackWriter) error {
-			if _, err := w.ClaimSlackDelivery(t.Context(), postgres.ClaimSlackDeliveryInput{OrganizationID: org, ID: "first", ExpectedAttempts: 1, Now: now.Add(time.Minute), NextAttemptAt: now.Add(2 * time.Minute)}); err != nil {
+			if _, err := w.ClaimSlackDelivery(t.Context(), postgres.ClaimSlackDeliveryInput{ExpectedSettingsRevision: 1, OrganizationID: org, ID: "first", ExpectedAttempts: 1, Now: now.Add(time.Minute), NextAttemptAt: now.Add(2 * time.Minute)}); err != nil {
 				return err
 			}
 			if _, err := w.FinishSlackDelivery(t.Context(), postgres.FinishSlackDeliveryInput{OrganizationID: org, ID: "first", ExpectedAttempts: 2, Outcome: "committed", ExternalReceipt: "receipt_" + string(org), StatusCode: 200, At: now.Add(time.Minute), NextAttemptAt: now.Add(2 * time.Minute)}); err != nil {

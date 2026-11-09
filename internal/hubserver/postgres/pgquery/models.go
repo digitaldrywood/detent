@@ -1290,18 +1290,19 @@ type HealthFindingProject struct {
 }
 
 type HealthSlackDelivery struct {
-	OrganizationID  tracker.OrganizationID
-	ID              string
-	FindingID       string
-	Event           string
-	EventAt         time.Time
-	QueuedAt        time.Time
-	NextAttemptAt   time.Time
-	Attempts        int64
-	Outcome         string
-	ExternalReceipt string
-	CompletedAt     *time.Time
-	StatusCode      int32
+	OrganizationID      tracker.OrganizationID
+	ID                  string
+	FindingID           string
+	Event               string
+	EventAt             time.Time
+	QueuedAt            time.Time
+	NextAttemptAt       time.Time
+	Attempts            int64
+	Outcome             string
+	ExternalReceipt     string
+	CompletedAt         *time.Time
+	StatusCode          int32
+	IntegrationRevision int64
 }
 
 type HostedArtifactUsage struct {
@@ -5100,6 +5101,7 @@ type SlackIntegration struct {
 	LastStatusCode     int32
 	LastDeliveryFailed bool
 	UpdatedAt          time.Time
+	DisabledRevision   int64
 }
 
 type SpriteLifecycleOperation struct {

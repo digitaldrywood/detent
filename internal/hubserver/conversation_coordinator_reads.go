@@ -120,7 +120,7 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 			if !canManageProjectSecrets(credential) {
 				err = operatortool.ErrAccessDenied
 			} else {
-				value, err = readSlackIntegration(ctx, s.database.reader, record.OrganizationID)
+				value, err = s.readSlackIntegration(ctx, record.OrganizationID)
 			}
 		}
 	case "get_project_budget":

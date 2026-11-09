@@ -41,19 +41,21 @@ func (s *Service) startIssueMailer() {
 	s.issueMailer = &issueMailer{cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(s.issueMailer.done)
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
+		wait := func() time.Duration { return gitHubRetryDelay(1, 10*time.Second, 10*time.Second, s.config.jitter()) }
+		timer := s.config.newOutboxTimer(wait())
+		defer timer.stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-timer.ticks:
 				if err := s.deliverDailySummaries(ctx, s.config.now()); err != nil && ctx.Err() == nil {
 					s.config.Logger.Warn("daily summary delivery failed", "error", err)
 				}
 				if err := s.deliverIssueEmails(ctx, s.config.now()); err != nil && ctx.Err() == nil {
 					s.config.Logger.Warn("issue notification delivery failed", "error", err)
 				}
+				timer.reset(wait())
 			}
 		}
 	}()

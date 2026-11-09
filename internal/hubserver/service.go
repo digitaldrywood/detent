@@ -164,9 +164,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 		database.runtimeBilling = cfg.Hosted.Billing
 		cfg = cfg.normalized()
-		if cfg.Hosted.EmailSender != nil {
-			return nil, errors.Join(ErrPostgresFeatureUnavailable, database.Close())
-		}
 	}
 	ctx = database.policyContext(ctx)
 	var secretKeysErr error
@@ -258,7 +255,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.startSpritePoolForQueue = func(scope nativeScope) {
 		service.scheduleSpritePoolForQueue(workerContext, scope)
 	}
-	if database.postgres == nil || cfg.OutboxBackend != nil {
+	if database.postgres == nil || cfg.OutboxBackend != nil || cfg.SecretKeys != nil {
 		service.outbox = newOutboxWorker(service)
 	}
 	if cfg.Hosted != nil {

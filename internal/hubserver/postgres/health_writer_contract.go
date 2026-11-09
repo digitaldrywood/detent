@@ -25,7 +25,12 @@ type LinkHealthIssueInput = pgquery.LinkHealthIssueParams
 type PutHealthBaselineInput = pgquery.PutHealthBaselineParams
 type ClearHealthBaselineInput = pgquery.ClearHealthBaselineParams
 type PutHealthTickInput = pgquery.PutHealthTickParams
+type RecordHealthSlackStatusInput = pgquery.RecordHealthSlackStatusParams
+type HealthEvaluationRecordsInput = pgquery.HealthEvaluationRecordsParams
+type ReplaceHealthProjectLinksInput = pgquery.ReplaceHealthProjectLinksParams
+
 type HealthReader interface {
+	HealthEvaluationRecords(context.Context, HealthEvaluationRecordsInput) ([]HealthRecord, error)
 	healthstore.Reader
 	HealthTick(context.Context) (time.Time, error)
 	HealthRecord(context.Context, HealthRecordInput) (HealthRecord, error)
@@ -34,6 +39,8 @@ type HealthReader interface {
 	HealthRecordIssues(context.Context, HealthRecordIssuesInput) ([]HealthIssueLink, error)
 }
 type HealthWriter interface {
+	RecordHealthSlackStatus(context.Context, RecordHealthSlackStatusInput) error
+	ReplaceHealthProjectLinks(context.Context, ReplaceHealthProjectLinksInput) error
 	HealthReader
 	healthstore.PageMaintainer
 	CreateHealthRecord(context.Context, CreateHealthRecordInput) (HealthRecord, error)
@@ -161,4 +168,35 @@ func (s *session) PutHealthTick(ctx context.Context, arg PutHealthTickInput) err
 func (s *session) HealthTick(ctx context.Context) (time.Time, error) {
 	row, err := s.queries.HealthTick(ctx, s.organization)
 	return row, mapError(ctx, err)
+}
+
+func (s *session) HealthEvaluationRecords(ctx context.Context, arg HealthEvaluationRecordsInput) ([]HealthRecord, error) {
+	if err := s.checkOrganization(arg.OrganizationID); err != nil {
+		return nil, err
+	}
+	if err := checkPage(int(arg.Limit)); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.HealthEvaluationRecords(ctx, arg)
+	return rows, mapError(ctx, err)
+}
+func (s *session) ReplaceHealthProjectLinks(ctx context.Context, arg ReplaceHealthProjectLinksInput) error {
+	if err := s.checkOrganization(arg.OrganizationID); err != nil {
+		return err
+	}
+	if len(arg.ProjectIds) > 100 {
+		return corestore.ErrInvalidPage
+	}
+	return mapError(ctx, s.queries.ReplaceHealthProjectLinks(ctx, arg))
+}
+
+func (s *session) RecordHealthSlackStatus(ctx context.Context, arg RecordHealthSlackStatusInput) error {
+	if err := s.checkOrganization(arg.OrganizationID); err != nil {
+		return err
+	}
+	if arg.At.IsZero() {
+		return corestore.ErrInvalidPage
+	}
+	count, err := s.queries.RecordHealthSlackStatus(ctx, arg)
+	return affected(ctx, count, err)
 }

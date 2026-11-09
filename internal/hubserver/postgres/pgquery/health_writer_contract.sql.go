@@ -131,6 +131,86 @@ func (q *Queries) CreateHealthRecord(ctx context.Context, arg CreateHealthRecord
 	return i, err
 }
 
+const healthEvaluationRecords = `-- name: HealthEvaluationRecords :many
+SELECT organization_id, id, sequence, fingerprint, signal, class, subject_kind, subject_id, opened_at, last_seen_at, resolved_at, severity, summary, next_action, evidence_object_key, evidence_sha256, evidence_bytes, evidence_content_bytes, email_unavailable, slack_unavailable_at, slack_status_code, page_event_ids, page_attempt_ids, page_work_item_ids, page_signatures, page_reason, page_count_keys, page_count_values, page_value_keys, page_value_values, page_queue_keys, page_queue_depths, page_queue_short, page_queue_long, page_queue_baseline, page_productivity_from, page_productivity_to, page_failure_stage, page_last_report_at, page_last_run_url, page_last_green_at, page_cadence_seconds, page_window_seconds, page_generation, page_checkpoint, page_source_at, page_projected_at, page_examined_at, revision FROM health_findings WHERE organization_id=$1 AND id>$2 AND resolved_at IS NULL ORDER BY id LIMIT $3
+`
+
+type HealthEvaluationRecordsParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+	Limit          int32
+}
+
+func (q *Queries) HealthEvaluationRecords(ctx context.Context, arg HealthEvaluationRecordsParams) ([]HealthFinding, error) {
+	rows, err := q.db.Query(ctx, healthEvaluationRecords, arg.OrganizationID, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HealthFinding{}
+	for rows.Next() {
+		var i HealthFinding
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.Sequence,
+			&i.Fingerprint,
+			&i.Signal,
+			&i.Class,
+			&i.SubjectKind,
+			&i.SubjectID,
+			&i.OpenedAt,
+			&i.LastSeenAt,
+			&i.ResolvedAt,
+			&i.Severity,
+			&i.Summary,
+			&i.NextAction,
+			&i.EvidenceObjectKey,
+			&i.EvidenceSha256,
+			&i.EvidenceBytes,
+			&i.EvidenceContentBytes,
+			&i.EmailUnavailable,
+			&i.SlackUnavailableAt,
+			&i.SlackStatusCode,
+			&i.PageEventIds,
+			&i.PageAttemptIds,
+			&i.PageWorkItemIds,
+			&i.PageSignatures,
+			&i.PageReason,
+			&i.PageCountKeys,
+			&i.PageCountValues,
+			&i.PageValueKeys,
+			&i.PageValueValues,
+			&i.PageQueueKeys,
+			&i.PageQueueDepths,
+			&i.PageQueueShort,
+			&i.PageQueueLong,
+			&i.PageQueueBaseline,
+			&i.PageProductivityFrom,
+			&i.PageProductivityTo,
+			&i.PageFailureStage,
+			&i.PageLastReportAt,
+			&i.PageLastRunUrl,
+			&i.PageLastGreenAt,
+			&i.PageCadenceSeconds,
+			&i.PageWindowSeconds,
+			&i.PageGeneration,
+			&i.PageCheckpoint,
+			&i.PageSourceAt,
+			&i.PageProjectedAt,
+			&i.PageExaminedAt,
+			&i.Revision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const healthRecord = `-- name: HealthRecord :one
 SELECT organization_id, id, sequence, fingerprint, signal, class, subject_kind, subject_id, opened_at, last_seen_at, resolved_at, severity, summary, next_action, evidence_object_key, evidence_sha256, evidence_bytes, evidence_content_bytes, email_unavailable, slack_unavailable_at, slack_status_code, page_event_ids, page_attempt_ids, page_work_item_ids, page_signatures, page_reason, page_count_keys, page_count_values, page_value_keys, page_value_values, page_queue_keys, page_queue_depths, page_queue_short, page_queue_long, page_queue_baseline, page_productivity_from, page_productivity_to, page_failure_stage, page_last_report_at, page_last_run_url, page_last_green_at, page_cadence_seconds, page_window_seconds, page_generation, page_checkpoint, page_source_at, page_projected_at, page_examined_at, revision FROM health_findings WHERE organization_id=$1 AND id=$2
 `
@@ -421,6 +501,49 @@ func (q *Queries) RecentHealthFingerprint(ctx context.Context, arg RecentHealthF
 		&i.Revision,
 	)
 	return i, err
+}
+
+const recordHealthSlackStatus = `-- name: RecordHealthSlackStatus :execrows
+UPDATE health_findings SET slack_unavailable_at=CASE WHEN $1::boolean THEN $2::timestamptz ELSE NULL END,slack_status_code=CASE WHEN $1::boolean THEN $3::integer ELSE 0 END
+WHERE organization_id=$4 AND id=$5
+`
+
+type RecordHealthSlackStatusParams struct {
+	Failed         bool
+	At             time.Time
+	StatusCode     int32
+	OrganizationID tracker.OrganizationID
+	ID             string
+}
+
+func (q *Queries) RecordHealthSlackStatus(ctx context.Context, arg RecordHealthSlackStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordHealthSlackStatus,
+		arg.Failed,
+		arg.At,
+		arg.StatusCode,
+		arg.OrganizationID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const replaceHealthProjectLinks = `-- name: ReplaceHealthProjectLinks :exec
+DELETE FROM health_finding_projects AS p WHERE p.organization_id=$1 AND p.finding_id=$2 AND NOT(p.project_id=ANY($3::text[]))
+AND NOT EXISTS(SELECT 1 FROM health_finding_issues i WHERE i.organization_id=p.organization_id AND i.finding_id=p.finding_id AND i.project_id=p.project_id)
+`
+
+type ReplaceHealthProjectLinksParams struct {
+	OrganizationID tracker.OrganizationID
+	FindingID      string
+	ProjectIds     []string
+}
+
+func (q *Queries) ReplaceHealthProjectLinks(ctx context.Context, arg ReplaceHealthProjectLinksParams) error {
+	_, err := q.db.Exec(ctx, replaceHealthProjectLinks, arg.OrganizationID, arg.FindingID, arg.ProjectIds)
+	return err
 }
 
 const updateHealthRecord = `-- name: UpdateHealthRecord :one

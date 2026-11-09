@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestOutboxStepStopsAfterOneDeliveryOrRejection(t *testing.T) {
+func TestOutboxStepAdvancesBothDeliveryOwners(t *testing.T) {
 	failure := errors.New("delivery unavailable")
 	for _, test := range []struct {
 		name      string
@@ -18,8 +18,8 @@ func TestOutboxStepStopsAfterOneDeliveryOrRejection(t *testing.T) {
 		canceled  bool
 		github    int
 	}{
-		{name: "delivered", delivered: true},
-		{name: "rejected", failure: failure},
+		{name: "delivered", delivered: true, github: 1},
+		{name: "rejected", failure: failure, github: 1},
 		{name: "idle", github: 1},
 		{name: "canceled", canceled: true},
 	} {

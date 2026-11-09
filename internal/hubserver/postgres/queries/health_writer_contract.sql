@@ -36,3 +36,14 @@ INSERT INTO health_detector_ticks(organization_id,last_tick_at) VALUES($1,$2) ON
 
 -- name: HealthTick :one
 SELECT last_tick_at FROM health_detector_ticks WHERE organization_id=$1;
+
+-- name: HealthEvaluationRecords :many
+SELECT * FROM health_findings WHERE organization_id=$1 AND id>$2 AND resolved_at IS NULL ORDER BY id LIMIT $3;
+
+-- name: ReplaceHealthProjectLinks :exec
+DELETE FROM health_finding_projects AS p WHERE p.organization_id=$1 AND p.finding_id=$2 AND NOT(p.project_id=ANY(sqlc.arg(project_ids)::text[]))
+AND NOT EXISTS(SELECT 1 FROM health_finding_issues i WHERE i.organization_id=p.organization_id AND i.finding_id=p.finding_id AND i.project_id=p.project_id);
+
+-- name: RecordHealthSlackStatus :execrows
+UPDATE health_findings SET slack_unavailable_at=CASE WHEN sqlc.arg(failed)::boolean THEN sqlc.arg(at)::timestamptz ELSE NULL END,slack_status_code=CASE WHEN sqlc.arg(failed)::boolean THEN sqlc.arg(status_code)::integer ELSE 0 END
+WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id);

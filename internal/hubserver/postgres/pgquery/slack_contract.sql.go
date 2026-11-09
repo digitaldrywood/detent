@@ -13,16 +13,18 @@ import (
 )
 
 const claimSlackDelivery = `-- name: ClaimSlackDelivery :one
-UPDATE health_slack_deliveries SET attempts=attempts+1,next_attempt_at=$1
-WHERE organization_id=$2 AND id=$3 AND attempts=$4 AND completed_at IS NULL AND next_attempt_at<=$5::timestamptz AND $1>$5 RETURNING organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code
+UPDATE health_slack_deliveries AS d SET attempts=d.attempts+1,next_attempt_at=$1
+WHERE d.organization_id=$2 AND d.id=$3 AND d.attempts=$4 AND d.completed_at IS NULL AND d.outcome<>'uncertain' AND d.next_attempt_at<=$5::timestamptz AND $1>$5
+AND EXISTS(SELECT 1 FROM slack_integrations integration WHERE integration.organization_id=d.organization_id AND integration.enabled AND integration.revision=$6 AND d.integration_revision>integration.disabled_revision) RETURNING d.organization_id, d.id, d.finding_id, d.event, d.event_at, d.queued_at, d.next_attempt_at, d.attempts, d.outcome, d.external_receipt, d.completed_at, d.status_code, d.integration_revision
 `
 
 type ClaimSlackDeliveryParams struct {
-	NextAttemptAt    time.Time
-	OrganizationID   tracker.OrganizationID
-	ID               string
-	ExpectedAttempts int64
-	Now              time.Time
+	NextAttemptAt            time.Time
+	OrganizationID           tracker.OrganizationID
+	ID                       string
+	ExpectedAttempts         int64
+	Now                      time.Time
+	ExpectedSettingsRevision int64
 }
 
 func (q *Queries) ClaimSlackDelivery(ctx context.Context, arg ClaimSlackDeliveryParams) (HealthSlackDelivery, error) {
@@ -32,6 +34,7 @@ func (q *Queries) ClaimSlackDelivery(ctx context.Context, arg ClaimSlackDelivery
 		arg.ID,
 		arg.ExpectedAttempts,
 		arg.Now,
+		arg.ExpectedSettingsRevision,
 	)
 	var i HealthSlackDelivery
 	err := row.Scan(
@@ -47,12 +50,13 @@ func (q *Queries) ClaimSlackDelivery(ctx context.Context, arg ClaimSlackDelivery
 		&i.ExternalReceipt,
 		&i.CompletedAt,
 		&i.StatusCode,
+		&i.IntegrationRevision,
 	)
 	return i, err
 }
 
 const createSlackIntegration = `-- name: CreateSlackIntegration :one
-INSERT INTO slack_integrations(organization_id,channel_name,enabled,updated_at) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING organization_id, channel_name, enabled, revision, last_success_at, last_failure_at, last_status_code, last_delivery_failed, updated_at
+INSERT INTO slack_integrations(organization_id,channel_name,enabled,updated_at) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING organization_id, channel_name, enabled, revision, last_success_at, last_failure_at, last_status_code, last_delivery_failed, updated_at, disabled_revision
 `
 
 type CreateSlackIntegrationParams struct {
@@ -80,12 +84,13 @@ func (q *Queries) CreateSlackIntegration(ctx context.Context, arg CreateSlackInt
 		&i.LastStatusCode,
 		&i.LastDeliveryFailed,
 		&i.UpdatedAt,
+		&i.DisabledRevision,
 	)
 	return i, err
 }
 
 const enqueueSlackDelivery = `-- name: EnqueueSlackDelivery :one
-INSERT INTO health_slack_deliveries(organization_id,id,finding_id,event,event_at,queued_at,next_attempt_at) VALUES($1,$2,$3,$4,$5,$6,$6) ON CONFLICT DO NOTHING RETURNING organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code
+INSERT INTO health_slack_deliveries(organization_id,id,finding_id,event,event_at,queued_at,next_attempt_at,integration_revision) VALUES($1,$2,$3,$4,$5,$6,$6,(SELECT revision FROM slack_integrations WHERE organization_id=$1)) ON CONFLICT DO NOTHING RETURNING organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code, integration_revision
 `
 
 type EnqueueSlackDeliveryParams struct {
@@ -120,13 +125,14 @@ func (q *Queries) EnqueueSlackDelivery(ctx context.Context, arg EnqueueSlackDeli
 		&i.ExternalReceipt,
 		&i.CompletedAt,
 		&i.StatusCode,
+		&i.IntegrationRevision,
 	)
 	return i, err
 }
 
 const finishSlackDelivery = `-- name: FinishSlackDelivery :one
 UPDATE health_slack_deliveries SET outcome=$1,external_receipt=$2,completed_at=CASE WHEN $1::text='committed' THEN $3::timestamptz ELSE NULL END,status_code=$4,next_attempt_at=$5
-WHERE organization_id=$6 AND id=$7 AND attempts=$8 AND completed_at IS NULL RETURNING organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code
+WHERE organization_id=$6 AND id=$7 AND attempts=$8 AND completed_at IS NULL RETURNING organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code, integration_revision
 `
 
 type FinishSlackDeliveryParams struct {
@@ -165,13 +171,15 @@ func (q *Queries) FinishSlackDelivery(ctx context.Context, arg FinishSlackDelive
 		&i.ExternalReceipt,
 		&i.CompletedAt,
 		&i.StatusCode,
+		&i.IntegrationRevision,
 	)
 	return i, err
 }
 
 const pendingSlackDeliveries = `-- name: PendingSlackDeliveries :many
-SELECT d.organization_id, d.id, d.finding_id, d.event, d.event_at, d.queued_at, d.next_attempt_at, d.attempts, d.outcome, d.external_receipt, d.completed_at, d.status_code FROM health_slack_deliveries d JOIN slack_integrations s ON s.organization_id=d.organization_id AND s.enabled
-WHERE d.organization_id=$1 AND d.completed_at IS NULL AND d.next_attempt_at<=$2 ORDER BY d.next_attempt_at,d.id LIMIT $3
+SELECT d.organization_id, d.id, d.finding_id, d.event, d.event_at, d.queued_at, d.next_attempt_at, d.attempts, d.outcome, d.external_receipt, d.completed_at, d.status_code, d.integration_revision FROM health_slack_deliveries d JOIN slack_integrations s ON s.organization_id=d.organization_id
+WHERE d.organization_id=$1 AND d.completed_at IS NULL AND d.outcome<>'uncertain' AND d.next_attempt_at<=$2
+AND (d.event='opened' OR NOT EXISTS (SELECT 1 FROM health_slack_deliveries o WHERE o.organization_id=d.organization_id AND o.finding_id=d.finding_id AND o.event='opened' AND o.completed_at IS NULL)) ORDER BY d.next_attempt_at,d.id LIMIT $3
 `
 
 type PendingSlackDeliveriesParams struct {
@@ -202,6 +210,7 @@ func (q *Queries) PendingSlackDeliveries(ctx context.Context, arg PendingSlackDe
 			&i.ExternalReceipt,
 			&i.CompletedAt,
 			&i.StatusCode,
+			&i.IntegrationRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -241,7 +250,7 @@ func (q *Queries) RecordSlackStatus(ctx context.Context, arg RecordSlackStatusPa
 }
 
 const slackDelivery = `-- name: SlackDelivery :one
-SELECT organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code FROM health_slack_deliveries WHERE organization_id=$1 AND id=$2
+SELECT organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code, integration_revision FROM health_slack_deliveries WHERE organization_id=$1 AND id=$2
 `
 
 type SlackDeliveryParams struct {
@@ -265,12 +274,13 @@ func (q *Queries) SlackDelivery(ctx context.Context, arg SlackDeliveryParams) (H
 		&i.ExternalReceipt,
 		&i.CompletedAt,
 		&i.StatusCode,
+		&i.IntegrationRevision,
 	)
 	return i, err
 }
 
 const slackIntegration = `-- name: SlackIntegration :one
-SELECT organization_id, channel_name, enabled, revision, last_success_at, last_failure_at, last_status_code, last_delivery_failed, updated_at FROM slack_integrations WHERE organization_id=$1
+SELECT organization_id, channel_name, enabled, revision, last_success_at, last_failure_at, last_status_code, last_delivery_failed, updated_at, disabled_revision FROM slack_integrations WHERE organization_id=$1
 `
 
 func (q *Queries) SlackIntegration(ctx context.Context, organizationID tracker.OrganizationID) (SlackIntegration, error) {
@@ -286,12 +296,51 @@ func (q *Queries) SlackIntegration(ctx context.Context, organizationID tracker.O
 		&i.LastStatusCode,
 		&i.LastDeliveryFailed,
 		&i.UpdatedAt,
+		&i.DisabledRevision,
+	)
+	return i, err
+}
+
+const suppressSlackDelivery = `-- name: SuppressSlackDelivery :one
+UPDATE health_slack_deliveries SET completed_at=$1::timestamptz,outcome='rejected'
+WHERE organization_id=$2 AND id=$3 AND attempts=$4 AND completed_at IS NULL AND outcome IN ('pending','rejected') RETURNING organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code, integration_revision
+`
+
+type SuppressSlackDeliveryParams struct {
+	At               time.Time
+	OrganizationID   tracker.OrganizationID
+	ID               string
+	ExpectedAttempts int64
+}
+
+func (q *Queries) SuppressSlackDelivery(ctx context.Context, arg SuppressSlackDeliveryParams) (HealthSlackDelivery, error) {
+	row := q.db.QueryRow(ctx, suppressSlackDelivery,
+		arg.At,
+		arg.OrganizationID,
+		arg.ID,
+		arg.ExpectedAttempts,
+	)
+	var i HealthSlackDelivery
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ID,
+		&i.FindingID,
+		&i.Event,
+		&i.EventAt,
+		&i.QueuedAt,
+		&i.NextAttemptAt,
+		&i.Attempts,
+		&i.Outcome,
+		&i.ExternalReceipt,
+		&i.CompletedAt,
+		&i.StatusCode,
+		&i.IntegrationRevision,
 	)
 	return i, err
 }
 
 const updateSlackIntegration = `-- name: UpdateSlackIntegration :one
-UPDATE slack_integrations SET channel_name=$2,enabled=$3,revision=revision+1,updated_at=$4 WHERE organization_id=$1 AND revision=$5 RETURNING organization_id, channel_name, enabled, revision, last_success_at, last_failure_at, last_status_code, last_delivery_failed, updated_at
+UPDATE slack_integrations SET channel_name=$2,enabled=$3,disabled_revision=CASE WHEN $3 THEN disabled_revision ELSE revision+1 END,revision=revision+1,updated_at=$4 WHERE organization_id=$1 AND revision=$5 RETURNING organization_id, channel_name, enabled, revision, last_success_at, last_failure_at, last_status_code, last_delivery_failed, updated_at, disabled_revision
 `
 
 type UpdateSlackIntegrationParams struct {
@@ -321,6 +370,7 @@ func (q *Queries) UpdateSlackIntegration(ctx context.Context, arg UpdateSlackInt
 		&i.LastStatusCode,
 		&i.LastDeliveryFailed,
 		&i.UpdatedAt,
+		&i.DisabledRevision,
 	)
 	return i, err
 }

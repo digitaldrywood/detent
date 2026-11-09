@@ -2,16 +2,20 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -38,25 +42,42 @@ func validSlackWebhook(value string) bool {
 	return u.Scheme == "https" && (u.Host == "hooks.slack.com" || u.Host == "hooks.slack-gov.com") && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.RawPath == "" && slackWebhookPath.MatchString(u.Path)
 }
 
-func readSlackIntegration(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID) (slackIntegrationStatus, error) {
+func (s *Service) readSlackIntegration(ctx context.Context, organization tracker.OrganizationID) (slackIntegrationStatus, error) {
 	var result slackIntegrationStatus
-	var success, failure sql.NullString
-	err := db.QueryRowContext(ctx, `SELECT channel_name,last_success_at,last_failure_at,last_delivery_failed,last_status_code FROM slack_integrations WHERE organization_id=?`, organization).Scan(&result.ChannelName, &success, &failure, &result.LastDeliveryFailed, &result.LastStatusCode)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return result, err
-	}
-	if success.Valid {
-		result.LastSuccessAt = &success.String
-	}
-	if failure.Valid {
-		result.LastFailureAt = &failure.String
-	}
-	var present bool
-	err = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_secrets WHERE organization_id=? AND kind=?)`, organization, slackWebhookSecret).Scan(&present)
-	if present {
-		result.Webhook = maskedSlackWebhook
-	}
+	err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
+		owner, ok := r.(postgres.SlackReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		row, err := owner.SlackIntegration(ctx)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		result.ChannelName, result.LastStatusCode, result.LastDeliveryFailed = row.ChannelName, int(row.LastStatusCode), row.LastDeliveryFailed
+		if row.LastSuccessAt != nil {
+			value := formatHubTime(*row.LastSuccessAt)
+			result.LastSuccessAt = &value
+		}
+		if row.LastFailureAt != nil {
+			value := formatHubTime(*row.LastFailureAt)
+			result.LastFailureAt = &value
+		}
+		_, err = r.AccessSecret(ctx, "", slackWebhookSecret)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err == nil {
+			result.Webhook = maskedSlackWebhook
+		}
+		return err
+	})
 	return result, err
+}
+
+func (s *Service) registerSlackRoutes(e *echo.Echo) {
+	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, s.hostedSessionOnly)
+	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, s.hostedAdministrationSession)
+	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, s.hostedAdministrationSession)
 }
 
 func (s *Service) slackSettingsScope(c echo.Context) (nativeScope, error) {
@@ -77,7 +98,7 @@ func (s *Service) getSlackIntegration(c echo.Context) error {
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	result, err := readSlackIntegration(ctx, s.database.reader, scope.organization)
+	result, err := s.readSlackIntegration(ctx, scope.organization)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -119,48 +140,48 @@ func (s *Service) setSlackIntegration(c echo.Context) error {
 		}
 	}
 	ctx := c.Request().Context()
-	err = s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
-		now := formatHubTime(s.config.now())
-		if _, err := tx.ExecContext(ctx, `INSERT INTO slack_integrations(organization_id,channel_name) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET channel_name=excluded.channel_name`, scope.organization, request.ChannelName); err != nil {
+	err = s.accessSecretWrite(ctx, scope, func(w tenantstore.Writer) error {
+		owner, ok := w.(postgres.SlackWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		row, err := owner.SlackIntegration(ctx)
+		missing := errors.Is(err, corestore.ErrNotFound)
+		if err != nil && !missing {
 			return err
 		}
-		if request.Webhook == nil {
-			return nil
+		old, secretErr := w.AccessSecret(ctx, "", slackWebhookSecret)
+		if secretErr != nil && !errors.Is(secretErr, corestore.ErrNotFound) {
+			return secretErr
 		}
-		old, err := readSlackIntegration(ctx, tx, scope.organization)
-		if err != nil {
-			return err
-		}
-		event, version := "set", envelope.Version
-		if old.Webhook != "" {
-			event = "replace"
-		}
-		if len(token) == 0 {
-			event = "remove"
-			if old.Webhook != "" {
-				if err := tx.QueryRowContext(ctx, `SELECT master_key_version FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, slackWebhookSecret).Scan(&version); err != nil {
-					return err
-				}
+		enabled := secretErr == nil
+		if request.Webhook != nil {
+			enabled = len(token) != 0
+			audit := accessstore.SecretAudit{OrganizationID: scope.organization, Actor: secretActor(scope), Kind: slackWebhookSecret, Event: "set", KeyVersion: envelope.Version, RecordedAt: s.config.now()}
+			if secretErr == nil {
+				audit.Event = "replace"
 			}
-			if _, err = tx.ExecContext(ctx, `DELETE FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, slackWebhookSecret); err != nil {
-				return err
+			if enabled {
+				err = w.StoreAccessSecret(ctx, accessstore.Secret{OrganizationID: scope.organization, Kind: slackWebhookSecret, Envelope: envelope, UpdatedAt: audit.RecordedAt}, audit)
+			} else if secretErr == nil {
+				audit.Event, audit.KeyVersion = "remove", old.Envelope.Version
+				err = w.DeleteAccessSecret(ctx, "", slackWebhookSecret, audit)
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE health_slack_deliveries SET completed_at=? WHERE completed_at IS NULL AND finding_id IN (SELECT id FROM health_findings WHERE organization_id=?)`, now, scope.organization); err != nil {
-				return err
-			}
-		} else {
-			_, err = tx.ExecContext(ctx, `INSERT INTO organization_secrets(organization_id,kind,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organization_id,kind) DO UPDATE SET ciphertext=excluded.ciphertext,nonce=excluded.nonce,wrapped_data_key=excluded.wrapped_data_key,master_key_version=excluded.master_key_version,updated_at=excluded.updated_at`, scope.organization, slackWebhookSecret, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, now)
 			if err != nil {
 				return err
 			}
 		}
-		return secretAudit(ctx, tx, string(scope.organization), "", secretActor(scope), slackWebhookSecret, event, version, now)
+		if missing {
+			_, err = owner.CreateSlackIntegration(ctx, postgres.CreateSlackIntegrationInput{OrganizationID: scope.organization, ChannelName: request.ChannelName, Enabled: enabled, UpdatedAt: s.config.now()})
+		} else {
+			_, err = owner.UpdateSlackIntegration(ctx, postgres.UpdateSlackIntegrationInput{OrganizationID: scope.organization, ChannelName: request.ChannelName, Enabled: enabled, UpdatedAt: s.config.now(), Revision: row.Revision})
+		}
+		return err
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	// Read back the integration updated by this request on the writer.
-	result, err := readSlackIntegration(ctx, s.database.db, scope.organization)
+	result, err := s.readSlackIntegration(ctx, scope.organization)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -173,7 +194,19 @@ func (s *Service) testSlackIntegration(c echo.Context) error {
 		return s.hostedAPIError(c, err)
 	}
 	ctx := c.Request().Context()
-	if err := s.secretMutation(ctx, scope, func(tx *sql.Tx) error { return nil }); err != nil {
+	var revision int64
+	if err := s.accessSecretWrite(ctx, scope, func(w tenantstore.Writer) error {
+		owner, ok := w.(postgres.SlackReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		row, err := owner.SlackIntegration(ctx)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		revision = row.Revision
+		return err
+	}); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	webhook, err := s.readSlackWebhook(ctx, scope.organization, secretActor(scope))
@@ -184,15 +217,34 @@ func (s *Service) testSlackIntegration(c echo.Context) error {
 	if len(webhook) == 0 {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Save a Slack webhook before sending a test message")
 	}
-	status, delivered := s.postSlack(ctx, webhook, "*Detent* · Test message\nHealth findings that need attention will be posted here when they open and resolve.")
-	if err := s.recordSlackResult(ctx, s.database.db, scope.organization, "", status, delivered, s.config.now()); err != nil {
+	sent := s.postSlack(ctx, webhook, "*Detent* · Test message\nHealth findings that need attention will be posted here when they open and resolve.")
+	if err := s.recordSlackTestResult(ctx, scope, revision, sent.status, sent.outcome == "committed"); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	result, err := readSlackIntegration(readCtx, s.database.reader, scope.organization)
+	result, err := s.readSlackIntegration(readCtx, scope.organization)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) recordSlackTestResult(ctx context.Context, scope nativeScope, revision int64, status int, delivered bool) error {
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return s.accessSecretWrite(finishCtx, scope, func(w tenantstore.Writer) error {
+		owner, ok := w.(postgres.SlackWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		row, err := owner.SlackIntegration(finishCtx)
+		if err != nil {
+			return err
+		}
+		if row.Revision != revision {
+			return nil
+		}
+		return owner.RecordSlackStatus(finishCtx, postgres.RecordSlackStatusInput{OrganizationID: scope.organization, ExpectedRevision: row.Revision, StatusCode: int32(status), Failed: !delivered, At: s.config.now()})
+	})
 }

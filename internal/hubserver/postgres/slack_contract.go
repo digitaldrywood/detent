@@ -22,6 +22,7 @@ type RecordSlackStatusInput = pgquery.RecordSlackStatusParams
 type EnqueueSlackDeliveryInput = pgquery.EnqueueSlackDeliveryParams
 type ClaimSlackDeliveryInput = pgquery.ClaimSlackDeliveryParams
 type FinishSlackDeliveryInput = pgquery.FinishSlackDeliveryParams
+type SuppressSlackDeliveryInput = pgquery.SuppressSlackDeliveryParams
 type SlackReader interface {
 	SlackIntegration(context.Context) (SlackIntegration, error)
 	AccessSecret(context.Context, tracker.ProjectID, string) (accessstore.Secret, error)
@@ -29,6 +30,7 @@ type SlackReader interface {
 	PendingSlackDeliveries(context.Context, PendingSlackDeliveriesInput) ([]SlackDelivery, error)
 }
 type SlackWriter interface {
+	SuppressSlackDelivery(context.Context, SuppressSlackDeliveryInput) (SlackDelivery, error)
 	SlackReader
 	StoreAccessSecret(context.Context, accessstore.Secret, accessstore.SecretAudit) error
 	CreateSlackIntegration(context.Context, CreateSlackIntegrationInput) (SlackIntegration, error)
@@ -120,7 +122,7 @@ func (s *session) ClaimSlackDelivery(ctx context.Context, arg ClaimSlackDelivery
 	if err := s.checkOrganization(arg.OrganizationID); err != nil {
 		return SlackDelivery{}, err
 	}
-	if arg.Now.IsZero() || arg.ExpectedAttempts < 0 || !arg.NextAttemptAt.After(arg.Now) {
+	if arg.Now.IsZero() || arg.ExpectedAttempts < 0 || arg.ExpectedSettingsRevision < 1 || !arg.NextAttemptAt.After(arg.Now) {
 		return SlackDelivery{}, corestore.ErrInvalidPage
 	}
 	row, err := s.queries.ClaimSlackDelivery(ctx, arg)
@@ -142,4 +144,15 @@ func (s *session) FinishSlackDelivery(ctx context.Context, arg FinishSlackDelive
 func (s *session) SlackIntegration(ctx context.Context) (SlackIntegration, error) {
 	row, err := s.queries.SlackIntegration(ctx, s.organization)
 	return row, mapError(ctx, err)
+}
+
+func (s *session) SuppressSlackDelivery(ctx context.Context, arg SuppressSlackDeliveryInput) (SlackDelivery, error) {
+	if err := s.checkOrganization(arg.OrganizationID); err != nil {
+		return SlackDelivery{}, err
+	}
+	if arg.At.IsZero() || arg.ExpectedAttempts < 0 {
+		return SlackDelivery{}, corestore.ErrInvalidPage
+	}
+	row, err := s.queries.SuppressSlackDelivery(ctx, arg)
+	return row, updated(ctx, err)
 }
