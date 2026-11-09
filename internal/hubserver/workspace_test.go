@@ -462,6 +462,11 @@ func newWorkspaceRunnerFixture(t *testing.T) *workspaceRunnerFixture {
 	// the owner tuple, and a refusal from the workspace session contract's limits would only
 	// hide it.
 	f := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50})
+	return newWorkspaceRunnerFixtureFor(t, f)
+}
+
+func newWorkspaceRunnerFixtureFor(t *testing.T, f workspaceFixture) *workspaceRunnerFixture {
+	t.Helper()
 	r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	// The capacity is generous so that one fixture can hold several
 	// workspaces at once; the claim gate, not the host, is what these tests
@@ -1364,11 +1369,12 @@ func (f *workspaceRunnerFixture) reportRunner(t *testing.T, capacity int, capabi
 // that is checked at the claim, the bind and every heartbeat.
 func TestWorkspaceTerminalIsolationIsEnforced(t *testing.T) {
 	t.Parallel()
+	base := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50})
 	withTerminal := workspacesession.Capabilities{Files: true, Diff: true, Terminal: true}
 
 	t.Run("the claim gate skips a user-isolation runner", func(t *testing.T) {
 		t.Parallel()
-		f := newWorkspaceRunnerFixture(t)
+		f := newWorkspaceRunnerFixtureFor(t, base)
 		f.reportRunner(t, 8, withTerminal, workspacesession.IsolationUser)
 		session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 		f.requireTerminal(t, session.ID)
@@ -1402,7 +1408,7 @@ func TestWorkspaceTerminalIsolationIsEnforced(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newWorkspaceRunnerFixture(t)
+			f := newWorkspaceRunnerFixtureFor(t, base)
 			f.reportRunner(t, 8, withTerminal, workspacesession.IsolationContainer)
 			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 			f.requireTerminal(t, session.ID)
@@ -1433,10 +1439,11 @@ func TestWorkspaceTerminalIsolationIsEnforced(t *testing.T) {
 // out the lease TTL.
 func TestWorkspaceUnbindReleasesTheLease(t *testing.T) {
 	t.Parallel()
+	base := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50})
 	for _, reason := range []string{workspacesession.ReasonRunnerRestarted, workspacesession.ReasonClosedByActor, ""} {
 		t.Run("reason "+reason, func(t *testing.T) {
 			t.Parallel()
-			f := newWorkspaceRunnerFixture(t)
+			f := newWorkspaceRunnerFixtureFor(t, base)
 			f.reportRunner(t, 1, workspaceTestCapabilities, workspacesession.IsolationContainer)
 			bind, lease := f.bound(t)
 			second := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
