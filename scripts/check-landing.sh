@@ -1,5 +1,10 @@
 set -euo pipefail
 
+if [ "${1:-}" != --supervised ]; then
+    exec python3 scripts/check-landing.py supervise "$0" "$@"
+fi
+shift
+
 base_ref=${1:?base ref required}
 procs=${2:?process budget required}
 linter=${3:?linter path required}
@@ -11,13 +16,30 @@ export GOMAXPROCS=1
 GOTOOLCHAIN=$(awk '$1 == "toolchain" {print $2}' go.mod)
 export GOTOOLCHAIN=${GOTOOLCHAIN:-auto}
 source scripts/check-evidence.sh
-started=$SECONDS
-trap 'result=$?; printf "check-landing finished: exit=%s wall=%ss\n" "$result" "$((SECONDS - started))"' EXIT
 
 head=$(git rev-parse --verify 'HEAD^{commit}')
 base_head=$(git rev-parse --verify "${base_ref}^{commit}")
 base=$base_head
 printf 'Landing comparison: base=%s head=%s\n' "$base" "$head"
+
+if [ -z "${TMPDIR:-}" ] || [ ! -d "$TMPDIR" ] || [ ! -w "$TMPDIR" ]; then
+    printf 'Landing PostgreSQL tests require a writable job TMPDIR.\n' >&2
+    exit 1
+fi
+if ! command -v initdb >/dev/null || ! command -v postgres >/dev/null; then
+    if command -v pg_config >/dev/null; then
+        if postgres_bin=$(pg_config --bindir) && [ -d "$postgres_bin" ]; then
+            export PATH="$postgres_bin:$PATH"
+        fi
+    fi
+fi
+for postgres_tool in initdb postgres; do
+    if ! command -v "$postgres_tool" >/dev/null; then
+        printf 'Landing PostgreSQL tests require %s in the job PATH or pg_config bindir.\n' "$postgres_tool" >&2
+        exit 1
+    fi
+done
+export DETENT_TEST_POSTGRES=binary
 
 check_with_evidence sqlite-policy python3 scripts/check-sqlite-policy.py "$base" "$head"
 check_with_evidence assets make -j1 assets generate-docs TEST_PROCS="$procs"
@@ -87,8 +109,18 @@ while IFS=$'\t' read -r scope package; do
         wide) lint_scope=() ;;
     esac
 done <<< "$selection"
+while IFS= read -r package; do
+    if ! [[ " ${test_packages[*]+${test_packages[*]}} " == *" $package "* ]]; then
+        test_packages+=("$package")
+    fi
+done < <(python3 scripts/check-landing.py packages)
+sorted_packages=()
+while IFS= read -r package; do
+    sorted_packages+=("$package")
+done < <(printf '%s\n' "${test_packages[@]}" | sort)
+test_packages=("${sorted_packages[@]}")
 if [ "${#test_packages[@]}" -gt 0 ]; then
-    check_with_evidence unit-short env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=10m "${test_packages[@]}"
+    check_with_evidence unit-short python3 scripts/check-landing.py tests -p "$procs" -short -timeout=10m "${test_packages[@]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     make -j1 "$linter" TEST_PROCS="$procs"

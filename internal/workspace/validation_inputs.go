@@ -86,7 +86,7 @@ func landingRecipeInputsMatch(dir string) bool {
 			return false
 		}
 	}
-	for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py"} {
+	for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py", "scripts/check-landing.py"} {
 		actual, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return false

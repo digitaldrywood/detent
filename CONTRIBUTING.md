@@ -33,7 +33,27 @@ Do not start a second server on `127.0.0.1:4000` when another Detent process use
 
 ## Validation
 
-While working, run focused tests for the packages you change. `make check-landing` is the landing gate and `make check` the optional full local diagnostic; [WORKFLOW.md](WORKFLOW.md#validation) lists what each runs. Run `make generate` after changing templates, SQL queries, migrations or Tailwind inputs.
+While working, run focused tests for the packages you change. Normal landing uses the short suite through `make check-landing`. Reserve full validation for final recovery confirmation and releases; [WORKFLOW.md](WORKFLOW.md#validation) lists the targets. Run `make generate` after changing templates, SQL queries, migrations or Tailwind inputs.
+
+Landing jobs also need Bash, Python 3, a writable job `TMPDIR`, and PostgreSQL
+17 or 18's `initdb` and `postgres` executables. The gate discovers PostgreSQL
+through the job `PATH`, falling back to [`pg_config --bindir`](https://www.postgresql.org/docs/17/app-pgconfig.html).
+It sets `DETENT_TEST_POSTGRES=binary`; the existing `pgtest` owner creates
+disposable test databases under that `TMPDIR` and tears down its server. These
+fixtures never hold runner application state. On Darwin, `pgtest` places only
+the Unix socket in a short directory when the job path exceeds the socket limit.
+
+The gate always includes the small PostgreSQL contract in
+`scripts/check-landing.py`, alongside the packages selected by the source diff.
+Its JSON inventory requires every named scenario to run and pass, including its
+subtests and package completion. Missing PostgreSQL skips fail the gate.
+The inventory reports no-test-file packages, subprocess helpers, short-mode
+integration exclusions, platform exclusions and opt-in previews or smoke tests
+separately. There is no missing-configuration skip exemption; the pgtest
+negative proof verifies a failing child process. Other skips are reported as
+unclassified for review; none can satisfy a required scenario.
+SIGTERM and SIGINT to the gate terminate the test process group; `pgtest`'s
+lifetime supervisor shuts down each test-owned server when its binary exits.
 
 ## UI Surface Guardrails
 

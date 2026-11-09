@@ -7,7 +7,7 @@ import (
 
 const operatorSkillPath = "internal/operatorskill/detent-operator-introspection/SKILL.md"
 
-//go:embed static/** internal/operatorskill/detent-operator-introspection/SKILL.md Makefile scripts/check-landing.sh scripts/check-evidence.sh scripts/check-sqlite-policy.py
+//go:embed static/** internal/operatorskill/detent-operator-introspection/SKILL.md Makefile scripts/check-landing.sh scripts/check-evidence.sh scripts/check-sqlite-policy.py scripts/check-landing.py
 var embeddedFiles embed.FS
 
 func ValidationFS() fs.FS {

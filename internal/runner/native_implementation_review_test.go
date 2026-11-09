@@ -331,7 +331,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				}
 				runRunnerGit(t, source, "add", "internal/invariants/sqlite_policy.json")
 				runRunnerGit(t, source, "commit", "-m", "initialize storage policy")
-				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py"} {
+				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py", "scripts/check-landing.py"} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
 					if err != nil {
 						t.Fatal(err)
@@ -384,10 +384,26 @@ elif [ "$1" = build ]; then
     echo build >> .git/invocations
 elif [ "$1" = list ]; then
     printf '{"Dir":"%s","ImportPath":"example.test/project"}\n' "$PWD"
+elif [ "$1" = test ]; then
+    python3 - <<'PY'
+import json
+import runpy
+
+for package, tests in runpy.run_path("scripts/check-landing.py")["REQUIRED_POSTGRES"].items():
+    for test in tests:
+        for action in ("run", "pass"):
+            print(json.dumps({"Action": action, "Package": package, "Test": test}))
+    print(json.dumps({"Action": "pass", "Package": package}))
+PY
 fi
 `
 				if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool), 0o700); err != nil {
 					t.Fatal(err)
+				}
+				for _, tool := range []string{"initdb", "postgres"} {
+					if err := os.WriteFile(filepath.Join(bin, tool), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
 				}
 				searchPath := bin + string(os.PathListSeparator) + os.Getenv("PATH")
 				t.Setenv("PATH", searchPath)

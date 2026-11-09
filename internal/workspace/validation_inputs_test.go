@@ -12,25 +12,27 @@ import (
 func TestLandingRecipeInputsMatch(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, helper string
-		want         bool
+		name, file, helper string
+		want               bool
 	}{
 		{name: "embedded recipe", helper: "unchanged", want: true},
-		{name: "modified SQLite helper rejected", helper: "modified"},
-		{name: "missing SQLite helper rejected", helper: "missing"},
+		{name: "modified SQLite helper rejected", file: "scripts/check-sqlite-policy.py", helper: "modified"},
+		{name: "missing SQLite helper rejected", file: "scripts/check-sqlite-policy.py", helper: "missing"},
+		{name: "modified PostgreSQL helper rejected", file: "scripts/check-landing.py", helper: "modified"},
+		{name: "missing PostgreSQL helper rejected", file: "scripts/check-landing.py", helper: "missing"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py"} {
-				if name == "scripts/check-sqlite-policy.py" && tt.helper == "missing" {
+			for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py", "scripts/check-landing.py"} {
+				if name == tt.file && tt.helper == "missing" {
 					continue
 				}
 				data, err := fs.ReadFile(detent.ValidationFS(), name)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if name == "scripts/check-sqlite-policy.py" && tt.helper == "modified" {
+				if name == tt.file && tt.helper == "modified" {
 					data = []byte("raise SystemExit(0)\n")
 				}
 				file := filepath.Join(root, filepath.FromSlash(name))
