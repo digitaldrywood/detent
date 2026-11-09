@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -1935,6 +1936,8 @@ func TestWorkspaceRelayResumeReleasesAcknowledgedFrames(t *testing.T) {
 // a late joiner its workspace is over instead of leaving it waiting.
 func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *testing.T) {
 	t.Parallel()
+	f := newRelayFixture(t)
+	source := f.record(t)
 	for _, test := range []struct {
 		name     string
 		state    string
@@ -1952,13 +1955,24 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newRelayFixture(t)
+			id := newNativeID("ws")
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), source.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.(postgres.WorkspaceWriter).CreateWorkspaceSession(t.Context(), postgres.WorkspaceCreate{
+					OrganizationID: source.OrganizationID, ProjectID: source.ProjectID, ID: id,
+					SubjectWorkItemID: source.SubjectWorkItemID, Requires: source.Requires,
+					IdleTimeoutSeconds: int32(source.IdleTimeoutSeconds), ExpiresAt: source.ExpiresAt,
+					RequestedExpiresAt: source.RequestedExpiresAt, CreatedBy: source.CreatedBy, CreatedAt: source.CreatedAt,
+				})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := workspaceTestDB(t, f.service).ExecContext(t.Context(),
-				"UPDATE workspace_sessions SET state = $1 WHERE id = $2", test.state, f.workspace); err != nil {
+				"UPDATE workspace_sessions SET state = $1 WHERE id = $2", test.state, id); err != nil {
 				t.Fatal(err)
 			}
 			connection := &relayConnection{
-				id: newNativeID("relayconn"), workspaceID: f.workspace, runner: test.runner,
+				id: newNativeID("relayconn"), workspaceID: id, runner: test.runner,
 				scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID},
 				out:   make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
 			}

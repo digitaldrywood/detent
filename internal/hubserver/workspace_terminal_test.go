@@ -544,6 +544,10 @@ func TestWorkspaceTerminalRecordingEndpoints(t *testing.T) {
 // member on an organization that runs terminals as the runner's own user.
 func TestRefuseTerminalGrantMatrix(t *testing.T) {
 	t.Parallel()
+	fixture := &relayFixture{
+		nativeFixture: newNativeFixture(t, newWorkspaceNativeService(t, Config{}), "", "Example terminal project"),
+		clock:         time.Now().UTC().Truncate(time.Microsecond),
+	}
 
 	tests := []struct {
 		name      string
@@ -615,23 +619,24 @@ func TestRefuseTerminalGrantMatrix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f := newRelayFixture(t, withTerminal)
-			f.service.workspaces.config.Terminal.Enabled = tt.enabled
-			f.service.workspaces.config.Terminal.Isolation = tt.isolation
+			workspace := newWorkspaceService(fixture.service, WorkspaceConfig{
+				Enabled:  true,
+				Terminal: WorkspaceTerminalConfig{Enabled: tt.enabled, Isolation: tt.isolation},
+			})
 			subject := "user_" + strings.Map(func(r rune) rune {
 				if r == ' ' {
 					return '_'
 				}
 				return r
 			}, tt.name)
-			seedTerminalGrant(t, f, subject, tt.role, tt.canWrite, tt.runners)
+			seedTerminalGrant(t, fixture, subject, tt.role, tt.canWrite, tt.runners)
 
-			record := f.record(t)
+			record := workspaceRecord{OrganizationID: fixture.project.OrganizationID, ProjectID: fixture.project.ID}
 			connection := &relayConnection{
-				id: "relayconn_test", workspaceID: f.workspace, subject: subject,
+				id: "relayconn_test", subject: subject,
 				sessionHash: "hash_" + subject, hostedRole: tt.role, supportReason: tt.support,
 			}
-			got := f.service.workspaces.refuseTerminal(t.Context(), record, connection, terminalOpenFrame())
+			got := workspace.refuseTerminal(t.Context(), record, connection, terminalOpenFrame())
 			if got != tt.want {
 				t.Fatalf("refuseTerminal() = %q, want %q", got, tt.want)
 			}
