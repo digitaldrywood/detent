@@ -1437,12 +1437,11 @@ func demoRuntimeStoreEvidence(now time.Time, workflowRows int64) telemetry.Runti
 		newest = &newestValue
 	}
 	return telemetry.RuntimeStoreEvidence{
-		Backend:          "sqlite",
-		Status:           "healthy",
-		Healthy:          true,
-		Path:             "/tmp/detent-screenshots/detent.db",
-		MigrationStatus:  "applied through 6",
-		MigrationVersion: 6,
+		Backend:         "postgres",
+		Status:          "healthy",
+		Healthy:         true,
+		Path:            "Hub",
+		MigrationStatus: "current",
 		Tables: []telemetry.RuntimeStoreTableEvidence{
 			{Name: "detent_runs", Scope: "fleet", RowCount: 7},
 			{Name: "codex_sessions", Scope: "fleet", RowCount: 22},
