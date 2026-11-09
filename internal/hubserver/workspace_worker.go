@@ -253,14 +253,6 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 // no longer queued, so this cannot take one out from under it; what it
 // prevents is a row that is running with nothing named as running it.
 
-// workerActionRunClaimant is what claimed_by holds for a run the runner
-// started itself and reported through the worker endpoint. It names the runner
-// rather than a stream because there is no stream: this run has no relay state
-// at all, which is exactly why the workspace sweep exists for it.
-func workerActionRunClaimant(record workspaceRecord) string {
-	return "runner:" + record.RunnerID
-}
-
 // workerRelayIdentity reads the workspace tuple from the upgrade's headers.
 func workerRelayIdentity(c echo.Context) (workspaceWorkerIdentity, error) {
 	lease := strings.TrimSpace(c.Request().Header.Get("X-Detent-Lease"))

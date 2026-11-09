@@ -262,6 +262,64 @@ func (q *Queries) ExpiringWorkspaces(ctx context.Context, arg ExpiringWorkspaces
 	return items, nil
 }
 
+const lockWorkspaceClaimSession = `-- name: LockWorkspaceClaimSession :one
+SELECT s.organization_id, s.project_id, s.id, s.subject_work_item_id, s.attempt_id, s.ref, s.head_sha, s.runner_id, s.machine_id, s.lease_id, s.fencing_token, s.state, s.reason, s.requires, s.capabilities, s.isolation, s.worktree, s.machine_hostname, s.worktree_path, s.read_only, s.idle_timeout_seconds, s.expires_at, s.requested_expires_at, s.opened_at, s.last_activity_at, s.last_heartbeat_at, s.rebind_deadline, s.created_by, s.revision, s.created_at, s.updated_at,i.closed_at
+FROM workspace_items i JOIN workspace_sessions s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.id=i.workspace_id
+WHERE i.organization_id=$1 AND i.project_id=$2 AND i.work_item_id=$3
+FOR UPDATE OF i,s
+`
+
+type LockWorkspaceClaimSessionParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+}
+
+type LockWorkspaceClaimSessionRow struct {
+	WorkspaceSession WorkspaceSession
+	ClosedAt         *time.Time
+}
+
+func (q *Queries) LockWorkspaceClaimSession(ctx context.Context, arg LockWorkspaceClaimSessionParams) (LockWorkspaceClaimSessionRow, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceClaimSession, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	var i LockWorkspaceClaimSessionRow
+	err := row.Scan(
+		&i.WorkspaceSession.OrganizationID,
+		&i.WorkspaceSession.ProjectID,
+		&i.WorkspaceSession.ID,
+		&i.WorkspaceSession.SubjectWorkItemID,
+		&i.WorkspaceSession.AttemptID,
+		&i.WorkspaceSession.Ref,
+		&i.WorkspaceSession.HeadSHA,
+		&i.WorkspaceSession.RunnerID,
+		&i.WorkspaceSession.MachineID,
+		&i.WorkspaceSession.LeaseID,
+		&i.WorkspaceSession.FencingToken,
+		&i.WorkspaceSession.State,
+		&i.WorkspaceSession.Reason,
+		&i.WorkspaceSession.Requires,
+		&i.WorkspaceSession.Capabilities,
+		&i.WorkspaceSession.Isolation,
+		&i.WorkspaceSession.Worktree,
+		&i.WorkspaceSession.MachineHostname,
+		&i.WorkspaceSession.WorktreePath,
+		&i.WorkspaceSession.ReadOnly,
+		&i.WorkspaceSession.IdleTimeoutSeconds,
+		&i.WorkspaceSession.ExpiresAt,
+		&i.WorkspaceSession.RequestedExpiresAt,
+		&i.WorkspaceSession.OpenedAt,
+		&i.WorkspaceSession.LastActivityAt,
+		&i.WorkspaceSession.LastHeartbeatAt,
+		&i.WorkspaceSession.RebindDeadline,
+		&i.WorkspaceSession.CreatedBy,
+		&i.WorkspaceSession.Revision,
+		&i.WorkspaceSession.CreatedAt,
+		&i.WorkspaceSession.UpdatedAt,
+		&i.ClosedAt,
+	)
+	return i, err
+}
+
 const openWorkspaceAttempt = `-- name: OpenWorkspaceAttempt :one
 SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND state NOT IN ('closed','failed')
 `
@@ -427,6 +485,63 @@ func (q *Queries) UpdateWorkspaceSession(ctx context.Context, arg UpdateWorkspac
 		&i.Revision,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const workspaceClaimSession = `-- name: WorkspaceClaimSession :one
+SELECT s.organization_id, s.project_id, s.id, s.subject_work_item_id, s.attempt_id, s.ref, s.head_sha, s.runner_id, s.machine_id, s.lease_id, s.fencing_token, s.state, s.reason, s.requires, s.capabilities, s.isolation, s.worktree, s.machine_hostname, s.worktree_path, s.read_only, s.idle_timeout_seconds, s.expires_at, s.requested_expires_at, s.opened_at, s.last_activity_at, s.last_heartbeat_at, s.rebind_deadline, s.created_by, s.revision, s.created_at, s.updated_at,i.closed_at
+FROM workspace_items i JOIN workspace_sessions s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.id=i.workspace_id
+WHERE i.organization_id=$1 AND i.project_id=$2 AND i.work_item_id=$3
+`
+
+type WorkspaceClaimSessionParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+}
+
+type WorkspaceClaimSessionRow struct {
+	WorkspaceSession WorkspaceSession
+	ClosedAt         *time.Time
+}
+
+func (q *Queries) WorkspaceClaimSession(ctx context.Context, arg WorkspaceClaimSessionParams) (WorkspaceClaimSessionRow, error) {
+	row := q.db.QueryRow(ctx, workspaceClaimSession, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	var i WorkspaceClaimSessionRow
+	err := row.Scan(
+		&i.WorkspaceSession.OrganizationID,
+		&i.WorkspaceSession.ProjectID,
+		&i.WorkspaceSession.ID,
+		&i.WorkspaceSession.SubjectWorkItemID,
+		&i.WorkspaceSession.AttemptID,
+		&i.WorkspaceSession.Ref,
+		&i.WorkspaceSession.HeadSHA,
+		&i.WorkspaceSession.RunnerID,
+		&i.WorkspaceSession.MachineID,
+		&i.WorkspaceSession.LeaseID,
+		&i.WorkspaceSession.FencingToken,
+		&i.WorkspaceSession.State,
+		&i.WorkspaceSession.Reason,
+		&i.WorkspaceSession.Requires,
+		&i.WorkspaceSession.Capabilities,
+		&i.WorkspaceSession.Isolation,
+		&i.WorkspaceSession.Worktree,
+		&i.WorkspaceSession.MachineHostname,
+		&i.WorkspaceSession.WorktreePath,
+		&i.WorkspaceSession.ReadOnly,
+		&i.WorkspaceSession.IdleTimeoutSeconds,
+		&i.WorkspaceSession.ExpiresAt,
+		&i.WorkspaceSession.RequestedExpiresAt,
+		&i.WorkspaceSession.OpenedAt,
+		&i.WorkspaceSession.LastActivityAt,
+		&i.WorkspaceSession.LastHeartbeatAt,
+		&i.WorkspaceSession.RebindDeadline,
+		&i.WorkspaceSession.CreatedBy,
+		&i.WorkspaceSession.Revision,
+		&i.WorkspaceSession.CreatedAt,
+		&i.WorkspaceSession.UpdatedAt,
+		&i.ClosedAt,
 	)
 	return i, err
 }

@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -90,36 +89,6 @@ func terminalRecordingPath(r terminalRecordingRecord) string {
 		"/workspaces/" + r.WorkspaceID + "/terminal-recordings/" + r.ID
 }
 
-// terminalRecordingColumns is the row every read selects.
-const terminalRecordingColumns = `id, workspace_id, organization_id, project_id, relay_session_id, stream_id,
- principal_id, subject, isolation, support_reason, started_at, finished_at, terminal_cols, terminal_rows, cast_text, cast_bytes, truncated`
-
-// scanTerminalRecording reads one row.
-func scanTerminalRecording(scan func(...any) error) (terminalRecordingRecord, error) {
-	var record terminalRecordingRecord
-	var started string
-	var finished sql.NullString
-	if err := scan(&record.ID, &record.WorkspaceID, &record.OrganizationID, &record.ProjectID,
-		&record.RelaySessionID, &record.StreamID, &record.PrincipalID, &record.Subject,
-		&record.Isolation, &record.SupportReason, &started, &finished,
-		&record.Cols, &record.Rows, &record.Cast, &record.Bytes, &record.Truncated); err != nil {
-		return terminalRecordingRecord{}, err
-	}
-	parsed, err := parseTimeValue(started)
-	if err != nil {
-		return terminalRecordingRecord{}, fmt.Errorf("decode terminal recording started_at: %w", err)
-	}
-	record.StartedAt = parsed
-	if finished.Valid {
-		parsed, err := parseTimeValue(finished.String)
-		if err != nil {
-			return terminalRecordingRecord{}, fmt.Errorf("decode terminal recording finished_at: %w", err)
-		}
-		record.FinishedAt = &parsed
-	}
-	return record, nil
-}
-
 // writeTerminalRecording stores one finished recording.
 //
 // It is an upsert on the stream rather than an insert, because two teardown
@@ -131,9 +100,6 @@ func scanTerminalRecording(scan func(...any) error) (terminalRecordingRecord, er
 // optionally narrowed to one relay session.
 
 // readTerminalRecordingByID reads one recording inside a workspace.
-
-// terminalRecordingPage bounds one listing.
-const terminalRecordingPage = 50
 
 // terminalRecordingReadable is the terminal contract's audience, and it is deliberately
 // narrower than the issue's.

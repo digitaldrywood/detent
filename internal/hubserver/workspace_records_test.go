@@ -175,6 +175,125 @@ func TestPostgresWorkspaceRoutesPersistSessionsAndDispatch(t *testing.T) {
 	}
 }
 
+func TestPostgresWorkspaceClaimUsesCurrentTenantFacts(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service := newWorkspaceNativeService(t, Config{now: func() time.Time { return now }, Workspace: &WorkspaceConfig{Enabled: true, maintenanceTicks: make(chan time.Time), Terminal: WorkspaceTerminalConfig{Enabled: true, Isolation: workspacesession.IsolationContainer}}})
+	type candidate struct {
+		scope nativeScope
+		item  tracker.NativeWorkItemID
+		want  bool
+	}
+	var saved []candidate
+	evaluate := func(t *testing.T, record candidate, at time.Time, isolation string) {
+		t.Helper()
+		check := func(r tenantstore.Reader) error {
+			eligible, err := workspaceClaimEligible(t.Context(), r.(workspaceReader), record.scope, record.item, time.Hour, isolation, at)
+			if err != nil {
+				return err
+			}
+			if eligible != record.want {
+				t.Errorf("workspace claim eligible=%v want %v", eligible, record.want)
+			}
+			return nil
+		}
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), record.scope.organization, corestore.Serving, check); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), record.scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return check(w) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		fixture := newNativeFixture(t, service, organization, "Workspace claim project")
+		runner := prepareRunner(t, fixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+		runner.enroll(t)
+		credential, status, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(runner.redemption.Credential), "", "")
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("runner authentication status=%d error=%v", status, err)
+		}
+		scope := nativeScope{organization: organization, project: fixture.project.ID, credential: credential}
+		for index := range 2 {
+			subject := fixture.create(t, "Workspace claim subject")
+			response := performHubAPIRequest(t, service, http.MethodPost, fixture.base+"/workspaces", fixture.token, map[string]any{"idempotency_key": fmt.Sprintf("claim-workspace-%d", index), "work_item_id": subject.WorkItemID, "requires": []string{"files"}})
+			requireNativeStatus(t, response, http.StatusCreated)
+			var session workspacesession.Session
+			decodeHubResponse(t, response, &session)
+			if _, err := workspaceTestDB(t, service).ExecContext(t.Context(), "UPDATE workspace_sessions SET requires='{files,terminal}' WHERE organization_id=$1 AND project_id=$2 AND id=$3", organization, fixture.project.ID, session.ID); err != nil {
+				t.Fatal(err)
+			}
+			record := candidate{scope: scope}
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				item, err := r.(workspaceReader).WorkspaceDispatchItem(t.Context(), fixture.project.ID, session.ID)
+				record.item = tracker.NativeWorkItemID(item)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if index == 0 {
+				evaluate(t, record, now, workspacesession.IsolationContainer)
+			}
+			capabilities := workspacesession.Capabilities{Files: true, Terminal: true}
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, fixture.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "capacity_configuration": workspaceTestCapacity(2, now), "workspace_capabilities": capabilities, "workspace_isolation": workspacesession.IsolationContainer}), http.StatusOK)
+			record.want = true
+			evaluate(t, record, now, workspacesession.IsolationContainer)
+			for _, test := range []struct {
+				name string
+				at   time.Time
+			}{
+				{name: "heartbeat boundary", at: now.Add(runnerauth.HeartbeatTimeout)},
+				{name: "request deadline", at: now.Add(service.workspaces.config.RequestTimeout)},
+			} {
+				t.Run(fmt.Sprintf("%s/%d/%s", organization, index, test.name), func(t *testing.T) {
+					refused := record
+					refused.want = false
+					evaluate(t, refused, test.at, workspacesession.IsolationContainer)
+				})
+			}
+			for _, test := range []struct {
+				name         string
+				capabilities workspacesession.Capabilities
+				isolation    string
+			}{
+				{name: "missing required surface", capabilities: workspacesession.Capabilities{Files: true}, isolation: workspacesession.IsolationContainer},
+				{name: "insufficient terminal isolation", capabilities: capabilities, isolation: workspacesession.IsolationUser},
+			} {
+				t.Run(fmt.Sprintf("%s/%d/%s", organization, index, test.name), func(t *testing.T) {
+					if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.ReplaceRunnerWorkspaceReport(t.Context(), runner.binding.RunnerID, test.capabilities, test.isolation)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					refused := record
+					refused.want = false
+					evaluate(t, refused, now, workspacesession.IsolationContainer)
+				})
+			}
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.ReplaceRunnerWorkspaceReport(t.Context(), runner.binding.RunnerID, capabilities, workspacesession.IsolationContainer); err != nil {
+					return err
+				}
+				if index == 0 {
+					return w.CloseWorkspaceItem(t.Context(), fixture.project.ID, record.item, now)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			record.want = index != 0
+			evaluate(t, record, now, workspacesession.IsolationContainer)
+			saved = append(saved, record)
+		}
+	}
+	service = reopenWorkspaceHub(t, service)
+	for index, record := range saved {
+		evaluate(t, record, now, workspacesession.IsolationContainer)
+		foreign := record
+		foreign.scope.project = saved[(index+2)%len(saved)].scope.project
+		foreign.want = false
+		evaluate(t, foreign, now, workspacesession.IsolationContainer)
+	}
+}
+
 func workspaceTestDB(t *testing.T, service *Service) *sql.DB {
 	t.Helper()
 	value, ok := projectRecordDatabases.Load(service.database.postgres)

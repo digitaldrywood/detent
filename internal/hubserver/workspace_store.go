@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -209,17 +208,6 @@ const openWorkspaceStates = `('requested', 'starting', 'ready', 'idle', 'unreach
 // of them one actor holds, in one read: the two limits of the workspace session contract are
 // checked together so a request cannot pass one and race past the other.
 
-// workspaceItemRecord associates a workspace with the native issue that
-// dispatches it.
-type workspaceItemRecord struct {
-	WorkItemID     string
-	WorkspaceID    string
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	CreatedAt      time.Time
-	ClosedAt       *time.Time
-}
-
 // insertWorkspaceItem records the association.
 
 // closeWorkspaceItem marks the association closed, which is what returns the
@@ -229,35 +217,6 @@ type workspaceItemRecord struct {
 
 // readWorkspaceItemByWorkspace resolves the dispatch issue a workspace was
 // given, which is the direction the close path reads it in.
-
-// workspaceItemQuery selects one association row, without its filter.
-const workspaceItemQuery = `SELECT work_item_id, workspace_id, organization_id, project_id, created_at, closed_at
-FROM workspace_items`
-
-func scanWorkspaceItem(row *sql.Row) (workspaceItemRecord, bool, error) {
-	var record workspaceItemRecord
-	var created string
-	var closed sql.NullString
-	err := row.Scan(&record.WorkItemID, &record.WorkspaceID,
-		&record.OrganizationID, &record.ProjectID, &created, &closed)
-	if errors.Is(err, sql.ErrNoRows) {
-		return record, false, nil
-	}
-	if err != nil {
-		return record, false, fmt.Errorf("read workspace item: %w", err)
-	}
-	if record.CreatedAt, err = parseTimeValue(created); err != nil {
-		return record, false, fmt.Errorf("decode workspace item created_at: %w", err)
-	}
-	if closed.Valid {
-		parsed, err := parseTimeValue(closed.String)
-		if err != nil {
-			return record, false, fmt.Errorf("decode workspace item closed_at: %w", err)
-		}
-		record.ClosedAt = &parsed
-	}
-	return record, true, nil
-}
 
 // readWorkspaceByItem resolves the workspace an issue dispatches, open or not.
 

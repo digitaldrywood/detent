@@ -69,3 +69,14 @@ SELECT * FROM workspace_sessions WHERE organization_id=$1 AND id=ANY($2::text[])
 
 -- name: WorkspaceSubjectActors :many
 SELECT native_id, actor_principal_id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=ANY($3::text[]);
+
+-- name: WorkspaceClaimSession :one
+SELECT sqlc.embed(s),i.closed_at
+FROM workspace_items i JOIN workspace_sessions s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.id=i.workspace_id
+WHERE i.organization_id=$1 AND i.project_id=$2 AND i.work_item_id=$3;
+
+-- name: LockWorkspaceClaimSession :one
+SELECT sqlc.embed(s),i.closed_at
+FROM workspace_items i JOIN workspace_sessions s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.id=i.workspace_id
+WHERE i.organization_id=$1 AND i.project_id=$2 AND i.work_item_id=$3
+FOR UPDATE OF i,s;

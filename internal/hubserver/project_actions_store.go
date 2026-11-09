@@ -99,24 +99,6 @@ func actionRunOutputPath(r actionRunRecord) string {
 const actionColumns = `id, organization_id, project_id, name, command, keybinding, icon, preview_url,
  open_preview, run_on_worktree_creation, created_by, revision, created_at, updated_at`
 
-func scanAction(row interface{ Scan(...any) error }) (actionRecord, error) {
-	var record actionRecord
-	var created, updated string
-	if err := row.Scan(&record.ID, &record.OrganizationID, &record.ProjectID, &record.Name,
-		&record.Command, &record.Keybinding, &record.Icon, &record.PreviewURL, &record.OpenPreview,
-		&record.RunOnWorktreeCreation, &record.CreatedBy, &record.Revision, &created, &updated); err != nil {
-		return record, err
-	}
-	var err error
-	if record.CreatedAt, err = parseTimeValue(created); err != nil {
-		return record, fmt.Errorf("decode action %s created_at: %w", record.ID, err)
-	}
-	if record.UpdatedAt, err = parseTimeValue(updated); err != nil {
-		return record, fmt.Errorf("decode action %s updated_at: %w", record.ID, err)
-	}
-	return record, nil
-}
-
 // insertProjectAction writes a new action at revision 1.
 func insertProjectAction(ctx context.Context, tx *sql.Tx, record actionRecord) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO project_actions (`+actionColumns+`)
@@ -134,43 +116,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // readProjectAction reads one action inside a scope, so an action of another
 // project is simply not found.
 
-// Authoring order, which is also the order the run-on-worktree-creation set
-// runs in: an author who wants install before build writes install first, and
-// nothing else in the contract would say so. It is project_actions_project_idx's
-// own order, so both listings are index scans.
-//
-// Neither listing takes a cursor. MaxActionsPerProject bounds the set at 50 and
-// the create endpoint refuses the fifty-first, so one page is always the whole
-// catalogue -- the same reason listNativeLabels answers without one. A cursor
-// here would be a parameter every client had to loop over to learn what it
-// already had.
-const projectActionOrder = ` ORDER BY created_at, id`
-
 // readProjectActions lists a project's whole catalogue.
 
 // readRunOnCreationActions lists the actions a fresh worktree runs. It is
 // written out rather than folded into readProjectActions behind a flag: the two
 // have different callers, different audiences -- one a person's menu, one the
 // bind response -- and a reader of either should see the whole predicate.
-
-func scanActions(rows *sql.Rows, queryErr error) ([]actionRecord, error) {
-	if queryErr != nil {
-		return nil, fmt.Errorf("query project actions: %w", queryErr)
-	}
-	defer func() { _ = rows.Close() }()
-	records := []actionRecord{}
-	for rows.Next() {
-		record, err := scanAction(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate project actions: %w", err)
-	}
-	return records, nil
-}
 
 // countProjectActions reports how many actions a project holds, which is what
 // MaxActionsPerProject is applied to inside the create transaction.

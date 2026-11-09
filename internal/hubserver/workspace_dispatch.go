@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -175,6 +177,83 @@ func workspaceClaimable(record workspaceRecord, capabilities workspacesession.Ca
 	return true, ""
 }
 
+func runnerWorkspaceCapabilitiesRecord(ctx context.Context, r tenantstore.Reader, runnerID string, now time.Time) (workspacesession.Capabilities, string, bool, error) {
+	identity, err := r.RunnerIdentity(ctx, runnerID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return workspacesession.Capabilities{}, "", false, nil
+	}
+	if err != nil {
+		return workspacesession.Capabilities{}, "", false, err
+	}
+	if identity.RemovedAt != nil || !identity.ExpiresAt.After(now) || now.Before(identity.LastHeartbeatAt) || !now.Before(identity.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)) {
+		return workspacesession.Capabilities{}, "", false, nil
+	}
+	capabilities, isolation, err := r.RunnerWorkspaceReport(ctx, runnerID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return workspacesession.Capabilities{}, "", false, nil
+	}
+	return capabilities, isolation, err == nil, err
+}
+
+func workspaceClaimEligible(ctx context.Context, r workspaceReader, scope nativeScope, item tracker.NativeWorkItemID, retain time.Duration, isolation string, now time.Time) (bool, error) {
+	row, err := r.WorkspaceClaimSession(ctx, scope.project, item)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	record := workspaceFromRecord(row.WorkspaceSession)
+	deadline := record.RequestedExpiresAt
+	if record.RebindDeadline != nil {
+		deadline = *record.RebindDeadline
+		if record.RunnerID != scope.credential.Runner.RunnerID {
+			return false, nil
+		}
+	}
+	if row.ClosedAt != nil || record.State != workspacesession.StateRequested || !record.ExpiresAt.After(now) || !deadline.After(now) {
+		return false, nil
+	}
+	if _, err := authorizeRunnerRepositoryReader(ctx, r, scope, now); err != nil {
+		return false, err
+	}
+	capabilities, reportedIsolation, fresh, err := runnerWorkspaceCapabilitiesRecord(ctx, r, scope.credential.Runner.RunnerID, now)
+	if err != nil {
+		return false, err
+	}
+	retained, err := retainedWorkspaceRunnerRecord(ctx, r, record, retain, now)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	eligible, _ := workspaceClaimable(record, capabilities, fresh, scope.credential.Runner.RunnerID, retained, reportedIsolation, isolation)
+	return eligible, nil
+}
+
+func retainedWorkspaceRunnerRecord(ctx context.Context, r workspaceReader, record workspaceRecord, retain time.Duration, now time.Time) (string, error) {
+	if record.AttemptID == "" {
+		return "", nil
+	}
+	attempt, err := r.Attempt(ctx, record.AttemptID)
+	if err != nil {
+		return "", err
+	}
+	subject, err := r.WorkItem(ctx, record.ProjectID, tracker.NativeWorkItemID(record.SubjectWorkItemID))
+	if err != nil {
+		return "", err
+	}
+	if attempt.IssueID != subject.ID {
+		return "", corestore.ErrNotFound
+	}
+	if attempt.Status != "running" && !now.Before(attempt.UpdatedAt.Add(retain)) {
+		return "", nil
+	}
+	runner, err := r.RunnerForLease(ctx, attempt.LeaseID)
+	return runner.RunnerID, err
+}
+
 // gateWorkspaceClaim filters the workspace items a claiming runner may take.
 // It returns the set to skip, in the shape the claim loop already uses for
 // coordinator items -- a skipped candidate never consumes the claim, so the
@@ -330,22 +409,6 @@ func retainedWorktreeRunnerFor(ctx context.Context, query nativeQueryer, record 
 // coordinator item is not.
 const notWorkspaceItemClause = `NOT EXISTS (SELECT 1 FROM workspace_items wi
  WHERE wi.work_item_id = i.native_id AND wi.organization_id = i.organization_id AND wi.project_id = i.project_id)`
-
-// updateRunnerWorkspaceReport stores what the runner says it can serve. A
-// heartbeat that omits the report leaves the stored one alone rather than
-// clearing it: an older runner that does not know about workspaces would
-// otherwise revoke its own eligibility on every beat, and the freshness check
-// on last_heartbeat_at is what decides whether a stored report still counts.
-func prepareRunnerWorkspaceReport(capabilities *workspacesession.Capabilities) (string, error) {
-	if capabilities == nil {
-		return "", nil
-	}
-	encoded, err := json.Marshal(capabilities)
-	if err != nil {
-		return "", fmt.Errorf("encode runner workspace capabilities: %w", err)
-	}
-	return string(encoded), nil
-}
 
 // firstTerminalState reports the project's first terminal workflow state, the
 // lane a closed workspace item is transitioned to.

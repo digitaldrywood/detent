@@ -10,6 +10,7 @@ import (
 
 type WorkspaceLifecycleReader interface {
 	WorkspaceReader
+	WorkspaceClaimSession(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (WorkspaceClaimSession, error)
 	WorkspaceSessionsByIDs(context.Context, []string) ([]WorkspaceSession, error)
 	WorkspaceSubjectActors(context.Context, tracker.ProjectID, []string) (map[string]string, error)
 	WorkspaceSessionByID(context.Context, string) (WorkspaceSession, error)
@@ -19,6 +20,17 @@ type WorkspaceLifecycleReader interface {
 	OpenWorkspaceAttempt(context.Context, tracker.ProjectID, string) (WorkspaceSession, error)
 	ActiveWorkspaceSessions(context.Context, string, int) ([]WorkspaceSession, error)
 	RecentWorkspaceSessions(context.Context, tracker.ProjectID, string, string, int) ([]WorkspaceSession, error)
+}
+
+type WorkspaceClaimSession = pgquery.WorkspaceClaimSessionRow
+
+func (s *session) WorkspaceClaimSession(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (WorkspaceClaimSession, error) {
+	if !s.readOnly {
+		row, err := s.queries.LockWorkspaceClaimSession(ctx, pgquery.LockWorkspaceClaimSessionParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: string(item)})
+		return WorkspaceClaimSession(row), mapError(ctx, err)
+	}
+	row, err := s.queries.WorkspaceClaimSession(ctx, pgquery.WorkspaceClaimSessionParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: string(item)})
+	return row, mapError(ctx, err)
 }
 
 func (s *session) WorkspaceSubjectActors(ctx context.Context, project tracker.ProjectID, ids []string) (map[string]string, error) {
