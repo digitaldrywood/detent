@@ -70,9 +70,10 @@ WITH document AS MATERIALIZED (
  SELECT prefix||'w'||term AS lexeme,frequency::double precision/(1+sqlc.arg(token_count)::bigint) AS impact
  FROM prefixes CROSS JOIN ROWS FROM(unnest(sqlc.arg(terms)::text[]),unnest(sqlc.arg(term_frequencies)::bigint[])) AS t(term,frequency)
 ), lexemes AS (
- SELECT term,coalesce(w.impact,0) AS impact FROM (
-  SELECT unnest(tsvector_to_array(sqlc.arg(vector)::tsvector || CASE WHEN d.kind='issue' THEN public.search_metadata_vector(d.organization_id,d.project_id,d.metadata_labels) ELSE ''::tsvector END)) AS term FROM document d UNION SELECT lexeme FROM words
- ) terms LEFT JOIN words w ON w.lexeme=term
+ SELECT coalesce(v.term,w.lexeme) AS term,coalesce(w.impact,0) AS impact
+ FROM (
+  SELECT unnest(tsvector_to_array(sqlc.arg(vector)::tsvector || CASE WHEN d.kind='issue' THEN public.search_metadata_vector(d.organization_id,d.project_id,d.metadata_labels) ELSE ''::tsvector END)) AS term FROM document d
+ ) v FULL JOIN words w ON w.lexeme=v.term
 ), visibility AS MATERIALIZED (
  SELECT d.organization_id,d.id,key FROM document d
  CROSS JOIN LATERAL public.search_scope_keys(d.project_id,d.work_item_id,d.kind,d.scope,d.status,d.parent_archived,d.parent_principal) key

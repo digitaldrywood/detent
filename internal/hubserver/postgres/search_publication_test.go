@@ -64,7 +64,7 @@ CREATE TRIGGER count_search_publication_deletes AFTER DELETE ON search_postings
 		if postings < 1000 {
 			t.Fatalf("fixture has only %d postings", postings)
 		}
-		assertSearchPublicationWork(t, f, d, postings)
+		assertSearchPublicationWork(t, f, d, postings, nil)
 		for _, mode := range []string{"identical refresh", "revision and time", "literal source change", "source word removal"} {
 			t.Run(string(org)+"/"+mode, func(t *testing.T) {
 				staleLiterals := []string{}
@@ -147,6 +147,19 @@ CREATE TRIGGER count_search_publication_deletes AFTER DELETE ON search_postings
 				}
 			})
 		}
+		t.Run(string(org)+"/large source plan", func(t *testing.T) {
+			var dense strings.Builder
+			dense.WriteString(text.Body)
+			for index := range 3000 {
+				fmt.Fprintf(&dense, "%04x ", index)
+			}
+			text.Body = dense.String()
+			expected := d.Revision
+			d.Revision++
+			d.UpdatedAt = d.UpdatedAt.Add(time.Minute)
+			d = f.put(t, d, text, expected)
+			assertSearchPublicationWork(t, f, d, postings, &text)
+		})
 	}
 }
 
@@ -156,18 +169,22 @@ type searchPublicationProbe struct {
 	args      []any
 }
 
-func (p *searchPublicationProbe) QueryRow(ctx context.Context, statement string, args ...any) pgx.Row {
+type searchPublicationCaptureRow struct{}
+
+func (searchPublicationCaptureRow) Scan(...any) error { return pgx.ErrNoRows }
+
+func (p *searchPublicationProbe) QueryRow(_ context.Context, statement string, args ...any) pgx.Row {
 	p.statement, p.args = statement, args
-	return p.Tx.QueryRow(ctx, statement, args...)
+	return searchPublicationCaptureRow{}
 }
 
-func assertSearchPublicationWork(t *testing.T, f searchFixture, d searchstore.Document, postings int64) {
+func assertSearchPublicationWork(t *testing.T, f searchFixture, d searchstore.Document, postings int64, text *searchstore.Text) {
 	t.Helper()
 	if err := withPlanSeedTransaction(t.Context(), f.admin, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(d.OrganizationID)); err != nil {
+		if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true),set_config('jit','off',true)", string(d.OrganizationID)); err != nil {
 			return err
 		}
 		input := pgquery.SearchPreparePublicationPostingsParams{OrganizationID: d.OrganizationID, ID: d.ID, Revision: d.Revision, PayloadObjectKey: d.Payload.Key, PayloadSHA256: d.Payload.SHA256}
@@ -176,15 +193,27 @@ ARRAY(SELECT DISTINCT p.term FROM search_postings p WHERE p.organization_id=d.or
 FROM search_documents d WHERE organization_id=$1 AND id=$2`, d.OrganizationID, d.ID).Scan(&input.Generation, &input.Vector, &input.TokenCount, &input.Terms, &input.TermFrequencies, &input.Literals); err != nil {
 			return err
 		}
+		budget := postings
+		if text != nil {
+			statistics := searchstore.Describe(d, *text)
+			if err := statistics.Validate(); err != nil {
+				return err
+			}
+			input.TokenCount, input.Terms, input.TermFrequencies = statistics.Tokens, statistics.Terms, statistics.Frequencies
+			input.Vector = searchstore.Vector(d, *text)
+			literals := searchstore.LiteralPostings(d, *text)
+			input.Literals = make([]string, len(literals))
+			for index, literal := range literals {
+				input.Literals[index] = literal.Term
+			}
+			budget += int64(len(input.Terms)+len(input.Literals)) * 32
+		}
 		if _, err := tx.Exec(t.Context(), "SAVEPOINT publication_plan"); err != nil {
 			return err
 		}
 		probe := &searchPublicationProbe{Tx: tx}
-		if _, err := pgquery.New(probe).SearchPreparePublicationPostings(t.Context(), input); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(t.Context(), "ROLLBACK TO SAVEPOINT publication_plan"); err != nil {
-			return err
+		if _, err := pgquery.New(probe).SearchPreparePublicationPostings(t.Context(), input); !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("capture publication statement: %w", err)
 		}
 		var raw []byte
 		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
@@ -209,9 +238,9 @@ FROM search_documents d WHERE organization_id=$1 AND id=$2`, d.OrganizationID, d
 			return total
 		}
 		work := visits(plans[0].Plan)
-		t.Logf("publication postings=%d plan_visits=%.0f", postings, work)
-		if work == 0 || work > float64(postings)*64 {
-			t.Errorf("publication visits %.0f rows for %d postings", work, postings)
+		t.Logf("publication postings=%d plan_visits=%.0f input_budget=%d", postings, work, budget)
+		if work == 0 || work > float64(budget)*64 {
+			t.Errorf("publication visits %.0f rows for posting/input budget %d", work, budget)
 		}
 		return nil
 	}); err != nil {
