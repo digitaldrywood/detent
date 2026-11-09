@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestSpriteWakeLostResponseReconcilesAfterServiceReopen(t *testing.T) {
@@ -400,7 +401,9 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 				}
 				return spritesTestResponse(`{"type":"complete"}`, test.status), nil
 			})}
-			f, scope, _ := newSpriteWakeFixture(t, client, true, time.Minute, "customer-host")
+			f, scope, runners := newSpriteWakeFixture(t, client, true, time.Minute, "customer-host")
+			now := f.service.config.now()
+			f.service.config.now = func() time.Time { return now }
 			f.create(t, "initial")
 			waitSpriteWake(t, started)
 			done := spriteWakeDone(t, f.service, scope)
@@ -437,6 +440,19 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 			close(release)
 			waitSpriteWake(t, done)
 			f.service.spriteWakeWork.Wait()
+			if test.status != http.StatusOK || test.transportError {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					operation, err := r.(postgres.SpriteReader).SpriteEnrollmentWake(t.Context(), runners[0].enrollment.ID)
+					if err == nil {
+						now = operation.NextAttemptAt
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				f.create(t, "due-retry")
+				f.service.spriteWakeWork.Wait()
+			}
 			f.service.spriteWakeMu.Lock()
 			active = len(f.service.spriteWakes)
 			f.service.spriteWakeMu.Unlock()
@@ -447,9 +463,15 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 			if active != 0 || calls.Load() != wantCalls {
 				t.Fatalf("completed burst: active passes=%d provider calls=%d", active, calls.Load())
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_remove(capabilities_json,'$.sprite_woken_at') WHERE organization_id=?`, scope.organization); err != nil {
-				t.Fatal(err)
-			}
+			now = now.Add(2 * time.Minute)
+			writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+				identity, err := w.RunnerIdentity(t.Context(), runners[0].binding.RunnerID)
+				if err != nil {
+					return err
+				}
+				identity.LastHeartbeatAt = now.Add(-time.Minute)
+				return w.UpdateRunnerIdentity(t.Context(), identity)
+			})
 			f.create(t, "later-mutation")
 			waitSpriteWake(t, started)
 			f.service.spriteWakeWork.Wait()
@@ -504,35 +526,42 @@ func TestWakeSpriteRunnersFreshAuthority(t *testing.T) {
 			}()
 			waitSpriteWake(t, started)
 			id := runners[1].binding.RunnerID
-			var query string
-			var args []any
-			switch test.change {
-			case "grant":
-				query, args = "DELETE FROM token_grants WHERE token_id=(SELECT token_id FROM runner_identities WHERE id=?)", []any{id}
-			case "token":
-				query, args = "UPDATE api_tokens SET revoked_at=? WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", []any{formatHubTime(f.service.config.now()), id}
-			case "runner":
-				query, args = "UPDATE runner_identities SET state='disabled' WHERE id=?", []any{id}
-			case "heartbeat":
-				query, args = "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", []any{formatHubTime(f.service.config.now()), id}
-			case "secret":
-				query, args = "DELETE FROM project_secrets WHERE project_id=?", []any{f.project.ID}
-			case "rotation":
+			if test.change == "rotation" {
 				storeSpriteWakeSecret(t, f, spritesSecretSentinel+"-rotated")
-			case "workflow":
-				for i := range f.project.States {
-					f.project.States[i].Dispatchable = false
-				}
-				states, err := json.Marshal(f.project.States)
-				if err != nil {
-					t.Fatal(err)
-				}
-				query, args = "UPDATE projects SET states_json=? WHERE id=?", []any{string(states), f.project.ID}
-			}
-			if query != "" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), query, args...); err != nil {
-					t.Fatal(err)
-				}
+			} else {
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), id)
+					if err != nil {
+						return err
+					}
+					switch test.change {
+					case "grant":
+						return w.DeleteAccessTokenGrant(t.Context(), identity.TokenID, scope.project)
+					case "token":
+						return w.RevokeAccessCredential(t.Context(), identity.TokenID, f.service.config.now())
+					case "runner", "heartbeat":
+						if test.change == "runner" {
+							identity.State = "disabled"
+							return w.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
+						} else {
+							identity.LastHeartbeatAt = f.service.config.now()
+						}
+						return w.UpdateRunnerIdentity(t.Context(), identity)
+					case "secret":
+						return w.DeleteAccessSecret(t.Context(), scope.project, flySpritesToken, accessstore.SecretAudit{OrganizationID: scope.organization, ProjectID: scope.project, Actor: scope.credential.ID, Kind: flySpritesToken, Event: "delete", RecordedAt: f.service.config.now()})
+					case "workflow":
+						project, err := w.ProjectRecord(t.Context(), scope.project)
+						if err != nil {
+							return err
+						}
+						for i := range project.States {
+							project.States[i].Dispatchable = false
+						}
+						_, err = w.UpdateProjectRecord(t.Context(), project)
+						return err
+					}
+					return nil
+				})
 			}
 			close(release)
 			select {
@@ -553,7 +582,19 @@ func TestWakeSpriteRunnersFreshAuthority(t *testing.T) {
 				}
 			}
 			var audits int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM project_secret_audit WHERE project_id=? AND event='use'", f.project.ID).Scan(&audits); err != nil || audits != test.want {
+			config, err := f.service.config.Postgres.Connection.PoolConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			connection, err := pgx.ConnectConfig(t.Context(), config.ConnConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer connection.Close(t.Context())
+			if _, err := connection.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, false)", string(scope.organization)); err != nil {
+				t.Fatal(err)
+			}
+			if err := connection.QueryRow(t.Context(), "SELECT count(*) FROM project_secret_audit WHERE organization_id=$1 AND project_id=$2 AND event='use'", scope.organization, scope.project).Scan(&audits); err != nil || audits != test.want {
 				t.Fatalf("secret use audits=%d error=%v, want %d", audits, err, test.want)
 			}
 		})
@@ -736,7 +777,13 @@ func TestWakeManagedSpriteMembers(t *testing.T) {
 					identity.State = "draining"
 				}
 				identity.LastHeartbeatAt = now.Add(-time.Minute)
-				return w.UpdateRunnerIdentity(t.Context(), identity)
+				if err := w.UpdateRunnerIdentity(t.Context(), identity); err != nil {
+					return err
+				}
+				if test.drain {
+					return w.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
+				}
+				return nil
 			})
 			f.service.config.SecretKeys = keys
 			woken, err := f.service.wakeOrganizationSpriteRunners(t.Context(), nativeScope{organization: scope.organization})

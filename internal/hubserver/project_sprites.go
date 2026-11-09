@@ -146,10 +146,17 @@ type spriteWakeKey struct {
 	organization tracker.OrganizationID
 }
 
+type spriteLifecycleTrigger struct {
+	scope nativeScope
+	state string
+}
+
 type spriteLifecyclePass struct {
-	cancel       context.CancelFunc
-	done         chan struct{}
-	pendingState string
+	cancel          context.CancelFunc
+	done            chan struct{}
+	pendingState    string
+	pending         map[tracker.ProjectID]spriteLifecycleTrigger
+	pendingProjects []tracker.ProjectID
 }
 
 func (s *Service) scheduleSpriteWake(ctx context.Context, scope nativeScope, result json.RawMessage) {
@@ -192,12 +199,19 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 	key := spriteWakeKey{organization: scope.organization}
 	s.spriteWakeMu.Lock()
 	defer s.spriteWakeMu.Unlock()
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || s.spriteWakes == nil {
 		return
 	}
 	if active := s.spriteWakes[key]; active != nil {
 		if state != "" {
 			active.pendingState = state
+			if active.pending == nil {
+				active.pending = map[tracker.ProjectID]spriteLifecycleTrigger{}
+			}
+			if _, exists := active.pending[scope.project]; !exists {
+				active.pendingProjects = append(active.pendingProjects, scope.project)
+			}
+			active.pending[scope.project] = spriteLifecycleTrigger{scope: scope, state: state}
 		}
 		return
 	}
@@ -207,26 +221,30 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 	s.spriteWakeWork.Add(1)
 	go func() {
 		defer s.spriteWakeWork.Done()
-		defer func() {
-			s.spriteWakeMu.Lock()
-			pending := pass.pendingState
-			delete(s.spriteWakes, key)
-			close(pass.done)
-			s.spriteWakeMu.Unlock()
-			if pending != "" && ctx.Err() == nil {
-				s.scheduleSpriteLifecycle(ctx, scope, pending)
-			}
-		}()
 		defer cancel()
-		if state != "" {
-			if _, err := s.wakeOrganizationSpriteRunners(wakeContext, scope); err != nil {
-				if wakeContext.Err() == nil {
+		for {
+			if state != "" {
+				if _, err := s.wakeOrganizationSpriteRunners(wakeContext, scope); err != nil && wakeContext.Err() == nil {
 					s.config.Logger.Warn("sprite runners could not be woken", "error", err)
 				}
 			}
-		}
-		if err := s.scaleSpritePool(wakeContext, scope, state != ""); err != nil && wakeContext.Err() == nil {
-			s.config.Logger.Warn("Sprite pool lifecycle failed", "organization", scope.organization, "project", scope.project, "error", err)
+			if err := s.scaleSpritePool(wakeContext, scope, state != ""); err != nil && wakeContext.Err() == nil {
+				s.config.Logger.Warn("Sprite pool lifecycle failed", "organization", scope.organization, "project", scope.project, "error", err)
+			}
+			s.spriteWakeMu.Lock()
+			if wakeContext.Err() != nil || len(pass.pendingProjects) == 0 {
+				delete(s.spriteWakes, key)
+				close(pass.done)
+				s.spriteWakeMu.Unlock()
+				return
+			}
+			project := pass.pendingProjects[0]
+			pass.pendingProjects = pass.pendingProjects[1:]
+			next := pass.pending[project]
+			delete(pass.pending, project)
+			scope, state = next.scope, next.state
+			pass.pendingState = ""
+			s.spriteWakeMu.Unlock()
 		}
 	}()
 }
@@ -234,6 +252,13 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 func (s *Service) stopSpriteRunners() {
 	s.spriteWakeMu.Lock()
 	s.workerCancel()
+	for _, pass := range s.spriteWakes {
+		pass.pendingState = ""
+		if pass.cancel != nil {
+			pass.cancel()
+		}
+	}
+	s.spriteWakes = nil
 	s.spriteWakeMu.Unlock()
 	s.spriteWakeWork.Wait()
 }

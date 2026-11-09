@@ -100,7 +100,7 @@ func decideSpriteScale(input spriteScaleInput) spriteScaleDecision {
 
 func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
 	if s.config.TenantRepository != nil {
-		e.Use(s.spritePoolAfterHeartbeat)
+		e.Use(s.spritePoolAfterMutation)
 	}
 	read := s.requireNativeScope(apiScopeOperator, apiScopeAdmin)
 	e.GET(nativeBase+"/sprite-pool", s.getSpritePool, read)
@@ -117,15 +117,35 @@ func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
 	}
 }
 
-func (s *Service) spritePoolAfterHeartbeat(next echo.HandlerFunc) echo.HandlerFunc {
+func (s *Service) spritePoolAfterMutation(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		err := next(c)
-		if err != nil || c.Request().Method != http.MethodPost || c.Path() != nativeBase+"/machines/:machine/heartbeat" || c.Response().Status < 200 || c.Response().Status >= 300 {
+		if err != nil || c.Response().Status < 200 || c.Response().Status >= 300 {
 			return err
 		}
 		credential, ok := c.Get("hub_api_credential").(apiCredential)
-		if ok && credential.Runner.RunnerID != "" && credential.Runner.OrganizationID != "" && s.startSpriteLifecycle != nil {
-			s.startSpriteLifecycle(nativeScope{organization: credential.Runner.OrganizationID}, "")
+		if !ok || s.startSpriteLifecycle == nil {
+			return nil
+		}
+		method, path := c.Request().Method, c.Path()
+		if method == http.MethodPost && path == nativeBase+"/machines/:machine/heartbeat" {
+			if credential.Runner.RunnerID != "" && credential.Runner.OrganizationID != "" {
+				s.startSpriteLifecycle(nativeScope{organization: credential.Runner.OrganizationID}, "")
+			}
+			return nil
+		}
+		queueChanged := method == http.MethodPatch && path == nativeBase+"/work-items/:item"
+		if method == http.MethodPost {
+			switch path {
+			case nativeBase + "/work-items", nativeBase + "/work-items/:item/archive", nativeBase + "/work-items/:item/restore", nativeBase + "/work-items/:item/source-intake", nativeBase + "/work-items/:item/workflow", nativeBase + "/work-items/:item/verification", nativeBase + "/work-items/:item/dependencies", nativeBase + "/work-items/:item/dependency-reasons":
+				queueChanged = true
+			}
+		}
+		if queueChanged {
+			scope := nativeRequestScope(c)
+			if scope.organization != "" && scope.project != "" && credential.ID != "" {
+				s.startSpriteLifecycle(scope, "organization")
+			}
 		}
 		return nil
 	}

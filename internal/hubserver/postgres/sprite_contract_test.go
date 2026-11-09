@@ -412,7 +412,7 @@ func TestSpriteRunnerSelectionHonorsAllocationAndSharing(t *testing.T) {
 	for _, organization := range organizations {
 		seedTenantAccess(t, repository, organization)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			for _, name := range []string{"first", "second"} {
+			for _, name := range []string{"first", "second", "unmanaged"} {
 				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: tracker.ProjectID("prj_" + name), Name: name, Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
 					return err
 				}
@@ -458,6 +458,8 @@ func TestSpriteRunnerSelectionHonorsAllocationAndSharing(t *testing.T) {
 				other, want  bool
 			}{
 				{name: "own ready member", want: true},
+				{name: "organization member", change: "unallocated", want: true},
+				{name: "disabled organization pool", change: "disabled"},
 				{name: "sharing requires consent", other: true},
 				{name: "shared ready member", change: "sharing", other: true, want: true},
 				{name: "shared target desired zero", change: "target zero", other: true},
@@ -482,6 +484,26 @@ func TestSpriteRunnerSelectionHonorsAllocationAndSharing(t *testing.T) {
 							}
 						}
 						switch test.change {
+						case "unallocated", "disabled":
+							member, err := writer.RunnerSpriteMembershipByEnrollment(t.Context(), "enrollment_"+id)
+							if err != nil {
+								return err
+							}
+							member.AllocationProjectID, member.AllocationRevision = "", 0
+							if err := writer.UpdateRunnerSpriteMembership(t.Context(), member); err != nil {
+								return err
+							}
+							target = "prj_unmanaged"
+							if test.change == "disabled" {
+								pool, err := w.SpritePool(t.Context())
+								if err != nil {
+									return err
+								}
+								pool.MaxRunners = 0
+								if _, err := w.PutSpritePool(t.Context(), pool, pool.Revision); err != nil {
+									return err
+								}
+							}
 						case "sharing", "target zero":
 							pool, err := w.SpritePool(t.Context())
 							if err != nil {

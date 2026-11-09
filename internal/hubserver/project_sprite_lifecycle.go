@@ -39,6 +39,7 @@ type spriteLifecycleRequest struct {
 	Settings        spritePoolSettings  `json:"settings"`
 	EnrollmentToken hubsecrets.Envelope `json:"enrollment_token"`
 	Version         string              `json:"version"`
+	State           string              `json:"state,omitempty"`
 }
 
 type spriteLifecycleReceipt struct {
@@ -487,6 +488,11 @@ func (s *Service) spriteOperationToken(ctx context.Context, op postgres.SpriteOp
 			if project.Core.DeletedAt != nil {
 				return corestore.ErrNotFound
 			}
+			if !slices.ContainsFunc(project.States, func(state tracker.NativeState) bool {
+				return state.Name == request.State && state.Dispatchable && !state.Terminal
+			}) {
+				return accessstore.ErrDenied
+			}
 			credential, err := r.AccessCredential(ctx, request.Actor)
 			if err != nil {
 				return err
@@ -502,6 +508,24 @@ func (s *Service) spriteOperationToken(ctx context.Context, op postgres.SpriteOp
 				return accessstore.ErrTransactionRequired
 			}
 			allowed, err := owner.SpriteWakeTarget(ctx, op.TargetEnrollmentID, op.Name, op.ProjectID, s.config.now())
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return accessstore.ErrDenied
+			}
+			enrollment, err := r.RunnerEnrollment(ctx, op.TargetEnrollmentID)
+			if err != nil {
+				return err
+			}
+			identity, err := r.RunnerIdentity(ctx, enrollment.RunnerID)
+			if err != nil {
+				return err
+			}
+			if s.config.now().Sub(identity.LastHeartbeatAt) < spriteRunnerIdle || identity.LastHeartbeatAt.After(op.CreatedAt) {
+				return accessstore.ErrDenied
+			}
+			allowed, err = owner.SpriteRunnerAllowed(ctx, identity.RunnerID, op.ProjectID, s.config.now())
 			if err != nil {
 				return err
 			}
@@ -1023,7 +1047,7 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 		}
 		status, _, err := s.spriteOperationHTTP(ctx, op, request, http.MethodPost, path+"/services/detent-runner/start?duration=30s", nil)
 		if err != nil {
-			return nil
+			return ctx.Err()
 		}
 		if status < 200 || status > 299 {
 			if status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests {
@@ -1461,11 +1485,18 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 		return 0, err
 	}
 	total := 0
+	slices.SortFunc(placement.Runners, func(a, b placementRunner) int {
+		if order := strings.Compare(a.Hostname, b.Hostname); order != 0 {
+			return order
+		}
+		return strings.Compare(a.RunnerID, b.RunnerID)
+	})
+	seen := map[string]bool{}
 	for _, candidate := range placement.Runners {
 		if total >= 20 {
 			break
 		}
-		if !candidate.Sprite || !candidate.Paused || candidate.State != "active" || !validSpritesSlug(candidate.Hostname) {
+		if !candidate.Sprite || !candidate.Paused || candidate.State != "active" || !validSpritesSlug(candidate.Hostname) || seen[candidate.Hostname] {
 			continue
 		}
 		allowed := false
@@ -1474,6 +1505,23 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 			owner, ok := r.(postgres.SpriteReader)
 			if !ok {
 				return accessstore.ErrTransactionRequired
+			}
+			identity, err := r.RunnerIdentity(ctx, candidate.RunnerID)
+			if err != nil {
+				return err
+			}
+			if !identity.LastHeartbeatAt.Equal(candidate.LastHeartbeatAt) || s.config.now().Sub(identity.LastHeartbeatAt) < spriteRunnerIdle {
+				return nil
+			}
+			project, err := r.ProjectRecord(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			dispatchable := slices.ContainsFunc(project.States, func(current tracker.NativeState) bool {
+				return current.Name == state && current.Dispatchable && !current.Terminal
+			})
+			if !dispatchable || project.Core.DeletedAt != nil {
+				return nil
 			}
 			allowed, err = owner.SpriteRunnerAllowed(ctx, candidate.RunnerID, scope.project, s.config.now())
 			return err
@@ -1491,7 +1539,7 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 		if err != nil {
 			return total, err
 		}
-		key, err := s.spriteLifecycleArchive(ctx, scope.organization, spriteLifecycleRequest{Actor: scope.credential.ID, TokenProject: secretScope.project, Provider: provider})
+		key, err := s.spriteLifecycleArchive(ctx, scope.organization, spriteLifecycleRequest{Actor: scope.credential.ID, TokenProject: secretScope.project, Provider: provider, State: state})
 		if err != nil {
 			return total, err
 		}
@@ -1512,6 +1560,7 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 		if err != nil {
 			return total, err
 		}
+		seen[candidate.Hostname] = true
 		if op.Outcome == "committed" || op.NextAttemptAt.After(s.config.now()) {
 			continue
 		}
@@ -1537,7 +1586,18 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 
 func (s *Service) wakeOrganizationSpriteRunnersRecord(ctx context.Context, scope nativeScope) (int, error) {
 	var projects []corestore.Project
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { var err error; projects, err = r.Projects(ctx, "", 100); return err })
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if scope.project != "" {
+			project, err := r.ProjectRecord(ctx, scope.project)
+			if err == nil {
+				projects = []corestore.Project{project.Core}
+			}
+			return err
+		}
+		var err error
+		projects, err = r.Projects(ctx, "", 100)
+		return err
+	})
 	if err != nil {
 		return 0, err
 	}

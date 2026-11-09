@@ -414,6 +414,13 @@ func (s *session) SpriteRunnerAllowed(ctx context.Context, runnerID string, proj
 	if member.State != "enrolled" {
 		return false, nil
 	}
+	pool, err := s.SpritePool(ctx)
+	if err != nil {
+		return false, err
+	}
+	if pool.MaxRunners == 0 {
+		return false, nil
+	}
 	if member.AllocationProjectID == "" {
 		return !managed, nil
 	}
@@ -427,11 +434,7 @@ func (s *session) SpriteRunnerAllowed(ctx context.Context, runnerID string, proj
 	if err != nil || owner.DesiredCount == 0 {
 		return false, err
 	}
-	pool, err := s.SpritePool(ctx)
-	if err != nil {
-		return false, err
-	}
-	if pool.MaxRunners == 0 || member.AllocationProjectID != project && !pool.ShareIdleCapacity {
+	if member.AllocationProjectID != project && !pool.ShareIdleCapacity {
 		return false, nil
 	}
 	checks, err := s.RunnerLocalChecks(ctx, runnerID, project)
