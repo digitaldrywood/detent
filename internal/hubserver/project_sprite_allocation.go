@@ -312,20 +312,15 @@ func decodeSpriteMemberChecks(raw sql.NullString) (runnerauth.LocalChecks, bool,
 }
 
 func (s *Service) projectSpriteAllocationAuthority(ctx context.Context, q nativeQueryer, scope nativeScope) (bool, error) {
-	if s.config.TenantRepository != nil {
-		var allowed bool
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			owner, ok := r.(postgres.SpriteReader)
-			if !ok {
-				return accessstore.ErrTransactionRequired
-			}
-			var err error
-			allowed, err = owner.SpriteAllocationAuthority(ctx, scope.project, s.config.now())
-			return err
-		})
-		return allowed, err
-	}
 	var allowed bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM project_sprite_allocations a JOIN api_tokens t ON t.id=a.configured_by AND t.revoked_at IS NULL JOIN projects p ON p.id=a.project_id AND p.organization_id=a.organization_id AND p.deleted_at IS NULL WHERE a.organization_id=? AND a.project_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND ((t.scope='admin' AND t.native_only=0) OR EXISTS(SELECT 1 FROM hosted_members m JOIN hosted_project_grants g ON g.user_id=m.user_id AND g.organization_id=a.organization_id AND g.project_id=a.project_id AND g.can_write=1 WHERE m.principal_id=t.id AND m.active=1 AND m.role IN ('owner','admin'))))`, scope.organization, scope.project, formatHubTime(s.config.now())).Scan(&allowed)
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return accessstore.ErrTransactionRequired
+		}
+		var err error
+		allowed, err = owner.SpriteAllocationAuthority(ctx, scope.project, s.config.now())
+		return err
+	})
 	return allowed, err
 }

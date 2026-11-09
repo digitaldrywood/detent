@@ -172,12 +172,7 @@ func (s *Service) spritePoolResponse(ctx context.Context, scope nativeScope) (sp
 	if err != nil {
 		return view, err
 	}
-	var decision placementSnapshot
-	if s.config.TenantRepository != nil {
-		decision, err = s.spritePlacementRecord(ctx, scope)
-	} else {
-		decision, err = readOrganizationPlacementSnapshot(ctx, s.database.reader, scope, s.config.now(), s.database.billingRepository)
-	}
+	decision, err := s.spritePlacementRecord(ctx, scope)
 	if err != nil {
 		return view, err
 	}
@@ -218,58 +213,15 @@ func (s *Service) setSpritePoolCommand(ctx context.Context, scope nativeScope, i
 	if input.ShareIdleCapacity != nil && input.IdempotencyKey == "" {
 		return spritePoolView{}, nativePublicInvalid("An idempotency key is required to change idle capacity sharing")
 	}
-	if s.config.TenantRepository != nil {
-		if err := s.updateSpritePoolRecord(ctx, scope, input); err != nil {
-			return spritePoolView{}, err
-		}
-		s.startSpritePoolForQueue(scope)
-		return s.spritePoolResponse(ctx, scope)
-	}
-	if input.ShareIdleCapacity != nil || input.IdempotencyKey != "" {
-		if err := s.executeSpritePoolCommand(ctx, scope, input); err != nil {
-			return spritePoolView{}, err
-		}
-		s.startSpritePoolForQueue(scope)
-		return s.spritePoolResponse(ctx, scope)
-	}
-	settings := input.spritePoolSettings
-	view, err := s.readSpritePool(ctx, scope)
-	if err != nil {
-		return view, err
-	}
-	settings.IsolationTier = view.IsolationTier
-	settings.ShareIdleCapacity = view.ShareIdleCapacity
-	if input.Bootstrap != nil {
-		settings.Bootstrap = *input.Bootstrap
-	} else {
-		settings.Bootstrap = view.Bootstrap
-	}
-	if err := s.updateSpritePool(ctx, scope, settings, input.IsolationTier); err != nil {
-		return view, err
+	if err := s.updateSpritePoolRecord(ctx, scope, input); err != nil {
+		return spritePoolView{}, err
 	}
 	s.startSpritePoolForQueue(scope)
 	return s.spritePoolResponse(ctx, scope)
 }
 
 func (s *Service) executeSpritePoolCommand(ctx context.Context, scope nativeScope, command spritePoolCommand) error {
-	if s.config.TenantRepository != nil {
-		return s.updateSpritePoolRecord(ctx, scope, command)
-	}
-	return s.executeSpritePoolSettingsCommand(ctx, scope, command.Mutation, command, func(ctx context.Context, tx *sql.Tx, scope nativeScope) (spritePoolSettings, *string, error) {
-		settings := command.spritePoolSettings
-		settings.IsolationTier = isolation.NativeTrusted
-		err := tx.QueryRowContext(ctx, `SELECT bootstrap,isolation_tier,share_idle_capacity FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&settings.Bootstrap, &settings.IsolationTier, &settings.ShareIdleCapacity)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return settings, nil, err
-		}
-		if command.Bootstrap != nil {
-			settings.Bootstrap = *command.Bootstrap
-		}
-		if command.ShareIdleCapacity != nil {
-			settings.ShareIdleCapacity = *command.ShareIdleCapacity
-		}
-		return settings, command.IsolationTier, nil
-	})
+	return s.updateSpritePoolRecord(ctx, scope, command)
 }
 
 func (s *Service) executeSpritePoolSettingsCommand(ctx context.Context, scope nativeScope, command tracker.Mutation, input any, resolve func(context.Context, *sql.Tx, nativeScope) (spritePoolSettings, *string, error)) error {
@@ -316,14 +268,7 @@ func validateSpritePoolSettings(settings *spritePoolSettings) error {
 }
 
 func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, settings spritePoolSettings, tier *string) error {
-	if s.config.TenantRepository != nil {
-		return s.updateSpritePoolRecord(ctx, scope, spritePoolCommand{spritePoolSettings: settings, Bootstrap: &settings.Bootstrap, IsolationTier: tier, ShareIdleCapacity: &settings.ShareIdleCapacity})
-	}
-	scope.project = ""
-	scope.requireHostedAdmin = true
-	return s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
-		return s.updateSpritePoolInTx(ctx, tx, scope, settings, tier)
-	})
+	return s.updateSpritePoolRecord(ctx, scope, spritePoolCommand{spritePoolSettings: settings, Bootstrap: &settings.Bootstrap, IsolationTier: tier, ShareIdleCapacity: &settings.ShareIdleCapacity})
 }
 
 func (s *Service) spritePoolSettingsRecord(ctx context.Context, scope nativeScope) (spritePoolSettings, postgres.SpritePool, error) {
