@@ -29,7 +29,14 @@ func loadWorkspaceWorkerRecord(ctx context.Context, w workspaceWriter, scope nat
 	if err != nil {
 		return workspaceRecord{}, leasestore.Lease{}, err
 	}
-	lease, err := w.Lease(ctx, string(identity.LeaseID))
+	locker, ok := w.(leasestore.FencedLeaseLocker)
+	if !ok {
+		return workspaceRecord{}, leasestore.Lease{}, workspaceUnavailable()
+	}
+	lease, err := locker.LockLease(ctx, string(identity.LeaseID))
+	if errors.Is(err, tracker.ErrLeaseNotFound) {
+		err = corestore.ErrNotFound
+	}
 	if err != nil {
 		return workspaceRecord{}, lease, err
 	}
