@@ -85,7 +85,7 @@ func workspaceRequirement(name string, r workspaceToolRequest, write bool) opera
 func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer, scope nativeScope, r operatortool.Requirement) error {
 	kind := r.ResourceKind
 	if strings.HasPrefix(kind, "runners:") {
-		if err := s.requireOperatorRunners(ctx, query, scope); err != nil {
+		if err := s.requireOperatorRunners(ctx, scope); err != nil {
 			return err
 		}
 		kind = strings.TrimPrefix(kind, "runners:")

@@ -57,7 +57,7 @@ func (s *Service) readRecordings(ctx context.Context, scope nativeScope, workspa
 
 // runner grants are required for headless execution too. A token retains the
 // dashboard's existing non-person restrictions on interactive terminals.
-func (s *Service) requireOperatorRunners(ctx context.Context, _ nativeQueryer, scope nativeScope) error {
+func (s *Service) requireOperatorRunners(ctx context.Context, scope nativeScope) error {
 	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin {
 		return nativeNotFound()
 	}

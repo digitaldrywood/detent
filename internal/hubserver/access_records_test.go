@@ -76,7 +76,7 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := service.requireOperatorRunners(t.Context(), nil, scope); err == nil {
+		if err := service.requireOperatorRunners(t.Context(), scope); err == nil {
 			t.Fatal("runner access accepted without management grant")
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -84,7 +84,7 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := service.requireOperatorRunners(t.Context(), nil, scope); err != nil {
+		if err := service.requireOperatorRunners(t.Context(), scope); err != nil {
 			t.Fatalf("runner management grant rejected: %v", err)
 		}
 		token, err := service.createAPITokenFor(t.Context(), tokenRequest{Name: "Example key", Scope: apiScopeOperator, Issuer: &credential, KeyScope: apikey.ScopeRead, ProjectAccess: hostedProjectsAll})
