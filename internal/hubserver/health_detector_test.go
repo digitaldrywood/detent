@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,10 +10,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func healthFixtureDatabase(t *testing.T, f nativeFixture) *sql.DB {
+	t.Helper()
+	value, ok := projectRecordDatabases.Load(f.service.database.postgres)
+	if !ok {
+		t.Fatal("PostgreSQL fixture database is missing")
+	}
+	return value.(*sql.DB)
+}
 
 func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
 	t.Parallel()
@@ -21,17 +36,15 @@ func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	r.enroll(t)
 	f.create(t, "candidate")
-	clearNativeFixturePolicy(t, f)
-	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_created_at=? WHERE project_id=?", formatHubTime(now.Add(-time.Hour)), f.project.ID); err != nil {
+	admin := healthFixtureDatabase(t, f)
+	if _, err := admin.ExecContext(t.Context(), `DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2`, f.project.OrganizationID, f.project.ID); err != nil {
 		t.Fatal(err)
 	}
-	routing := map[string]any{"project_ranks": map[string]int{string(f.project.ID): 1}}
-	raw, err := json.Marshal(routing)
-	if err != nil {
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET native_created_at=$1 WHERE organization_id=$2 AND project_id=$3`, now.Add(-time.Hour), f.project.OrganizationID, f.project.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET routing_settings_json=?,last_heartbeat_at=?,created_at=? WHERE id=?", string(raw), formatHubTime(now.Add(-6*time.Minute)), formatHubTime(now.Add(-time.Hour)), r.binding.RunnerID); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=$1,created_at=$2 WHERE organization_id=$3 AND runner_id=$4`, now.Add(-6*time.Minute), now.Add(-time.Hour), f.project.OrganizationID, r.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -45,13 +58,13 @@ func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
 		{"policy restored", now, true, "dead_man"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(test.heartbeat), r.binding.RunnerID); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2 AND runner_id=$3`, test.heartbeat, f.project.OrganizationID, r.binding.RunnerID); err != nil {
 				t.Fatal(err)
 			}
 			if test.policy {
 				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			}
-			snapshot, err := readHealthSnapshot(t.Context(), f.service.database.db, f.project.OrganizationID, now)
+			snapshot, err := f.service.readHealthSnapshotRecords(t.Context(), f.project.OrganizationID, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,16 +89,15 @@ func appendTestHealthEvent(t *testing.T, f nativeFixture, item tracker.NativeIss
 
 func appendTestHealthEventAs(t *testing.T, f nativeFixture, actor tracker.Actor, item tracker.NativeIssue, kind string, data tracker.CollaborationData, at time.Time) {
 	t.Helper()
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	raw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: at, Data: data})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, sourceActor: &actor}
-	if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(item.WorkItemID), kind, data, at); err != nil {
+	event, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, raw)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -94,108 +106,102 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "wait-health")
 	addHealthBacklog(t, f)
+	var states []tracker.NativeState
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		project, err := r.ProjectRecord(t.Context(), f.project.ID)
+		states = project.States
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(states, func(state tracker.NativeState) bool { return state.Name == "Blocked" }) {
+		states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo"}})
+	}
+	for i := range states {
+		if states[i].Name == "Todo" && !slices.Contains(states[i].Transitions, "Blocked") {
+			states[i].Transitions = append(states[i].Transitions, "Blocked")
+		}
+	}
+	setHealthProjectStates(t, f, states)
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
 	item := f.create(t, "waiting")
-	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
 	at := now.Add(-time.Hour)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Blocked','Blocked',0,0,?,?)", f.project.ID, formatHubTime(at), formatHubTime(at)); err != nil {
-		t.Fatal(err)
-	}
-	var itemID int64
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id=?", item.WorkItemID).Scan(&itemID); err != nil {
-		t.Fatal(err)
-	}
-	result, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) VALUES('health-lease',?,?,'health-session',?,?,?,?,?)`, itemID, r.binding.MachineID, formatHubTime(at.Add(time.Minute)), formatHubTime(at), formatHubTime(at), formatHubTime(at), formatHubTime(at))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fence, err := result.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
 	data := tracker.NativeRunData{Disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true, ReasonCode: "permission_wait"}}
-	raw, err := json.Marshal(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) VALUES('attempt-health',?,?,?,'health-lease',?,'run-health',1,'succeeded',?,?,?)`, f.project.OrganizationID, f.project.ID, item.WorkItemID, fence, string(raw), formatHubTime(at), formatHubTime(at)); err != nil {
-		t.Fatal(err)
-	}
+	currentAttempt := seedHealthAttemptRecord(t, f, item, string(r.binding.MachineID), "succeeded", data, at, -1)
 	appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Revision: item.Revision, Reason: "worker_progress"}, at)
 	for _, test := range []struct {
-		name      string
-		supersede bool
-		limit     bool
-		action    bool
-		typed     bool
-		want      string
+		name                            string
+		supersede, limit, action, typed bool
+		want                            string
 	}{
 		{name: "permission action still authoritative", want: "unanswered_human_wait"},
 		{name: "typed permission action still authoritative", typed: true, want: "unanswered_human_wait"},
 		{name: "human action transition precedes final attempt update", action: true, want: "unanswered_human_wait"},
 		{name: "new human revision supersedes attempt", supersede: true},
-		{name: "lifetime transition remains current", limit: true, want: ""},
-		{name: "recovered lifetime transition", want: ""},
+		{name: "lifetime transition remains current", limit: true},
+		{name: "recovered lifetime transition"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.typed {
-				if err := f.service.convertAttemptHotProjection(t.Context(), "attempt-health"); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json='{}' WHERE id='attempt-health'`); err != nil {
-					t.Fatal(err)
-				}
-				for _, query := range []string{
-					`UPDATE collaboration_events SET actor_kind='human' WHERE work_item_id=? AND type='workflow.transitioned'`,
-					`UPDATE collaboration_events SET transition_reason='user_requested' WHERE work_item_id=? AND type='workflow.transitioned'`,
-					`UPDATE collaboration_events SET transition_revision=0 WHERE work_item_id=? AND type='workflow.transitioned'`,
-					`UPDATE native_attempts SET disposition_status='complete' WHERE work_item_id=?`,
-					`UPDATE native_attempts SET disposition_human_action=0,health_disposition_reason='user_requested' WHERE work_item_id=?`,
-				} {
-					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-					if err != nil {
+				for _, filter := range []string{"human actor", "user reason", "old revision", "complete disposition", "no human action"} {
+					modified := data
+					disposition := *data.Disposition
+					modified.Disposition = &disposition
+					transition := tracker.CollaborationData{Revision: item.Revision, Reason: "worker_progress"}
+					actor := tracker.Actor{Kind: "runner", PrincipalID: "runner-health"}
+					switch filter {
+					case "human actor":
+						actor.Kind = "human"
+					case "user reason":
+						transition.Reason = "user_requested"
+					case "old revision":
+						transition.Revision = 0
+					case "complete disposition":
+						disposition.Status = "complete"
+					case "no human action":
+						disposition.HumanAction, disposition.ReasonCode = false, "user_requested"
+					}
+					currentAttempt = seedHealthAttemptRecord(t, f, item, string(r.binding.MachineID), "succeeded", modified, at, -1)
+					var attempt leasestore.Attempt
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+						var err error
+						attempt, err = reader.Attempt(t.Context(), currentAttempt)
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := tx.ExecContext(t.Context(), query, item.WorkItemID); err != nil {
-						tx.Rollback()
-						t.Fatal(err)
-					}
+					stale := data
+					stale.AttemptID, stale.RunID, stale.Outcome, stale.Sequence = currentAttempt, attempt.RunID, "succeeded", 1
+					appendTestHealthEvent(t, f, item, "run.finished", tracker.CollaborationData{Run: &stale}, at)
+					appendTestHealthEventAs(t, f, actor, item, "workflow.transitioned", transition, at)
 					snapshot := healthSnapshot{}
-					readErr := readHealthCurrentWaits(t.Context(), tx, f.project.OrganizationID, now, &snapshot)
-					if err := tx.Rollback(); err != nil {
-						t.Fatal(err)
-					}
+					readErr := f.service.readHealthWaitRecords(t.Context(), f.project.OrganizationID, now, &snapshot)
 					if readErr != nil || len(snapshot.Waits) != 0 {
-						t.Fatalf("typed authority filter %s: waits=%+v err=%v", query, snapshot.Waits, readErr)
+						t.Fatalf("typed authority filter %s: waits=%+v err=%v", filter, snapshot.Waits, readErr)
 					}
 				}
-				defer func() {
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=? WHERE id='attempt-health'`, string(raw)); err != nil {
-						t.Fatal(err)
-					}
-					appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Revision: item.Revision, Reason: "worker_progress"}, at)
-				}()
+				currentAttempt = seedHealthAttemptRecord(t, f, item, string(r.binding.MachineID), "succeeded", data, at, -1)
+				appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Revision: item.Revision, Reason: "worker_progress"}, at)
 			}
 			if test.action {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "health-permission-state"}, ExpectedRevision: item.Revision, State: "Blocked", Reason: "user_requested"})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &item)
+				action := tracker.NativeRunData{Disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}}
+				currentAttempt = seedHealthAttemptRecord(t, f, item, string(r.binding.MachineID), "succeeded", action, at.Add(time.Second), -1)
+				appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Revision: item.Revision, ToState: "Blocked", Reason: "worker_progress", ReasonDetail: "human_action"}, at)
 				defer func() {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,updated_at=? WHERE id='attempt-health'", string(raw), formatHubTime(at)); err != nil {
-						t.Fatal(err)
-					}
+					currentAttempt = seedHealthAttemptRecord(t, f, item, string(r.binding.MachineID), "succeeded", data, at, -1)
 					appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Revision: item.Revision, Reason: "worker_progress"}, at)
 				}()
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,updated_at=? WHERE id='attempt-health'", `{"disposition":{"status":"blocked","human_action":true}}`, formatHubTime(at.Add(time.Second))); err != nil {
-					t.Fatal(err)
-				}
-				appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Revision: item.Revision, ToState: "Blocked", Reason: "worker_progress", ReasonDetail: "human_action"}, at)
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Blocked') WHERE native_id=?", f.project.ID, item.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
 			}
 			if test.supersede {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", item.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				title := "Human revision supersedes attempt"
+				response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "health-human-revision"}, ExpectedRevision: item.Revision, Title: &title})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &item)
 			}
 			if test.limit {
 				appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Reason: "lifetime_limit"}, now.Add(-25*time.Hour))
@@ -204,7 +210,7 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 				appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Reason: "lifetime_limit_recovered"}, now)
 			}
 			snapshot := healthSnapshot{}
-			if err := readHealthCurrentWaits(t.Context(), f.service.database.db, f.project.OrganizationID, now, &snapshot); err != nil {
+			if err := f.service.readHealthWaitRecords(t.Context(), f.project.OrganizationID, now, &snapshot); err != nil {
 				t.Fatal(err)
 			}
 			got := evaluateHealth(now, snapshot)
@@ -216,13 +222,17 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 			}
 		})
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO lease_runners(lease_id,runner_id) VALUES('health-lease',?)", r.binding.RunnerID); err != nil {
+	admin := healthFixtureDatabase(t, f)
+	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=NULL WHERE organization_id=$1 AND lease_id=(SELECT lease_id FROM native_attempts WHERE organization_id=$1 AND id=$2)`, f.project.OrganizationID, currentAttempt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET routing_settings_json='{}',last_heartbeat_at=? WHERE id=?", formatHubTime(at), r.binding.RunnerID); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)`, f.project.OrganizationID, r.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
-	runners, err := readHealthRunners(t.Context(), f.service.database.db, f.project.OrganizationID, now)
+	if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2 AND runner_id=$3`, at, f.project.OrganizationID, r.binding.RunnerID); err != nil {
+		t.Fatal(err)
+	}
+	runners, err := f.service.readHealthRunnerRecords(t.Context(), f.project.OrganizationID, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,16 +252,21 @@ func TestHealthSnapshotConversationQuestions(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "question-health")
 	addHealthBacklog(t, f)
 	item := f.create(t, "question")
-	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
-	if err != nil {
+	var principal string
+	if err := f.service.config.AccessRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		credential, err := r.CredentialByHash(t.Context(), apikey.HashToken(f.token))
+		principal = credential.ID
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
+	admin := healthFixtureDatabase(t, f)
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
 	at := now.Add(-time.Hour)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO conversations(id,organization_id,project_id,owner_principal_id,visibility,status,work_item_id,execution_json,created_at,updated_at) VALUES('conversation-health',?,?,?,'private','active',?,'{}',?,?)`, f.project.OrganizationID, f.project.ID, credential.ID, item.WorkItemID, formatHubTime(at), formatHubTime(at)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversations(id,organization_id,project_id,owner_principal_id,origin,visibility,status,work_item_id,created_at,updated_at) VALUES('conversation-health',$1,$2,$3,'user','private','active',$4,$5,$5)`, f.project.OrganizationID, f.project.ID, principal, item.WorkItemID, at); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO conversation_questions(id,conversation_id,status,created_at,updated_at) VALUES('question-health','conversation-health','pending',?,?)`, formatHubTime(at), formatHubTime(at)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversation_questions(organization_id,id,conversation_id,status,created_at,updated_at) VALUES($1,'question-health','conversation-health','pending',$2,$2)`, f.project.OrganizationID, at); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -268,18 +283,18 @@ func TestHealthSnapshotConversationQuestions(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var expires any
 			if test.expired {
-				expires = formatHubTime(now.Add(-time.Minute))
+				expires = now.Add(-time.Minute)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_questions SET status=?,expires_at=?", test.status, expires); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `UPDATE conversation_questions SET status=$1,expires_at=$2 WHERE organization_id=$3 AND conversation_id='conversation-health'`, test.status, expires, f.project.OrganizationID); err != nil {
 				t.Fatal(err)
 			}
 			if test.unlinked {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET work_item_id=NULL"); err != nil {
+				if _, err := admin.ExecContext(t.Context(), `UPDATE conversations SET work_item_id=NULL WHERE organization_id=$1 AND id='conversation-health'`, f.project.OrganizationID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			snapshot := healthSnapshot{}
-			if err := readHealthCurrentWaits(t.Context(), f.service.database.db, f.project.OrganizationID, now, &snapshot); err != nil {
+			if err := f.service.readHealthWaitRecords(t.Context(), f.project.OrganizationID, now, &snapshot); err != nil {
 				t.Fatal(err)
 			}
 			got := evaluateHealth(now, snapshot)
@@ -302,12 +317,9 @@ func TestHealthSnapshotRefreshObservation(t *testing.T) {
 	addHealthBacklog(t, f)
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
-	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	routing, err := json.Marshal(runnerauth.Routing{ProjectIDs: []tracker.ProjectID{f.project.ID}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET routing_settings_json=?,created_at=?,last_heartbeat_at=? WHERE id=?", string(routing), formatHubTime(now.Add(-time.Hour)), formatHubTime(now), r.binding.RunnerID); err != nil {
+	admin := healthFixtureDatabase(t, f)
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET created_at=$1,last_heartbeat_at=$2 WHERE organization_id=$3 AND runner_id=$4`, now.Add(-time.Hour), now, f.project.OrganizationID, r.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -322,37 +334,19 @@ func TestHealthSnapshotRefreshObservation(t *testing.T) {
 		{"old runner omits timing", time.Time{}, 0, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			observation := tracker.NativeAdmissionObservation{RunnerRevision: 1, Context: tracker.NativeAdmissionContext{ObservedAt: now, PolicyID: hubTestPolicy().ID, LastRefreshAt: test.refresh, RefreshDuration: test.duration}}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Runner: r.identity}}
-			if err := storeRunnerAdmissionObservation(t.Context(), tx, scope, &observation, now); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET admission_facts_ready=NULL WHERE id=?`, r.binding.MachineID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM runner_admission_observations WHERE runner_id=?`, r.binding.RunnerID); err != nil {
+			observation := tracker.NativeAdmissionObservation{RunnerRevision: 1, ReceivedAt: now, Context: tracker.NativeAdmissionContext{ObservedAt: now, PolicyID: hubTestPolicy().ID, LastRefreshAt: test.refresh, RefreshDuration: test.duration}}
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.ReplaceRunnerAdmissionObservation(t.Context(), r.binding.RunnerID, f.project.ID, observation)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			var previous healthSnapshot
-			for _, phase := range []string{"legacy", "typed"} {
-				if phase == "typed" {
-					if err := f.service.database.populateRunnerFacts(t.Context()); err != nil {
-						t.Fatal(err)
-					}
-				}
-				snapshot, err := readHealthSnapshot(t.Context(), f.service.database.db, f.project.OrganizationID, now)
+			for _, phase := range []string{"first read", "cached read"} {
+				snapshot, err := f.service.readHealthSnapshotRecords(t.Context(), f.project.OrganizationID, now)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if phase == "legacy" {
+				if phase == "first read" {
 					previous = snapshot
 				} else if !reflect.DeepEqual(previous, snapshot) {
 					t.Fatalf("refresh projection changed snapshot: before=%+v after=%+v", previous, snapshot)

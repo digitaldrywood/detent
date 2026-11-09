@@ -262,11 +262,16 @@ func (s *Service) readHealthEventRecords(ctx context.Context, organization track
 
 func (s *Service) readHealthWaitRecords(ctx context.Context, organization tracker.OrganizationID, now time.Time, snapshot *healthSnapshot) error {
 	type itemEvents struct {
-		item            healthstore.OpenItemObservation
-		transition, run eventstore.Event
+		item       healthstore.OpenItemObservation
+		transition eventstore.Event
+		attempt    tenantAttemptSnapshot
 	}
 	var inputs []itemEvents
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return workItemStorageUnavailable()
+	}
+	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		owner, ok := r.(healthstore.ObservationReader)
 		if !ok {
 			return workItemStorageUnavailable()
@@ -289,8 +294,20 @@ func (s *Service) readHealthWaitRecords(ctx context.Context, organization tracke
 				return err
 			}
 			if item.AttemptID != "" {
-				input.run, err = r.LatestRunEvent(ctx, item.Project, item.AttemptID)
+				input.attempt.attempt, err = r.Attempt(ctx, item.AttemptID)
+				if err != nil {
+					return err
+				}
+				input.item.AttemptStatus = input.attempt.attempt.Status
+				input.item.AttemptUpdatedAt = input.attempt.attempt.UpdatedAt
+				input.attempt.event, err = r.LatestRunEvent(ctx, item.Project, item.AttemptID)
 				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				if input.attempt.event.ID == "" {
+					input.attempt.event = eventstore.Event{OrganizationID: organization, ProjectID: item.Project, WorkItemID: item.Item}
+				}
+				if err := readTenantAttemptRunPayload(ctx, r, &input.attempt); err != nil {
 					return err
 				}
 			}
@@ -326,17 +343,17 @@ func (s *Service) readHealthWaitRecords(ctx context.Context, organization tracke
 			snapshot.Waits = append(snapshot.Waits, wait)
 			continue
 		}
-		if input.run.ID == "" || input.item.AttemptStatus != "succeeded" || event.Actor.Kind != "runner" || event.Data.Reason != "worker_progress" || int64(event.Data.Revision) != input.item.Revision || input.transition.RecordedAt.Before(input.item.AttemptUpdatedAt) {
+		if input.attempt.attempt.ID == "" || input.item.AttemptStatus != "succeeded" || event.Actor.Kind != "runner" || event.Data.Reason != "worker_progress" || int64(event.Data.Revision) != input.item.Revision || input.transition.RecordedAt.Before(input.item.AttemptUpdatedAt) {
 			continue
 		}
-		run, _, err := s.readTenantCollaborationEvent(ctx, input.run)
+		run, err := s.readNativeAttemptRunTenant(ctx, input.attempt)
 		if err != nil {
 			return err
 		}
-		if run.Data.Run == nil || run.Data.Run.Disposition == nil {
+		if run.Disposition == nil {
 			continue
 		}
-		disposition := run.Data.Run.Disposition
+		disposition := run.Disposition
 		if disposition.Status == "blocked" && (disposition.HumanAction || disposition.ReasonCode == "permission_wait") {
 			snapshot.Waits = append(snapshot.Waits, wait)
 		}
