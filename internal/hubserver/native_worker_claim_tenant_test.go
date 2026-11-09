@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -111,7 +110,7 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
+		RunDetails: &memoryRunDetails{}, Clock: clock.Now,
 		SecretKeys: secretTestKeys(t, "1", "1"),
 	})
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
@@ -226,7 +225,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	participant := &nativeRunEventParticipantFixture{}
 	details := &memoryRunDetails{}
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: details, Clock: clock.Now,
+		RunDetails: details, Clock: clock.Now,
 		NativeRunEvents: participant, SecretKeys: secretTestKeys(t, "1", "1"), Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 	})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
@@ -1046,7 +1045,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	var logs bytes.Buffer
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now, SecretKeys: secretTestKeys(t, "1", "1"),
+		RunDetails: &memoryRunDetails{}, Clock: clock.Now, SecretKeys: secretTestKeys(t, "1", "1"),
 		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}

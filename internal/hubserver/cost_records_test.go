@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -23,7 +22,7 @@ func TestSpriteCostRecordsUsePostgresAndReplayImport(t *testing.T) {
 		}
 	})
 	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	for _, name := range []string{"First example", "Second example"} {
 		org, err := service.createNativeOrganizationFor(t.Context(), name)
 		if err != nil {

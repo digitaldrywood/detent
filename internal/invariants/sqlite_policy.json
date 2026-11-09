@@ -267,9 +267,6 @@
     "internal/hubserver/attempt_diffs_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/attempt_evidence_tenant_test.go": {
-      "database_path": 1
-    },
     "internal/hubserver/attempt_hot_projection.go": {
       "sql_julianday": 2
     },
@@ -289,12 +286,6 @@
     },
     "internal/hubserver/change_files_test.go": {
       "database_path": 2
-    },
-    "internal/hubserver/change_records_test.go": {
-      "database_path": 1
-    },
-    "internal/hubserver/change_sources_test.go": {
-      "database_path": 1
     },
     "internal/hubserver/change_validator_test.go": {
       "database_path": 1
@@ -352,9 +343,6 @@
       "database_path": 1
     },
     "internal/hubserver/conversation_worker_test.go": {
-      "database_path": 1
-    },
-    "internal/hubserver/cost_records_test.go": {
       "database_path": 1
     },
     "internal/hubserver/credential_maintenance_test.go": {
@@ -485,9 +473,6 @@
     },
     "internal/hubserver/key_actor_test.go": {
       "sqlite_open": 1
-    },
-    "internal/hubserver/linked_issue_source_records_test.go": {
-      "database_path": 1
     },
     "internal/hubserver/local_board_import_test.go": {
       "sqlite_open": 1
@@ -1352,9 +1337,6 @@
     "internal/hubserver/native_attempts_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/native_blockers.go": {
-      "sql_julianday": 2
-    },
     "internal/hubserver/native_board_execution.go": {
       "sql_julianday": 4
     },
@@ -1372,11 +1354,8 @@
     "internal/hubserver/native_dispatch_requests_test.go": {
       "sql_insert_or": 1
     },
-    "internal/hubserver/native_dispatch_wait.go": {
-      "sql_julianday": 4
-    },
     "internal/hubserver/native_duplicates.go": {
-      "sql_julianday": 4
+      "sql_julianday": 2
     },
     "internal/hubserver/native_duplicates_test.go": {
       "database_path": 2,
@@ -1386,9 +1365,6 @@
       "database_path": 1
     },
     "internal/hubserver/native_events_tenant_test.go": {
-      "database_path": 1
-    },
-    "internal/hubserver/native_labels_test.go": {
       "database_path": 1
     },
     "internal/hubserver/native_migration_test.go": {
@@ -1435,9 +1411,6 @@
     },
     "internal/hubserver/native_work_search_tokenizer.go": {
       "driver_import": 1
-    },
-    "internal/hubserver/native_worker_claim_tenant_test.go": {
-      "database_path": 3
     },
     "internal/hubserver/native_worker_test.go": {
       "database_path": 2

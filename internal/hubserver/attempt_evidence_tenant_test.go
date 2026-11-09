@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +29,7 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 	var operationLog bytes.Buffer
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now, Logger: slog.New(slog.NewTextHandler(&operationLog, nil)),
+		RunDetails: &memoryRunDetails{}, Clock: clock.Now, Logger: slog.New(slog.NewTextHandler(&operationLog, nil)),
 		SecretKeys: secretTestKeys(t, "1", "1"),
 	})
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
@@ -204,9 +203,6 @@ func testPostgresAttemptEvidence(t *testing.T, service *Service, admin *sql.DB, 
 	if service.outbox != nil {
 		service.outbox.stop()
 	}
-	originalDB, originalReader := service.database.db, service.database.reader
-	t.Cleanup(func() { service.database.db = originalDB; service.database.reader = originalReader })
-	service.database.db, service.database.reader = nil, nil
 	input := attachment.EvidenceRequest{Mutation: tracker.Mutation{IdempotencyKey: "evidence-preflight", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, WorkItemID: issue.WorkItemID, AttemptID: firstAttemptID, Caption: "Example evidence"}
 	path := projectPath + "/" + string(project.ID) + "/attempts/" + input.AttemptID + "/evidence/check"
 	request := func(path string, input attachment.EvidenceRequest) int {

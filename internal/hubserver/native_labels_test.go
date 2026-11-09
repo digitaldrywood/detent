@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -30,7 +29,7 @@ func patchLabels(t *testing.T, f nativeFixture, issue tracker.NativeIssue, key s
 
 func TestNativeLabelCatalogue(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
+	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	service.config.AccessRepository = repository
 	createProject := func(name, key string) (nativeOrganization, tracker.NativeProject) {
 		t.Helper()

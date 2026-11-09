@@ -177,12 +177,7 @@ func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if s.config.TenantRepository != nil {
-		return s.approveChangeReviewPolicyRecord(c, request)
-	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return s.approveChangeReviewPolicyCommand(ctx, tx, scope, request)
-	})
+	return s.approveChangeReviewPolicyRecord(c, request)
 }
 
 func readChange(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string) (tracker.ChangeRequest, error) {
@@ -421,12 +416,7 @@ func (s *Service) createChange(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if s.config.TenantRepository != nil {
-		return s.createChangeRecord(c, request)
-	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return s.createChangeCommand(ctx, tx, scope, c.Param("item"), request, now)
-	})
+	return s.createChangeRecord(c, request)
 }
 
 func (s *Service) getChange(c echo.Context) error {

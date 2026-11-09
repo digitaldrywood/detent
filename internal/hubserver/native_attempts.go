@@ -604,22 +604,6 @@ func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObs
 }
 
 func (s *Service) listNativeAttempts(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		ctx := c.Request().Context()
-		scope := nativeRequestScope(c)
-		params, err := nativeReadQuery(c)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if params.Get("view") == "" && c.Request().Header.Get("X-Detent-Attempt-Detail") == "full" {
-			params.Set("view", "detail")
-		}
-		result, err := s.readNativeAttemptPageTenant(ctx, scope, c.Param("item"), params, json.Marshal)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSONBlob(http.StatusOK, result.encoded)
-	}
 	ctx := c.Request().Context()
 	scope := nativeRequestScope(c)
 	params, err := nativeReadQuery(c)
@@ -629,7 +613,7 @@ func (s *Service) listNativeAttempts(c echo.Context) error {
 	if params.Get("view") == "" && c.Request().Header.Get("X-Detent-Attempt-Detail") == "full" {
 		params.Set("view", "detail")
 	}
-	result, err := s.readNativeAttemptPage(ctx, scope, c.Param("item"), params, json.Marshal)
+	result, err := s.readNativeAttemptPageTenant(ctx, scope, c.Param("item"), params, json.Marshal)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -728,14 +712,6 @@ func scanNativeAttemptRow(rows *sql.Rows) (nativeAttemptRow, error) {
 	var row nativeAttemptRow
 	err := rows.Scan(&row.data, &row.attempt.Status, &row.started, &row.updated, &row.checkpoint, &row.artifacts, &row.expires, &row.released, &row.renewed, &row.attempt.WorkItemRevision, &row.attempt.DispatchGeneration, &row.cleanupAcknowledged)
 	return row, err
-}
-
-func scanNativeAttempt(ctx context.Context, q nativeQueryer, rows *sql.Rows, now time.Time) (tracker.NativeAttempt, error) {
-	row, err := scanNativeAttemptRow(rows)
-	if err != nil {
-		return tracker.NativeAttempt{}, err
-	}
-	return row.hydrate(ctx, q, now)
 }
 
 func (row nativeAttemptRow) hydrate(ctx context.Context, q nativeQueryer, now time.Time) (tracker.NativeAttempt, error) {

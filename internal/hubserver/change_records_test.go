@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -244,7 +243,7 @@ func (s *changeReviewDetailReadGuard) ReadDetail(ctx context.Context, organizati
 
 func TestChangeDetailEmptyCollectionsAreArrays(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openLocalPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
+	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(id), func(t *testing.T) {
 			seedWorkItemRecordOrganization(t, repository, service, nativeOrganization{ID: id, Name: string(id), Slug: string(id)})

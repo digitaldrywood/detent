@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ import (
 
 func TestLinkedIssueIntakeRequiresSelectedAccessAuthority(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
+	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	path := "/api/v2/organizations/org_example/projects/prj_example/work-items/wi_example/source-intake"
 	request := tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "intake"}}
 	response := performHubAPIRequest(t, service, http.MethodPost, path, testHubAdminToken, request)

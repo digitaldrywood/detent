@@ -122,24 +122,3 @@ func readIssueEmailParticipants(ctx context.Context, q nativeQueryer, event issu
 	}
 	return participants, next, nil
 }
-
-func appendIssueEmailNotice(ctx context.Context, tx *sql.Tx, item, user, due string, notice issueEmailNotice) error {
-	var raw string
-	err := tx.QueryRowContext(ctx, "SELECT notices_json FROM issue_notification_batches WHERE work_item_id=? AND user_id=?", item, user).Scan(&raw)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	var notices []issueEmailNotice
-	if err == nil {
-		if err := json.Unmarshal([]byte(raw), &notices); err != nil {
-			return err
-		}
-	}
-	notices = append(notices, notice)
-	encoded, err := json.Marshal(notices)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO issue_notification_batches(work_item_id,user_id,due_at,notices_json) SELECT work_item_id,user_id,?,? FROM issue_subscriptions WHERE work_item_id=? AND user_id=? AND unsubscribed=0 ON CONFLICT(work_item_id,user_id) DO UPDATE SET notices_json=excluded.notices_json`, due, string(encoded), item, user)
-	return err
-}

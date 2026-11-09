@@ -20,8 +20,8 @@ import (
 
 func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 	t.Parallel()
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}
-	f := newChangeFixture(t, openTestService(t, config))
+	config := Config{Content: (&changeObjectFixture{}).call}
+	f := newChangeFixture(t, newPostgresNativeService(t, config))
 	input := changeTestInput()
 	bundle := changeTestSource(t, &input, bytes.Repeat([]byte("retained source\n"), 100000))
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle}
@@ -90,15 +90,13 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 	if replay.ID != version.ID {
 		t.Fatal("source replay changed the immutable version")
 	}
-	for _, statement := range []string{"UPDATE change_sources SET bundle = x'00'", "DELETE FROM change_sources"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err == nil {
+	admin := usagePostgresAdmin(t, f.service)
+	for _, statement := range []string{"UPDATE change_versions SET source_content_bytes=source_content_bytes+1 WHERE id=$1", "DELETE FROM change_versions WHERE id=$1"} {
+		if _, err := admin.ExecContext(t.Context(), statement, version.ID); err == nil {
 			t.Fatal("source bytes lost version immutability")
 		}
 	}
-	if err := f.service.Close(); err != nil {
-		t.Fatal(err)
-	}
-	f.service = openTestService(t, config)
+	f.service = reopenCoordinatorService(t, f.service)
 	path := f.path + "/versions/" + version.ID + "/source"
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
