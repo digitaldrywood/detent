@@ -7,62 +7,147 @@ package pgquery
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const artifactProjectBindingIDs = `-- name: ArtifactProjectBindingIDs :many
+SELECT id FROM artifact_services WHERE organization_id=$1 AND project_id=$2 ORDER BY id LIMIT $3::integer
+`
+
+type ArtifactProjectBindingIDsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	BatchLimit     int32
+}
+
+func (q *Queries) ArtifactProjectBindingIDs(ctx context.Context, arg ArtifactProjectBindingIDsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, artifactProjectBindingIDs, arg.OrganizationID, arg.ProjectID, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const artifactProjectHasAuthorizations = `-- name: ArtifactProjectHasAuthorizations :one
+SELECT EXISTS(SELECT 1 FROM artifact_grants g WHERE g.organization_id=$1 AND g.project_id=$2)
+OR EXISTS(SELECT 1 FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND a.project_id=$2)
+`
+
+type ArtifactProjectHasAuthorizationsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+}
+
+func (q *Queries) ArtifactProjectHasAuthorizations(ctx context.Context, arg ArtifactProjectHasAuthorizationsParams) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, artifactProjectHasAuthorizations, arg.OrganizationID, arg.ProjectID)
+	var column_1 pgtype.Bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const artifactProjectHasMetadata = `-- name: ArtifactProjectHasMetadata :one
+SELECT EXISTS(SELECT 1 FROM artifact_grants g WHERE g.organization_id=$1 AND g.project_id=$2)
+OR EXISTS(SELECT 1 FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND a.project_id=$2)
+OR EXISTS(SELECT 1 FROM artifact_services s WHERE s.organization_id=$1 AND s.project_id=$2)
+`
+
+type ArtifactProjectHasMetadataParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+}
+
+func (q *Queries) ArtifactProjectHasMetadata(ctx context.Context, arg ArtifactProjectHasMetadataParams) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, artifactProjectHasMetadata, arg.OrganizationID, arg.ProjectID)
+	var column_1 pgtype.Bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const deleteArtifactProjectBindings = `-- name: DeleteArtifactProjectBindings :exec
-DELETE FROM artifact_services WHERE organization_id=$1 AND project_id=$2
+DELETE FROM artifact_services WHERE organization_id=$1 AND project_id=$2 AND id=ANY($3::text[])
 `
 
 type DeleteArtifactProjectBindingsParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
+	ServiceIds     []string
 }
 
 func (q *Queries) DeleteArtifactProjectBindings(ctx context.Context, arg DeleteArtifactProjectBindingsParams) error {
-	_, err := q.db.Exec(ctx, deleteArtifactProjectBindings, arg.OrganizationID, arg.ProjectID)
+	_, err := q.db.Exec(ctx, deleteArtifactProjectBindings, arg.OrganizationID, arg.ProjectID, arg.ServiceIds)
 	return err
 }
 
 const deleteArtifactProjectCatalogSettings = `-- name: DeleteArtifactProjectCatalogSettings :exec
-DELETE FROM artifact_catalog_traffic_settings WHERE organization_id=$1 AND project_id=$2
+DELETE FROM artifact_catalog_traffic_settings WHERE organization_id=$1 AND project_id=$2 AND service_id=ANY($3::text[])
 `
 
 type DeleteArtifactProjectCatalogSettingsParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
+	ServiceIds     []string
 }
 
 func (q *Queries) DeleteArtifactProjectCatalogSettings(ctx context.Context, arg DeleteArtifactProjectCatalogSettingsParams) error {
-	_, err := q.db.Exec(ctx, deleteArtifactProjectCatalogSettings, arg.OrganizationID, arg.ProjectID)
+	_, err := q.db.Exec(ctx, deleteArtifactProjectCatalogSettings, arg.OrganizationID, arg.ProjectID, arg.ServiceIds)
 	return err
 }
 
-const deleteArtifactProjectReadGrants = `-- name: DeleteArtifactProjectReadGrants :exec
-DELETE FROM artifact_grants WHERE organization_id=$1 AND project_id=$2
+const deleteArtifactProjectExpiredUploadAuthorizations = `-- name: DeleteArtifactProjectExpiredUploadAuthorizations :execrows
+DELETE FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND a.project_id=$2 AND (a.service_id,a.attempt_id,a.idempotency_key) IN (
+SELECT e.service_id,e.attempt_id,e.idempotency_key FROM artifact_upload_authorizations e WHERE e.organization_id=$1 AND e.project_id=$2 AND e.expires_at<=$3::timestamptz ORDER BY e.service_id,e.attempt_id,e.idempotency_key LIMIT $4::integer)
+`
+
+type DeleteArtifactProjectExpiredUploadAuthorizationsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Now            time.Time
+	BatchLimit     int32
+}
+
+func (q *Queries) DeleteArtifactProjectExpiredUploadAuthorizations(ctx context.Context, arg DeleteArtifactProjectExpiredUploadAuthorizationsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteArtifactProjectExpiredUploadAuthorizations,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.Now,
+		arg.BatchLimit,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteArtifactProjectReadGrants = `-- name: DeleteArtifactProjectReadGrants :execrows
+DELETE FROM artifact_grants g WHERE g.organization_id=$1 AND g.project_id=$2 AND g.token_hash IN (
+SELECT e.token_hash FROM artifact_grants e WHERE e.organization_id=$1 AND e.project_id=$2 ORDER BY e.token_hash LIMIT $3::integer)
 `
 
 type DeleteArtifactProjectReadGrantsParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
+	BatchLimit     int32
 }
 
-func (q *Queries) DeleteArtifactProjectReadGrants(ctx context.Context, arg DeleteArtifactProjectReadGrantsParams) error {
-	_, err := q.db.Exec(ctx, deleteArtifactProjectReadGrants, arg.OrganizationID, arg.ProjectID)
-	return err
-}
-
-const deleteArtifactProjectUploadAuthorizations = `-- name: DeleteArtifactProjectUploadAuthorizations :exec
-DELETE FROM artifact_upload_authorizations WHERE organization_id=$1 AND project_id=$2
-`
-
-type DeleteArtifactProjectUploadAuthorizationsParams struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-}
-
-func (q *Queries) DeleteArtifactProjectUploadAuthorizations(ctx context.Context, arg DeleteArtifactProjectUploadAuthorizationsParams) error {
-	_, err := q.db.Exec(ctx, deleteArtifactProjectUploadAuthorizations, arg.OrganizationID, arg.ProjectID)
-	return err
+func (q *Queries) DeleteArtifactProjectReadGrants(ctx context.Context, arg DeleteArtifactProjectReadGrantsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteArtifactProjectReadGrants, arg.OrganizationID, arg.ProjectID, arg.BatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

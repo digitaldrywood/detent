@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -94,17 +95,24 @@ func (p tenantProjectParticipants) UpdateProject(ctx context.Context, w tenantst
 	return err
 }
 
-func (p tenantProjectParticipants) RetireProject(ctx context.Context, w tenantstore.Writer, actor tenantstore.ProjectActor, record projectstore.Record, now time.Time) error {
-	s := p.service
-	now = now.UTC()
+func (s *Service) requireProjectRetirementEntitlement(ctx context.Context, r billingstore.Reader, now time.Time) error {
 	if s.database.plans() != nil {
-		entitlement, err := s.database.hostedEntitlementRecord(ctx, w, now)
+		entitlement, err := s.database.hostedEntitlementRecord(ctx, r, now)
 		if err != nil {
 			return err
 		}
 		if err := requireHostedFeatureInEntitlement(entitlement, "collaboration"); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (p tenantProjectParticipants) RetireProject(ctx context.Context, w tenantstore.Writer, actor tenantstore.ProjectActor, record projectstore.Record, now time.Time) error {
+	s := p.service
+	now = now.UTC()
+	if err := s.requireProjectRetirementEntitlement(ctx, w, now); err != nil {
+		return err
 	}
 	if err := s.applyRunnerTenantUsage(ctx, w, now, "project-retire/"+string(record.Core.ID)+"/"+strconv.FormatInt(record.Settings.Revision, 10), false, false); err != nil {
 		return err

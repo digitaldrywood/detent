@@ -51,6 +51,15 @@ func (s *Service) catalogPublisherScope(ctx context.Context, r postgres.Artifact
 	if _, err := tenant.AccessTokenGrant(ctx, current.ID, project); err != nil {
 		return scope, artifact.Binding{}, artifact.ErrDenied
 	}
+	if write {
+		writer, ok := tenant.(tenantstore.Writer)
+		if !ok {
+			return scope, artifact.Binding{}, workItemStorageUnavailable()
+		}
+		if err := writer.LockArtifactProject(ctx, project); err != nil {
+			return scope, artifact.Binding{}, err
+		}
+	}
 	binding, err := tenant.ArtifactService(ctx, project, command.ServiceID)
 	if err != nil || binding.PublisherTokenID != current.ID {
 		return scope, artifact.Binding{}, artifact.ErrDenied

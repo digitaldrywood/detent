@@ -16,6 +16,11 @@ func (s *session) ArtifactService(ctx context.Context, project tracker.ProjectID
 	return artifactServiceBinding(row), mapError(ctx, err)
 }
 
+func (s *session) LockArtifactProject(ctx context.Context, project tracker.ProjectID) error {
+	_, err := s.queries.ShareActiveProject(ctx, pgquery.ShareActiveProjectParams{OrganizationID: s.organization, ID: project})
+	return mapError(ctx, err)
+}
+
 func (s *session) ArtifactServices(ctx context.Context, project tracker.ProjectID) ([]artifact.Binding, error) {
 	rows, err := s.queries.ArtifactServiceList(ctx, pgquery.ArtifactServiceListParams{OrganizationID: s.organization, ProjectID: project})
 	if err != nil {
@@ -31,6 +36,9 @@ func (s *session) ArtifactServices(ctx context.Context, project tracker.ProjectI
 func (s *session) BindArtifactService(ctx context.Context, project tracker.ProjectID, binding artifact.Binding) error {
 	if !artifact.ValidID(binding.ServiceID, "service") || !artifact.ValidOrigin(binding.Origin) || !slices.Contains([]string{"customer", "hosted"}, binding.Mode) || binding.Mode == "hosted" && !binding.HostedOptIn || binding.PublisherTokenID == "" {
 		return corestore.ErrInvalidCursor
+	}
+	if err := s.LockArtifactProject(ctx, project); err != nil {
+		return err
 	}
 	count, err := s.queries.ArtifactServiceBind(ctx, pgquery.ArtifactServiceBindParams{OrganizationID: s.organization, ProjectID: project, ID: binding.ServiceID, Origin: binding.Origin, BindingMode: binding.Mode, HostedOptIn: binding.HostedOptIn, PublisherTokenID: binding.PublisherTokenID})
 	if err != nil {

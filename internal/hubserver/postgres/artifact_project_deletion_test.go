@@ -1,8 +1,13 @@
 package postgres_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -152,6 +158,79 @@ func TestArtifactProjectDeletionRetainsCatalogCustody(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+				var extraServices []string
+				if len(deleted) == 0 {
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						grant, err := w.ArtifactReadGrant(t.Context(), project, artifact.Digest([]byte(string(org)+"/"+string(project))))
+						if err != nil {
+							return err
+						}
+						for index := range 33 {
+							grant.TokenHash = artifact.Digest([]byte(string(org) + "/backlog/" + strconv.Itoa(index)))
+							if err := w.CreateArtifactReadGrant(t.Context(), grant, now); err != nil {
+								return err
+							}
+							if err := w.AuthorizeArtifactUpload(t.Context(), artifact.Reservation{Scope: artifact.Scope{OrganizationID: string(org), ProjectID: string(project), WorkItemID: fixture.reference.WorkItemID, RunID: fixture.reference.RunID, AttemptID: artifact.NewID("attempt")}, ServiceID: service, Key: "expired/" + strconv.Itoa(index), Kind: "log", Bytes: 1}, now.Add(-8*24*time.Hour)); err != nil {
+								return err
+							}
+							binding := artifact.Binding{ServiceID: artifact.NewID("service"), Origin: "https://example.invalid", Mode: "customer", PublisherTokenID: grant.PrincipalID}
+							if err := w.BindArtifactService(t.Context(), project, binding); err != nil {
+								return err
+							}
+							extraServices = append(extraServices, binding.ServiceID)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+						for _, id := range extraServices {
+							if _, err := w.PutCatalogTrafficSettings(t.Context(), postgres.CatalogTrafficPolicy{OrganizationID: org, ProjectID: project, ServiceID: id, WindowSeconds: 60, RetentionSeconds: 3600}); err != nil {
+								return err
+							}
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.RetireProject(t.Context(), project, 1, now.Add(2*time.Hour))
+				}); !errors.Is(err, projectstore.ErrActiveWork) {
+					t.Fatalf("artifact metadata must drain before retirement: %v", err)
+				}
+				counts := func() [4]int64 {
+					t.Helper()
+					var rows [4]int64
+					if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM artifact_grants WHERE organization_id=$1 AND project_id=$2),(SELECT count(*) FROM artifact_upload_authorizations WHERE organization_id=$1 AND project_id=$2),(SELECT count(*) FROM artifact_services WHERE organization_id=$1 AND project_id=$2),(SELECT count(*) FROM artifact_catalog_traffic_settings WHERE organization_id=$1 AND project_id=$2)`, org, project).Scan(&rows[0], &rows[1], &rows[2], &rows[3]); err != nil {
+						t.Fatal(err)
+					}
+					return rows
+				}
+				before := counts()
+				ready := false
+				for pass := 0; pass < 3 && !ready; pass++ {
+					if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+						var err error
+						ready, err = w.PruneProjectArtifactBindings(t.Context(), project, artifactstore.ProjectRetirementBatch)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					after := counts()
+					for index := range before {
+						if removed := before[index] - after[index]; removed < 0 || removed > 32 {
+							t.Fatalf("cleanup family%d changed by%d rows in one request", index, removed)
+						}
+					}
+					if len(extraServices) > 0 && pass == 0 && (ready || after != [4]int64{2, 1, 34, before[3]}) {
+						t.Fatalf("first cleanup did not retain bounded progress and bindings: ready=%t rows=%v", ready, after)
+					}
+					before = after
+				}
+				if !ready || before != [4]int64{} {
+					t.Fatalf("bounded cleanup did not finish: ready=%t rows=%v", ready, before)
+				}
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 					if err := w.RequireProjectIdle(t.Context(), project, now); err != nil {
 						return err
@@ -217,4 +296,95 @@ func TestArtifactProjectDeletionRetainsCatalogCustody(t *testing.T) {
 
 func TestArtifactProjectGrantIndexResumesAfterInterruption(t *testing.T) {
 	assertConcurrentIndexMigrationRecovery(t, 20261109035756, "artifact_grants_project", "CREATE INDEX artifact_grants_project ON artifact_grants (token_hash)", "CREATE INDEX artifact_grants_project ON public.artifact_grants USING btree (organization_id, project_id, token_hash)")
+}
+
+func TestArtifactRetirementWaitsBeforeCatalogBindingLocks(t *testing.T) {
+	admin, repository, pool, now := artifactCatalogFixture(t)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			project := tracker.ProjectID("prj_first")
+			service := fmt.Sprintf("service_%032x", 1)
+			locked, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			t.Cleanup(func() { once.Do(func() { close(release) }) })
+			writer := startRepositoryTask(t, func(ctx context.Context) error {
+				return repository.WriteArtifactCatalog(ctx, org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+					if _, err := w.CatalogPolicy(ctx, postgres.CatalogPolicyInput{OrganizationID: org, ProjectID: project, ID: service}); err != nil {
+						return err
+					}
+					close(locked)
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					_, err := w.ReserveCatalogUpload(ctx, catalogReservation(org, project, service, now))
+					return err
+				})
+			})
+			select {
+			case <-locked:
+			case <-writer.done:
+				t.Fatalf("catalog writer failed before the interleaving: %v", writer.err)
+			case <-t.Context().Done():
+				t.Fatal("catalog writer did not acquire its policy")
+			}
+			var writerPID int
+			if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockCatalogPolicy :one%'`, pool.Config().ConnConfig.User).Scan(&writerPID); err != nil {
+				t.Fatal(err)
+			}
+			parallel := startRepositoryTask(t, func(ctx context.Context) error {
+				return repository.WriteArtifactCatalog(ctx, org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+					_, err := w.CatalogPolicy(ctx, postgres.CatalogPolicyInput{OrganizationID: org, ProjectID: project, ID: fmt.Sprintf("service_%032x", 2)})
+					return err
+				})
+			})
+			var serialized bool
+			testenv.WaitUntil(t, t.Context(), func() error {
+				select {
+				case <-parallel.done:
+					return nil
+				default:
+				}
+				if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))`, writerPID).Scan(&serialized); err != nil {
+					return err
+				}
+				if serialized {
+					return nil
+				}
+				return errors.New("second artifact writer has not reached its project")
+			})
+			if serialized {
+				t.Fatal("independent artifact writes serialize on the project lifecycle lock")
+			}
+			if err := parallel.wait(t); err != nil {
+				t.Fatal(err)
+			}
+			cleanup := startRepositoryTask(t, func(ctx context.Context) error {
+				return repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
+					_, err := w.PruneProjectArtifactBindings(ctx, project, 1)
+					return err
+				})
+			})
+			var waitingQuery string
+			testenv.WaitUntil(t, t.Context(), func() error {
+				select {
+				case <-cleanup.done:
+					t.Fatalf("cleanup bypassed the held catalog writer: %v", cleanup.err)
+				default:
+				}
+				return admin.QueryRowContext(t.Context(), `SELECT query FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))`, writerPID).Scan(&waitingQuery)
+			})
+			if !strings.Contains(waitingQuery, "FROM projects") {
+				t.Errorf("retirement waited on artifact metadata before project custody: %s", waitingQuery)
+			}
+			once.Do(func() { close(release) })
+			if err := writer.wait(t); err != nil {
+				t.Fatalf("catalog writer deadlocked with retirement: %v", err)
+			}
+			if err := cleanup.wait(t); !errors.Is(err, projectstore.ErrActiveWork) {
+				t.Fatalf("cleanup did not observe committed upload custody: %v", err)
+			}
+		})
+	}
 }

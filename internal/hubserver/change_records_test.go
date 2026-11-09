@@ -687,9 +687,12 @@ func newChangePolicyPostgresFixtureWithDetails(t *testing.T, maxConnections int,
 	return repository, f, owner, admin
 }
 
-func newChangePolicyPostgresTenantFixture(t *testing.T, repository tenantstore.Repository, organization tracker.OrganizationID, details *memoryRunDetails) (hostedSecurityFixture, hostedSecurityUser) {
+func newChangePolicyPostgresTenantFixture(t *testing.T, repository tenantstore.Repository, organization tracker.OrganizationID, details *memoryRunDetails, projects ...tracker.ProjectID) (hostedSecurityFixture, hostedSecurityUser) {
 	t.Helper()
 	projectID := tracker.ProjectID("prj_security")
+	if len(projects) > 0 {
+		projectID = projects[0]
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	descriptor := hubTestPolicy()
 	content := eventstore.NewContent(details)

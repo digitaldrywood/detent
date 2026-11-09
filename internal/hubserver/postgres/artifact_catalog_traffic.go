@@ -26,6 +26,9 @@ func (s *session) recordCatalogTraffic(ctx context.Context, arg CatalogTrafficRe
 	if arg.ID == "" || len(arg.ID) > 200 || arg.Minute.IsZero() || !arg.Minute.Equal(arg.Minute.UTC().Truncate(time.Minute)) || arg.UploadBytes < 0 || arg.DownloadBytes < 0 || arg.Requests < 0 {
 		return artifact.ErrInvalid
 	}
+	if err := s.LockArtifactProject(ctx, arg.ProjectID); err != nil {
+		return err
+	}
 	if _, err := s.lockCatalogUsage(ctx); err != nil {
 		return err
 	}
@@ -69,6 +72,9 @@ func (s *session) PutCatalogTrafficSettings(ctx context.Context, arg CatalogTraf
 	}
 	if arg.WindowSeconds < 1 || arg.RetentionSeconds < arg.WindowSeconds {
 		return CatalogTrafficSettings{}, artifact.ErrInvalid
+	}
+	if err := s.LockArtifactProject(ctx, arg.ProjectID); err != nil {
+		return CatalogTrafficSettings{}, err
 	}
 	if _, err := s.lockCatalogUsage(ctx); err != nil {
 		return CatalogTrafficSettings{}, err

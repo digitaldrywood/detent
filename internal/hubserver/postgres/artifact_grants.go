@@ -20,6 +20,9 @@ func (s *session) CreateArtifactReadGrant(ctx context.Context, grant artifactsto
 	if !artifact.ValidHash(grant.TokenHash, 64) || grant.PrincipalID == "" || grant.ExpiresAt.IsZero() || now.IsZero() {
 		return corestore.ErrInvalidCursor
 	}
+	if err := s.LockArtifactProject(ctx, grant.ProjectID); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "artifact_grants|"+string(s.organization)+"|"+grant.PrincipalID); err != nil {
 		return mapError(ctx, err)
 	}

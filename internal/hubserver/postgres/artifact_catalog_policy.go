@@ -15,6 +15,9 @@ func (s *session) CatalogPolicy(ctx context.Context, arg CatalogPolicyInput) (Ca
 		return CatalogBinding{}, err
 	}
 	if !s.readOnly {
+		if err := s.LockArtifactProject(ctx, arg.ProjectID); err != nil {
+			return CatalogBinding{}, err
+		}
 		row, err := s.queries.LockCatalogPolicy(ctx, pgquery.LockCatalogPolicyParams(arg))
 		return row, mapError(ctx, err)
 	}
@@ -24,6 +27,9 @@ func (s *session) CatalogPolicy(ctx context.Context, arg CatalogPolicyInput) (Ca
 
 func (s *session) SetCatalogPolicy(ctx context.Context, project tracker.ProjectID, service string, p artifact.Policy) (CatalogBinding, error) {
 	if err := p.Validate(); err != nil {
+		return CatalogBinding{}, err
+	}
+	if err := s.LockArtifactProject(ctx, project); err != nil {
 		return CatalogBinding{}, err
 	}
 	row, err := s.queries.SetCatalogPolicy(ctx, pgquery.SetCatalogPolicyParams{OrganizationID: s.organization, ProjectID: project, ServiceID: service, PolicyID: p.ID, RetainedLimit: p.Limits.RetainedBytes, ReservedLimit: p.Limits.ReservedBytes, ArtifactLimit: p.Limits.ArtifactBytes, UploadLimit: p.Limits.UploadBytes, RetentionSeconds: p.Limits.RetentionSeconds, AbandonedSeconds: p.AbandonedUploadSeconds, DeletionSeconds: p.DeletionRecordSeconds, BackupSeconds: p.BackupSeconds})

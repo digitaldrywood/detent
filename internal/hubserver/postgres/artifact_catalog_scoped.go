@@ -272,6 +272,9 @@ func (s *session) CatalogExecutionAuthority(ctx context.Context, arg CatalogExec
 	if err := s.checkOrganization(arg.OrganizationID); err != nil {
 		return err
 	}
+	if err := s.LockArtifactProject(ctx, arg.ProjectID); err != nil {
+		return err
+	}
 	_, err := s.queries.CatalogExecutionAuthority(ctx, arg)
 	return mapError(ctx, err)
 }

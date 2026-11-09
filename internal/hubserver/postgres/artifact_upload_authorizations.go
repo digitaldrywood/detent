@@ -19,6 +19,9 @@ func (s *session) AuthorizeArtifactUpload(ctx context.Context, reservation artif
 		return corestore.ErrInvalidCursor
 	}
 	project, now := tracker.ProjectID(reservation.ProjectID), recordTime(now)
+	if err := s.LockArtifactProject(ctx, project); err != nil {
+		return err
+	}
 	expires := now.Add(artifactstore.UploadAuthorizationLifetime)
 	if err := s.queries.ArtifactUploadAuthorizationPruneAttempt(ctx, pgquery.ArtifactUploadAuthorizationPruneAttemptParams{OrganizationID: s.organization, ProjectID: project, AttemptID: reservation.AttemptID, Now: now, BatchLimit: artifactstore.UploadAuthorizationPruneBatch}); err != nil {
 		return mapError(ctx, err)

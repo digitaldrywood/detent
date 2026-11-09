@@ -33,6 +33,7 @@ const (
 	UploadAuthorizationPruneBatch    = 2 * UploadAuthorizationLimit
 	MaxUploadAuthorizationPruneBatch = 5000
 	UploadAuthorizationLifetime      = 7 * 24 * time.Hour
+	ProjectRetirementBatch           = 32
 )
 
 type ReadGrant struct {
@@ -56,6 +57,8 @@ type Reader interface {
 }
 
 type Writer interface {
+	LockArtifactProject(context.Context, tracker.ProjectID) error
+	PruneProjectArtifactBindings(context.Context, tracker.ProjectID, int) (bool, error)
 	CreateArtifactReadGrant(context.Context, ReadGrant, time.Time) error
 	PruneExpiredArtifactReadGrants(context.Context, time.Time, int) (int64, error)
 	BindArtifactService(context.Context, tracker.ProjectID, artifact.Binding) error

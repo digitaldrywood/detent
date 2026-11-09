@@ -266,7 +266,7 @@ func (s *session) RetireProject(ctx context.Context, id tracker.ProjectID, revis
 	if active.Bool {
 		return projectstore.ErrActiveWork
 	}
-	if err := s.pruneProjectArtifactBindings(ctx, id); err != nil {
+	if err := s.requireProjectArtifactBindingsAccounted(ctx, id); err != nil {
 		return err
 	}
 	record.Settings.RepositoryEnabled = false

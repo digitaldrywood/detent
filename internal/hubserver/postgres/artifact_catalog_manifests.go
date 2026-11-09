@@ -83,6 +83,9 @@ func (s *session) RecordCatalogPublication(ctx context.Context, arg CatalogPubli
 	if arg.UpdatedAt.IsZero() || arg.Outcome == "committed" && arg.ExternalReceipt == "" {
 		return CatalogPublication{}, artifact.ErrInvalid
 	}
+	if err := s.LockArtifactProject(ctx, arg.ProjectID); err != nil {
+		return CatalogPublication{}, err
+	}
 	if _, err := s.lockCatalogUsage(ctx); err != nil {
 		return CatalogPublication{}, err
 	}

@@ -256,6 +256,9 @@ func (s *session) lockCatalogUpload(ctx context.Context, scope CatalogScope) (Ca
 	if err := s.checkOrganization(scope.OrganizationID); err != nil {
 		return CatalogUpload{}, err
 	}
+	if err := s.LockArtifactProject(ctx, scope.ProjectID); err != nil {
+		return CatalogUpload{}, err
+	}
 	if _, err := s.lockCatalogUsage(ctx); err != nil {
 		return CatalogUpload{}, err
 	}

@@ -332,6 +332,18 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 	if err != nil {
 		return nil, err
 	}
+	if request, ok := input.(deleteCloudProjectRequest); ok {
+		ready, previous, cleanupErr := s.pruneProjectRetirementArtifacts(ctx, scope, current, request, options.OperationID, command.IdempotencyKey, hash)
+		if cleanupErr != nil {
+			return nil, projectRecordError(cleanupErr)
+		}
+		if previous != nil {
+			return content.Receipt(ctx, *previous)
+		}
+		if !ready {
+			return nil, &nativeError{Code: "project_cleanup_pending", Message: "Project cleanup is incomplete. Retry deletion.", status: http.StatusConflict, publicMessage: true}
+		}
+	}
 	receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: options.OperationID, CommandKey: command.IdempotencyKey, RequestHash: hash}, raw)
 	if err != nil {
 		return nil, err
