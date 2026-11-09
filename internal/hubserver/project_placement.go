@@ -804,6 +804,9 @@ func (s *Service) spritePlacementScopeRecord(ctx context.Context, scope nativeSc
 		if err != nil {
 			return result, err
 		}
+		if projectID != "" {
+			result.Requirements = descriptor.Requirements
+		}
 		workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(project.ID), descriptor)
 		if err != nil {
 			return result, err

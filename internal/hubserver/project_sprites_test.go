@@ -351,8 +351,10 @@ func TestWakeSpriteRunners(t *testing.T) {
 		organizationToken      bool
 		organizationScope      bool
 		wrongOrganizationToken bool
+		selector               bool
 	}{
 		{name: "paused runner with dispatchable work", heartbeatAgo: time.Minute, dispatchable: true, storeToken: true, spriteStatus: http.StatusOK, wantWoken: 1, wantWakeCalls: 1},
+		{name: "policy selector excludes another paused runner", heartbeatAgo: time.Minute, dispatchable: true, storeToken: true, spriteStatus: http.StatusOK, wantWoken: 1, wantWakeCalls: 1, selector: true},
 		{name: "organization runner inherits token", heartbeatAgo: time.Minute, dispatchable: true, organizationToken: true, organizationScope: true, spriteStatus: http.StatusOK, wantWoken: 1, wantWakeCalls: 1},
 		{name: "project token overrides organization token", heartbeatAgo: time.Minute, dispatchable: true, storeToken: true, organizationToken: true, wrongOrganizationToken: true, spriteStatus: http.StatusOK, wantWoken: 1, wantWakeCalls: 1},
 		{name: "organization token cannot cross tenant", heartbeatAgo: time.Minute, dispatchable: true, organizationToken: true, organizationScope: true, wrongOrganizationToken: true, spriteStatus: http.StatusOK},
@@ -372,6 +374,12 @@ func TestWakeSpriteRunners(t *testing.T) {
 				return spritesTestResponse(`{"type":"complete"}`, tt.spriteStatus), nil
 			})}
 			f, scope, runners := newSpriteWakeFixture(t, client, tt.storeToken, tt.heartbeatAgo, "customer-host")
+			if tt.selector {
+				runners = append(runners, enrollSpriteWakeRunners(t, f, tt.heartbeatAgo, "other-host")...)
+				descriptor := hubTestPolicy()
+				descriptor.Requirements.RunnerID = runners[0].binding.RunnerID
+				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor.WithID())
+			}
 			if tt.organizationScope {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 					identity, err := w.RunnerIdentity(t.Context(), runners[0].binding.RunnerID)

@@ -1720,6 +1720,9 @@ func (s *Service) wakeSpriteRunnersBudgetRecord(ctx context.Context, scope nativ
 		if !candidate.Sprite || !candidate.Paused || candidate.State != "active" || !validSpritesSlug(candidate.Hostname) || seen[candidate.Hostname] {
 			continue
 		}
+		if err := placement.Requirements.Match(candidate.RunnerID, string(candidate.MachineID), candidate.Tags); err != nil {
+			continue
+		}
 		allowed := false
 		var op postgres.SpriteOperation
 		operationKey := "wake:" + candidate.RunnerID + ":" + candidate.LastHeartbeatAt.UTC().Format(time.RFC3339Nano)
