@@ -2502,28 +2502,7 @@ func TestProjectSpriteLoginReadiness(t *testing.T) {
 				return w.UpdateRunnerIdentity(t.Context(), identity)
 			})
 			if test.wakeFailed {
-				request, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleRequest{Actor: scope.credential.ID, Provider: "detent-test"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				receipt, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleReceipt{Log: "Runner service start was rejected"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
-					owner := w.(postgres.SpriteWriter)
-					identity, err := w.RunnerIdentity(t.Context(), runner.RunnerID)
-					if err != nil {
-						return err
-					}
-					at := heartbeat.Add(time.Second)
-					operation, err := owner.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: scope.organization, IdempotencyKey: "fixture-wake", Name: runner.SpriteName, Operation: "wake", TargetEnrollmentID: identity.EnrollmentID, ProjectID: scope.project, RequestObjectKey: &request, CreatedAt: at, NextAttemptAt: at})
-					if err != nil {
-						return err
-					}
-					operation.Outcome, operation.ReceiptObjectKey, operation.UpdatedAt = "pending", &receipt, at
-					return owner.UpdateSpriteOperation(t.Context(), operation, operation.Attempts)
-				})
+				storeSpriteWakeReceiptFixture(t, f, scope, runner.RunnerID, runner.SpriteName, "pending", heartbeat.Add(time.Second))
 			}
 			assertSpritePostgresFacts(t, f)
 			allowed, err := spriteRunnerAllowedFixture(t, f, scope, runner.RunnerID)

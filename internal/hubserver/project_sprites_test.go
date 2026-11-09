@@ -320,6 +320,31 @@ func spritePostgresFixtureConnection(t *testing.T, f nativeFixture) *pgx.Conn {
 	return connection
 }
 
+func storeSpriteWakeReceiptFixture(t *testing.T, f nativeFixture, scope nativeScope, runnerID, name, outcome string, at time.Time) {
+	t.Helper()
+	request, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleRequest{Actor: scope.credential.ID, Provider: "detent-test", TokenProject: scope.project, State: "Todo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleReceipt{Log: "Runner service start observed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+		owner := w.(postgres.SpriteWriter)
+		identity, err := w.RunnerIdentity(t.Context(), runnerID)
+		if err != nil {
+			return err
+		}
+		operation, err := owner.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: scope.organization, IdempotencyKey: "fixture-wake:" + identity.EnrollmentID, Name: name, Operation: "wake", TargetEnrollmentID: identity.EnrollmentID, ProjectID: scope.project, RequestObjectKey: &request, CreatedAt: at, NextAttemptAt: at})
+		if err != nil {
+			return err
+		}
+		operation.Outcome, operation.ReceiptObjectKey, operation.UpdatedAt = outcome, &receipt, at
+		return owner.UpdateSpriteOperation(t.Context(), operation, operation.Attempts)
+	})
+}
+
 func newSpriteWakeFixture(t *testing.T, client *http.Client, storeToken bool, heartbeatAgo time.Duration, names ...string) (nativeFixture, nativeScope, []runnerFixture) {
 	t.Helper()
 	f := newSpriteNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), SpritesHTTPClient: client, RunDetails: &verifiedAttemptDetails{}})
