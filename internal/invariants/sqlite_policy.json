@@ -1436,9 +1436,6 @@
       "database_path": 2,
       "sqlite_open": 1
     },
-    "internal/hubserver/pilot_artifacts_test.go": {
-      "database_path": 1
-    },
     "internal/hubserver/pilot_self_hosted_test.go": {
       "database_path": 1
     },

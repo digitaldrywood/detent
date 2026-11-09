@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -10,15 +11,38 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func pilotHostedJourney(t *testing.T) (*browserHostedFixture, string, string) {
 	t.Helper()
-	f := seedHostedOnboardingJourney(t, newBrowserHostedOrganizationFixture(t, true, artifact.NewID("org")))
+	f := newPostgresBrowserHostedOrganizationFixture(t, true, artifact.NewID("org"), func(cfg *Config) {
+		cfg.SecretKeys = secretTestKeys(t, "1", "1")
+	})
+	organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
+	envelope, err := f.service.config.SecretKeys.Seal(bytes.Repeat([]byte{3}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := f.service.config.now()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedHostedOnboardingJourney(t, f)
 	runner := pilotHostedRunner(t, f, 2)
 	base := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/projects/" + f.project
+	configuration := runnerauth.CapacityConfig{Revision: strings.Repeat("d", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.now()}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/machines/"+string(runner.MachineID)+"/heartbeat", runner.Credential, map[string]any{"backend_isolation": runner.BackendIsolation, "display_name": runner.DisplayName, "capacity": 2, "version": "test", "capacity_configuration": configuration}), http.StatusOK)
+	if err := f.service.maintainBoardRecords(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	response := f.page(t, "owner", base+"/work-items")
 	requireNativeStatus(t, response, http.StatusOK)
 	var issues tracker.Page[tracker.NativeIssue]
@@ -44,10 +68,21 @@ func pilotHostedJourney(t *testing.T) (*browserHostedFixture, string, string) {
 
 func pilotExpireRunners(t *testing.T, f *browserHostedFixture) {
 	t.Helper()
-	for _, query := range []string{"UPDATE runner_identities SET last_heartbeat_at = '2000-01-01T00:00:00Z'", "UPDATE machines SET last_heartbeat_at = '2000-01-01T00:00:00Z'"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), query); err != nil {
-			t.Fatal(err)
+	organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		rows, err := w.RunnerIdentities(t.Context(), 100)
+		if err != nil {
+			return err
 		}
+		for _, row := range rows {
+			row.LastHeartbeatAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+			if err := w.UpdateRunnerIdentity(t.Context(), row); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

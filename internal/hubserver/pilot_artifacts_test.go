@@ -8,13 +8,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -69,20 +74,34 @@ func pilotUploadArtifact(t *testing.T, f *browserHostedFixture, issue tracker.Na
 	path := base + "/work-items/" + string(issue.WorkItemID)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", runner.Credential, start), http.StatusOK)
 
-	publisher := "pilot-publisher-token"
-	seedHubAPIToken(t, f.service, "pilot-publisher", publisher, apiScopeWorker)
-	for _, statement := range []struct {
-		query string
-		args  []any
-	}{
-		{"UPDATE api_tokens SET native_only=1 WHERE id='pilot-publisher'", nil},
-		{"INSERT INTO token_grants(token_id,organization_id,project_id) VALUES ('pilot-publisher',?,?)", []any{organization, f.project}},
-	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
-			t.Fatal(err)
+	publisherID, publisher := artifact.NewID("publisher"), artifact.NewID("token")
+	cfg := artifact.Config{ServiceID: artifact.NewID("service"), OrganizationID: organization, ProjectID: f.project, Mode: "customer", AllowedOrigins: []string{f.server.URL}, Policy: artifact.Policy{ID: "pilot", Limits: artifact.Limits{RetainedBytes: 8 << 20, ReservedBytes: 8 << 20, ArtifactBytes: 4 << 20, UploadBytes: 1 << 20, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}
+	var installed atomic.Pointer[artifact.HTTPServer]
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := installed.Load()
+		if handler == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
 		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(gateway.Close)
+	now := f.service.config.now()
+	expires := now.Add(time.Hour)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(organization), ID: publisherID, Name: publisherID, Hash: apikey.HashToken(publisher), Scope: "worker", Kind: "service", NativeOnly: true, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(organization), TokenID: publisherID, ProjectID: tracker.ProjectID(f.project)}); err != nil {
+			return err
+		}
+		return w.BindArtifactService(t.Context(), tracker.ProjectID(f.project), artifact.Binding{ServiceID: cfg.ServiceID, Origin: gateway.URL, Mode: "customer", PublisherTokenID: publisherID})
+	}); err != nil {
+		t.Fatal(err)
 	}
-	cfg := artifact.Config{ServiceID: artifact.NewID("service"), OrganizationID: organization, Mode: "customer", DatabasePath: filepath.Join(t.TempDir(), "catalog.db"), AllowedOrigins: []string{f.server.URL}, Policy: artifact.Policy{ID: "pilot", Limits: artifact.Limits{RetainedBytes: 8 << 20, ReservedBytes: 8 << 20, ArtifactBytes: 4 << 20, UploadBytes: 1 << 20, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/artifact-services/"+cfg.ServiceID+"/catalog-policy", cfg.Policy), http.StatusNoContent)
+	remote := &artifact.RemoteHub{Origin: f.server.URL, OrganizationID: organization, ProjectID: f.project, ServiceID: cfg.ServiceID, PublisherToken: func() string { return publisher }, Client: catalogJourneyHTTPClient(t)}
+	cfg.Catalog = &artifact.RemoteCatalog{Hub: remote}
 	service, err := artifact.NewService(t.Context(), cfg, &pilotArtifactStorage{}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -92,21 +111,11 @@ func pilotUploadArtifact(t *testing.T, f *browserHostedFixture, issue tracker.Na
 			t.Error(err)
 		}
 	})
-	remote := &artifact.RemoteHub{Origin: f.server.URL, OrganizationID: organization, ProjectID: f.project, ServiceID: cfg.ServiceID, PublisherToken: func() string { return publisher }}
 	handler, err := artifact.NewHTTPServer(service, remote)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gateway := httptest.NewServer(handler)
-	t.Cleanup(gateway.Close)
-	binding := artifact.Binding{ServiceID: cfg.ServiceID, Origin: gateway.URL, Mode: "customer", PublisherTokenID: "pilot-publisher"}
-	raw, err := json.Marshal(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id) VALUES (?,?,?,?,'pilot-publisher')", organization, f.project, cfg.ServiceID, raw); err != nil {
-		t.Fatal(err)
-	}
+	installed.Store(handler)
 	client := &artifact.Client{Origin: gateway.URL, Token: func(context.Context) (string, error) { return runner.Credential, nil }}
 	upload, err := client.Reserve(t.Context(), artifact.Reservation{ServiceID: cfg.ServiceID, Mode: "customer", Scope: artifact.Scope{OrganizationID: organization, ProjectID: f.project, WorkItemID: string(issue.WorkItemID), RunID: start.Data.RunID, AttemptID: start.Data.AttemptID}, LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken), Key: "pilot-log", Kind: "log", Bytes: 1 << 20})
 	if err != nil {
@@ -194,7 +203,7 @@ func pilotArtifactDownload(t *testing.T, target, token string, want int) []byte 
 		t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	response, err := http.DefaultClient.Do(request)
+	response, err := catalogJourneyHTTPClient(t).Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
