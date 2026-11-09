@@ -60,7 +60,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	case operatortool.GetSpritePool:
 		value, err = s.spritePoolResponse(ctx, scope)
 	case operatortool.GetProjectSpriteAllocation:
-		value, err = readProjectSpriteAllocation(ctx, s.database.reader, scope)
+		value, err = s.projectSpriteAllocation(ctx, scope)
 	case "get_onboarding":
 		value, err = s.projectOnboarding(ctx, scope)
 	case "get_git_hub_batch":
@@ -117,7 +117,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		}
 	case "project_secret_metadata":
 		var status projectSecretStatus
-		status, err = readSecretStatus(ctx, s.database.reader, scope)
+		status, err = s.readSecretStatus(ctx, nil, scope)
 		value = struct {
 			Metadata projectSecretStatus `json:"metadata"`
 			SetupURL string              `json:"setup_url"`

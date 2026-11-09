@@ -1945,6 +1945,7 @@ func TestProjectSpriteAllocationCommands(t *testing.T) {
 
 func TestSpritePoolOperatorTools(t *testing.T) {
 	f := newSpriteNativeFixture(t, Config{})
+	storeSpriteWakeSecret(t, f, spritesSecretSentinel)
 	captured := make(chan context.Context, 1)
 	f.service.echo.GET("/api/v2/organizations/:organization/sprite-tools-test", func(c echo.Context) error {
 		captured <- c.Request().Context()
@@ -1969,6 +1970,7 @@ func TestSpritePoolOperatorTools(t *testing.T) {
 		desired                       int
 	}{
 		{name: "organization pool read", caller: "admin", tool: operatortool.GetSpritePool, arguments: `{}`},
+		{name: "project secret metadata", caller: "operator", tool: "project_secret_metadata", arguments: `{"project_id":"` + project + `"}`},
 		{name: "operator cannot configure", caller: "operator", tool: operatortool.UpdateSpritePool, arguments: `{"project_id":"` + project + `","request_id":"operator","input":{"min_runners":0,"max_runners":0,"revision":0}}`, refusal: operatortool.ErrAccessDenied},
 		{name: "sandbox refused with reason", caller: "admin", tool: operatortool.UpdateSpritePool, arguments: `{"request_id":"sandbox","input":{"min_runners":0,"max_runners":0,"revision":0,"isolation_tier":"sandbox"}}`, message: spriteSandboxUnavailableReason},
 		{name: "configure organization pool", caller: "admin", tool: operatortool.UpdateSpritePool, arguments: `{"request_id":"configure","input":{"min_runners":0,"max_runners":0,"idle_seconds":600,"revision":0}}`, revision: 1},
@@ -1976,6 +1978,7 @@ func TestSpritePoolOperatorTools(t *testing.T) {
 		{name: "project pool read", caller: "operator", tool: operatortool.GetSpritePool, arguments: `{"project_id":"` + project + `"}`, revision: 1},
 		{name: "operator cannot allocate", caller: "operator", tool: operatortool.UpdateProjectSpriteAllocation, arguments: `{"project_id":"` + project + `","request_id":"operator","input":{"expected_revision":"0","desired_count":2}}`, refusal: operatortool.ErrAccessDenied},
 		{name: "allocate project Sprites", caller: "admin", tool: operatortool.UpdateProjectSpriteAllocation, arguments: `{"project_id":"` + project + `","request_id":"allocate","input":{"expected_revision":"0","desired_count":2}}`, revision: 1, desired: 2},
+		{name: "replay project Sprite allocation", caller: "admin", tool: operatortool.UpdateProjectSpriteAllocation, arguments: `{"project_id":"` + project + `","request_id":"allocate","input":{"expected_revision":"0","desired_count":2}}`, revision: 1, desired: 2},
 		{name: "project allocation read", caller: "operator", tool: operatortool.GetProjectSpriteAllocation, arguments: `{"project_id":"` + project + `"}`, revision: 1, desired: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2010,6 +2013,21 @@ func TestSpritePoolOperatorTools(t *testing.T) {
 					t.Fatal(err)
 				}
 				raw = page.Data
+			}
+			if test.tool == "project_secret_metadata" {
+				var got struct {
+					Metadata projectSecretStatus `json:"metadata"`
+				}
+				if err := json.Unmarshal(raw, &got); err != nil {
+					t.Fatal(err)
+				}
+				if !got.Metadata.Present || got.Metadata.OrganizationSlug != "detent-test" || got.Metadata.KeyVersion != 1 {
+					t.Fatalf("secret metadata=%s", raw)
+				}
+				if strings.Contains(string(result.Content), spritesSecretSentinel) || strings.Contains(string(result.Content), "ciphertext") {
+					t.Fatal("secret metadata exposed private key material")
+				}
+				return
 			}
 			var got struct {
 				Revision     json.Number `json:"revision"`
@@ -2745,6 +2763,7 @@ func TestProjectSpriteDrain(t *testing.T) {
 }
 
 func TestProjectSpriteProvisioningRecovery(t *testing.T) {
+	const spriteProvisionAttempts = 3
 	for _, test := range []struct {
 		name    string
 		rewrite bool

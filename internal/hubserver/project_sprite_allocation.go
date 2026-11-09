@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -34,17 +33,6 @@ type projectSpriteAllocationRequest struct {
 	tracker.Mutation
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 	DesiredCount     int              `json:"desired_count"`
-}
-
-func readProjectSpriteAllocation(ctx context.Context, q nativeQueryer, scope nativeScope) (projectSpriteAllocation, error) {
-	result := projectSpriteAllocation{ProjectID: scope.project}
-	err := q.QueryRowContext(ctx, `SELECT desired_count,revision,provision_failures,(SELECT count(*) FROM organization_sprite_members m WHERE m.organization_id=a.organization_id AND m.allocation_project_id=a.project_id AND m.state<>'deleted') FROM project_sprite_allocations a WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&result.DesiredCount, &result.Revision, &result.ProvisionFailures, &result.AllocatedCount)
-	if errors.Is(err, sql.ErrNoRows) {
-		return result, nil
-	}
-	result.Managed = err == nil
-	result.Shortfall = max(result.DesiredCount-result.AllocatedCount, 0)
-	return result, err
 }
 
 func (s *Service) getProjectSpriteAllocation(c echo.Context) error {
@@ -202,39 +190,6 @@ func (s *Service) setSpriteAllocationRecord(ctx context.Context, scope nativeSco
 	}
 	return raw, nil
 }
-
-func updateProjectSpriteAllocation(request projectSpriteAllocationRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		if request.DesiredCount < 0 || request.ExpectedRevision < 0 {
-			return nil, spritePoolInvalid("Sprite desired count and expected revision must be nonnegative")
-		}
-		var configured int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&configured); err != nil {
-			return nil, err
-		}
-		if configured == 0 {
-			return nil, spritePoolInvalid("Configure the organization Sprite pool before allocating project members")
-		}
-		current, err := readProjectSpriteAllocation(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if current.Revision != request.ExpectedRevision {
-			return nil, nativeConflict(current.Revision)
-		}
-		actor := scope.credential.ID
-		if scope.credential.HostedPrincipal != "" {
-			actor = scope.credential.HostedPrincipal
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO project_sprite_allocations(organization_id,project_id,desired_count,revision,requested_at,configured_by) VALUES(?,?,?,1,?,?) ON CONFLICT(organization_id,project_id) DO UPDATE SET desired_count=excluded.desired_count,revision=project_sprite_allocations.revision+1,provision_failures=0,requested_at=CASE WHEN ? >= project_sprite_allocations.desired_count THEN excluded.requested_at ELSE project_sprite_allocations.requested_at END,configured_by=excluded.configured_by`, scope.organization, scope.project, request.DesiredCount, formatHubTime(now), actor, current.AllocatedCount)
-		if err != nil {
-			return nil, err
-		}
-		return readProjectSpriteAllocation(ctx, tx, scope)
-	}
-}
-
-const spriteProvisionAttempts = 3
 
 func spriteAllocationRunnerProject(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID) (tracker.ProjectID, error) {
 	var project tracker.ProjectID
