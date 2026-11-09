@@ -14,10 +14,6 @@
       "sql_schema": 1,
       "sqlite_open": 1
     },
-    "internal/apikey/service_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
     "internal/artifact/service.go": {
       "database_path": 1
     },
@@ -1624,9 +1620,6 @@
     },
     "internal/project/runner_setup_test.go": {
       "sqlite_open": 2
-    },
-    "internal/sqlstmt/cache_test.go": {
-      "driver_import": 1
     },
     "internal/staleness/acknowledgements_test.go": {
       "sqlite_open": 2

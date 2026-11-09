@@ -3,7 +3,7 @@ package apikey
 import (
 	"context"
 	"errors"
-	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -95,10 +95,6 @@ func TestAuthenticateRejectsChecksumInvalidTokenWithoutLookup(t *testing.T) {
 }
 
 func TestRotateKeepsOldKeyValidUntilGraceExpires(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
@@ -106,9 +102,9 @@ func TestRotateKeepsOldKeyValidUntilGraceExpires(t *testing.T) {
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	service := NewService(backend, WithNow(func() time.Time { return now }))
 	created, err := service.Create(ctx, CreateRequest{
-		Name:       "Video Studio",
+		Name:       "Example key",
 		Scopes:     []string{"write"},
-		ProjectIDs: []string{"digitaldrywood-video"},
+		ProjectIDs: []string{"example-project"},
 		ExpiresIn:  "90d",
 	})
 	if err != nil {
@@ -118,13 +114,22 @@ func TestRotateKeepsOldKeyValidUntilGraceExpires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Rotate() error = %v", err)
 	}
+	if rotated.Key.ID == created.Key.ID || rotated.Token == created.Token {
+		t.Fatal("Rotate() reused the old key identity or token")
+	}
+	if !slices.Equal(rotated.Key.Scopes, []string{"write"}) || !slices.Equal(rotated.Key.ProjectIDs, []string{"example-project"}) {
+		t.Fatalf("rotated permissions = %v, %v, want write for example-project", rotated.Key.Scopes, rotated.Key.ProjectIDs)
+	}
+	if rotated.Key.ExpiresAt == nil || !rotated.Key.ExpiresAt.Equal(*created.Key.ExpiresAt) {
+		t.Fatalf("rotated expiry = %v, want %v", rotated.Key.ExpiresAt, created.Key.ExpiresAt)
+	}
 
 	now = now.Add(59 * time.Minute)
-	if _, err := service.Authenticate(ctx, created.Token, ""); err != nil {
-		t.Fatalf("old key before grace expiry Authenticate() error = %v", err)
-	}
-	if _, err := service.Authenticate(ctx, rotated.Token, ""); err != nil {
-		t.Fatalf("new key Authenticate() error = %v", err)
+	for _, key := range []CreatedKey{created, rotated} {
+		credential, err := service.Authenticate(ctx, key.Token, "")
+		if err != nil || credential.ID != key.Key.ID {
+			t.Fatalf("key %s before grace expiry Authenticate() = %v, error = %v", key.Key.ID, credential, err)
+		}
 	}
 
 	now = now.Add(2 * time.Minute)
@@ -136,10 +141,6 @@ func TestRotateKeepsOldKeyValidUntilGraceExpires(t *testing.T) {
 }
 
 func TestRotateDoesNotExtendOldKeyBeyondOriginalExpiry(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
@@ -170,10 +171,6 @@ func TestRotateDoesNotExtendOldKeyBeyondOriginalExpiry(t *testing.T) {
 }
 
 func TestRotateRejectsExpiredKey(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
@@ -196,22 +193,54 @@ func TestRotateRejectsExpiredKey(t *testing.T) {
 	}
 }
 
-func openAPIKeyTestStore(t *testing.T) store.Store {
+func openAPIKeyTestStore(t *testing.T) *rotationKeyStore {
 	t.Helper()
+	return &rotationKeyStore{keys: make(map[string]store.APIKey)}
+}
 
-	backend, err := store.Open(context.Background(), store.Config{
-		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "detent.db"),
-	})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
+type rotationKeyStore struct {
+	countingAPIKeyStore
+	keys map[string]store.APIKey
+}
+
+func (s *rotationKeyStore) CreateAPIKey(_ context.Context, row store.APIKeyCreate) (store.APIKey, error) {
+	if _, exists := s.keys[row.ID]; exists {
+		return store.APIKey{}, errors.New("duplicate key identity")
 	}
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
+	key := store.APIKey{ID: row.ID, Name: row.Name, PrefixLast4: row.PrefixLast4, KeyHash: row.KeyHash, Scopes: slices.Clone(row.Scopes), ProjectIDs: slices.Clone(row.ProjectIDs), CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt}
+	s.keys[key.ID] = key
+	return key, nil
+}
+
+func (s *rotationKeyStore) APIKey(_ context.Context, id string) (store.APIKey, error) {
+	key, exists := s.keys[id]
+	if !exists {
+		return store.APIKey{}, store.ErrNotFound
+	}
+	return key, nil
+}
+
+func (s *rotationKeyStore) APIKeyByHash(ctx context.Context, hash string) (store.APIKey, error) {
+	for _, key := range s.keys {
+		if key.KeyHash == hash {
+			return s.APIKey(ctx, key.ID)
 		}
-	})
-	return backend
+	}
+	return store.APIKey{}, store.ErrNotFound
+}
+
+func (s *rotationKeyStore) CountActiveAPIKeys(context.Context) (int64, error) {
+	return int64(len(s.keys)), nil
+}
+
+func (s *rotationKeyStore) SetAPIKeyExpiresAt(ctx context.Context, id string, at time.Time) error {
+	key, err := s.APIKey(ctx, id)
+	if err != nil {
+		return err
+	}
+	key.ExpiresAt = &at
+	s.keys[id] = key
+	return nil
 }
 
 type countingAPIKeyStore struct {
