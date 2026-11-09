@@ -190,7 +190,7 @@ func (w *workspaceService) startExecRunRecord(ctx context.Context, connection, r
 }
 
 func (w *workspaceService) pruneRelayTicketRecords(ctx context.Context, now time.Time) error {
-	return w.server.config.TenantRepository.WriteTenant(ctx, w.organization(), corestore.Background, func(writer tenantstore.Writer) error {
+	return w.server.config.TenantRepository.WriteTenant(ctx, w.maintenanceOrganization(), corestore.Background, func(writer tenantstore.Writer) error {
 		return writer.(workspaceWriter).PruneRelayTickets(ctx, now, workspaceMaintenanceBatch)
 	})
 }

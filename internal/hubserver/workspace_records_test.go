@@ -372,10 +372,25 @@ func reopenWorkspaceHub(t *testing.T, service *Service) *Service {
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if config.Hosted == nil {
+		return openWorkspaceHub(t, config, admin, organization)
+	}
 	return openWorkspaceTenantHub(t, config, admin, organization)
 }
 
 func openWorkspaceTenantHub(t *testing.T, config Config, admin *sql.DB, organization tracker.OrganizationID) *Service {
+	t.Helper()
+	if config.Hosted == nil {
+		config.Hosted = startupConfig(startupConnection(t, admin, "detent_runtime_v2", "")).Hosted
+	}
+	hosted := *config.Hosted
+	hosted.OrganizationID = string(organization)
+	hosted.WorkOSOrganizationID = "provider_" + string(organization)
+	config.Hosted = &hosted
+	return openWorkspaceHub(t, config, admin, organization)
+}
+
+func openWorkspaceHub(t *testing.T, config Config, admin *sql.DB, organization tracker.OrganizationID) *Service {
 	t.Helper()
 	cfg := *config.Postgres
 	cfg.LeaseClock = config.now
@@ -383,12 +398,6 @@ func openWorkspaceTenantHub(t *testing.T, config Config, admin *sql.DB, organiza
 	config.TenantRepository = nil
 	config.AccessRepository = nil
 	config.BillingRepository = nil
-	if config.Hosted == nil {
-		config.Hosted = startupConfig(startupConnection(t, admin, "detent_runtime_v2", "")).Hosted
-	}
-	hosted := *config.Hosted
-	hosted.OrganizationID = string(organization)
-	config.Hosted = &hosted
 	repository, err := postgres.Open(t.Context(), cfg, postgres.RoleMigrations(os.DirFS("postgres/migrations")))
 	if err != nil {
 		t.Fatal(err)
@@ -396,11 +405,19 @@ func openWorkspaceTenantHub(t *testing.T, config Config, admin *sql.DB, organiza
 	t.Cleanup(func() { _ = repository.Close() })
 	projectRecordDatabases.Store(repository, admin)
 	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
-	service := openLocalPostgresHubTestService(t, repository, config)
+	var service *Service
+	if config.Hosted == nil {
+		config.Hosted = startupConfig(startupConnection(t, admin, "detent_runtime_v2", "")).Hosted
+		config.Hosted.OrganizationID = string(organization)
+		config.Hosted.WorkOSOrganizationID = "provider_" + string(organization)
+		service = openLocalPostgresHubTestService(t, repository, config)
+		service.registerConversationRoutes(service.echo)
+	} else {
+		service = openPostgresHubTestService(t, repository, config)
+	}
 	service.database.hostedOrganization = organization
 	service.localOrganization = string(organization)
 	service.requestMetrics.organization = organization
-	service.registerConversationRoutes(service.echo)
 	return service
 }
 
@@ -456,6 +473,12 @@ func workspaceTestIssue(t *testing.T, s *Service, scope nativeScope, title, body
 		t.Fatal(err)
 	}
 	return plan.issue.WorkItemID
+}
+
+func newWorkspaceHostedNativeService(t *testing.T, cfg Config) *Service {
+	t.Helper()
+	cfg.Hosted = &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}
+	return newWorkspaceNativeService(t, cfg)
 }
 
 func newWorkspaceNativeService(t *testing.T, cfg Config) *Service {

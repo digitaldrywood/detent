@@ -320,6 +320,17 @@ func (q *Queries) LockWorkspaceClaimSession(ctx context.Context, arg LockWorkspa
 	return i, err
 }
 
+const nextWorkspaceMaintenanceOrganization = `-- name: NextWorkspaceMaintenanceOrganization :one
+SELECT COALESCE(public.next_workspace_maintenance_organization($1::text),'')::text AS organization_id
+`
+
+func (q *Queries) NextWorkspaceMaintenanceOrganization(ctx context.Context, afterOrganization string) (string, error) {
+	row := q.db.QueryRow(ctx, nextWorkspaceMaintenanceOrganization, afterOrganization)
+	var organization_id string
+	err := row.Scan(&organization_id)
+	return organization_id, err
+}
+
 const openWorkspaceAttempt = `-- name: OpenWorkspaceAttempt :one
 SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND state NOT IN ('closed','failed')
 `

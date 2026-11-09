@@ -69,10 +69,11 @@ type workspaceService struct {
 	stopOnce    sync.Once
 	// sweepInterval is how often the maintenance loop runs. It is a field so
 	// a test can drive the timeouts without waiting on wall clock.
-	sweepInterval  time.Duration
-	afterWorkspace string
-	afterActionRun string
-	restartAt      time.Time
+	sweepInterval        time.Duration
+	afterOrganization    tracker.OrganizationID
+	selectedOrganization tracker.OrganizationID
+	maintenanceCursors   map[tracker.OrganizationID]workspaceMaintenanceCursor
+	restartAt            time.Time
 }
 
 // workspaceSweepInterval is how often the maintenance loop checks for expired
@@ -252,6 +253,7 @@ func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connect
 // its own: a request no runner claimed, two missed heartbeats, a lost lease, an
 // idle workspace, the hard lifetime cap and the re-bind grace.
 func (w *workspaceService) sweep(ctx context.Context) {
+	defer func() { w.selectedOrganization = "" }()
 	now := w.now()
 	records, err := w.dueWorkspaces(ctx, now)
 	if err != nil {

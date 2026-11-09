@@ -14,6 +14,11 @@ import (
 
 const workspaceMaintenanceBatch = 100
 
+type workspaceMaintenanceCursor struct {
+	workspace string
+	actionRun string
+}
+
 func (w *workspaceService) organization() tracker.OrganizationID {
 	if w.server.config.Hosted != nil {
 		return tracker.OrganizationID(w.server.config.Hosted.OrganizationID)
@@ -22,13 +27,18 @@ func (w *workspaceService) organization() tracker.OrganizationID {
 }
 
 func (w *workspaceService) activeWorkspaceRecords(ctx context.Context) ([]workspaceRecord, error) {
+	organization, err := w.selectMaintenanceOrganization(ctx)
+	if err != nil || organization == "" {
+		return nil, err
+	}
+	cursor := w.maintenanceCursors[organization]
 	var records []workspaceRecord
-	err := w.server.config.TenantRepository.ReadTenant(ctx, w.organization(), corestore.Background, func(r tenantstore.Reader) error {
+	err = w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.WorkspaceLifecycleReader)
 		if !ok {
 			return workspaceUnavailable()
 		}
-		rows, err := owner.ActiveWorkspaceSessions(ctx, w.afterWorkspace, workspaceMaintenanceBatch)
+		rows, err := owner.ActiveWorkspaceSessions(ctx, cursor.workspace, workspaceMaintenanceBatch)
 		if err != nil {
 			return err
 		}
@@ -36,13 +46,58 @@ func (w *workspaceService) activeWorkspaceRecords(ctx context.Context) ([]worksp
 			records = append(records, workspaceFromRecord(row))
 		}
 		if len(rows) < workspaceMaintenanceBatch {
-			w.afterWorkspace = ""
+			cursor.workspace = ""
 		} else {
-			w.afterWorkspace = rows[len(rows)-1].ID
+			cursor.workspace = rows[len(rows)-1].ID
 		}
 		return nil
 	})
+	if err == nil {
+		w.storeMaintenanceCursor(organization, cursor)
+	}
 	return records, err
+}
+
+func (w *workspaceService) maintenanceOrganization() tracker.OrganizationID {
+	if w.selectedOrganization != "" {
+		return w.selectedOrganization
+	}
+	return w.organization()
+}
+
+func (w *workspaceService) selectMaintenanceOrganization(ctx context.Context) (tracker.OrganizationID, error) {
+	organization := w.organization()
+	if w.server.config.Hosted == nil {
+		err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+			owner, ok := r.(postgres.WorkspaceLifecycleReader)
+			if !ok {
+				return workspaceUnavailable()
+			}
+			var err error
+			organization, err = owner.NextWorkspaceMaintenanceOrganization(ctx, string(w.afterOrganization))
+			if err == nil && organization == "" && w.afterOrganization != "" {
+				organization, err = owner.NextWorkspaceMaintenanceOrganization(ctx, "")
+			}
+			return err
+		})
+		if err != nil {
+			return "", err
+		}
+		w.afterOrganization = organization
+	}
+	w.selectedOrganization = organization
+	return organization, nil
+}
+
+func (w *workspaceService) storeMaintenanceCursor(organization tracker.OrganizationID, cursor workspaceMaintenanceCursor) {
+	if cursor.workspace == "" && cursor.actionRun == "" {
+		delete(w.maintenanceCursors, organization)
+		return
+	}
+	if w.maintenanceCursors == nil {
+		w.maintenanceCursors = make(map[tracker.OrganizationID]workspaceMaintenanceCursor)
+	}
+	w.maintenanceCursors[organization] = cursor
 }
 
 func (w *workspaceService) applyDeadlineRecord(ctx context.Context, record workspaceRecord, now time.Time) (workspaceRecord, bool, error) {
@@ -98,6 +153,7 @@ func (w *workspaceService) applyDeadlineRecord(ctx context.Context, record works
 }
 
 func (w *workspaceService) recoverWorkspaceRecords(ctx context.Context) error {
+	defer func() { w.selectedOrganization = "" }()
 	records, err := w.activeWorkspaceRecords(ctx)
 	if err != nil {
 		return err

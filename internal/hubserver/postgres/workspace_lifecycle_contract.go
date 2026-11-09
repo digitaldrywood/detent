@@ -19,10 +19,16 @@ type WorkspaceLifecycleReader interface {
 	OpenWorkspaceCounts(context.Context, string) (int64, int64, error)
 	OpenWorkspaceAttempt(context.Context, tracker.ProjectID, string) (WorkspaceSession, error)
 	ActiveWorkspaceSessions(context.Context, string, int) ([]WorkspaceSession, error)
+	NextWorkspaceMaintenanceOrganization(context.Context, string) (tracker.OrganizationID, error)
 	RecentWorkspaceSessions(context.Context, tracker.ProjectID, string, string, int) ([]WorkspaceSession, error)
 }
 
 type WorkspaceClaimSession = pgquery.WorkspaceClaimSessionRow
+
+func (s *session) NextWorkspaceMaintenanceOrganization(ctx context.Context, after string) (tracker.OrganizationID, error) {
+	organization, err := s.queries.NextWorkspaceMaintenanceOrganization(ctx, after)
+	return tracker.OrganizationID(organization), mapError(ctx, err)
+}
 
 func (s *session) WorkspaceClaimSession(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (WorkspaceClaimSession, error) {
 	if !s.readOnly {

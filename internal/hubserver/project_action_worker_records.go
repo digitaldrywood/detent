@@ -204,7 +204,7 @@ func (w *workspaceService) claimActionRunRecord(ctx context.Context, scope nativ
 
 func (w *workspaceService) dispatchActionRunRecords(ctx context.Context) {
 	var runs []postgres.ActionRun
-	err := w.server.config.TenantRepository.ReadTenant(ctx, w.organization(), corestore.Background, func(r tenantstore.Reader) error {
+	err := w.server.config.TenantRepository.ReadTenant(ctx, w.maintenanceOrganization(), corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		runs, err = r.(workspaceReader).PendingActionRuns(ctx, w.now().Add(-actionRunDispatchGrace), actionRunDispatchBatch)
 		return err
@@ -220,10 +220,12 @@ func (w *workspaceService) dispatchActionRunRecords(ctx context.Context) {
 
 func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 	w.purgeDeletedActionRecords(ctx)
+	organization := w.maintenanceOrganization()
+	cursor := w.maintenanceCursors[organization]
 	var ended []postgres.ActionRun
-	err := w.server.config.TenantRepository.ReadTenant(ctx, w.organization(), corestore.Background, func(reader tenantstore.Reader) error {
+	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner := reader.(workspaceReader)
-		rows, err := owner.ActiveActionRunsAfter(ctx, w.afterActionRun, workspaceMaintenanceBatch)
+		rows, err := owner.ActiveActionRunsAfter(ctx, cursor.actionRun, workspaceMaintenanceBatch)
 		if err != nil {
 			return err
 		}
@@ -245,9 +247,9 @@ func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 			}
 		}
 		if len(rows) < workspaceMaintenanceBatch {
-			w.afterActionRun = ""
+			cursor.actionRun = ""
 		} else {
-			w.afterActionRun = rows[len(rows)-1].ID
+			cursor.actionRun = rows[len(rows)-1].ID
 		}
 		return nil
 	})
@@ -255,6 +257,7 @@ func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 		w.logger.Warn("action_run.sweep_failed", "error", err)
 		return
 	}
+	w.storeMaintenanceCursor(organization, cursor)
 	for _, row := range ended {
 		if err = w.finishActionRunRecord(ctx, &execRunState{organization: row.OrganizationID, runID: row.ID}, workspacesession.RunFailed, nil, workspacesession.RunReasonWorkspaceEnd); err != nil {
 			w.logger.Warn("action_run.sweep_transition_failed", "run_id", row.ID, "error", err)
@@ -263,8 +266,9 @@ func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 }
 
 func (w *workspaceService) purgeDeletedActionRecords(ctx context.Context) {
+	organization := w.maintenanceOrganization()
 	var actions []postgres.DeletedProjectAction
-	err := w.server.config.TenantRepository.ReadTenant(ctx, w.organization(), corestore.Background, func(r tenantstore.Reader) error {
+	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		actions, err = r.(workspaceReader).DeletedProjectActions(ctx, workspaceMaintenanceBatch)
 		return err
@@ -274,7 +278,7 @@ func (w *workspaceService) purgeDeletedActionRecords(ctx context.Context) {
 		return
 	}
 	for _, action := range actions {
-		scope := nativeScope{organization: w.organization(), project: action.ProjectID}
+		scope := nativeScope{organization: organization, project: action.ProjectID}
 		err = w.server.workspaceWrite(ctx, scope, func(writer workspaceWriter, now time.Time) error {
 			row, err := writer.PurgeDeletedActionRun(ctx, action.ProjectID, action.ID)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {

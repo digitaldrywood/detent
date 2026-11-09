@@ -289,3 +289,31 @@ BEGIN
  GRANT EXECUTE ON FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) TO detent_runtime_v2;
 END
 $board_search_provision$;
+
+CREATE OR REPLACE FUNCTION public.next_workspace_maintenance_organization(after_organization text)
+RETURNS text LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $workspace_maintenance$
+DECLARE selected_organization text;
+BEGIN
+ SELECT min(c.organization_id) INTO selected_organization FROM (
+  (SELECT organization_id FROM public.workspace_sessions
+   WHERE organization_id>after_organization AND state NOT IN ('closed','failed')
+   ORDER BY organization_id LIMIT 1)
+  UNION ALL
+  (SELECT organization_id FROM public.project_action_runs
+   WHERE organization_id>after_organization AND status IN ('queued','running')
+   ORDER BY organization_id LIMIT 1)
+  UNION ALL
+  (SELECT organization_id FROM public.project_actions
+   WHERE organization_id>after_organization AND deleted_at IS NOT NULL
+   ORDER BY organization_id LIMIT 1)
+  UNION ALL
+  (SELECT organization_id FROM public.workspace_relay_tickets
+   WHERE organization_id>after_organization
+   ORDER BY organization_id LIMIT 1)
+ ) c;
+ RETURN selected_organization;
+END
+$workspace_maintenance$;
+ALTER FUNCTION public.next_workspace_maintenance_organization(text) OWNER TO detent_platform_v2;
+REVOKE ALL ON FUNCTION public.next_workspace_maintenance_organization(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.next_workspace_maintenance_organization(text) TO detent_runtime_v2;

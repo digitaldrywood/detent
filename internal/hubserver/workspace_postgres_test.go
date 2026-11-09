@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -31,7 +32,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		return clock
 	}
 	lifetime := 90 * time.Second
-	first := newWorkspaceNativeService(t, Config{now: now, Workspace: &WorkspaceConfig{Enabled: true, MaxLifetime: lifetime, IdleTimeout: lifetime, maintenanceTicks: make(chan time.Time), Terminal: WorkspaceTerminalConfig{Enabled: true, Isolation: workspacesession.IsolationSandbox}}})
+	first := newWorkspaceHostedNativeService(t, Config{now: now, Workspace: &WorkspaceConfig{Enabled: true, MaxLifetime: lifetime, IdleTimeout: lifetime, maintenanceTicks: make(chan time.Time), Terminal: WorkspaceTerminalConfig{Enabled: true, Isolation: workspacesession.IsolationSandbox}}})
 	config := first.config
 	workspace := first.workspaces.config
 	workspace.maintenanceTicks = make(chan time.Time)
@@ -40,6 +41,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 	hubs := []*Service{first, second}
 	type savedWorkspace struct {
 		fixture           *relayFixture
+		operatorToken     string
 		index             int
 		action            workspacesession.Action
 		run               string
@@ -116,11 +118,31 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		approveHubTestPolicy(t, hub, project.base+"/policy", hubTestPolicy())
 		for index := range 2 {
 			f := startRelayFixture(t, &relayFixture{nativeFixture: project, clock: started, terminal: true, exec: true})
-			record := &savedWorkspace{fixture: f, index: index, marker: fmt.Sprintf("recorded-%d-%d", tenant, index)}
+			record := &savedWorkspace{fixture: f, operatorToken: newNativeID("token"), index: index, marker: fmt.Sprintf("recorded-%d-%d", tenant, index)}
+			userID := newNativeID("user")
+			membership, err := hub.config.Hosted.Provider.CreateMembership(t.Context(), userID, hub.config.Hosted.WorkOSOrganizationID, "member")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := hub.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				credential := accessstore.Credential{OrganizationID: organization, ID: newNativeID("credential"), Name: "Example workspace operator " + f.workspace, Hash: apikey.HashToken(record.operatorToken), Fingerprint: tokenFingerprint(apikey.HashToken(record.operatorToken)), Scope: "operator", NativeOnly: true, Kind: "personal", UserID: membership.UserID, MembershipID: membership.ID, KeyScope: "read", ProjectAccess: "selected", CreatedAt: started, UpdatedAt: started}
+				if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
+					return err
+				}
+				if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: membership.UserID, Email: userID + "@example.test", MembershipID: membership.ID, Role: "member", Active: true, PrincipalID: credential.ID, CreatedAt: started, UpdatedAt: started}); err != nil {
+					return err
+				}
+				if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: membership.UserID, ProjectID: project.project.ID, CanWrite: false}); err != nil {
+					return err
+				}
+				return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credential.ID, ProjectID: project.project.ID})
+			}); err != nil {
+				t.Fatal(err)
+			}
 			path := f.base + "/workspaces/" + f.workspace
-			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path+"/worker/bind", "", nil), http.StatusUnauthorized)
-			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path+"/worker/heartbeat", "", nil), http.StatusUnauthorized)
-			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path+"/relay-tickets", "", map[string]any{}), http.StatusUnauthorized)
+			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path+"/worker/bind", "invalid_workspace_credential", nil), http.StatusUnauthorized)
+			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path+"/worker/heartbeat", "invalid_workspace_credential", nil), http.StatusUnauthorized)
+			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path+"/relay-tickets", "invalid_workspace_credential", map[string]any{}), http.StatusUnauthorized)
 			runner := f.dialRunner(t)
 			ticket := f.ticket(t)
 			url := f.socketURL(path + "/relay?ticket=" + ticket)
@@ -260,7 +282,11 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 							t.Fatalf("unfinished shutdown recording=%+v", recording)
 						}
 						record.shutdownRecording = recording.ID
-						if len(readSession(record).RelaySessions) != 0 {
+						operatorResponse := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/workspaces/"+f.workspace, record.operatorToken, nil)
+						requireNativeStatus(t, operatorResponse, http.StatusOK)
+						var operatorSession workspacesession.Session
+						decodeHubResponse(t, operatorResponse, &operatorSession)
+						if len(operatorSession.RelaySessions) != 0 {
 							t.Error("operator token exposed owner-only relay audits")
 						}
 						if err := reopened.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -325,7 +351,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/terminal-recordings/"+record.recording, "", nil), http.StatusUnauthorized)
 		if record.index == 0 {
 			body := workspaceUnbindRequest{workspaceWorkerIdentity: workspaceIdentity(f.lease), Reason: workspacesession.ReasonClosedByActor}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/worker/unbind", "", body), http.StatusUnauthorized)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/worker/unbind", "invalid_workspace_credential", body), http.StatusUnauthorized)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/worker/unbind", f.runner.redemption.Credential, body), http.StatusNoContent)
 		}
 	}

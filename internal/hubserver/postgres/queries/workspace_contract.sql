@@ -49,6 +49,9 @@ SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND 
 -- name: ActiveWorkspaceSessions :many
 SELECT * FROM workspace_sessions WHERE organization_id=$1 AND state NOT IN ('closed','failed') AND id>$2 ORDER BY id LIMIT $3;
 
+-- name: NextWorkspaceMaintenanceOrganization :one
+SELECT COALESCE(public.next_workspace_maintenance_organization(sqlc.arg(after_organization)::text),'')::text AS organization_id;
+
 -- name: WorkspaceSessionByID :one
 SELECT * FROM workspace_sessions WHERE organization_id=$1 AND id=$2;
 
