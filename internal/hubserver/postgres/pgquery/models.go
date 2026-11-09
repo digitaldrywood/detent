@@ -1858,6 +1858,33 @@ type IssueNotificationNotice struct {
 	Verify         bool
 }
 
+type IssueNotificationReceipt struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+	WorkItemID     string
+	UserID         string
+	Status         string
+	Attempts       int64
+	NoticeCount    int32
+	ClaimedAt      time.Time
+	NextAttemptAt  time.Time
+	FinishedAt     *time.Time
+}
+
+type IssueNotificationReceiptNotice struct {
+	OrganizationID tracker.OrganizationID
+	ReceiptID      string
+	SourceItem     string
+	EventID        string
+	DueAt          time.Time
+	StateFrom      string
+	StateTo        string
+	Author         string
+	CommentID      string
+	Related        bool
+	Verify         bool
+}
+
 type IssueRelationship struct {
 	OrganizationID   tracker.OrganizationID
 	FirstProjectID   string

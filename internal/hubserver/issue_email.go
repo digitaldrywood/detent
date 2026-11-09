@@ -33,6 +33,11 @@ type issueEmailEvent struct {
 
 type issueEmailNotice = accountstore.IssueNotice
 
+type issueEmailClaim struct {
+	message  auth.EmailMessage
+	delivery accountstore.IssueNotification
+}
+
 func (s *Service) startIssueMailer() {
 	if s.config.Hosted == nil || s.config.Hosted.EmailSender == nil {
 		return
@@ -79,20 +84,26 @@ func (s *Service) deliverIssueEmails(ctx context.Context, now time.Time) error {
 	for range 100 {
 		message, found, err := s.claimIssueEmail(ctx, now)
 		if err != nil {
-			return errors.Join(failures, err)
+			if !found {
+				return errors.Join(failures, err)
+			}
+			failures = errors.Join(failures, err, s.finishIssueEmail(ctx, message.delivery, "rejected", now))
+			continue
 		}
 		if !found {
 			break
 		}
-		if message.To == "" {
+		if message.message.To == "" {
 			continue
 		}
 		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err = s.config.Hosted.EmailSender.SendEmail(sendCtx, message)
+		err = s.config.Hosted.EmailSender.SendEmail(sendCtx, message.message)
 		cancel()
+		finishErr := s.finishIssueEmail(ctx, message.delivery, auth.EmailDeliveryOutcome(err), now)
 		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("send issue notification: %w", err))
 		}
+		failures = errors.Join(failures, finishErr)
 	}
 	return failures
 }
@@ -138,18 +149,39 @@ func issueNotice(event issueEmailEvent) (issueEmailNotice, bool) {
 	return issueEmailNotice{}, false
 }
 
-func (s *Service) claimIssueEmail(ctx context.Context, now time.Time) (auth.EmailMessage, bool, error) {
+func (s *Service) claimIssueEmail(ctx context.Context, now time.Time) (issueEmailClaim, bool, error) {
 	repository, ok := s.config.AccessRepository.(accountstore.NotificationRepository)
 	if !ok {
-		return auth.EmailMessage{}, false, errors.New("notification repository unavailable")
+		return issueEmailClaim{}, false, errors.New("notification repository unavailable")
 	}
 	notice, found, err := repository.ClaimNotification(ctx, s.accessOrganization(), now)
-	if err != nil || !found || notice.Email == "" {
-		return auth.EmailMessage{}, found, err
+	if err != nil {
+		return issueEmailClaim{}, false, err
+	}
+	if !found || notice.Email == "" {
+		return issueEmailClaim{delivery: notice}, found, nil
 	}
 	link := strings.TrimRight(s.config.Hosted.PublicURL, "/") + issueBrowserPath(notice.OrganizationSlug, notice.ProjectSlug, notice.Number)
 	message, err := s.renderIssueEmail(notice.Email, link, notice.Title, notice.Number, notice.Token, notice.Notices)
-	return message, true, err
+	return issueEmailClaim{message: message, delivery: notice}, true, err
+}
+
+func (s *Service) finishIssueEmail(ctx context.Context, delivery accountstore.IssueNotification, outcome string, now time.Time) error {
+	repository, ok := s.config.AccessRepository.(accountstore.NotificationRepository)
+	if !ok {
+		return errors.New("notification repository unavailable")
+	}
+	status, next := "uncertain", now
+	if outcome == "committed" {
+		status = "sent"
+	}
+	if outcome == "rejected" {
+		status = "rejected"
+		next = now.Add(notificationRetryDelay(delivery.Attempts, delivery.DeliveryID))
+	}
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return repository.FinishNotification(finishCtx, s.accessOrganization(), delivery.DeliveryID, delivery.Attempts, status, next, now)
 }
 
 func (s *Service) renderIssueEmail(to, link, title string, number int, token string, notices []issueEmailNotice) (auth.EmailMessage, error) {

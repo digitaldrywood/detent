@@ -15,10 +15,7 @@ import (
 
 func TestPostgresIssueNotificationPreferenceReadWrite(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.TenantRepository = repository
-	})
+	f := accountPreferencesPostgresFixture(t, repository)
 	now := time.Now().UTC()
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", CreatedAt: now}); err != nil {

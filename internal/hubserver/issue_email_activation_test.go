@@ -2,6 +2,8 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -35,12 +37,26 @@ func TestPostgresEmailSenderStartupAndIssueDelivery(t *testing.T) {
 			t.Fatal(err)
 		}
 		messages := []auth.EmailMessage{}
+		attempts := 0
+		var cancelDelivery context.CancelFunc
+		rejection := &auth.EmailDeliveryError{Outcome: "rejected", Err: errors.New("example send rejection")}
+		var sendFailure error = rejection
 		cfg := f.service.config
+		cfg.newOutboxTimer = func(time.Duration) outboxTimer {
+			return outboxTimer{ticks: make(chan time.Time), reset: func(time.Duration) {}, stop: func() {}}
+		}
 		at := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Microsecond)
 		cfg.now = func() time.Time { return at }
 		hosted := *cfg.Hosted
 		cfg.Hosted = &hosted
 		cfg.Hosted.EmailSender = healthEmailSenderFunc(func(ctx context.Context, message auth.EmailMessage) error {
+			attempts++
+			if attempts == 2 && cancelDelivery != nil {
+				cancelDelivery()
+			}
+			if sendFailure != nil {
+				return sendFailure
+			}
 			messages = append(messages, message)
 			return nil
 		})
@@ -67,8 +83,71 @@ func TestPostgresEmailSenderStartupAndIssueDelivery(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 		}
 		now := service.config.now().Add(2 * time.Minute)
-		if err := service.deliverIssueEmails(t.Context(), now); err != nil {
+		deliveryCtx, cancel := context.WithCancel(t.Context())
+		cancelDelivery = cancel
+		defer cancel()
+		if err := service.deliverIssueEmails(deliveryCtx, now); !errors.Is(err, rejection) {
+			t.Fatalf("rejected send error=%v", err)
+		}
+		if attempts != 2 || len(messages) != 0 {
+			t.Fatalf("rejected attempts=%d sent=%d", attempts, len(messages))
+		}
+		stored, ok := projectRecordDatabases.Load(repository)
+		if !ok {
+			t.Fatal("PostgreSQL fixture owner missing")
+		}
+		rows, err := stored.(*sql.DB).QueryContext(t.Context(), `SELECT id FROM issue_notification_receipts WHERE organization_id=$1 ORDER BY id`, org)
+		if err != nil {
 			t.Fatal(err)
+		}
+		receipts := []string{}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			receipts = append(receipts, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if len(receipts) != 2 {
+			t.Fatalf("receipts=%d", len(receipts))
+		}
+		cfg = service.config
+		if err := service.Close(); err != nil {
+			t.Fatal(err)
+		}
+		service, err = Open(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer service.Close()
+		service.stopIssueMailer()
+		f.service = service
+		for _, id := range receipts {
+			receipt, err := repository.NotificationReceipt(t.Context(), org, id)
+			if err != nil || receipt.Status != "rejected" || receipt.Attempts != 1 {
+				t.Fatalf("reopened receipt=%+v err=%v", receipt, err)
+			}
+		}
+		if err := service.deliverIssueEmails(t.Context(), now.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if attempts != 2 {
+			t.Fatal("rejected send retried before its backoff")
+		}
+		sendFailure = nil
+		if err := service.deliverIssueEmails(t.Context(), now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range receipts {
+			receipt, err := repository.NotificationReceipt(t.Context(), org, id)
+			if err != nil || receipt.Status != "sent" || receipt.Attempts != 2 {
+				t.Fatalf("sent receipt=%+v err=%v", receipt, err)
+			}
 		}
 		if len(messages) != 2 {
 			t.Fatalf("messages=%d want 2", len(messages))
@@ -116,13 +195,38 @@ func TestPostgresEmailSenderStartupAndIssueDelivery(t *testing.T) {
 			t.Fatal(err)
 		}
 		due := end.Add(time.Hour)
-		if err := service.deliverDailySummaries(t.Context(), due); err != nil {
+		sendFailure = rejection
+		if err := service.deliverDailySummaries(t.Context(), due); !errors.Is(err, rejection) {
+			t.Fatalf("rejected summary error=%v", err)
+		}
+		if len(messages) != 2 {
+			t.Fatal("rejected summary was recorded as sent")
+		}
+		cfg = service.config
+		if err := service.Close(); err != nil {
+			t.Fatal(err)
+		}
+		service, err = Open(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer service.Close()
+		service.stopIssueMailer()
+		f.service = service
+		summaryOwner := service.config.AccessRepository.(accountstore.SummaryDeliveryRepository)
+		for _, test := range []struct{ user, status string }{{owner.identity.Subject, "rejected"}, {member.identity.Subject, "quiet"}} {
+			status, err := summaryOwner.SummaryStatus(t.Context(), org, test.user, end)
+			if err != nil || status != test.status {
+				t.Fatalf("reopened summary status=%s want=%s err=%v", status, test.status, err)
+			}
+		}
+		sendFailure = nil
+		if err := service.deliverDailySummaries(t.Context(), due.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 		if len(messages) != 3 || !strings.Contains(messages[2].Subject, "2 need you") {
 			t.Fatalf("daily summary messages=%+v", messages)
 		}
-		summaryOwner := service.config.AccessRepository.(accountstore.SummaryDeliveryRepository)
 		for _, test := range []struct{ user, status string }{{owner.identity.Subject, "sent"}, {member.identity.Subject, "quiet"}} {
 			status, err := summaryOwner.SummaryStatus(t.Context(), org, test.user, end)
 			if err != nil || status != test.status {

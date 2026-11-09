@@ -18,9 +18,21 @@ type IssueNotice struct {
 }
 
 type IssueNotification struct {
+	DeliveryID                                         string
+	Attempts                                           int64
 	Email, Title, Token, OrganizationSlug, ProjectSlug string
 	Number                                             int
 	Notices                                            []IssueNotice
+}
+
+type NotificationReceipt struct {
+	ID                       string
+	WorkItemID               tracker.NativeWorkItemID
+	UserID, Status           string
+	Attempts                 int64
+	NoticeCount              int
+	ClaimedAt, NextAttemptAt time.Time
+	FinishedAt               *time.Time
 }
 
 type NotificationCollector interface {
@@ -31,6 +43,8 @@ type NotificationCollector interface {
 type NotificationDelivery interface {
 	ClaimNotification(context.Context, tracker.OrganizationID, time.Time) (IssueNotification, bool, error)
 	UnsubscribeNotification(context.Context, tracker.OrganizationID, string) error
+	FinishNotification(context.Context, tracker.OrganizationID, string, int64, string, time.Time, time.Time) error
+	NotificationReceipt(context.Context, tracker.OrganizationID, string) (NotificationReceipt, error)
 }
 
 type NotificationRepository interface {

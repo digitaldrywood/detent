@@ -306,7 +306,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"accountProjectIcon":                  "The request reserves its own icon attachment row and storage allowance, rechecking authority, before uploading content.",
 		"collectIssueEmails":                  "Queues notification batches and advances their event cursors atomically.",
 		"deliverDailySummary":                 "Claims one recipient window and records its delivery outcome in separate short transactions outside the send.",
-		"claimIssueEmail":                     "Deletes a due notification batch and reads its recipient in the same transaction before delivery.",
+		"claimIssueEmail":                     "Moves one due notification batch into an uncertain receipt and rechecks its recipient before delivery.",
 		"issueNotificationPreference":         "Updates the member preference and deletes queued notifications atomically on PUT; GET uses the reader.",
 		"revokeHostedInvitationFor":           "Revokes the invitation and releases its reserved seat atomically.",
 		"sendReservedHostedInvitationFor":     "Records the invitation together with its grants and reserved seat.",

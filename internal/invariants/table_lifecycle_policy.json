@@ -51,6 +51,8 @@
     "native_work_item_page_progress": {"class": "hot_state"},
     "native_board_page_summaries": {"class": "index"},
     "issue_notification_notices": {"class": "hot_state"},
+    "issue_notification_receipts": {"class": "hot_state", "retention": "subscription-lifetime delivery outcome receipts; cascade with their subscription"},
+    "issue_notification_receipt_notices": {"class": "hot_state", "retention": "rejected or uncertain batch metadata; deleted when delivery commits or is suppressed"},
     "runner_attempt_token_usage": {"class": "hot_state"},
     "runner_project_daily_tokens": {"class": "hot_state"},
     "runner_issue_tokens": {"class": "hot_state"},

@@ -214,7 +214,7 @@ func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	next := now.Add(slackRetryDelay(delivery.Attempts, delivery.ID))
+	next := now.Add(notificationRetryDelay(delivery.Attempts, delivery.ID))
 	err = s.database.postgres.WriteSlack(ctx, org, corestore.Background, func(w postgres.SlackWriter) error {
 		claimed, err := w.ClaimSlackDelivery(ctx, postgres.ClaimSlackDeliveryInput{OrganizationID: org, ID: delivery.ID, ExpectedAttempts: delivery.Attempts, ExpectedSettingsRevision: settings.Revision, Now: now, NextAttemptAt: next})
 		if err != nil {
@@ -261,7 +261,7 @@ func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
 	return true, err
 }
 
-func slackRetryDelay(attempts int64, id string) time.Duration {
+func notificationRetryDelay(attempts int64, id string) time.Duration {
 	base := time.Minute * time.Duration(1<<min(max(attempts, 0), 5))
 	sum := sha256.Sum256([]byte(id))
 	return base + base*time.Duration(sum[0])/1280
