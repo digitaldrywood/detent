@@ -792,6 +792,9 @@ func (s *Service) spritePlacementScopeRecord(ctx context.Context, scope nativeSc
 		r := runnerFromRoutingRecord(record, now, urgent)
 		reported[record.Record.Identity.EnrollmentID] = len(r.ProviderCapacity) > 0
 		current := placementRunner{Runner: r, Enrollment: record.Record.Identity.EnrollmentID, Sprite: record.Record.Machine.SpriteName == r.Hostname && validSpritesSlug(r.Hostname)}
+		if projectID != "" && (r.Scope != "organization" && !slices.Contains(r.ProjectIDs, projectID) || !current.Sprite && pool.PlacementMode == "sprites_only") {
+			continue
+		}
 		current.Paused = current.Sprite && now.Sub(r.LastHeartbeatAt) >= spriteRunnerIdle
 		if current.Paused {
 			if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {

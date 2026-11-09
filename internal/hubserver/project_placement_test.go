@@ -177,7 +177,7 @@ func TestPlacementClaims(t *testing.T) {
 							return err
 						}
 						identity.State = "draining"
-						return w.UpdateRunnerIdentity(t.Context(), identity)
+						return w.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
 					})
 				}
 			}
@@ -241,7 +241,7 @@ func TestPlacementClaims(t *testing.T) {
 						return err
 					}
 					identity.State = "disabled"
-					return w.UpdateRunnerIdentity(t.Context(), identity)
+					return w.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
 				})
 			case "execution":
 				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
@@ -257,14 +257,11 @@ func TestPlacementClaims(t *testing.T) {
 					return w.UpdateRunnerIdentity(t.Context(), identity)
 				})
 			case "host_full":
-				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
-					machine, err := w.Machine(t.Context(), string(r.binding.MachineID))
-					if err != nil {
-						return err
-					}
-					machine.Capacity = 1
-					return w.HeartbeatMachine(t.Context(), machine, f.service.config.now())
-				})
+				view, err := f.service.readRunnerRouting(t.Context(), scope, r.binding.RunnerID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/machines/"+string(r.binding.MachineID)+"/routing", testHubAdminToken, runnerauth.HostChange{ExpectedRevision: view.HostRevision, DisplayName: view.HostDisplayName, Capacity: 1}), http.StatusOK)
 			case "provider_full":
 				report := capacityReport(f.service.config.now())
 				report.Availability = "exhausted"
@@ -574,7 +571,7 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 						return err
 					}
 					identity.Scope = "organization"
-					if err := w.UpdateRunnerIdentity(t.Context(), identity); err != nil {
+					if err := w.UpdateRunnerRouting(t.Context(), identity.Revision, identity); err != nil {
 						return err
 					}
 					return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.organization, TokenID: identity.TokenID, ProjectID: later.project.ID})
@@ -590,7 +587,7 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 						return err
 					}
 					identity.Scope = "organization"
-					return w.UpdateRunnerIdentity(t.Context(), identity)
+					return w.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
 				})
 			}
 			start := make(chan struct{})
