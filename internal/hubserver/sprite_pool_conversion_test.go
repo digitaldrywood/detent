@@ -21,7 +21,7 @@ import (
 
 func TestSpritePromotionPreservesTenantOverridesAfterReopen(t *testing.T) {
 	var poolConfig *pgxpool.Config
-	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
+	repository, _ := projectSpritePostgresWithAdmin(t, 3, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	keys := secretTestKeys(t, "1", "1")
 	services := map[tracker.OrganizationID]*Service{}

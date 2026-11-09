@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
@@ -101,9 +103,41 @@ func assertSpritePostgresFacts(t *testing.T, f nativeFixture) {
 	}
 }
 
+func projectSpritePostgresWithAdmin(t *testing.T, maxConnections int, configure ...func(*pgxpool.Config)) (*postgres.Repository, *sql.DB) {
+	t.Helper()
+	admin := postgresStartupTemplate.Database(t)
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT "+strconv.Itoa(maxConnections+1)); err != nil {
+		t.Fatal(err)
+	}
+	native := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
+	native.MaxConns = int32(maxConnections)
+	for _, option := range configure {
+		option(native)
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: maxConnections, ServingConnections: maxConnections - 1, BackgroundConnections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	projectRecordDatabases.Store(repository, admin)
+	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
+	return repository, admin
+}
+
+
 func TestSpritePoolPostgresSettingsAndAuthority(t *testing.T) {
 	var poolConfig *pgxpool.Config
-	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
+	repository, _ := projectSpritePostgresWithAdmin(t, 3, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	details := &verifiedAttemptDetails{}
 	services := make(map[tracker.OrganizationID]*Service)
@@ -1710,7 +1744,7 @@ var spriteMemberReady = runnerauth.LocalChecks{Checkout: "passed", Doctor: "pass
 
 func TestProjectSpriteAllocationCommands(t *testing.T) {
 	var poolConfig *pgxpool.Config
-	repository, _ := projectRecordPostgresWithAdmin(t, 4, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
+	repository, _ := projectSpritePostgresWithAdmin(t, 4, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
 	cfg := Config{SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: &verifiedAttemptDetails{}}
 	service := openLocalPostgresHubTestService(t, repository, cfg)
 	service.registerSpritePoolRoutes(service.echo)
