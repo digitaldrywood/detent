@@ -73,7 +73,7 @@ type ArtifactCatalogWriter interface {
 	ArtifactCatalogReader
 	SetCatalogPolicy(context.Context, tracker.ProjectID, string, artifact.Policy) (CatalogBinding, error)
 	CatalogExecutionAuthority(context.Context, CatalogExecutionAuthorityInput) error
-	PruneScopedCatalogTraffic(context.Context, ScopedCatalogTrafficPrune) error
+	PruneScopedCatalogTraffic(context.Context, ScopedCatalogTrafficPrune) (CatalogTrafficPruneProgress, error)
 	RecordCatalogTrafficNow(context.Context, CatalogTrafficReport, time.Time) error
 	PruneCatalogManifestIntent(context.Context, CatalogIntentTransition) error
 	PrepareCatalogManifestIntent(context.Context, CatalogManifestIntent, time.Time) (CatalogManifestIntent, error)

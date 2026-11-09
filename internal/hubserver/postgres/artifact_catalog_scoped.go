@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type CatalogBinding = pgquery.ArtifactService
@@ -145,25 +146,72 @@ func (s *session) ScopedCatalogIntents(ctx context.Context, arg ScopedCatalogInt
 	return rows, nil
 }
 
-type ScopedCatalogTrafficPrune = pgquery.PruneScopedCatalogTrafficParams
+type ScopedCatalogTrafficPrune struct {
+	OrganizationID                                      tracker.OrganizationID
+	ServiceID, ProjectID, PublisherID, AfterProject     string
+	Before, AfterServiceMinute, AfterOrganizationMinute time.Time
+	PageLimit                                           int32
+}
 
-func (s *session) PruneScopedCatalogTraffic(ctx context.Context, arg ScopedCatalogTrafficPrune) error {
+type CatalogTrafficPruneProgress struct {
+	ProjectID                         string
+	ServiceMinute, OrganizationMinute time.Time
+}
+
+func (s *session) PruneScopedCatalogTraffic(ctx context.Context, arg ScopedCatalogTrafficPrune) (CatalogTrafficPruneProgress, error) {
+	var progress CatalogTrafficPruneProgress
 	if err := s.checkOrganization(arg.OrganizationID); err != nil {
-		return err
+		return progress, err
 	}
 	if arg.PageLimit < 1 || arg.PageLimit > 32 || arg.Before.IsZero() {
-		return corestore.ErrInvalidPage
+		return progress, corestore.ErrInvalidPage
 	}
-	if err := s.queries.PruneScopedCatalogTraffic(ctx, arg); err != nil {
-		return mapError(ctx, err)
+	projectLimit := min(int32(8), arg.PageLimit)
+	var projects []tracker.ProjectID
+	var err error
+	if arg.PublisherID == "" {
+		projects, err = s.queries.CatalogTrafficPruneOwnerProjects(ctx, pgquery.CatalogTrafficPruneOwnerProjectsParams{OrganizationID: arg.OrganizationID, ServiceID: arg.ServiceID, ProjectID: arg.ProjectID, AfterProject: arg.AfterProject, PageLimit: projectLimit})
+	} else {
+		projects, err = s.queries.CatalogTrafficPruneProjects(ctx, pgquery.CatalogTrafficPruneProjectsParams{OrganizationID: arg.OrganizationID, ServiceID: arg.ServiceID, ProjectID: arg.ProjectID, PublisherID: arg.PublisherID, AfterProject: arg.AfterProject, PageLimit: projectLimit})
 	}
-	if err := s.queries.PruneScopedCatalogTrafficReceipts(ctx, pgquery.PruneScopedCatalogTrafficReceiptsParams(arg)); err != nil {
-		return mapError(ctx, err)
+	if err != nil {
+		return progress, mapError(ctx, err)
 	}
-	if err := s.queries.PruneCatalogServiceTraffic(ctx, pgquery.PruneCatalogServiceTrafficParams{OrganizationID: arg.OrganizationID, ServiceID: arg.ServiceID, Before: arg.Before, PageLimit: arg.PageLimit}); err != nil {
-		return mapError(ctx, err)
+	budget := max(int32(1), arg.PageLimit/int32(max(1, len(projects))))
+	for _, project := range projects {
+		input := pgquery.PruneScopedCatalogTrafficParams{OrganizationID: arg.OrganizationID, ProjectID: project, ServiceID: arg.ServiceID, Before: arg.Before, PageLimit: budget}
+		if err := s.queries.PruneScopedCatalogTraffic(ctx, input); err != nil {
+			return progress, mapError(ctx, err)
+		}
+		if err := s.queries.PruneScopedCatalogTrafficReceipts(ctx, pgquery.PruneScopedCatalogTrafficReceiptsParams(input)); err != nil {
+			return progress, mapError(ctx, err)
+		}
 	}
-	return mapError(ctx, s.queries.PruneCatalogServiceTraffic(ctx, pgquery.PruneCatalogServiceTrafficParams{OrganizationID: arg.OrganizationID, ServiceID: "", Before: arg.Before.Add(-30 * 24 * time.Hour), PageLimit: arg.PageLimit}))
+	if len(projects) == int(projectLimit) {
+		progress.ProjectID = string(projects[len(projects)-1])
+	}
+	progress.ServiceMinute, err = s.pruneCatalogServiceTrafficPage(ctx, pgquery.CatalogServiceTrafficExpiryPageParams{OrganizationID: arg.OrganizationID, ServiceID: arg.ServiceID, AfterMinute: arg.AfterServiceMinute, Before: arg.Before, PageLimit: arg.PageLimit})
+	if err != nil {
+		return progress, err
+	}
+	progress.OrganizationMinute, err = s.pruneCatalogServiceTrafficPage(ctx, pgquery.CatalogServiceTrafficExpiryPageParams{OrganizationID: arg.OrganizationID, AfterMinute: arg.AfterOrganizationMinute, Before: arg.Before.Add(-30 * 24 * time.Hour), PageLimit: arg.PageLimit})
+	return progress, err
+}
+
+func (s *session) pruneCatalogServiceTrafficPage(ctx context.Context, arg pgquery.CatalogServiceTrafficExpiryPageParams) (time.Time, error) {
+	minutes, err := s.queries.CatalogServiceTrafficExpiryPage(ctx, arg)
+	if err != nil {
+		return time.Time{}, mapError(ctx, err)
+	}
+	if len(minutes) != 0 {
+		if err := s.queries.PruneCatalogServiceTraffic(ctx, pgquery.PruneCatalogServiceTrafficParams{OrganizationID: arg.OrganizationID, ServiceID: arg.ServiceID, Minutes: minutes}); err != nil {
+			return time.Time{}, mapError(ctx, err)
+		}
+	}
+	if len(minutes) == int(arg.PageLimit) {
+		return minutes[len(minutes)-1], nil
+	}
+	return time.Time{}, nil
 }
 
 type ScopedCatalogPublicationsInput = pgquery.ScopedCatalogPublicationsParams

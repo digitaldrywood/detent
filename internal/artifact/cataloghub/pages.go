@@ -23,6 +23,7 @@ type pageCursor struct {
 	Phase     int             `json:"phase"`
 	Position  pagePosition    `json:"position,omitzero"`
 	Retention [5]pagePosition `json:"retention"`
+	Traffic   [2]time.Time    `json:"traffic,omitzero"`
 }
 
 func readCursor(value string) (pageCursor, error) {
@@ -57,7 +58,16 @@ func (c *Catalog) page(ctx context.Context, command artifact.CatalogCommand, cfg
 	org := tracker.OrganizationID(command.OrganizationID)
 	if command.Operation == "prune_traffic" {
 		err := c.write(ctx, command, func(w postgres.ArtifactCatalogWriter) error {
-			return w.PruneScopedCatalogTraffic(ctx, postgres.ScopedCatalogTrafficPrune{OrganizationID: org, PublisherID: cfg.PublisherID, ServiceID: command.ServiceID, ProjectID: command.ProjectID, Before: command.Before, PageLimit: int32(command.Limit)})
+			progress, err := w.PruneScopedCatalogTraffic(ctx, postgres.ScopedCatalogTrafficPrune{OrganizationID: org, PublisherID: cfg.PublisherID, ServiceID: command.ServiceID, ProjectID: command.ProjectID, Before: command.Before, PageLimit: int32(command.Limit), AfterProject: cursor.Position.Project, AfterServiceMinute: cursor.Traffic[0], AfterOrganizationMinute: cursor.Traffic[1]})
+			if err != nil {
+				return err
+			}
+			cursor.Position.Project = progress.ProjectID
+			cursor.Traffic = [2]time.Time{progress.ServiceMinute, progress.OrganizationMinute}
+			if progress.ProjectID != "" || !progress.ServiceMinute.IsZero() || !progress.OrganizationMinute.IsZero() {
+				result.Next, err = nextCursor(cursor)
+			}
+			return err
 		})
 		return result, err
 	}

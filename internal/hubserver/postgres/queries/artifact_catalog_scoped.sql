@@ -41,14 +41,35 @@ ON CONFLICT(organization_id,service_id,minute) DO UPDATE SET upload_bytes=artifa
 SELECT COALESCE(sum(upload_bytes+download_bytes),0)::bigint AS relay_bytes,COALESCE(sum(requests),0)::bigint AS requests FROM artifact_catalog_service_traffic WHERE organization_id=$1 AND service_id=$2 AND minute>=$3 AND minute<$4;
 
 
+-- name: CatalogTrafficPruneProjects :many
+SELECT b.project_id FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id)
+WHERE b.organization_id=sqlc.arg(organization_id) AND b.id=sqlc.arg(service_id) AND b.publisher_token_id=sqlc.arg(publisher_id)
+AND b.project_id>sqlc.arg(after_project)::text AND (sqlc.arg(project_id)::text='' OR b.project_id=sqlc.arg(project_id))
+ORDER BY b.project_id LIMIT sqlc.arg(page_limit) FOR SHARE OF b,g;
+
+-- name: CatalogTrafficPruneOwnerProjects :many
+SELECT b.project_id FROM artifact_services b WHERE b.organization_id=sqlc.arg(organization_id) AND b.id=sqlc.arg(service_id)
+AND b.project_id>sqlc.arg(after_project)::text AND (sqlc.arg(project_id)::text='' OR b.project_id=sqlc.arg(project_id))
+ORDER BY b.project_id LIMIT sqlc.arg(page_limit) FOR SHARE OF b;
+
 -- name: PruneScopedCatalogTraffic :exec
-DELETE FROM artifact_catalog_traffic d WHERE (d.organization_id,d.project_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.project_id,s.service_id,s.minute FROM artifact_catalog_traffic s WHERE s.organization_id=sqlc.arg(organization_id) AND s.service_id=sqlc.arg(service_id) AND s.minute<sqlc.arg(before)::timestamptz AND (sqlc.arg(project_id)::text='' OR s.project_id=sqlc.arg(project_id)) AND (sqlc.arg(publisher_id)::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=s.organization_id AND b.project_id=s.project_id AND b.id=s.service_id AND b.publisher_token_id=sqlc.arg(publisher_id))) ORDER BY s.minute,s.organization_id,s.project_id,s.service_id,s.minute LIMIT sqlc.arg(page_limit));
+DELETE FROM artifact_catalog_traffic d WHERE (d.organization_id,d.project_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.project_id,s.service_id,s.minute FROM artifact_catalog_traffic s WHERE s.organization_id=sqlc.arg(organization_id) AND s.project_id=sqlc.arg(project_id) AND s.service_id=sqlc.arg(service_id) AND s.minute<sqlc.arg(before)::timestamptz ORDER BY s.minute LIMIT sqlc.arg(page_limit));
 
 -- name: PruneScopedCatalogTrafficReceipts :exec
-DELETE FROM artifact_catalog_traffic_receipts d WHERE (d.organization_id,d.project_id,d.service_id,d.id) IN (SELECT s.organization_id,s.project_id,s.service_id,s.id FROM artifact_catalog_traffic_receipts s WHERE s.organization_id=sqlc.arg(organization_id) AND s.service_id=sqlc.arg(service_id) AND s.minute<sqlc.arg(before)::timestamptz AND (sqlc.arg(project_id)::text='' OR s.project_id=sqlc.arg(project_id)) AND (sqlc.arg(publisher_id)::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=s.organization_id AND b.project_id=s.project_id AND b.id=s.service_id AND b.publisher_token_id=sqlc.arg(publisher_id))) ORDER BY s.minute,s.organization_id,s.project_id,s.service_id,s.id LIMIT sqlc.arg(page_limit));
+DELETE FROM artifact_catalog_traffic_receipts d WHERE (d.organization_id,d.project_id,d.service_id,d.id) IN (SELECT s.organization_id,s.project_id,s.service_id,s.id FROM artifact_catalog_traffic_receipts s WHERE s.organization_id=sqlc.arg(organization_id) AND s.project_id=sqlc.arg(project_id) AND s.service_id=sqlc.arg(service_id) AND s.minute<sqlc.arg(before)::timestamptz ORDER BY s.minute,s.id LIMIT sqlc.arg(page_limit));
+
+-- name: CatalogServiceTrafficExpiryPage :many
+SELECT minute FROM artifact_catalog_service_traffic WHERE organization_id=sqlc.arg(organization_id) AND service_id=sqlc.arg(service_id) AND minute>sqlc.arg(after_minute)::timestamptz AND minute<sqlc.arg(before)::timestamptz ORDER BY minute LIMIT sqlc.arg(page_limit);
 
 -- name: PruneCatalogServiceTraffic :exec
-DELETE FROM artifact_catalog_service_traffic d WHERE (d.organization_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.service_id,s.minute FROM artifact_catalog_service_traffic s WHERE s.organization_id=sqlc.arg(organization_id) AND s.service_id=sqlc.arg(service_id) AND s.minute<sqlc.arg(before)::timestamptz AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic t WHERE t.organization_id=s.organization_id AND (s.service_id='' OR t.service_id=s.service_id) AND t.minute=s.minute) AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic_receipts t WHERE t.organization_id=s.organization_id AND (s.service_id='' OR t.service_id=s.service_id) AND t.minute=s.minute) ORDER BY s.minute,s.organization_id,s.service_id,s.minute LIMIT sqlc.arg(page_limit));
+DELETE FROM artifact_catalog_service_traffic d WHERE d.organization_id=sqlc.arg(organization_id) AND d.service_id=sqlc.arg(service_id) AND d.minute=ANY(sqlc.arg(minutes)::timestamptz[])
+AND CASE WHEN sqlc.arg(service_id)::text='' THEN
+ NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic t WHERE t.organization_id=sqlc.arg(organization_id) AND t.minute=d.minute)
+ AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic_receipts t WHERE t.organization_id=sqlc.arg(organization_id) AND t.minute=d.minute)
+ELSE
+ NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic t WHERE t.organization_id=sqlc.arg(organization_id) AND t.service_id=sqlc.arg(service_id) AND t.minute=d.minute)
+ AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic_receipts t WHERE t.organization_id=sqlc.arg(organization_id) AND t.service_id=sqlc.arg(service_id) AND t.minute=d.minute)
+END;
 
 -- name: ScopedCatalogPublications :many
 SELECT r.* FROM artifact_catalog_publications r WHERE r.organization_id=sqlc.arg(organization_id) AND r.service_id=sqlc.arg(service_id) AND (sqlc.arg(project_id)::text='' OR r.project_id=sqlc.arg(project_id)) AND (sqlc.arg(publisher_id)::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=r.organization_id AND b.project_id=r.project_id AND b.id=r.service_id AND b.publisher_token_id=sqlc.arg(publisher_id))) AND (r.project_id,r.manifest_id)>(sqlc.arg(after_0)::text,sqlc.arg(after_1)::text) ORDER BY r.project_id,r.manifest_id LIMIT sqlc.arg(page_limit);

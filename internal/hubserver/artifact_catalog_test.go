@@ -241,7 +241,7 @@ func TestPostgresArtifactCatalogJourney(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPut, path, publisher.token, policy), http.StatusNotFound)
 				requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPut, path, adminToken, policy), http.StatusNoContent)
 			}
-			startCatalogJourneyPublisher(t, publisher, hubServer.URL, storage, &dropReceipt)
+			startCatalogJourneyPublisher(t, publisher, hubServer.URL, storage, &dropReceipt, now)
 			if foreignPublisher != "" {
 				foreign := &artifact.RemoteCatalog{Hub: &artifact.RemoteHub{Origin: hubServer.URL, OrganizationID: string(org), ServiceID: publisher.serviceID, PublisherToken: func() string { return foreignPublisher }, Client: catalogJourneyHTTPClient(t)}}
 				if _, err := foreign.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: artifact.CatalogScope{OrganizationID: string(org), ServiceID: publisher.serviceID}, Operation: "usage"}); !errors.Is(err, artifact.ErrDenied) {
@@ -298,7 +298,7 @@ func TestPostgresArtifactCatalogJourney(t *testing.T) {
 			if err := publisher.service.Close(); err != nil {
 				t.Fatal(err)
 			}
-			startCatalogJourneyPublisher(t, publisher, hubServer.URL, storage, &dropReceipt)
+			startCatalogJourneyPublisher(t, publisher, hubServer.URL, storage, &dropReceipt, now)
 			var retained int64
 			for _, record := range publisher.records {
 				_, data, err := publisher.service.ReadObject(t.Context(), record.upload.ArtifactID, record.reference.Revision, record.object.ID)
@@ -470,7 +470,7 @@ func catalogJourneyHTTPClient(t *testing.T) *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-func startCatalogJourneyPublisher(t *testing.T, publisher *catalogJourneyPublisher, origin string, storage artifact.Storage, drop *atomic.Bool) {
+func startCatalogJourneyPublisher(t *testing.T, publisher *catalogJourneyPublisher, origin string, storage artifact.Storage, drop *atomic.Bool, now func() time.Time) {
 	t.Helper()
 	transport := &http.Transport{}
 	t.Cleanup(transport.CloseIdleConnections)
@@ -480,7 +480,7 @@ func startCatalogJourneyPublisher(t *testing.T, publisher *catalogJourneyPublish
 	if publisher.mode == "hosted" {
 		allowances = publisher.remote
 	}
-	service, err := artifact.NewService(t.Context(), publisher.config, storage, allowances)
+	service, err := artifact.NewService(t.Context(), publisher.config, storage, allowances, artifact.ServiceOptions{Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}

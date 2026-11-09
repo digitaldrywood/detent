@@ -181,6 +181,44 @@ func (q *Queries) CatalogServiceTraffic(ctx context.Context, arg CatalogServiceT
 	return i, err
 }
 
+const catalogServiceTrafficExpiryPage = `-- name: CatalogServiceTrafficExpiryPage :many
+SELECT minute FROM artifact_catalog_service_traffic WHERE organization_id=$1 AND service_id=$2 AND minute>$3::timestamptz AND minute<$4::timestamptz ORDER BY minute LIMIT $5
+`
+
+type CatalogServiceTrafficExpiryPageParams struct {
+	OrganizationID tracker.OrganizationID
+	ServiceID      string
+	AfterMinute    time.Time
+	Before         time.Time
+	PageLimit      int32
+}
+
+func (q *Queries) CatalogServiceTrafficExpiryPage(ctx context.Context, arg CatalogServiceTrafficExpiryPageParams) ([]time.Time, error) {
+	rows, err := q.db.Query(ctx, catalogServiceTrafficExpiryPage,
+		arg.OrganizationID,
+		arg.ServiceID,
+		arg.AfterMinute,
+		arg.Before,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []time.Time{}
+	for rows.Next() {
+		var minute time.Time
+		if err := rows.Scan(&minute); err != nil {
+			return nil, err
+		}
+		items = append(items, minute)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const catalogServiceUploads = `-- name: CatalogServiceUploads :many
 SELECT organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in FROM artifact_catalog_uploads WHERE organization_id=$1 AND service_id=$2 AND id=$3 ORDER BY project_id LIMIT 2
 `
@@ -239,6 +277,89 @@ func (q *Queries) CatalogServiceUploads(ctx context.Context, arg CatalogServiceU
 	return items, nil
 }
 
+const catalogTrafficPruneOwnerProjects = `-- name: CatalogTrafficPruneOwnerProjects :many
+SELECT b.project_id FROM artifact_services b WHERE b.organization_id=$1 AND b.id=$2
+AND b.project_id>$3::text AND ($4::text='' OR b.project_id=$4)
+ORDER BY b.project_id LIMIT $5 FOR SHARE OF b
+`
+
+type CatalogTrafficPruneOwnerProjectsParams struct {
+	OrganizationID tracker.OrganizationID
+	ServiceID      string
+	AfterProject   string
+	ProjectID      string
+	PageLimit      int32
+}
+
+func (q *Queries) CatalogTrafficPruneOwnerProjects(ctx context.Context, arg CatalogTrafficPruneOwnerProjectsParams) ([]tracker.ProjectID, error) {
+	rows, err := q.db.Query(ctx, catalogTrafficPruneOwnerProjects,
+		arg.OrganizationID,
+		arg.ServiceID,
+		arg.AfterProject,
+		arg.ProjectID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []tracker.ProjectID{}
+	for rows.Next() {
+		var project_id tracker.ProjectID
+		if err := rows.Scan(&project_id); err != nil {
+			return nil, err
+		}
+		items = append(items, project_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const catalogTrafficPruneProjects = `-- name: CatalogTrafficPruneProjects :many
+SELECT b.project_id FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id)
+WHERE b.organization_id=$1 AND b.id=$2 AND b.publisher_token_id=$3
+AND b.project_id>$4::text AND ($5::text='' OR b.project_id=$5)
+ORDER BY b.project_id LIMIT $6 FOR SHARE OF b,g
+`
+
+type CatalogTrafficPruneProjectsParams struct {
+	OrganizationID tracker.OrganizationID
+	ServiceID      string
+	PublisherID    string
+	AfterProject   string
+	ProjectID      string
+	PageLimit      int32
+}
+
+func (q *Queries) CatalogTrafficPruneProjects(ctx context.Context, arg CatalogTrafficPruneProjectsParams) ([]tracker.ProjectID, error) {
+	rows, err := q.db.Query(ctx, catalogTrafficPruneProjects,
+		arg.OrganizationID,
+		arg.ServiceID,
+		arg.PublisherID,
+		arg.AfterProject,
+		arg.ProjectID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []tracker.ProjectID{}
+	for rows.Next() {
+		var project_id tracker.ProjectID
+		if err := rows.Scan(&project_id); err != nil {
+			return nil, err
+		}
+		items = append(items, project_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockCatalogPolicy = `-- name: LockCatalogPolicy :one
 SELECT organization_id, project_id, id, origin, binding_mode, hosted_opt_in, publisher_token_id, catalog_policy_id, catalog_retained_limit, catalog_reserved_limit, catalog_artifact_limit, catalog_upload_limit, catalog_retention_seconds, catalog_abandoned_seconds, catalog_deletion_seconds, catalog_backup_seconds FROM artifact_services WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR SHARE
 `
@@ -274,71 +395,68 @@ func (q *Queries) LockCatalogPolicy(ctx context.Context, arg LockCatalogPolicyPa
 }
 
 const pruneCatalogServiceTraffic = `-- name: PruneCatalogServiceTraffic :exec
-DELETE FROM artifact_catalog_service_traffic d WHERE (d.organization_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.service_id,s.minute FROM artifact_catalog_service_traffic s WHERE s.organization_id=$1 AND s.service_id=$2 AND s.minute<$3::timestamptz AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic t WHERE t.organization_id=s.organization_id AND (s.service_id='' OR t.service_id=s.service_id) AND t.minute=s.minute) AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic_receipts t WHERE t.organization_id=s.organization_id AND (s.service_id='' OR t.service_id=s.service_id) AND t.minute=s.minute) ORDER BY s.minute,s.organization_id,s.service_id,s.minute LIMIT $4)
+DELETE FROM artifact_catalog_service_traffic d WHERE d.organization_id=$1 AND d.service_id=$2 AND d.minute=ANY($3::timestamptz[])
+AND CASE WHEN $2::text='' THEN
+ NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic t WHERE t.organization_id=$1 AND t.minute=d.minute)
+ AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic_receipts t WHERE t.organization_id=$1 AND t.minute=d.minute)
+ELSE
+ NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic t WHERE t.organization_id=$1 AND t.service_id=$2 AND t.minute=d.minute)
+ AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic_receipts t WHERE t.organization_id=$1 AND t.service_id=$2 AND t.minute=d.minute)
+END
 `
 
 type PruneCatalogServiceTrafficParams struct {
 	OrganizationID tracker.OrganizationID
 	ServiceID      string
-	Before         time.Time
-	PageLimit      int32
+	Minutes        []time.Time
 }
 
 func (q *Queries) PruneCatalogServiceTraffic(ctx context.Context, arg PruneCatalogServiceTrafficParams) error {
-	_, err := q.db.Exec(ctx, pruneCatalogServiceTraffic,
-		arg.OrganizationID,
-		arg.ServiceID,
-		arg.Before,
-		arg.PageLimit,
-	)
+	_, err := q.db.Exec(ctx, pruneCatalogServiceTraffic, arg.OrganizationID, arg.ServiceID, arg.Minutes)
 	return err
 }
 
 const pruneScopedCatalogTraffic = `-- name: PruneScopedCatalogTraffic :exec
-DELETE FROM artifact_catalog_traffic d WHERE (d.organization_id,d.project_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.project_id,s.service_id,s.minute FROM artifact_catalog_traffic s WHERE s.organization_id=$1 AND s.service_id=$2 AND s.minute<$3::timestamptz AND ($4::text='' OR s.project_id=$4) AND ($5::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=s.organization_id AND b.project_id=s.project_id AND b.id=s.service_id AND b.publisher_token_id=$5)) ORDER BY s.minute,s.organization_id,s.project_id,s.service_id,s.minute LIMIT $6)
+DELETE FROM artifact_catalog_traffic d WHERE (d.organization_id,d.project_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.project_id,s.service_id,s.minute FROM artifact_catalog_traffic s WHERE s.organization_id=$1 AND s.project_id=$2 AND s.service_id=$3 AND s.minute<$4::timestamptz ORDER BY s.minute LIMIT $5)
 `
 
 type PruneScopedCatalogTrafficParams struct {
 	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
 	ServiceID      string
 	Before         time.Time
-	ProjectID      string
-	PublisherID    string
 	PageLimit      int32
 }
 
 func (q *Queries) PruneScopedCatalogTraffic(ctx context.Context, arg PruneScopedCatalogTrafficParams) error {
 	_, err := q.db.Exec(ctx, pruneScopedCatalogTraffic,
 		arg.OrganizationID,
+		arg.ProjectID,
 		arg.ServiceID,
 		arg.Before,
-		arg.ProjectID,
-		arg.PublisherID,
 		arg.PageLimit,
 	)
 	return err
 }
 
 const pruneScopedCatalogTrafficReceipts = `-- name: PruneScopedCatalogTrafficReceipts :exec
-DELETE FROM artifact_catalog_traffic_receipts d WHERE (d.organization_id,d.project_id,d.service_id,d.id) IN (SELECT s.organization_id,s.project_id,s.service_id,s.id FROM artifact_catalog_traffic_receipts s WHERE s.organization_id=$1 AND s.service_id=$2 AND s.minute<$3::timestamptz AND ($4::text='' OR s.project_id=$4) AND ($5::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=s.organization_id AND b.project_id=s.project_id AND b.id=s.service_id AND b.publisher_token_id=$5)) ORDER BY s.minute,s.organization_id,s.project_id,s.service_id,s.id LIMIT $6)
+DELETE FROM artifact_catalog_traffic_receipts d WHERE (d.organization_id,d.project_id,d.service_id,d.id) IN (SELECT s.organization_id,s.project_id,s.service_id,s.id FROM artifact_catalog_traffic_receipts s WHERE s.organization_id=$1 AND s.project_id=$2 AND s.service_id=$3 AND s.minute<$4::timestamptz ORDER BY s.minute,s.id LIMIT $5)
 `
 
 type PruneScopedCatalogTrafficReceiptsParams struct {
 	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
 	ServiceID      string
 	Before         time.Time
-	ProjectID      string
-	PublisherID    string
 	PageLimit      int32
 }
 
 func (q *Queries) PruneScopedCatalogTrafficReceipts(ctx context.Context, arg PruneScopedCatalogTrafficReceiptsParams) error {
 	_, err := q.db.Exec(ctx, pruneScopedCatalogTrafficReceipts,
 		arg.OrganizationID,
+		arg.ProjectID,
 		arg.ServiceID,
 		arg.Before,
-		arg.ProjectID,
-		arg.PublisherID,
 		arg.PageLimit,
 	)
 	return err

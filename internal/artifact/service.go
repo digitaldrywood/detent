@@ -98,16 +98,17 @@ type Usage struct {
 }
 
 type Service struct {
-	trafficWindow    atomic.Int64
-	trafficRetention atomic.Int64
-	config           Config
-	storage          Storage
-	catalog          Catalog
-	allowances       Allowances
-	now              func() time.Time
-	maintainAfter    string
-	publishAfter     publishCursor
-	publishMu        sync.Mutex
+	trafficWindow     atomic.Int64
+	trafficRetention  atomic.Int64
+	config            Config
+	storage           Storage
+	catalog           Catalog
+	allowances        Allowances
+	now               func() time.Time
+	maintainAfter     string
+	trafficPruneAfter string
+	publishAfter      publishCursor
+	publishMu         sync.Mutex
 }
 
 func (cfg Config) Validate() error {
@@ -128,7 +129,14 @@ func validLimits(l Limits) bool {
 	return l.RetainedBytes > 0 && l.RetainedBytes <= 1<<60 && l.ReservedBytes > 0 && l.ReservedBytes <= 1<<60 && l.ArtifactBytes > 0 && l.ArtifactBytes <= MaxArtifactBytes && l.UploadBytes > 0 && l.UploadBytes <= MaxVideoBytes && l.RetentionSeconds > 0 && l.RetentionSeconds <= 10*365*86400
 }
 
-func NewService(ctx context.Context, cfg Config, storage Storage, allowances Allowances) (*Service, error) {
+type ServiceOptions struct {
+	Now func() time.Time
+}
+
+func NewService(ctx context.Context, cfg Config, storage Storage, allowances Allowances, options ...ServiceOptions) (*Service, error) {
+	if len(options) > 1 {
+		return nil, ErrInvalid
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -143,6 +151,9 @@ func NewService(ctx context.Context, cfg Config, storage Storage, allowances All
 		return nil, ErrAuthorization
 	}
 	service := &Service{config: cfg, storage: storage, catalog: catalog, allowances: allowances, now: time.Now}
+	if len(options) == 1 && options[0].Now != nil {
+		service.now = options[0].Now
+	}
 	settings, err := service.command(ctx, CatalogCommand{Operation: "traffic_settings"})
 	if err != nil {
 		return nil, err

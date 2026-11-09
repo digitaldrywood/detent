@@ -96,6 +96,7 @@ func (s *Service) Maintain(ctx context.Context) error {
 	now := s.now().UTC()
 	s.publishMu.Lock()
 	after := s.maintainAfter
+	trafficAfter := s.trafficPruneAfter
 	s.publishMu.Unlock()
 	result, err := s.command(ctx, CatalogCommand{After: after, Operation: "retention", At: now, Before: now.Add(-time.Duration(s.config.Policy.DeletionRecordSeconds) * time.Second), Limit: 32})
 	if err != nil {
@@ -117,8 +118,12 @@ func (s *Service) Maintain(ctx context.Context) error {
 			return errors.Join(append(failures, ctx.Err())...)
 		}
 	}
-	if _, err := s.command(ctx, CatalogCommand{Operation: "prune_traffic", Before: now.Add(-time.Duration(s.trafficRetention.Load()) * time.Second), Limit: 32}); err != nil {
+	if page, err := s.command(ctx, CatalogCommand{Operation: "prune_traffic", After: trafficAfter, Before: now.Add(-time.Duration(s.trafficRetention.Load()) * time.Second), Limit: 32}); err != nil {
 		failures = append(failures, err)
+	} else {
+		s.publishMu.Lock()
+		s.trafficPruneAfter = page.Next
+		s.publishMu.Unlock()
 	}
 	return errors.Join(failures...)
 }

@@ -127,6 +127,7 @@ type scopedFixture struct {
 }
 
 func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
+	started := time.Now()
 	admin := catalogTemplate.Database(t)
 	role := "example_" + strings.TrimPrefix(artifact.NewID("role"), "role_")
 	quoted := pgx.Identifier{role}.Sanitize()
@@ -502,11 +503,15 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		persistedRows = append(persistedRows, persisted{fixture: fixture, upload: upload, reference: ref, object: object, part: part})
+		t.Logf("fixture %d complete at %s", len(persistedRows), time.Since(started))
 	}
 	for _, index := range []int{0, 4} {
 		cfg := fixtures[index].config
 		cfg.Catalog = remote(fixtures[index], fixtures[index].token)
-		verifyIntentMaintenanceProgress(t, backend.repository, cfg, storage, fixtures[index].item)
+		verifyIntentMaintenanceProgress(t, admin, backend.repository, cfg, storage, fixtures[index].item)
+		t.Logf("intent maintenance fixture %d complete at %s", index, time.Since(started))
+		verifyTrafficMaintenanceCursor(t, backend.repository, cfg, fixtures[index+2], storage)
+		t.Logf("traffic maintenance fixture %d complete at %s", index, time.Since(started))
 	}
 	server.Close()
 	if err := backend.repository.Close(); err != nil {
@@ -558,7 +563,57 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 	}
 }
 
-func verifyIntentMaintenanceProgress(t *testing.T, repository *postgres.Repository, cfg artifact.Config, storage artifact.Storage, item string) {
+func verifyTrafficMaintenanceCursor(t *testing.T, repository *postgres.Repository, cfg artifact.Config, other scopedFixture, storage artifact.Storage) {
+	t.Helper()
+	org := tracker.OrganizationID(cfg.OrganizationID)
+	otherProject := tracker.ProjectID(other.config.ProjectID)
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.BindArtifactService(t.Context(), otherProject, artifact.Binding{ServiceID: cfg.ServiceID, Origin: "https://example.invalid", Mode: "customer", PublisherTokenID: other.credential})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Truncate(time.Minute).Add(-40 * 24 * time.Hour)
+	orphanMinute := base.Add(33 * time.Minute)
+	if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+		for index := range 34 {
+			project := otherProject
+			if index == 33 {
+				project = tracker.ProjectID(cfg.ProjectID)
+			}
+			if err := w.RecordCatalogTrafficNow(t.Context(), postgres.CatalogTrafficReport{OrganizationID: org, ProjectID: project, ServiceID: cfg.ServiceID, ID: fmt.Sprintf("cursor-%d", index), Requests: 1}, base.Add(time.Duration(index)*time.Minute)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := artifact.NewService(t.Context(), cfg, storage, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, want := range []int64{1, 0} {
+		if err := service.Maintain(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadArtifactCatalog(t.Context(), org, corestore.Serving, func(r postgres.ArtifactCatalogReader) error {
+			usage, err := r.CatalogServiceTraffic(t.Context(), postgres.CatalogServiceTrafficInput{OrganizationID: org, ServiceID: cfg.ServiceID, Minute: orphanMinute, Minute_2: orphanMinute.Add(time.Minute)})
+			if err == nil && usage.Requests != want {
+				t.Fatalf("authenticated maintenance did not advance beyond a protected summary page: requests=%d want=%d", usage.Requests, want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func verifyIntentMaintenanceProgress(t *testing.T, admin *sql.DB, repository *postgres.Repository, cfg artifact.Config, storage artifact.Storage, item string) {
 	t.Helper()
 	service, err := artifact.NewService(t.Context(), cfg, storage, nil)
 	if err != nil {
@@ -572,29 +627,23 @@ func verifyIntentMaintenanceProgress(t *testing.T, repository *postgres.Reposito
 			t.Fatal(err)
 		}
 		uploads = append(uploads, upload)
-		receipts := []string{}
-		err = repository.WriteArtifactCatalog(t.Context(), tracker.OrganizationID(cfg.OrganizationID), corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
-			scope := postgres.CatalogScope{OrganizationID: tracker.OrganizationID(cfg.OrganizationID), ProjectID: tracker.ProjectID(cfg.ProjectID), ServiceID: cfg.ServiceID, UploadID: upload.ArtifactID}
-			for range count {
-				intent, err := w.PrepareCatalogManifestIntent(t.Context(), postgres.CatalogManifestIntent{OrganizationID: scope.OrganizationID, ProjectID: scope.ProjectID, ServiceID: scope.ServiceID, UploadID: scope.UploadID, ID: artifact.NewID("intent"), Revision: 1, BodyObjectKey: "proposed", Sha256: artifact.Digest([]byte("manifest")), BodyBytes: 100, ManifestState: "complete"}, time.Now().UTC())
-				if err != nil {
-					return err
-				}
-				transition := postgres.CatalogIntentTransition{CatalogScope: scope, ID: intent.ID, State: "discarding"}
-				if _, err := w.TransitionCatalogManifestIntent(t.Context(), transition); err != nil {
-					return err
-				}
-				transition.State = "discarded"
-				transition.ReceiptObjectKey = fmt.Sprintf("%s/%s/%s/%s/discarded/%s", cfg.OrganizationID, cfg.ProjectID, cfg.ServiceID, upload.ArtifactID, intent.ID)
-				receipts = append(receipts, transition.ReceiptObjectKey)
-				if _, err := w.TransitionCatalogManifestIntent(t.Context(), transition); err != nil {
-					return err
-				}
-			}
-			_, err := w.BeginCatalogDeletion(t.Context(), scope)
+		ids := make([]string, count)
+		receipts := make([]string, count)
+		prefix := fmt.Sprintf("%s/%s/%s/%s/", cfg.OrganizationID, cfg.ProjectID, cfg.ServiceID, upload.ArtifactID)
+		for index := range ids {
+			ids[index] = artifact.NewID("intent")
+			receipts[index] = prefix + "discarded/" + ids[index]
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_catalog_manifest_intents
+(organization_id,project_id,service_id,upload_id,id,revision,body_object_key,sha256,body_bytes,manifest_state,state,receipt_object_key,created_at,write_state)
+SELECT $1,$2,$3,$4,candidate,1,$6||'manifests/1/'||$7||'/'||candidate,$7,100,'complete','discarded',$6||'discarded/'||candidate,$8,'rejected'
+FROM unnest($5::text[]) AS candidate`, cfg.OrganizationID, cfg.ProjectID, cfg.ServiceID, upload.ArtifactID, ids, prefix, artifact.Digest([]byte("manifest")), time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteArtifactCatalog(t.Context(), tracker.OrganizationID(cfg.OrganizationID), corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+			_, err := w.BeginCatalogDeletion(t.Context(), postgres.CatalogScope{OrganizationID: tracker.OrganizationID(cfg.OrganizationID), ProjectID: tracker.ProjectID(cfg.ProjectID), ServiceID: cfg.ServiceID, UploadID: upload.ArtifactID})
 			return err
-		})
-		if err != nil {
+		}); err != nil {
 			t.Fatal(err)
 		}
 		for _, key := range receipts {
