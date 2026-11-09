@@ -608,7 +608,7 @@ func (s *Service) readSpritePoolRecord(ctx context.Context, scope nativeScope) (
 		if err != nil {
 			return view, err
 		}
-		view.Members[i].BootstrapLog = log
+		view.Members[i].BootstrapLog += log
 	}
 	return view, nil
 }

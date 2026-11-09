@@ -134,7 +134,6 @@ func projectSpritePostgresWithAdmin(t *testing.T, maxConnections int, configure 
 	return repository, admin
 }
 
-
 func TestSpritePoolPostgresSettingsAndAuthority(t *testing.T) {
 	var poolConfig *pgxpool.Config
 	repository, _ := projectSpritePostgresWithAdmin(t, 3, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
@@ -195,6 +194,20 @@ func TestSpritePoolPostgresSettingsAndAuthority(t *testing.T) {
 				}
 			})
 		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, project := range []tracker.ProjectID{"first", "second"} {
+				id := "historical_" + string(org) + "_" + string(project)
+				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: id, TokenHash: apikey.HashToken(id), Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: now.Add(runnerauth.MaxEnrollmentTTL), CreatedBy: principal}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: org, Name: "historical-" + string(project), ProviderOrganization: "example", EnrollmentID: id, State: "deleted", AllocationProjectID: project, BootstrapLog: "Recovered bootstrap for " + string(org) + ":" + string(project) + "\n", CreatedAt: now, IdleSince: now}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 		var revokeErr error
 		details.afterStore = func(attachment.ArchiveReference) {
 			details.afterStore = nil
@@ -231,6 +244,32 @@ func TestSpritePoolPostgresSettingsAndAuthority(t *testing.T) {
 	})
 	for org, service := range services {
 		service.config.TenantRepository, service.config.AccessRepository = reopened, reopened
+		principal := "recovery_" + string(org)
+		if err := reopened.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: principal, Hash: principal, Name: "Recovery reader", Scope: "admin", Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		view, err := service.readSpritePool(t.Context(), nativeScope{organization: org, credential: apiCredential{ID: principal, Hash: principal, Scope: apiScopeAdmin}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(view.Members) != 2 {
+			t.Fatalf("recovered historical members=%d want 2", len(view.Members))
+		}
+		for _, member := range view.Members {
+			if want := "Recovered bootstrap for " + string(org) + ":" + string(member.AllocationProjectID) + "\n"; member.BootstrapLog != want {
+				t.Fatalf("recovered bootstrap log=%q want=%q", member.BootstrapLog, want)
+			}
+		}
+		foreignOrganization := tracker.OrganizationID("org_first")
+		if org == foreignOrganization {
+			foreignOrganization = "org_second"
+		}
+		foreign, err := service.readSpritePool(t.Context(), nativeScope{organization: foreignOrganization, credential: apiCredential{ID: principal, Hash: principal, Scope: apiScopeAdmin}})
+		if err == nil || len(foreign.Members) != 0 {
+			t.Fatalf("foreign bootstrap history read returned %d members, error=%v", len(foreign.Members), err)
+		}
 		if err := reopened.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
 			row, err := r.SpritePool(t.Context())
 			if err != nil {
