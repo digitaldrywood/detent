@@ -125,9 +125,13 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 		},
 	})
 	fixture.nativeFixture = f
-	service := f.service
-	policy := hubTestPolicy()
-	approveHubTestPolicy(t, service, fixture.base+"/policy", policy)
+	approveHubTestPolicy(t, f.service, fixture.base+"/policy", hubTestPolicy())
+	return startRelayFixture(t, fixture)
+}
+
+func startRelayFixture(t *testing.T, fixture *relayFixture) *relayFixture {
+	t.Helper()
+	service := fixture.service
 	fixture.server = httptest.NewServer(service.echo)
 	t.Cleanup(fixture.server.Close)
 
@@ -136,13 +140,13 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 	fixture.runner.enroll(t)
 	fixture.reportCapabilities(t, fixture.capabilities())
 
-	issue := fixture.create(t, "subject")
+	issue := fixture.create(t, "Workspace subject "+fixture.runner.binding.RunnerID)
 	requires := []string{workspacesession.CapabilityFiles}
 	if fixture.git {
 		requires = append(requires, workspacesession.CapabilityGit)
 	}
 	fixture.workspace = fixture.open(t, map[string]any{
-		"idempotency_key": "ws-1", "work_item_id": string(issue.WorkItemID), "requires": requires,
+		"idempotency_key": "ws-" + string(issue.WorkItemID), "work_item_id": string(issue.WorkItemID), "requires": requires,
 	})
 	fixture.item = fixture.dispatchItem(t)
 	fixture.lease = fixture.claim(t)
@@ -252,7 +256,7 @@ func (f *relayFixture) claim(t *testing.T) tracker.NativeLease {
 	// workspace session runs no model.
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential,
 		tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: tracker.NativeWorkItemID(f.item),
-			MachineID: f.runner.binding.MachineID, SessionID: "relay-session", TTLSeconds: 90, ProtocolMajor: 2,
+			MachineID: f.runner.binding.MachineID, SessionID: "relay-" + f.workspace, TTLSeconds: 90, ProtocolMajor: 2,
 			Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease

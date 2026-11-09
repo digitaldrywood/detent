@@ -366,9 +366,17 @@ func reopenWorkspaceHub(t *testing.T, service *Service) *Service {
 	t.Helper()
 	admin := workspaceTestDB(t, service)
 	config := service.config
-	organization := service.localOrganization
+	organization := tracker.OrganizationID(service.localOrganization)
 	workspace := service.workspaces.config
 	config.Workspace = &workspace
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return openWorkspaceTenantHub(t, config, admin, organization)
+}
+
+func openWorkspaceTenantHub(t *testing.T, config Config, admin *sql.DB, organization tracker.OrganizationID) *Service {
+	t.Helper()
 	cfg := *config.Postgres
 	cfg.LeaseClock = config.now
 	config.Postgres = &cfg
@@ -378,9 +386,9 @@ func reopenWorkspaceHub(t *testing.T, service *Service) *Service {
 	if config.Hosted == nil {
 		config.Hosted = startupConfig(startupConnection(t, admin, "detent_runtime_v2", "")).Hosted
 	}
-	if err := service.Close(); err != nil {
-		t.Fatal(err)
-	}
+	hosted := *config.Hosted
+	hosted.OrganizationID = string(organization)
+	config.Hosted = &hosted
 	repository, err := postgres.Open(t.Context(), cfg, postgres.RoleMigrations(os.DirFS("postgres/migrations")))
 	if err != nil {
 		t.Fatal(err)
@@ -388,12 +396,12 @@ func reopenWorkspaceHub(t *testing.T, service *Service) *Service {
 	t.Cleanup(func() { _ = repository.Close() })
 	projectRecordDatabases.Store(repository, admin)
 	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
-	reopened := openLocalPostgresHubTestService(t, repository, config)
-	reopened.database.hostedOrganization = tracker.OrganizationID(organization)
-	reopened.localOrganization = organization
-	reopened.requestMetrics.organization = tracker.OrganizationID(organization)
-	reopened.registerConversationRoutes(reopened.echo)
-	return reopened
+	service := openLocalPostgresHubTestService(t, repository, config)
+	service.database.hostedOrganization = organization
+	service.localOrganization = string(organization)
+	service.requestMetrics.organization = organization
+	service.registerConversationRoutes(service.echo)
+	return service
 }
 
 func seedWorkspaceMember(t *testing.T, f *relayFixture, principal, subject, email, role string, grant, write, runners bool) {
