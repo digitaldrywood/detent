@@ -2070,6 +2070,66 @@ func TestProjectSpriteConcurrentReservations(t *testing.T) {
 	}
 }
 
+func TestSpritePoolProvisionRetryDoesNotDelayOtherProjects(t *testing.T) {
+	f, scope, provider := newSpritePoolFixture(t, "billing")
+	hosted := f.service.config.Hosted
+	f.service.config.Hosted = nil
+	later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
+	f.service.config.Hosted = hosted
+	now := f.service.config.now()
+	f.service.config.now = func() time.Time { return now }
+	setSpriteAllocationFixture(t, f, 1, 0)
+	if err := f.service.scaleSpritePool(t.Context(), scope, true); err == nil {
+		t.Fatal("provider rejection was not returned")
+	}
+	if len(provider.created) != 1 {
+		t.Fatalf("initial provider calls=%d", len(provider.created))
+	}
+	var rejected postgres.SpriteOperation
+	if err := f.service.database.postgres.ReadSprite(t.Context(), scope.organization, corestore.Serving, func(r postgres.SpriteReader) error {
+		member, err := r.SpriteMember(t.Context(), provider.created[0])
+		if err != nil {
+			return err
+		}
+		rejected, err = r.SpriteOperation(t.Context(), "provision:"+member.EnrollmentID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rejected.Outcome != "rejected" || rejected.Attempts != 2 || !rejected.NextAttemptAt.After(now) {
+		t.Fatalf("missing persisted retry: %+v", rejected)
+	}
+	provider.fail = ""
+	now = now.Add(100 * time.Millisecond)
+	setSpriteAllocationFixture(t, later, 1, 0)
+	for range 2 {
+		if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	laterScope := scope
+	laterScope.project = later.project.ID
+	first, err := f.service.projectSpriteAllocation(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.service.projectSpriteAllocation(t.Context(), laterScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AllocatedCount != 0 || first.ProvisionFailures != 1 || second.AllocatedCount != 1 || len(provider.created) != 2 || len(provider.runners) != 1 {
+		t.Fatalf("retry blocked independent project: first=%+v second=%+v creates=%d enrollments=%d", first, second, len(provider.created), len(provider.runners))
+	}
+	now = rejected.NextAttemptAt
+	if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
+		t.Fatal(err)
+	}
+	first, err = f.service.projectSpriteAllocation(t.Context(), scope)
+	if err != nil || first.AllocatedCount != 1 || len(provider.created) != 3 || len(provider.runners) != 2 {
+		t.Fatalf("due retry did not resume: first=%+v creates=%d enrollments=%d error=%v", first, len(provider.created), len(provider.runners), err)
+	}
+}
+
 func TestSpritePoolFulfilledAllocationsDoNotHidePendingRequest(t *testing.T) {
 	f, scope, provider := newSpritePoolFixture(t, "")
 	now := f.service.config.now()

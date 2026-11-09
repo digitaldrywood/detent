@@ -319,6 +319,34 @@ func (s *Service) createPoolSpriteRecord(ctx context.Context, scope nativeScope,
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
+		secret, err := w.AccessSecret(ctx, secretScope.project, flySpritesToken)
+		if err != nil {
+			return err
+		}
+		if secret.OrganizationSlug != provider {
+			return corestore.ErrRevisionConflict
+		}
+		provisionAttempt := func(project tracker.ProjectID, revision int64) (string, int64, bool, error) {
+			source, err := nativeCommandHash(struct {
+				Pool            int64
+				Allocation      int64
+				SecretUpdatedAt time.Time
+				Version         string
+			}{pool.Revision, revision, secret.UpdatedAt, version})
+			if err != nil {
+				return "", 0, false, err
+			}
+			previous, err := owner.SpriteProvisionSourceFailure(ctx, project, source)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return source, 0, true, nil
+			}
+			if err != nil {
+				return "", 0, false, err
+			}
+			return source, previous.Attempts, !previous.NextAttemptAt.After(now), nil
+		}
+		var source string
+		var attempts int64
 		allocations, err := owner.SpriteProvisionQueue(ctx, postgres.SpriteAllocationCursor{}, 100)
 		if err != nil {
 			return err
@@ -354,9 +382,17 @@ func (s *Service) createPoolSpriteRecord(ctx context.Context, scope nativeScope,
 			if !decision.Allowed {
 				continue
 			}
+			candidateSource, candidateAttempts, due, err := provisionAttempt(allocation.ProjectID, allocation.Revision)
+			if err != nil {
+				return err
+			}
+			if !due {
+				continue
+			}
 			scope.project = allocation.ProjectID
 			floor = int(allocation.DesiredCount)
 			revision = allocation.Revision
+			source, attempts = candidateSource, candidateAttempts
 			break
 		}
 		if scope.project == "" && !allowOrganization {
@@ -385,31 +421,12 @@ func (s *Service) createPoolSpriteRecord(ctx context.Context, scope nativeScope,
 		if decideSpriteScale(input).Create == 0 {
 			return nil
 		}
-		secret, err := w.AccessSecret(ctx, secretScope.project, flySpritesToken)
-		if err != nil {
-			return err
-		}
-		if secret.OrganizationSlug != provider {
-			return corestore.ErrRevisionConflict
-		}
-		source, err := nativeCommandHash(struct {
-			Pool            int64
-			Allocation      int64
-			SecretUpdatedAt time.Time
-			Version         string
-		}{pool.Revision, revision, secret.UpdatedAt, version})
-		if err != nil {
-			return err
-		}
-		attempts := int64(0)
-		previous, err := owner.SpriteProvisionSourceFailure(ctx, scope.project, source)
-		if err == nil {
-			if previous.NextAttemptAt.After(now) {
-				return nil
+		if source == "" {
+			var due bool
+			source, attempts, due, err = provisionAttempt(scope.project, revision)
+			if err != nil || !due {
+				return err
 			}
-			attempts = previous.Attempts
-		} else if !errors.Is(err, corestore.ErrNotFound) {
-			return err
 		}
 		enrollment := runnerstore.Enrollment{OrganizationID: scope.organization, ID: enrollmentID, TokenHash: apikey.HashToken(token), Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, CreatedAt: now, ExpiresAt: now.Add(runnerauth.MaxEnrollmentTTL), CreatedBy: scope.credential.ID}
 		if scope.project != "" {
