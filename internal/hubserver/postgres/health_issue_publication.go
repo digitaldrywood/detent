@@ -146,3 +146,18 @@ func (s *session) HealthIssueAutoCancelledBefore(ctx context.Context, project tr
 	err := s.db.QueryRow(ctx, `SELECT coalesce((SELECT actor_kind='integration' AND actor_principal_id='health_detector' AND from_state='Backlog' AND to_state='Cancelled' AND recorded_at<$4 FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1),false)`, s.organization, project, item, opened).Scan(&result)
 	return result, mapError(ctx, err)
 }
+
+func (s *session) HealthSubjectRepairOwner(ctx context.Context, finding string, project tracker.ProjectID) (tracker.NativeWorkItemID, error) {
+	var item tracker.NativeWorkItemID
+	err := s.db.QueryRow(ctx, `WITH subject AS (
+ SELECT i.id FROM health_findings f JOIN issues i ON i.organization_id=f.organization_id AND i.project_id=$3 AND i.native_id=f.subject_id WHERE f.organization_id=$1 AND f.id=$2 AND f.subject_kind='work_item'
+ ), blockers AS MATERIALIZED (
+ SELECT d.blocker_issue_id AS id FROM issue_dependencies d JOIN subject s ON s.id=d.dependent_issue_id WHERE d.organization_id=$1 AND d.dependent_project_id=$3 ORDER BY d.blocker_project_id,d.blocker_issue_id LIMIT 100
+ ), forward_links AS MATERIALIZED (
+ SELECT r.second_issue_id AS id FROM issue_relationships r JOIN subject s ON s.id=r.first_issue_id WHERE r.organization_id=$1 AND r.first_project_id=$3 AND r.relationship_type='related' ORDER BY r.second_project_id,r.second_issue_id LIMIT 100
+ ), reverse_links AS MATERIALIZED (
+ SELECT r.first_issue_id AS id FROM issue_relationships r JOIN subject s ON s.id=r.second_issue_id WHERE r.organization_id=$1 AND r.second_project_id=$3 AND r.relationship_type='related' ORDER BY r.first_project_id,r.first_issue_id LIMIT 100
+ ), candidates AS (SELECT id FROM blockers UNION SELECT id FROM forward_links UNION SELECT id FROM reverse_links)
+ SELECT i.native_id FROM candidates c JOIN issues i ON i.organization_id=$1 AND i.id=c.id JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name WHERE i.project_id=$3 AND NOT i.archived AND NOT ws.terminal ORDER BY i.number DESC LIMIT 1`, s.organization, finding, project).Scan(&item)
+	return item, mapError(ctx, err)
+}

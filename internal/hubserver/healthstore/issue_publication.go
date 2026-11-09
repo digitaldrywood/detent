@@ -31,6 +31,7 @@ type IssueReport struct {
 }
 
 type IssueReader interface {
+	HealthSubjectRepairOwner(context.Context, string, tracker.ProjectID) (tracker.NativeWorkItemID, error)
 	NextHealthIssueWork(context.Context, time.Time) (IssueWork, error)
 	HealthIssueReports(context.Context, string, tracker.ProjectID, string, int) ([]IssueReport, error)
 	HealthIssueReport(context.Context, string, tracker.ProjectID, string) (IssueReport, error)

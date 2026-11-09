@@ -24,6 +24,7 @@ type healthIssuePublication struct {
 	cutoff   time.Time
 	openedAt time.Time
 	linked   tracker.NativeWorkItemID
+	repair   tracker.NativeWorkItemID
 }
 
 func authorizeHealthPublication(ctx context.Context, reader accessstore.Reader, scope nativeScope, write bool) error {
@@ -79,6 +80,15 @@ func recordHealthPublication(ctx context.Context, writer tenantstore.Writer, sco
 	if !ok {
 		return workItemStorageUnavailable()
 	}
+	if repair := scope.healthPublication.repair; repair != "" {
+		current, err := owner.HealthSubjectRepairOwner(ctx, scope.healthPublication.work.FindingID, scope.project)
+		if errors.Is(err, corestore.ErrNotFound) || err == nil && current != repair {
+			return corestore.ErrSerializationFailure
+		}
+		if err != nil {
+			return err
+		}
+	}
 	row := *scope.healthPublication.report
 	row.WorkItemID = plan.issue.WorkItemID
 	if plan.comment.ID != "" {
@@ -110,6 +120,31 @@ func (s *Service) filterHealthPublicationDuplicates(ctx context.Context, scope n
 		}
 		if !issue.Archived {
 			search.matches = []possibleDuplicate{{WorkItemID: issue.WorkItemID, Number: issue.Number, Title: issue.Title, State: issue.State, revision: issue.Revision, terminal: issue.Terminal}}
+		}
+	}
+	if len(search.matches) == 0 || search.matches[0].terminal {
+		var repair tracker.NativeWorkItemID
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Background, func(r tenantstore.Reader) error {
+			owner, ok := r.(healthstore.IssueReader)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			var err error
+			repair, err = owner.HealthSubjectRepairOwner(ctx, scope.healthPublication.work.FindingID, scope.project)
+			return err
+		})
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err == nil {
+			issue, err := s.readWorkItem(ctx, scope, string(repair))
+			if err != nil {
+				return err
+			}
+			if !issue.Archived && !issue.Terminal {
+				search.matches = []possibleDuplicate{{WorkItemID: issue.WorkItemID, Number: issue.Number, Title: issue.Title, State: issue.State, revision: issue.Revision}}
+				scope.healthPublication.repair = repair
+			}
 		}
 	}
 	retained := search.matches[:0]
