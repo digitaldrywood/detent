@@ -897,7 +897,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 			}
 			if test.failure != "" {
 				provider.fail = ""
-				now := spriteRetryTimeFixture(t, f, scope)
+				now := spriteRetryTimeFixture(t, f, scope, provider)
 				f.service.config.now = func() time.Time { return now }
 				if err := f.service.scaleSpritePool(context.Background(), scope, true); err != nil {
 					t.Fatalf("next native scale-up cannot replace failure: %v", err)
@@ -1633,15 +1633,20 @@ func claimSpriteFixture(t *testing.T, f nativeFixture, runnerID, leaseID string)
 	return lease
 }
 
-func spriteRetryTimeFixture(t *testing.T, f nativeFixture, scope nativeScope) time.Time {
+func spriteRetryTimeFixture(t *testing.T, f nativeFixture, scope nativeScope, provider *spritePoolProvider) time.Time {
 	t.Helper()
-	view, err := f.service.readSpritePool(t.Context(), scope)
-	if err != nil {
-		t.Fatal(err)
+	provider.mu.Lock()
+	created := append([]string(nil), provider.created...)
+	provider.mu.Unlock()
+	if len(created) == 0 {
+		t.Fatal("no provider creation attempt to resume")
 	}
-	last := view.Members[len(view.Members)-1]
 	var next time.Time
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		last, err := r.(postgres.SpriteReader).SpriteMember(t.Context(), created[len(created)-1])
+		if err != nil {
+			return err
+		}
 		for _, phase := range []string{"provision", "bootstrap", "checkpoint"} {
 			operation, err := r.(postgres.SpriteReader).SpriteOperation(t.Context(), phase+":"+last.EnrollmentID)
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -2607,7 +2612,7 @@ func TestProjectSpriteProvisioningRecovery(t *testing.T) {
 			}
 			for attempt := range spriteProvisionAttempts {
 				if attempt > 0 {
-					now = spriteRetryTimeFixture(t, f, scope)
+					now = spriteRetryTimeFixture(t, f, scope, provider)
 				}
 				if err := f.service.scaleSpritePool(t.Context(), scope, false); err == nil {
 					t.Fatal("fixture bootstrap rejection was not reported")
@@ -2627,7 +2632,7 @@ func TestProjectSpriteProvisioningRecovery(t *testing.T) {
 				t.Fatalf("allocation=%+v created=%d deleted=%d err=%v", held, len(provider.created), len(provider.deleted), err)
 			}
 			if test.resume {
-				now = spriteRetryTimeFixture(t, f, scope)
+				now = spriteRetryTimeFixture(t, f, scope, provider)
 			} else {
 				setSpriteAllocationFixture(t, f, 1, held.Revision)
 			}

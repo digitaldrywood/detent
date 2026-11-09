@@ -235,6 +235,44 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 		})
 	}
 }
+func TestSpriteOperationRetrySpreadsEqualLengthIdentities(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name     string
+		attempts int64
+		delay    time.Duration
+	}{
+		{"initial retry", 0, time.Second},
+		{"growing retry", 1, 2 * time.Second},
+		{"capped retry", 8, 256 * time.Second},
+		{"later retry stays capped", 20, 256 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			seen := map[time.Time]bool{}
+			for i := range 32 {
+				op := postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "provision:enrollment-" + strconv.Itoa(1000+i), Attempts: test.attempts}
+				at := spriteOperationRetryAt(op, now)
+				if at.Before(now.Add(test.delay)) || !at.Before(now.Add(test.delay+31*time.Millisecond)) {
+					t.Fatalf("retry delay=%s outside bounded backoff", at.Sub(now))
+				}
+				if again := spriteOperationRetryAt(op, now); !again.Equal(at) {
+					t.Fatal("persisted identity changed its retry schedule")
+				}
+				seen[at] = true
+			}
+			if len(seen) < 10 {
+				t.Fatalf("equal-length operation identities produced only %d retry times", len(seen))
+			}
+			op := postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "provision:enrollment-1000", Attempts: test.attempts}
+			first := spriteOperationRetryAt(op, now)
+			op.OrganizationID = "org_second"
+			if spriteOperationRetryAt(op, now).Equal(first) {
+				t.Fatal("tenant identity did not separate retry schedules")
+			}
+		})
+	}
+}
+
 func TestSpritePoolBootstrapShell(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

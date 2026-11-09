@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -865,7 +866,9 @@ func (s *Service) spriteOperationHTTP(ctx context.Context, op postgres.SpriteOpe
 
 func spriteOperationRetryAt(op postgres.SpriteOperation, now time.Time) time.Time {
 	delay := time.Second * time.Duration(1<<min(op.Attempts, 8))
-	return now.Add(delay + time.Duration(len(op.IdempotencyKey)%31)*time.Millisecond)
+	digest := sha256.Sum256([]byte(string(op.OrganizationID) + "\x00" + op.IdempotencyKey))
+	jitter := time.Duration(binary.BigEndian.Uint64(digest[:8])%31) * time.Millisecond
+	return now.Add(delay + jitter)
 }
 
 func (s *Service) saveSpriteOperation(ctx context.Context, op *postgres.SpriteOperation, outcome string, receipt *string) error {
