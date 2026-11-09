@@ -1954,7 +1954,6 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 		{name: "runner on a ready workspace stays", state: workspacesession.StateReady, runner: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			id := newNativeID("ws")
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), source.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 				_, err := w.(postgres.WorkspaceWriter).CreateWorkspaceSession(t.Context(), postgres.WorkspaceCreate{

@@ -1373,7 +1373,6 @@ func TestWorkspaceTerminalIsolationIsEnforced(t *testing.T) {
 	withTerminal := workspacesession.Capabilities{Files: true, Diff: true, Terminal: true}
 
 	t.Run("the claim gate skips a user-isolation runner", func(t *testing.T) {
-		t.Parallel()
 		f := newWorkspaceRunnerFixtureFor(t, base)
 		f.reportRunner(t, 8, withTerminal, workspacesession.IsolationUser)
 		session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
@@ -1407,7 +1406,6 @@ func TestWorkspaceTerminalIsolationIsEnforced(t *testing.T) {
 			beatIsolation: workspacesession.IsolationUser, wantBind: http.StatusOK, wantBeat: http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			f := newWorkspaceRunnerFixtureFor(t, base)
 			f.reportRunner(t, 8, withTerminal, workspacesession.IsolationContainer)
 			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
@@ -1442,7 +1440,6 @@ func TestWorkspaceUnbindReleasesTheLease(t *testing.T) {
 	base := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50})
 	for _, reason := range []string{workspacesession.ReasonRunnerRestarted, workspacesession.ReasonClosedByActor, ""} {
 		t.Run("reason "+reason, func(t *testing.T) {
-			t.Parallel()
 			f := newWorkspaceRunnerFixtureFor(t, base)
 			f.reportRunner(t, 1, workspaceTestCapabilities, workspacesession.IsolationContainer)
 			bind, lease := f.bound(t)
