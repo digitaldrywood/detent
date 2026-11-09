@@ -43,9 +43,10 @@ const (
 )
 
 const (
-	conversationCommandQueueSize = 64
-	conversationMaxBatchEvents   = 500
-	conversationReportTimeout    = 15 * time.Second
+	conversationCommandQueueSize       = 64
+	conversationMaxBatchEvents         = 500
+	conversationReportTimeout          = 15 * time.Second
+	conversationQuestionReportAttempts = 3
 )
 
 // ConversationIdentity is the owner tuple every worker request carries.
@@ -461,6 +462,9 @@ func (s *conversationSession) Report(ctx context.Context, events []runner.Conver
 				s.held = append(s.held, event)
 				break
 			}
+			if event.Type == runner.ConversationEventQuestionOpened && (len(s.events) >= conversationMaxBatchEvents || conversationQueuedBytes(s.events) >= s.timings.withDefaults().MaxQueuedBytes) {
+				return fmt.Errorf("conversation question publication has no report capacity: %w", ErrUnavailable)
+			}
 			if len(s.events) < conversationMaxBatchEvents && (event.Type == runner.ConversationEventDelta || conversationQueuedBytes(s.events) < s.timings.withDefaults().MaxQueuedBytes) {
 				s.events = append(s.events, event)
 				s.boundQueuedLocked()
@@ -575,13 +579,15 @@ func (s *conversationSession) Close(ctx context.Context, outcome string, runErr 
 			case <-bounded:
 			}
 		}()
+		s.mu.Lock()
+		s.closing = true
+		s.mu.Unlock()
 		s.cancel()
 		close(s.stop)
 		s.loops.Wait()
 		close(s.closed)
 		s.waiters.Wait()
 		s.mu.Lock()
-		s.closing = true
 		s.releaseHeldLocked()
 		s.mu.Unlock()
 		s.drainCommands()
@@ -788,23 +794,29 @@ func (s *conversationSession) reportLoop(ctx context.Context, reportCtx context.
 // item and retrying transient failures. Events of a batch that still fails
 // are dropped: the hub's unknown path covers the uncertainty.
 func (s *conversationSession) flush(ctx context.Context) error {
-	s.mu.Lock()
-	events := coalesceConversationDeltas(s.events)
-	s.events = nil
-	if s.reportRoom != nil {
-		close(s.reportRoom)
-		s.reportRoom = nil
-	}
-	s.mu.Unlock()
-	var errs []error
-	for len(events) > 0 {
-		batch := events[:min(len(events), conversationMaxBatchEvents)]
-		events = events[len(batch):]
-		if err := s.post(ctx, batch); err != nil {
-			errs = append(errs, err)
+	var firstErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(firstErr, err)
+		}
+		s.mu.Lock()
+		events := coalesceConversationDeltas(s.events)
+		if len(events) == 0 {
+			s.mu.Unlock()
+			return firstErr
+		}
+		count := min(len(events), conversationMaxBatchEvents)
+		batch := events[:count]
+		s.events = events[count:]
+		if s.reportRoom != nil {
+			close(s.reportRoom)
+			s.reportRoom = nil
+		}
+		s.mu.Unlock()
+		if err := s.post(ctx, batch); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	return errors.Join(errs...)
 }
 
 // post delivers one batch. A batch the hub refuses for its content is retried
@@ -815,19 +827,20 @@ func (s *conversationSession) flush(ctx context.Context) error {
 // question_opened event is declined to the provider straight away rather
 // than leaving the turn waiting for an answer nobody can give.
 func (s *conversationSession) post(ctx context.Context, batch []runner.ConversationTurnEvent) error {
-	err := s.postBatch(ctx, batch)
+	declined := make(map[conversationQuestionIdentity]struct{})
+	err := s.postBatch(ctx, batch, declined)
 	if err == nil {
 		return nil
 	}
 	if len(batch) < 2 || !conversationBatchRejected(err) {
-		s.declineQuestions(batch, err)
+		s.declineQuestions(batch, err, declined)
 		return err
 	}
 	var errs []error
 	for _, event := range batch {
-		if err := s.postBatch(ctx, []runner.ConversationTurnEvent{event}); err != nil {
+		if err := s.postBatch(ctx, []runner.ConversationTurnEvent{event}, declined); err != nil {
 			s.logger.Warn("conversation turn event dropped", "event_type", event.Type, "event_key", event.Key, "error", err)
-			s.declineQuestions([]runner.ConversationTurnEvent{event}, err)
+			s.declineQuestions([]runner.ConversationTurnEvent{event}, err, declined)
 			errs = append(errs, err)
 		}
 	}
@@ -837,13 +850,23 @@ func (s *conversationSession) post(ctx context.Context, batch []runner.Conversat
 // conversationDeclineCauseBytes bounds the hub error quoted to the provider.
 const conversationDeclineCauseBytes = 500
 
-// declineQuestions answers every question the hub did not record with a
-// reason instead of an answer, through the turn's own control queue so the
-// transport writes it the way it writes a human answer. A session that is
-// closing has no live turn left to answer.
-func (s *conversationSession) declineQuestions(events []runner.ConversationTurnEvent, cause error) {
+type conversationQuestionIdentity struct {
+	requestID string
+	threadID  string
+	turnID    string
+}
+
+func conversationQuestionIdentityFor(event runner.ConversationTurnEvent) conversationQuestionIdentity {
+	return conversationQuestionIdentity{requestID: event.RequestID, threadID: event.ThreadID, turnID: event.TurnID}
+}
+
+func (s *conversationSession) declineQuestions(events []runner.ConversationTurnEvent, cause error, declined map[conversationQuestionIdentity]struct{}) {
 	for _, event := range events {
 		if event.Type != runner.ConversationEventQuestionOpened || event.RequestID == "" {
+			continue
+		}
+		identity := conversationQuestionIdentityFor(event)
+		if _, exists := declined[identity]; exists {
 			continue
 		}
 		reason := "Detent could not show this question to the user (" + conversationTruncateBytes(cause.Error(), conversationDeclineCauseBytes) + "). No answer will come; continue without one."
@@ -871,8 +894,55 @@ func (s *conversationSession) declineQuestions(events []runner.ConversationTurnE
 			}
 		}
 		s.mu.Unlock()
+		if queued {
+			declined[identity] = struct{}{}
+		}
 		s.logger.Warn("conversation question declined to the provider", "request_id", event.RequestID, "queued", queued, "error", cause)
 	}
+}
+
+func (s *conversationSession) declineQueuedQuestions(cause error, inFlight map[conversationQuestionIdentity]struct{}) {
+	s.mu.Lock()
+	var questions []runner.ConversationTurnEvent
+	for _, events := range [][]runner.ConversationTurnEvent{s.events, s.held} {
+		for _, event := range events {
+			if event.Type == runner.ConversationEventQuestionOpened && event.RequestID != "" {
+				questions = append(questions, event)
+			}
+		}
+	}
+	s.mu.Unlock()
+	if len(questions) == 0 {
+		return
+	}
+	declined := make(map[conversationQuestionIdentity]struct{}, len(inFlight)+len(questions))
+	for identity := range inFlight {
+		declined[identity] = struct{}{}
+	}
+	s.declineQuestions(questions, cause, declined)
+	if len(declined) == 0 {
+		return
+	}
+	remove := func(events []runner.ConversationTurnEvent) []runner.ConversationTurnEvent {
+		kept := events[:0]
+		for _, event := range events {
+			if event.Type == runner.ConversationEventQuestionOpened {
+				if _, ok := declined[conversationQuestionIdentityFor(event)]; ok {
+					continue
+				}
+			}
+			kept = append(kept, event)
+		}
+		clear(events[len(kept):])
+		return kept
+	}
+	s.mu.Lock()
+	s.events, s.held = remove(s.events), remove(s.held)
+	if s.reportRoom != nil {
+		close(s.reportRoom)
+		s.reportRoom = nil
+	}
+	s.mu.Unlock()
 }
 
 // conversationTruncateBytes cuts value to at most limit bytes on a rune
@@ -902,7 +972,10 @@ func conversationBatchRejected(err error) bool {
 	return apiErr.Status >= 400 && apiErr.Status < 500
 }
 
-func (s *conversationSession) postBatch(ctx context.Context, batch []runner.ConversationTurnEvent) error {
+func (s *conversationSession) postBatch(ctx context.Context, batch []runner.ConversationTurnEvent, declined map[conversationQuestionIdentity]struct{}) error {
+	if declined == nil {
+		declined = make(map[conversationQuestionIdentity]struct{})
+	}
 	var lastErr error
 	key := conversationBatchKey()
 	for attempt := 0; ; attempt++ {
@@ -921,6 +994,10 @@ func (s *conversationSession) postBatch(ctx context.Context, batch []runner.Conv
 		lastErr = fmt.Errorf("attempt %d: %w", attempt+1, err)
 		if !errors.Is(err, ErrUnavailable) {
 			return fmt.Errorf("report %d conversation turn events: %w", len(batch), lastErr)
+		}
+		if attempt+1 >= conversationQuestionReportAttempts {
+			s.declineQuestions(batch, lastErr, declined)
+			s.declineQueuedQuestions(lastErr, declined)
 		}
 	}
 }

@@ -393,7 +393,12 @@ func TestNativeConversationDeclinesQuestionsTheHubDropped(t *testing.T) {
 			if err != nil {
 				t.Fatalf("bind error = %v", err)
 			}
-			defer func() { _ = session.Close(context.Background(), runner.ConversationOutcomeSucceeded, nil) }()
+			defer func() {
+				hub.mu.Lock()
+				hub.reportFailure = 0
+				hub.mu.Unlock()
+				_ = session.Close(context.Background(), runner.ConversationOutcomeSucceeded, nil)
+			}()
 			hub.mu.Lock()
 			test.script(hub)
 			hub.mu.Unlock()
