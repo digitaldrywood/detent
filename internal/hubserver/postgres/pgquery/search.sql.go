@@ -37,7 +37,7 @@ WITH scoped AS NOT MATERIALIZED (
         AND ($5::text = '' OR d.project_id = $5)
         AND (NOT $6::boolean OR d.project_id = ANY($7::text[]) OR d.scope = 'general')
         AND ($8::text = '' OR d.work_item_id = $8)
-        AND (($9::text = 'thread' AND d.kind = 'thread') OR ($9 = 'work' AND d.kind = 'issue'))
+        AND CASE d.kind WHEN 'issue' THEN 'work' WHEN 'thread' THEN 'thread' END = $9::text
         AND ($10::text = '' OR d.scope = $10)
         AND ($11::text = '' OR d.status = $11)
         AND (d.project_id IS NULL OR COALESCE((SELECT p.deleted_at IS NULL FROM projects p WHERE p.organization_id = d.organization_id AND p.id = d.project_id), false))

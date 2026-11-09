@@ -2,17 +2,20 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/testenv/searchtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -188,6 +191,7 @@ func TestSearchThreadCursorContinuesBeyondCandidateBudget(t *testing.T) {
 		for _, text := range []string{"", "shared"} {
 			t.Run(fmt.Sprintf("indexed=%v/%s", indexed, text), func(t *testing.T) {
 				query := searchstore.Query{Kind: "thread", Text: text, Limit: 200}
+				assertThreadCandidatePointLookups(t, f, org, query, len(documents))
 				count := 0
 				for {
 					page := f.find(t, org, query)
@@ -399,4 +403,53 @@ func copyThreadCursorPostings(ctx context.Context, tx pgx.Tx, organization track
 	}
 	_, err = tx.Exec(ctx, "INSERT INTO search_postings("+columns+") SELECT "+values+" FROM search_postings seed JOIN search_documents d ON d.organization_id=seed.organization_id AND d.kind='thread' AND d.id<>seed.document_id WHERE seed.organization_id=$1 AND seed.document_id=$2", organization, exemplar)
 	return err
+}
+
+func assertThreadCandidatePointLookups(t *testing.T, f searchFixture, org tracker.OrganizationID, query searchstore.Query, population int) {
+	t.Helper()
+	if err := withPlanSeedTransaction(t.Context(), f.admin, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true),set_config('jit','off',true)", org); err != nil {
+			return err
+		}
+		probe := &searchPlanProbe{DBTX: tx}
+		rows, err := pgquery.New(probe).SearchCandidates(t.Context(), pgquery.SearchCandidatesParams{OrganizationID: org, Kind: query.Kind, ProjectID: string(query.ProjectID), ProjectIds: []string{}, Expression: strings.Join(searchstore.Expressions(org, query), " | "), SearchTerms: searchstore.CandidateTerms(org, query), EmptyQuery: strings.TrimSpace(query.Text) == ""})
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			t.Fatal("thread plan returned no candidates")
+		}
+		var raw []byte
+		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+			return err
+		}
+		var plans []struct{ Plan searchPlanNode }
+		if err := json.Unmarshal(raw, &plans); err != nil {
+			return err
+		}
+		if len(plans) != 1 {
+			t.Fatalf("thread plans=%d, want 1", len(plans))
+		}
+		var visits float64
+		var inspect func(searchPlanNode)
+		inspect = func(node searchPlanNode) {
+			if node.Relation == "search_documents" {
+				visits += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+			}
+			for _, child := range node.Plans {
+				inspect(child)
+			}
+		}
+		inspect(plans[0].Plan)
+		t.Logf("thread candidates=%d document_visits=%.0f population=%d", len(rows), visits, population)
+		if visits == 0 || visits > float64(population)*32 {
+			t.Errorf("thread candidate lookups visited %.0f document rows for population %d", visits, population)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

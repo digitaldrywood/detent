@@ -164,7 +164,7 @@ WITH scoped AS NOT MATERIALIZED (
         AND (sqlc.arg(project_id)::text = '' OR d.project_id = sqlc.arg(project_id))
         AND (NOT sqlc.arg(restrict_projects)::boolean OR d.project_id = ANY(sqlc.arg(project_ids)::text[]) OR d.scope = 'general')
         AND (sqlc.arg(work_item_id)::text = '' OR d.work_item_id = sqlc.arg(work_item_id))
-        AND ((sqlc.arg(kind)::text = 'thread' AND d.kind = 'thread') OR (sqlc.arg(kind) = 'work' AND d.kind = 'issue'))
+        AND CASE d.kind WHEN 'issue' THEN 'work' WHEN 'thread' THEN 'thread' END = sqlc.arg(kind)::text
         AND (sqlc.arg(scope)::text = '' OR d.scope = sqlc.arg(scope))
         AND (sqlc.arg(status)::text = '' OR d.status = sqlc.arg(status))
         AND (d.project_id IS NULL OR COALESCE((SELECT p.deleted_at IS NULL FROM projects p WHERE p.organization_id = d.organization_id AND p.id = d.project_id), false))
