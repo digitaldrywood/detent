@@ -106,7 +106,18 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 
 func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 	e.POST("/api/v1/webhooks/github", s.githubWebhook)
+	e.GET("/api/v2/organizations/:organization/secrets/status", s.hostedSecretStatus, s.hostedSecretStatusAuthority)
 	if s.config.Hosted != nil {
+		if s.config.Hosted.SharedEntry == nil {
+			e.GET("/auth/oidc/start", s.startHostedLogin)
+			e.GET("/auth/oidc/callback", s.completeHostedLogin)
+			e.GET("/invite", s.startHostedInvitation)
+			e.POST("/logout", s.logoutHosted)
+			e.POST("/support/start", s.startHostedSupport)
+			e.GET("/support", s.hostedSupportPage)
+			e.POST("/organization/create", s.createHostedOrganization)
+			e.POST("/organization/switch", s.switchHostedOrganization)
+		}
 		if s.config.Hosted.SharedEntry != nil {
 			e.Pre(s.hostedSharedEntry)
 		}

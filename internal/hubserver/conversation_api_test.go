@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,23 +47,28 @@ func newConversationAPIFixture(t *testing.T, cfg *ConversationConfig, clocks ...
 	if cfg.ArchiveContents == nil {
 		cfg.ArchiveContents = &conversationContentFixture{}
 	}
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: cfg}
+	config := Config{Conversation: cfg}
 	if len(clocks) > 0 {
 		config.now = clocks[0]
 	}
 	f := newDefaultNativeFixture(t, config)
 	service := f.service
-	var ownerID string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", "operator-native").Scan(&ownerID); err != nil {
+	service.registerConversationRoutes(service.echo)
+	owner, _, err := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "operator-chat-other", "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var token tokenResponse
-	decodeHubResponse(t, response, &token)
-	response = performHubAPIRequest(t, service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID})
-	requireNativeStatus(t, response, http.StatusNoContent)
-	return conversationAPIFixture{nativeFixture: f, ownerID: ownerID, other: token.Token, otherID: token.ID}
+	token := tokenResponse{ID: newNativeID("credential"), Token: newNativeID("token")}
+	now := service.config.now()
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "Example second operator", Hash: apikey.HashToken(token.Token), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: token.ID, ProjectID: f.project.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return conversationAPIFixture{nativeFixture: f, ownerID: owner.ID, other: token.Token, otherID: token.ID}
 }
 
 type conversationCreateResponse struct {

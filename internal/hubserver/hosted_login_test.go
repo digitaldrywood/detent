@@ -39,7 +39,7 @@ func TestHostedLoginCallbackProtection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, true))
+			s := openHostedPostgresService(t, hostedLoginConfig(t, p, true))
 			transaction, state := hostedLoginStart(t, s, false)
 			query := url.Values{"code": {"callback_code"}, "state": {state}}
 			cookies := []*http.Cookie{transaction}
@@ -49,7 +49,7 @@ func TestHostedLoginCallbackProtection(t *testing.T) {
 			case "missing cookie":
 				cookies = nil
 			case "expired transaction":
-				hostedLoginExec(t, s, "UPDATE hosted_transactions SET expires_at = ?", formatHubTime(time.Now().Add(-time.Hour)))
+				hostedLoginExec(t, s, "UPDATE hosted_transactions SET expires_at = $1", formatHubTime(time.Now().Add(-time.Hour)))
 			case "missing verifier":
 				hostedLoginExec(t, s, "UPDATE hosted_transactions SET verifier = ''")
 			case "provider error callback":
@@ -115,7 +115,7 @@ func TestHostedLoginStaffAndUnallocatedStart(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, tt.allocated))
+			s := openHostedPostgresService(t, hostedLoginConfig(t, p, tt.allocated))
 			recorder := hostedLoginRequest(s, http.MethodGet, "/auth/oidc/start?"+tt.query, "", nil, false)
 			location, err := url.Parse(recorder.Header().Get("Location"))
 			if recorder.Code != http.StatusSeeOther || err != nil {
@@ -151,7 +151,7 @@ func TestHostedLoginSupportBrowserBinding(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, true))
+			s := openHostedPostgresService(t, hostedLoginConfig(t, p, true))
 			staff := hostedLoginIdentity("user_staff", "support@example.test", "")
 			staffToken := hostedLoginSession(t, s, p, staff)
 			start := hostedLoginRequest(s, http.MethodPost, "/support/start", staffToken, nil, true)
@@ -195,7 +195,7 @@ func TestHostedLoginSupportBrowserBinding(t *testing.T) {
 					t.Fatalf("previous browser session remains active: %v", err)
 				}
 				var actor, effective, reason string
-				if err := s.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,reason FROM hosted_audit WHERE event = 'session_started'").Scan(&actor, &effective, &reason); err != nil {
+				if err := hostedPostgresAdmin(t, s).QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,reason FROM hosted_audit WHERE event = 'session_started'").Scan(&actor, &effective, &reason); err != nil {
 					t.Fatal(err)
 				}
 				if actor != staff.Email || effective != p.identity.Subject || reason != "troubleshooting" {
@@ -221,7 +221,7 @@ func TestHostedLoginSupportStartRequiresAuthorizationAndCSRF(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, true))
+			s := openHostedPostgresService(t, hostedLoginConfig(t, p, true))
 			token := hostedLoginSession(t, s, p, hostedLoginIdentity("user_staff", tt.email, ""))
 			form := url.Values{}
 			if tt.csrf {
@@ -268,13 +268,13 @@ func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, true))
+			s := openHostedPostgresService(t, hostedLoginConfig(t, p, true))
 			p.identity = hostedLoginIdentity("user_invited", "invitee@example.test", "")
 			p.newUser = tt.name == "new user sign-up"
 			p.sessions[p.identity.Hosted.SessionID] = *p.identity.Hosted
 			p.memberships = append(p.memberships, hostedLoginMembership(p.identity.Subject, "org_provider_login", "member"))
 			p.invitation = auth.Invitation{ID: "invitation_email", Email: p.identity.Email, OrganizationID: "org_provider_login", State: "pending", ExpiresAt: time.Now().Add(time.Hour)}
-			hostedLoginExec(t, s, "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?)", p.invitation.ID, p.identity.Email, "org_local_login", "member", formatHubTime(time.Now()))
+			hostedLoginExec(t, s, "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,accepted_user_id,expires_at) VALUES ($1,$2,$3,$4,$5,'',$5::timestamptz + interval '1 day')", p.invitation.ID, p.identity.Email, "org_local_login", "member", formatHubTime(time.Now()))
 			switch tt.name {
 			case "wrong recipient login":
 				p.identity.Email = "different@example.test"
@@ -287,7 +287,7 @@ func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 			case "already used invitation":
 				p.invitation.State, p.invitation.AcceptedUserID = "accepted", p.identity.Subject
 			case "reused local invitation":
-				hostedLoginExec(t, s, "UPDATE hosted_invitations SET accepted_user_id = ?", p.identity.Subject)
+				hostedLoginExec(t, s, "UPDATE hosted_invitations SET accepted_user_id = $1", p.identity.Subject)
 			case "membership role mismatch":
 				p.memberships[len(p.memberships)-1].Role.Slug = "admin"
 			case "provider acceptance failure":
@@ -340,7 +340,7 @@ func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 			case "expired during login", "provider rejected expired invitation":
 				p.invitation.ExpiresAt = time.Now().Add(-time.Hour)
 			case "locally revoked during login":
-				hostedLoginExec(t, s, "DELETE FROM hosted_invitations WHERE id=?", p.invitation.ID)
+				hostedLoginExec(t, s, "DELETE FROM hosted_invitations WHERE id=$1", p.invitation.ID)
 			}
 			transaction := hostedLoginCookie(t, entry, hostedTransactionCookie)
 			query := url.Values{"code": {"invitation_callback"}, "state": {authorization.Query().Get("state")}, "invitation_token": {"attacker_token"}}
@@ -355,7 +355,7 @@ func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 				t.Fatal("callback used token outside protected transaction")
 			}
 			var members int
-			if err := s.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members WHERE user_id = ? AND active = 1", p.identity.Subject).Scan(&members); err != nil {
+			if err := hostedPostgresAdmin(t, s).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members WHERE user_id = $1 AND active = true", p.identity.Subject).Scan(&members); err != nil {
 				t.Fatal(err)
 			}
 			if callback.Code != http.StatusSeeOther {
@@ -372,7 +372,7 @@ func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 				t.Fatal("invitation did not establish membership and restart scoped login")
 			}
 			var acceptedUser string
-			if err := s.database.db.QueryRowContext(t.Context(), "SELECT accepted_user_id FROM hosted_invitations WHERE id = ?", p.invitation.ID).Scan(&acceptedUser); err != nil || acceptedUser != p.identity.Subject {
+			if err := hostedPostgresAdmin(t, s).QueryRowContext(t.Context(), "SELECT accepted_user_id FROM hosted_invitations WHERE id = $1", p.invitation.ID).Scan(&acceptedUser); err != nil || acceptedUser != p.identity.Subject {
 				t.Fatalf("accepted recipient = %q, error = %v", acceptedUser, err)
 			}
 			replay := hostedLoginRequest(s, http.MethodGet, "/auth/oidc/callback?"+query.Encode(), "", nil, false, transaction)
@@ -410,7 +410,7 @@ func TestHostedLoginOrganizationCreation(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, false))
+			s := openHostedPostgresService(t, hostedLoginConfig(t, p, false))
 			identity := hostedLoginIdentity("user_customer", "customer@example.test", "")
 			form := url.Values{"name": {"Customer organization"}}
 			switch tt.name {
@@ -434,7 +434,7 @@ func TestHostedLoginOrganizationCreation(t *testing.T) {
 					t.Fatalf("organization binding = %q, error = %v, external = %q, role = %q", providerID, err, p.createdOrganization, p.createdRole)
 				}
 				var role string
-				if err := s.database.db.QueryRowContext(t.Context(), "SELECT role FROM hosted_members WHERE user_id = ?", identity.Subject).Scan(&role); err != nil || role != "owner" {
+				if err := hostedPostgresAdmin(t, s).QueryRowContext(t.Context(), "SELECT role FROM hosted_members WHERE user_id = $1", identity.Subject).Scan(&role); err != nil || role != "owner" {
 					t.Fatalf("local creator role = %q, error = %v", role, err)
 				}
 				_, _ = hostedLoginStart(t, s, false)
@@ -493,13 +493,13 @@ func TestHostedLoginOrganizationSetupRecovery(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			provider := newHostedLoginProvider()
-			service := openTestService(t, hostedLoginConfig(t, provider, false))
+			service := openHostedPostgresService(t, hostedLoginConfig(t, provider, false))
 			identity := hostedLoginIdentity("user_customer", "customer@example.test", "")
 			token := hostedLoginSession(t, service, provider, identity)
 			if tt.membershipFailed {
 				provider.createMembershipErr = auth.ErrHostedIdentity
 			} else {
-				hostedLoginExec(t, service, "CREATE TRIGGER reject_hosted_name BEFORE UPDATE OF name ON organizations BEGIN SELECT RAISE(ABORT, 'fixture'); END")
+				hostedLoginExec(t, service, `CREATE FUNCTION reject_hosted_name() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE TRIGGER reject_hosted_name BEFORE UPDATE OF name ON organizations FOR EACH ROW EXECUTE FUNCTION reject_hosted_name()`)
 			}
 			form := url.Values{"name": {"Recovered organization"}}
 			response := hostedLoginRequest(service, http.MethodPost, "/organization/create", token, form, true)
@@ -511,7 +511,7 @@ func TestHostedLoginOrganizationSetupRecovery(t *testing.T) {
 				t.Fatalf("interrupted provider binding = %q, error = %v", providerID, err)
 			}
 			var members int
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members").Scan(&members); err != nil || members != 0 {
+			if err := hostedPostgresAdmin(t, service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members").Scan(&members); err != nil || members != 0 {
 				t.Fatalf("incomplete local setup persisted members = %d, error = %v", members, err)
 			}
 			page := hostedLoginRequest(service, http.MethodGet, "/organization", token, nil, false)
@@ -520,14 +520,14 @@ func TestHostedLoginOrganizationSetupRecovery(t *testing.T) {
 			}
 			provider.createMembershipErr = nil
 			if !tt.membershipFailed {
-				hostedLoginExec(t, service, "DROP TRIGGER reject_hosted_name")
+				hostedLoginExec(t, service, "DROP TRIGGER reject_hosted_name ON organizations; DROP FUNCTION reject_hosted_name()")
 			}
 			response = hostedLoginRequest(service, http.MethodPost, "/organization/create", token, form, true)
 			if response.Code != http.StatusSeeOther {
 				t.Fatalf("recovered setup status = %d: %s", response.Code, response.Body.String())
 			}
 			var name string
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE id = ?", service.config.Hosted.OrganizationID).Scan(&name); err != nil || name != "Recovered organization" {
+			if err := hostedPostgresAdmin(t, service).QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE organization_id = $1", service.config.Hosted.OrganizationID).Scan(&name); err != nil || name != "Recovered organization" {
 				t.Fatalf("recovered organization name = %q, error = %v", name, err)
 			}
 			page = hostedLoginRequest(service, http.MethodGet, "/organization", token, nil, false)
@@ -555,7 +555,7 @@ func TestHostedLoginBootstrapMembershipLifecycle(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			provider := newHostedLoginProvider()
-			service := openTestService(t, hostedLoginConfig(t, provider, true))
+			service := openHostedPostgresService(t, hostedLoginConfig(t, provider, true))
 			provider.memberships[0].Role.Slug = tt.role
 			if tt.wrongOrg {
 				provider.organization.ID = "org_unrelated"
@@ -572,7 +572,7 @@ func TestHostedLoginBootstrapMembershipLifecycle(t *testing.T) {
 			}
 			if tt.wantStatus == http.StatusSeeOther && !tt.existing {
 				var name string
-				if err := service.database.db.QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE id = ?", service.config.Hosted.OrganizationID).Scan(&name); err != nil || name != provider.organization.Name {
+				if err := hostedPostgresAdmin(t, service).QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE organization_id = $1", service.config.Hosted.OrganizationID).Scan(&name); err != nil || name != provider.organization.Name {
 					t.Fatalf("organization name=%q, error=%v", name, err)
 				}
 			}
@@ -594,7 +594,7 @@ func TestHostedLoginOrganizationSwitching(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, true))
+			s := openHostedPostgresService(t, hostedLoginConfig(t, p, true))
 			identity := p.identity
 			form := url.Values{"organization": {"org_destination"}, "url": {"https://attacker.example.test"}}
 			p.memberships = append(p.memberships, hostedLoginMembership(identity.Subject, "org_provider_destination", "member"))
@@ -633,7 +633,7 @@ func TestHostedLoginLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, true))
+			s := openHostedPostgresService(t, hostedLoginConfig(t, p, true))
 			identity := p.identity
 			if tt.name == "support" {
 				identity.Hosted.SupportActor, identity.Hosted.SupportReason = "support@example.test", "troubleshooting"
@@ -643,7 +643,7 @@ func TestHostedLoginLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 			}
 			token := hostedLoginSession(t, s, p, identity)
 			if tt.name == "expired local session" {
-				hostedLoginExec(t, s, "UPDATE hosted_sessions SET expires_at = ?", formatHubTime(time.Now().Add(-time.Minute)))
+				hostedLoginExec(t, s, "UPDATE hosted_sessions SET expires_at = $1", formatHubTime(time.Now().Add(-time.Minute)))
 				if _, err := s.hostedSessions.Authenticate(t.Context(), token); !errors.Is(err, auth.ErrInvalidSession) {
 					t.Fatalf("expired local session authenticated before logout: %v", err)
 				}
@@ -690,7 +690,7 @@ func TestHostedLoginSessionExpiryAndRevocation(t *testing.T) {
 	for _, mode := range []string{"short expiry", "expired identity", "remote revocation", "remote organization change", "shortened remote expiry"} {
 		t.Run(mode, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, true))
+			s := openHostedPostgresService(t, hostedLoginConfig(t, p, true))
 			identity := p.identity
 			identity.Hosted.ExpiresAt = time.Now().UTC().Add(2 * time.Minute).Truncate(time.Second)
 			if mode == "expired identity" {
@@ -727,7 +727,7 @@ func TestHostedLoginSessionExpiryAndRevocation(t *testing.T) {
 
 func hostedLoginConfig(t *testing.T, provider *hostedLoginProvider, allocated bool) Config {
 	t.Helper()
-	cfg := Config{DatabasePath: hostedTestDatabasePath(t), Hosted: &HostedConfig{
+	cfg := Config{Hosted: &HostedConfig{
 		OrganizationID: "org_local_login", BootstrapSubject: "user_customer", PublicURL: "https://login.example.test", Provider: provider,
 		StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 		Directory: []HostedDestination{{OrganizationID: "org_destination", WorkOSOrganizationID: "org_provider_destination", PublicURL: "https://destination.example.test"}},
@@ -735,7 +735,7 @@ func hostedLoginConfig(t *testing.T, provider *hostedLoginProvider, allocated bo
 	if allocated {
 		cfg.Hosted.WorkOSOrganizationID = "org_provider_login"
 	}
-	return cfg
+	return hostedPostgresConfig(t, cfg)
 }
 
 func hostedLoginStart(t *testing.T, s *Service, staff bool) (*http.Cookie, string) {
@@ -808,7 +808,7 @@ func hostedLoginSession(t *testing.T, s *Service, provider *hostedLoginProvider,
 
 func hostedLoginExec(t *testing.T, s *Service, query string, args ...any) {
 	t.Helper()
-	if _, err := s.database.db.ExecContext(t.Context(), query, args...); err != nil {
+	if _, err := hostedPostgresAdmin(t, s).ExecContext(t.Context(), query, args...); err != nil {
 		t.Fatal(err)
 	}
 }

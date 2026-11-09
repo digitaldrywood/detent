@@ -935,7 +935,7 @@ func TestAppBootstrapPreferenceChoices(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			service := openTestService(t, Config{DatabasePath: t.TempDir() + "/hub.db", Conversation: test.conversation})
+			service := openTestService(t, Config{Conversation: test.conversation})
 			preferences, err := service.appBootstrapPreferences(t.Context(), "org", []appBootstrapProject{})
 			if err != nil {
 				t.Fatal(err)

@@ -6,10 +6,8 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -21,16 +19,27 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const hostedCookie = "detent_hosted_session"
 
 func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecord) error {
-	return s.createAccessWebSession(ctx, record)
+	if s.config.Hosted == nil || record.Identity == nil {
+		return auth.ErrInvalidSession
+	}
+	identity := record.Identity
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		tenant, err := w.AccessTenant(ctx)
+		if err != nil {
+			return err
+		}
+		if identity.OrganizationID != tenant.ProviderID && (s.hostedShared() || identity.OrganizationID != "") {
+			return auth.ErrInvalidSession
+		}
+		return w.CreateAccessSession(ctx, accessstore.Session{OrganizationID: s.accessOrganization(), Hash: record.TokenHash, Email: record.Email, Subject: identity.Subject, ProviderOrganizationID: identity.OrganizationID, SessionID: identity.SessionID, IdentityCreatedAt: identity.CreatedAt, IdentityExpiresAt: identity.ExpiresAt, SupportActor: identity.SupportActor, SupportReason: identity.SupportReason, CreatedAt: record.CreatedAt, ExpiresAt: record.ExpiresAt})
+	})
 }
 
 func (s *Service) storedWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
@@ -309,42 +318,9 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 }
 
 func (s *Service) requireHostedProject(ctx context.Context, query nativeQueryer, scope nativeScope, write bool) error {
-	if s.config.AccessRepository != nil {
-		return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
-	}
-	if s.config.Hosted == nil {
-		return authorizeNativeProject(ctx, query, scope)
-	}
-	if scope.credential.EntryKey != nil {
-		if !scope.credential.EntryKey.Allows(string(scope.project)) {
-			return &apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"}
-		}
-		if scope.credential.EntryKey.Kind == "service" && string(scope.organization) == s.config.Hosted.OrganizationID {
-			return nil
-		}
-	}
-	if scope.credential.Hosted == nil {
-		return nil
-	}
-	if string(scope.organization) != s.config.Hosted.OrganizationID || scope.project == "" {
-		return nativeNotFound()
-	}
-	var count int
-	err := query.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g JOIN hosted_members m ON m.user_id = g.user_id
-WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ? AND g.project_id = ? AND (? = 0 OR g.can_write = 1)`, scope.credential.Hosted.Subject, scope.organization, scope.project, write).Scan(&count)
-	if err != nil {
-		return err
-	}
-	if count != 1 || write && scope.credential.HostedRole == "viewer" {
-		return nativeNotFound()
-	}
-	return nil
+	return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
 }
 
-// hostedMutationIdentity returns the identity and membership a mutation is
-// rechecked against. Behind the shared entry the credential already comes
-// from this request's entry assertion, whose access token the entry verified,
-// so it is used as is; a dedicated tenant asks the provider.
 func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCredential) (auth.HostedIdentity, auth.Membership, error) {
 	if credential.EntryKey != nil {
 		membership := auth.Membership{ID: credential.HostedMembership}
@@ -391,150 +367,7 @@ func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope *
 }
 
 func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope *nativeScope, required apikey.Scope) error {
-	if s.config.AccessRepository != nil {
-		return accessstore.ErrTransactionRequired
-	}
-	if scope.credential.Hosted == nil {
-		return nil
-	}
-	identity, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
-	if err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-			return operatorAuthorizationError(err)
-		}
-		return auth.ErrHostedIdentity
-	}
-	if scope.credential.EntryKey == nil || scope.credential.EntryKey.Kind != "service" {
-		var localRole string
-		if err := queryRowSQL(ctx, tx, "SELECT role FROM hosted_members WHERE user_id=? AND membership_id=? AND active=1", identity.Subject, membership.ID).Scan(&localRole); err != nil || !auth.ValidOrganizationRole(localRole) {
-			return auth.ErrHostedIdentity
-		}
-		scope.credential.HostedRole = lesserHostedRole(scope.credential.HostedRole, lesserHostedRole(localRole, membership.Role.Slug))
-	}
-	if !hostedRoleAllows(scope.credential.HostedRole, required, scope.action) {
-		return operatortool.ErrAccessDenied
-	}
-	if scope.requireHostedAdmin && scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
-		return auth.ErrHostedIdentity
-	}
-	var count int
-	if scope.credential.EntryKey != nil {
-		if scope.requireHostedAdmin {
-			required = apikey.ScopeAdmin
-		}
-		if !hostedKeyAllows(scope.credential.HostedKeyScope, required) || !hostedRoleAllows(scope.credential.HostedRole, required, scope.action) {
-			return auth.ErrHostedIdentity
-		}
-		if scope.credential.EntryKey.Kind == "personal" {
-			var local string
-			err := queryRowSQL(ctx, tx, "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.membership_id=? AND m.active=1 AND t.revoked_at IS NULL", identity.Subject, membership.ID).Scan(&local)
-			if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required, scope.action) {
-				return auth.ErrHostedIdentity
-			}
-		}
-	} else if scope.credential.HostedKeyScope != "" {
-		if scope.requireHostedAdmin {
-			required = apikey.ScopeAdmin
-		}
-		if !hostedKeyAllows(scope.credential.HostedKeyScope, required) {
-			return auth.ErrHostedIdentity
-		}
-		var local, keyScope string
-		var access hostedProjectAccess
-		err = queryRowSQL(ctx, tx, `SELECT m.role,t.operator_key_scope,t.operator_project_access,m.principal_id FROM hosted_members m JOIN api_tokens t ON t.hosted_user_id=m.user_id AND t.hosted_membership_id=m.membership_id JOIN api_tokens p ON p.id=m.principal_id AND p.revoked_at IS NULL
-WHERE t.id=? AND t.token_hash=? AND t.revoked_at IS NULL AND t.native_only=1 AND t.scope IN ('operator','admin') AND t.hosted_organization_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND m.user_id=? AND m.membership_id=? AND m.active=1`, scope.credential.ID, scope.credential.Hash, scope.organization, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&local, &keyScope, &access, &scope.credential.HostedPrincipal)
-		if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required, scope.action) || !hostedKeyAllows(apikey.Scope(keyScope), required) || access != hostedProjectsAll && access != hostedProjectsSelected {
-			return auth.ErrHostedIdentity
-		}
-		scope.credential.HostedProjectAccess = access
-	} else {
-		err = queryRowSQL(ctx, tx, `SELECT count(*) FROM hosted_sessions s, hosted_members m
-WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday(?) AND m.user_id = ? AND m.membership_id = ? AND m.active = 1`, scope.credential.SessionHash, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&count)
-		if err != nil || count != 1 {
-			return auth.ErrHostedIdentity
-		}
-	}
-	if scope.project != "" {
-		if err := s.requireHostedProject(ctx, tx, *scope, required != apikey.ScopeRead); err != nil {
-			return err
-		}
-		condition, args := scope.credential.projectGrantSQL("p.organization_id", "p.id")
-		args = append([]any{scope.organization, scope.project}, args...)
-		if err := queryRowSQL(ctx, tx, "SELECT count(*) FROM projects p WHERE p.organization_id=? AND p.id=? AND ("+condition+")", args...).Scan(&count); err != nil {
-			return err
-		}
-		if count != 1 {
-			return nativeNotFound()
-		}
-		if scope.credential.HostedRole == "reporter" && scope.actionItem != "" {
-			if err := requireReporterItem(ctx, tx, *scope, scope.actionItem); err != nil {
-				return err
-			}
-			switch scope.action {
-			case operatortool.MoveItem:
-				issue, _, err := readNativeIssue(ctx, tx, *scope, scope.actionItem)
-				if err != nil || scope.actionTarget != "Cancelled" || issue.Actor.PrincipalID != scope.actor().PrincipalID {
-					return operatortool.ErrAccessDenied
-				}
-			case operatortool.VerifyFix:
-				issue, _, err := readNativeIssue(ctx, tx, *scope, scope.actionItem)
-				if err != nil || issue.Actor.PrincipalID != scope.actor().PrincipalID {
-					return operatortool.ErrAccessDenied
-				}
-			case operatortool.EditComment:
-				comment, err := readNativeComment(ctx, tx, *scope, scope.actionItem, scope.actionComment)
-				if err != nil || comment.Actor.PrincipalID != scope.actor().PrincipalID {
-					return operatortool.ErrAccessDenied
-				}
-			}
-		}
-		return nil
-	}
-	if scope.credential.ManageRunners {
-		scope.credential.HostedRole = lesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
-		var projects []tracker.ProjectID
-		if scope.managedRunner != "" {
-			runner, err := readRunnerWithClock(ctx, tx, scope.organization, scope.managedRunner, s.config.now)
-			if err != nil {
-				return err
-			}
-			projects = runnerManagementProjects(runner)
-			if scope.managedRunnerScope == "organization" {
-				projects = nil
-			}
-			if projects != nil {
-				for _, project := range scope.managedRunnerProjects {
-					if !slices.Contains(projects, project) {
-						projects = append(projects, project)
-					}
-				}
-			}
-		}
-		if err := s.requireHostedRunnerProjects(ctx, tx, scope.credential, projects); err != nil {
-			return err
-		}
-		if scope.credential.HostedKeyScope != "" {
-			condition, args := scope.credential.projectGrantSQL("p.organization_id", "p.id")
-			raw, err := sqlList(projects)
-			if err != nil {
-				return err
-			}
-			args = append(args, scope.organization, projects == nil, raw)
-			var total, granted int
-			err = queryRowSQL(ctx, tx, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND (? OR p.id IN (SELECT value FROM sql_rows(?)))", args...).Scan(&total, &granted)
-			if err != nil || total == 0 || total != granted {
-				return auth.ErrHostedIdentity
-			}
-		}
-		return nil
-	}
-	if operatortool.IsThreadTool(scope.action) {
-		return nil
-	}
-	if membership.Role.Slug != "owner" && membership.Role.Slug != "admin" {
-		return auth.ErrHostedIdentity
-	}
-	return nil
+	return accessstore.ErrTransactionRequired
 }
 
 func (s *Service) addHostedMember(ctx context.Context, identity auth.Identity, membership auth.Membership) error {
@@ -542,62 +375,15 @@ func (s *Service) addHostedMember(ctx context.Context, identity auth.Identity, m
 }
 
 func (s *Service) storeHostedMember(ctx context.Context, identity auth.Identity, membership auth.Membership, organizationName string) (resultErr error) {
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return s.storeAccessMember(ctx, w, identity, membership) })
-}
-
-func (s *Service) storeHostedMemberTx(ctx context.Context, tx *sql.Tx, identity auth.Identity, membership auth.Membership, organizationName string) error {
-	if !identity.EmailVerified || identity.Subject != membership.UserID || membership.Status != "active" || !auth.ValidOrganizationRole(membership.Role.Slug) {
-		return auth.ErrHostedIdentity
-	}
-	stamp := s.config.now()
-	before, err := s.database.hostedConsumption(ctx, tx, stamp)
-	if err != nil {
-		return err
-	}
-	principal := "hosted_" + apikey.HashToken(identity.Subject)[:32]
-	now := formatHubTime(s.config.now())
-	token, err := s.config.generateToken()
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO api_tokens (id,name,token_hash,token_fingerprint,scope,created_at,updated_at,native_only)
-VALUES (?,?,?,?, 'operator',?,?,1) ON CONFLICT(id) DO NOTHING`, principal, principal, apikey.HashToken(token), tokenFingerprint(apikey.HashToken(token)), now, now)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM token_grants WHERE token_id IN (
-SELECT principal_id FROM hosted_members WHERE user_id = ? AND (membership_id != ? OR active = 0))`, identity.Subject, membership.ID)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM hosted_project_grants WHERE user_id IN (
-SELECT user_id FROM hosted_members WHERE user_id = ? AND (membership_id != ? OR active = 0))`, identity.Subject, membership.ID)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO hosted_members(user_id,email,membership_id,role,active,principal_id,created_at,updated_at)
-VALUES (?,?,?,?,1,?,?,?) ON CONFLICT(user_id) DO UPDATE SET email=excluded.email,membership_id=excluded.membership_id,role=excluded.role,active=1,updated_at=excluded.updated_at`, identity.Subject, strings.ToLower(identity.Email), membership.ID, membership.Role.Slug, principal, now, now)
-	if err != nil {
-		return err
-	}
-	if organizationName != "" {
-		if _, err := tx.ExecContext(ctx, "UPDATE organizations SET name = ? WHERE id = ?", organizationName, s.config.Hosted.OrganizationID); err != nil {
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		if err := s.storeAccessMember(ctx, w, identity, membership); err != nil {
 			return err
 		}
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_member_reservations WHERE email = ?", strings.ToLower(identity.Email)); err != nil {
-		return err
-	}
-	after, err := s.database.hostedConsumption(ctx, tx, stamp)
-	if err != nil {
-		return err
-	}
-	if after["members"] > before["members"] {
-		if err := s.database.checkHostedGrowth(ctx, tx, before, stamp, false); err != nil {
-			return err
+		if organizationName != "" {
+			return w.UpdateAccessOrganizationName(ctx, organizationName)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 type hostedExecer interface {
@@ -609,58 +395,5 @@ func (s *Service) hostedAudit(ctx context.Context, identity *auth.HostedIdentity
 }
 
 func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identity *auth.HostedIdentity, event, route, project string, status int) error {
-	if s.config.AccessRepository != nil {
-		return accessstore.ErrTransactionRequired
-	}
-	if identity == nil {
-		return nil
-	}
-	if audit := entryKeyAuditFrom(ctx); audit != nil && (event == "action" || event == "administration") {
-		if _, transactional := exec.(*sql.Tx); transactional {
-			return s.auditEntryKey(ctx, exec, audit, status)
-		}
-		return nil
-	}
-	if _, ok := mutation.FromContext(ctx); !ok && status < http.StatusBadRequest {
-		switch event {
-		case "billing_viewed", "billing_exported":
-			if identity.SupportActor == "" {
-				return nil
-			}
-		case "action", "administration":
-			method, _, _ := strings.Cut(route, " ")
-			switch method {
-			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-			default:
-				if identity.SupportActor == "" {
-					return nil
-				}
-			}
-		}
-	}
-	actor := identity.Subject
-	if identity.SupportActor != "" {
-		actor = identity.SupportActor
-	}
-	summary := "{}"
-	if m, ok := mutation.FromContext(ctx); ok {
-		if m.ActorKind != "" && m.ActorKind != "human" {
-			actor = m.PrincipalID
-		}
-		m.PrincipalID, m.OrganizationID = actor, s.config.Hosted.OrganizationID
-		m.RetryIdentity, m.InputHash = "", ""
-		raw, err := json.Marshal(struct {
-			mutation.Metadata
-			Outcome string `json:"outcome"`
-		}{m, event})
-		if err != nil {
-			return err
-		}
-		summary = string(raw)
-	}
-	now := s.config.now()
-	account := decodeAccountFields(event)
-	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns,account_kind,account_retry)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(now), summary, now.UnixNano(), account.Kind, account.Retry)
-	return err
+	return accessstore.ErrTransactionRequired
 }

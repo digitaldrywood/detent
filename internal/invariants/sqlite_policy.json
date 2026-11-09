@@ -261,9 +261,6 @@
     "internal/hubserver/api_worker.go": {
       "driver_import": 2
     },
-    "internal/hubserver/app_ui_test.go": {
-      "database_path": 1
-    },
     "internal/hubserver/attempt_diffs_test.go": {
       "database_path": 1
     },
@@ -299,9 +296,6 @@
     "internal/hubserver/changes_test.go": {
       "database_path": 7
     },
-    "internal/hubserver/chat_usage_records_test.go": {
-      "database_path": 1
-    },
     "internal/hubserver/claim_preflight_test.go": {
       "database_path": 1
     },
@@ -321,12 +315,6 @@
     "internal/hubserver/content_settings_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/conversation_api_test.go": {
-      "database_path": 1
-    },
-    "internal/hubserver/conversation_dispatch_tenant_test.go": {
-      "database_path": 1
-    },
     "internal/hubserver/conversation_failure_test.go": {
       "database_path": 2
     },
@@ -334,9 +322,6 @@
       "database_path": 3
     },
     "internal/hubserver/conversation_preferences_test.go": {
-      "database_path": 1
-    },
-    "internal/hubserver/conversation_stream_postgres_test.go": {
       "database_path": 1
     },
     "internal/hubserver/conversation_stream_test.go": {
@@ -404,20 +389,14 @@
       "sql_pragma_table": 2,
       "sql_schema": 1
     },
-    "internal/hubserver/hosted_auth.go": {
-      "sql_julianday": 4
-    },
     "internal/hubserver/hosted_browser_test.go": {
-      "database_path": 2
+      "database_path": 1
     },
     "internal/hubserver/hosted_diagnostics.go": {
       "sql_julianday": 16
     },
     "internal/hubserver/hosted_diagnostics_test.go": {
       "sql_julianday": 2
-    },
-    "internal/hubserver/hosted_login_test.go": {
-      "database_path": 1
     },
     "internal/hubserver/hosted_plans_test.go": {
       "database_path": 4,

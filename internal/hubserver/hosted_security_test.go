@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -215,7 +216,6 @@ type hostedSecurityFixture struct {
 func hostedTestDatabasePath(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "hosted.db")
-	seedHubDatabaseTemplate(t, path)
 	return path
 }
 
@@ -304,10 +304,9 @@ func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSe
 	for _, apply := range configure {
 		apply(&cfg)
 	}
-	seedHostedSecurityDatabaseTemplate(t, cfg)
-	service := openTestService(t, cfg)
+	service := openHostedPostgresService(t, cfg)
 	project := tracker.ProjectID("prj_security")
-	seedNativeFixturePolicy(t, service, "org_security/"+string(project))
+	seedHostedPostgresProject(t, service, project)
 	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
 }
 
@@ -384,16 +383,31 @@ func (f hostedSecurityFixture) grantContext(ctx context.Context, t *testing.T, u
 
 func (f hostedSecurityFixture) seedIssue(t *testing.T, number int) tracker.NativeWorkItemID {
 	t.Helper()
-	var id string
-	now := formatHubTime(time.Now())
-	err := f.service.database.db.QueryRowContext(t.Context(), `
-INSERT INTO issues (organization_id,project_id,number,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,workflow_state_id)
-VALUES ('org_security',?,?,'private-issue-sentinel','private-body-sentinel','','open','1',?,?,?,?,(SELECT id FROM workflow_states WHERE project_id = ? AND source_name = 'Todo'))
-RETURNING native_id`, f.project, number, now, now, now, now, f.project).Scan(&id)
+	organization := f.service.accessOrganization()
+	now := f.service.config.now()
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: f.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: number, Revision: 1}, State: "Todo", Title: "private-issue-sentinel", Body: "private-body-sentinel", CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
+	fields, err := f.service.prepareWorkItemFields(t.Context(), organization, workItemRecordPlan{issue: issue, create: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tracker.NativeWorkItemID(id)
+	raw, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: f.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: 1}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: f.project, NativeID: issue.WorkItemID, Number: int64(number), Revision: 1, Title: issue.Title, BodyObjectKey: &fields.Body, WorkflowStateName: &issue.State, CreatedAt: now, UpdatedAt: now, NativeCreatedAt: now, NativeUpdatedAt: now, LastActivityAt: now}); err != nil {
+			return err
+		}
+		_, err := w.CreateCollaborationVersion(t.Context(), version)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return issue.WorkItemID
 }
 
 func (f hostedSecurityFixture) request(t *testing.T, user hostedSecurityUser, method, path string, body any) *httptest.ResponseRecorder {

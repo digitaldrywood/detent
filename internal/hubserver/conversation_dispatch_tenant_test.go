@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +28,7 @@ func TestPostgresConversationDispatchReachesFencedRunner(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
+		RunDetails: &memoryRunDetails{}, Clock: clock.Now,
 		Conversation: &ConversationConfig{Enabled: true, ArchiveContents: &conversationContentFixture{}}, SecretKeys: secretTestKeys(t, "1", "1"),
 	})
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}

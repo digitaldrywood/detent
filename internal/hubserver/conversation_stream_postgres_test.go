@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,7 +86,6 @@ func TestConversationStreamBoundsEventRevalidation(t *testing.T) {
 func TestConversationPostgresStreamReauthorizesAgainstTenantProject(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
 		Conversation: &ConversationConfig{Enabled: true},
 	})
 	for _, orgID := range []tracker.OrganizationID{"org_stream", "org_stream_other"} {
@@ -124,12 +122,6 @@ func TestConversationPostgresStreamReauthorizesAgainstTenantProject(t *testing.T
 				t.Fatalf("seed PostgreSQL conversation: %v", err)
 			}
 
-			database := service.database
-			db, reader, authReader, claimReader, postgres := database.db, database.reader, database.authReader, database.claimReader, database.postgres
-			database.db, database.reader, database.authReader, database.claimReader, database.postgres = nil, nil, nil, nil, repository
-			t.Cleanup(func() {
-				database.db, database.reader, database.authReader, database.claimReader, database.postgres = db, reader, authReader, claimReader, postgres
-			})
 			server := httptest.NewServer(service.Handler())
 			t.Cleanup(server.Close)
 			ctx, cancel := context.WithCancel(t.Context())

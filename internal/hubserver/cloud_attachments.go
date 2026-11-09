@@ -3,13 +3,11 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -20,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -233,53 +230,7 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.UploadRequest) error {
-	if s.config.TenantRepository != nil {
-		return s.prepareCloudAttachmentTenant(c, input)
-	}
-	ctx := c.Request().Context()
-	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	input.ID = conversation.NewAttachmentID()
-	if input.Validate() != nil || strings.TrimSpace(input.RequestID) == "" || len(input.RequestID) > 128 || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment upload"))
-	}
-	scope := nativeRequestScope(c)
-	scope.action = operatortool.UploadAttachment
-	identity := input.Metadata
-	identity.ID, identity.ProjectID, identity.Uploader = "", "", ""
-	identity.CreatedAt = time.Time{}
-	options, command := attachmentEvidenceCommand(scope, "attachment.prepare", input)
-	var requestIdentity any = identity
-	if input.Evidence != nil {
-		if input.Evidence.IdempotencyKey != input.RequestID {
-			return s.nativeAPIError(c, nativePublicInvalid("Evidence retry identity does not match"))
-		}
-		requestIdentity = struct {
-			Metadata attachment.Metadata
-			Evidence *attachment.EvidenceRequest
-		}{identity, input.Evidence}
-	}
-	result, err := s.executeNativeMutation(ctx, scope, options, command, requestIdentity, func(_ context.Context, _ *sql.Tx, _ nativeScope, _ time.Time) (any, error) {
-		return input.Metadata, nil
-	})
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var prepared attachment.Metadata
-	if json.Unmarshal(result, &prepared) != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment receipt"))
-	}
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
-	var deleted bool
-	if err := s.database.reader.QueryRowContext(readCtx, "SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NOT NULL)", scope.organization, scope.project, prepared.ID).Scan(&deleted); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if deleted {
-		return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "The uploaded attachment was deleted", status: http.StatusConflict, publicMessage: true})
-	}
-	return c.JSONBlob(http.StatusOK, result)
+	return s.prepareCloudAttachmentTenant(c, input)
 }
 
 func (s *Service) recordCloudAttachment(c echo.Context) error {
@@ -287,54 +238,7 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 	if err := c.Bind(&input); err != nil || input.Validate() != nil || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil {
 		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment metadata"))
 	}
-	if s.config.TenantRepository != nil {
-		return s.recordCloudAttachmentTenant(c, input)
-	}
-	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	key := input.RequestID
-	if key == "" {
-		key = input.ID
-	}
-	scope := nativeRequestScope(c)
-	scope.action = operatortool.UploadAttachment
-	input.RequestID = key
-	options, command := attachmentEvidenceCommand(scope, "attachment.record", input)
-	var requestIdentity any = input.Metadata
-	if input.Evidence != nil {
-		if input.Evidence.IdempotencyKey != input.RequestID {
-			return s.nativeAPIError(c, nativePublicInvalid("Evidence retry identity does not match"))
-		}
-		requestIdentity = input
-	}
-	result, err := s.executeNativeMutation(c.Request().Context(), scope, options, command, requestIdentity, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		record := input.Metadata
-		before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes", "usage_windows")
-		if err != nil {
-			return nil, err
-		}
-		record.ProjectID, record.Uploader, record.CreatedAt = string(scope.project), scope.credential.ID, now
-		if scope.credential.HostedRole == "reporter" {
-			record.Uploader = scope.actor().PrincipalID
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, record.ID, scope.organization, scope.project, record.Uploader, record.Name, record.ContentType, record.Size, record.SHA256, record.Width, record.Height, formatHubTime(now)); err != nil {
-			return nil, err
-		}
-		if err := s.database.checkHostedGrowth(ctx, tx, before, now, false, "collaboration_bytes", "usage_windows"); err != nil {
-			return nil, err
-		}
-		if input.Evidence != nil {
-			if err := recordAttachmentEvidence(ctx, tx, scope, *input.Evidence, record, now); err != nil {
-				return nil, err
-			}
-		}
-		return record, nil
-	})
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusCreated, result)
+	return s.recordCloudAttachmentTenant(c, input)
 }
 
 func scanCloudAttachment(row interface{ Scan(...any) error }) (attachment.Metadata, error) {
@@ -372,12 +276,7 @@ func (s *Service) getCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) readCloudAttachment(ctx context.Context, scope nativeScope, id string) (attachment.Metadata, error) {
-	if s.config.TenantRepository != nil {
-		return s.readAttachmentRecordTenant(ctx, scope, id)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	return readCloudAttachment(ctx, s.database.reader, scope, id)
+	return s.readAttachmentRecordTenant(ctx, scope, id)
 }
 
 func readCloudAttachmentMetadata(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (attachment.Metadata, error) {
@@ -477,22 +376,7 @@ func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope native
 	if scope.credential.Scope == apiScopeWorker {
 		return nativeNotFound()
 	}
-	if s.config.TenantRepository != nil {
-		return s.deleteCloudAttachmentTenant(ctx, scope, id)
-	}
-	scope.action = operatortool.DeleteAttachment
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-		return err
-	}
-	if err := s.deleteCloudAttachmentMetadata(ctx, tx, scope, id); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.deleteCloudAttachmentTenant(ctx, scope, id)
 }
 
 func (s *Service) deleteCloudAttachmentMetadata(ctx context.Context, query nativeExecer, scope nativeScope, id string) error {
@@ -525,100 +409,15 @@ func (s *Service) referenceCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string, input attachment.SourceReference) error {
-	if s.config.TenantRepository != nil {
-		return s.referenceCloudAttachmentTenant(ctx, scope, id, input)
-	}
-	scope.action = operatortool.ReferenceAttachment
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-		return err
-	}
-	issue, _, err := readNativeIssue(ctx, tx, scope, input.WorkItemID)
-	if err != nil {
-		return err
-	}
-	if input.CommentID == "" {
-		if err := requireReporterTriage(scope, issue); err != nil {
-			return err
-		}
-	}
-	if _, err := readCloudAttachment(ctx, tx, scope, id); err != nil {
-		return err
-	}
-	if input.CommentID != "" {
-		if _, err := readNativeComment(ctx, tx, scope, input.WorkItemID, input.CommentID); err != nil {
-			return err
-		}
-	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO attachment_references(attachment_id,work_item_id,comment_id) SELECT id,?,? FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND kind='attachment' AND deleted_at IS NULL ON CONFLICT(attachment_id,work_item_id,comment_id) DO UPDATE SET attachment_id=excluded.attachment_id`, input.WorkItemID, input.CommentID, scope.organization, scope.project, id)
-	if err != nil {
-		return err
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count != 1 {
-		return nativeNotFound()
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return nil
+	return s.referenceCloudAttachmentTenant(ctx, scope, id, input)
 }
 
 func (s *Service) expiredCloudAttachments(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		return s.expiredCloudAttachmentsTenant(c)
-	}
-	claims, ok := hostedSharedClaims(c)
-	if !ok || claims.Kind != cloudassert.KindService {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT "+cloudAttachmentColumns+" FROM attachments WHERE kind='attachment' AND deleted_at IS NOT NULL AND object_deleted_at IS NULL ORDER BY created_at,id LIMIT 100")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer rows.Close()
-	items := []attachment.Metadata{}
-	for rows.Next() {
-		item, err := scanCloudAttachment(rows)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, items)
+	return s.expiredCloudAttachmentsTenant(c)
 }
 
 func (s *Service) finishCloudAttachmentDeletion(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		return s.finishCloudAttachmentDeletionTenant(c)
-	}
-	claims, ok := hostedSharedClaims(c)
-	if !ok || claims.Kind != cloudassert.KindService {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	var input struct {
-		ID string `json:"id"`
-	}
-	if err := c.Bind(&input); err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment id"))
-	}
-	_, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE attachments SET object_deleted_at=? WHERE id=? AND deleted_at IS NOT NULL", formatHubTime(s.config.now()), input.ID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.NoContent(http.StatusNoContent)
+	return s.finishCloudAttachmentDeletionTenant(c)
 }
 
 func (s *Service) cloudAttachmentExists(c echo.Context) error {

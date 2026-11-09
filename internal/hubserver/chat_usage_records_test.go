@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 
 func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	for _, name := range []string{"First example", "Second example"} {
 		org, err := service.createNativeOrganizationFor(t.Context(), name)

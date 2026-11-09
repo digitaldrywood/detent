@@ -261,7 +261,7 @@ const browserHostedPreviewLifetime = 20 * time.Minute
 
 func browserHostedSession(t *testing.T, service *Service, identity auth.Identity) (string, auth.Session) {
 	t.Helper()
-	if service.database.postgres == nil || identity.Hosted.OrganizationID == service.config.Hosted.WorkOSOrganizationID {
+	if identity.Hosted.OrganizationID == service.config.Hosted.WorkOSOrganizationID {
 		token, session, err := service.hostedSessions.CreateIdentitySession(t.Context(), identity)
 		if err != nil {
 			t.Fatal(err)
@@ -281,6 +281,66 @@ func browserHostedSession(t *testing.T, service *Service, identity auth.Identity
 		t.Fatal(err)
 	}
 	return token, session
+}
+
+func hostedPostgresConfig(t *testing.T, cfg Config) Config {
+	t.Helper()
+	if cfg.Postgres != nil || cfg.TenantRepository != nil {
+		return cfg
+	}
+	if cfg.SecretKeys == nil {
+		cfg.SecretKeys = secretTestKeys(t, "1", "1")
+	}
+	admin := postgresStartupTemplate.Database(t)
+	cfg.DatabaseBackend = DatabasePostgres
+	cfg.DatabasePath = ""
+	defaults := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	cfg.Postgres = defaults.Postgres
+	if len(cfg.InitialAdminToken) == 0 {
+		cfg.InitialAdminToken = []byte(testHubAdminToken)
+	}
+	normalized := cfg.normalized()
+	now := normalized.now()
+	store, err := openDatabase(t.Context(), normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := store.postgres
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	projectRecordDatabases.Store(cfg.Postgres.Connection.Database, admin)
+	t.Cleanup(func() { projectRecordDatabases.Delete(cfg.Postgres.Connection.Database) })
+	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+	deployment, generation := cfg.Hosted.deployment()
+	cursorKey := []byte(strings.Repeat("k", 32))
+	cursorEnvelope, err := cfg.SecretKeys.Seal(cursorKey, accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: "local-organization", CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.AddAccessOrganizationSlug(t.Context(), "local-organization"); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "test_hub_admin", Name: "Example administrator", Hash: apikey.HashToken(string(cfg.InitialAdminToken)), Scope: "admin", CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "service"}); err != nil {
+			return err
+		}
+		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: cursorKey}); err != nil {
+			return err
+		}
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: cursorEnvelope.Version, RecordedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }
 
 func newBrowserHostedFixture(t *testing.T, allocated bool) *browserHostedFixture {
@@ -305,15 +365,15 @@ func newPostgresBrowserHostedOrganizationFixture(t *testing.T, allocated bool, o
 
 func newPostgresBrowserHostedFixtureServing(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
-	return newBrowserHostedFixtureBackend(t, allocated, organization, listen, true, configure...)
+	return newBrowserHostedFixtureBackend(t, allocated, organization, listen, configure...)
 }
 
 func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
-	return newBrowserHostedFixtureBackend(t, allocated, organization, listen, false, configure...)
+	return newBrowserHostedFixtureBackend(t, allocated, organization, listen, configure...)
 }
 
-func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization string, listen, postgres bool, configure ...func(*Config)) *browserHostedFixture {
+func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
 	server := &httptest.Server{URL: "https://browser.example.test"}
 	base := server.URL
@@ -326,7 +386,7 @@ func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization s
 		members: make(map[string]auth.Membership), sessions: make(map[string]auth.HostedIdentity), invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string), authorizations: make(map[string]string), codes: make(map[string]auth.Identity),
 	}
 	legacyPlans := pilotHostedPlans()
-	cfg := Config{Content: (&changeObjectFixture{}).call, InitialAdminToken: []byte(testHubAdminToken), DatabasePath: filepath.Join(t.TempDir(), "hosted-browser.db"), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &HostedConfig{
+	cfg := Config{Content: (&changeObjectFixture{}).call, InitialAdminToken: []byte(testHubAdminToken), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &HostedConfig{
 		Plans: &legacyPlans, OrganizationID: organization, BootstrapSubject: "user_browser_owner", PublicURL: base, Provider: provider,
 		StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 		Directory: []HostedDestination{{OrganizationID: organization, WorkOSOrganizationID: "org_browser_provider", PublicURL: base}},
@@ -337,31 +397,13 @@ func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization s
 	for _, apply := range configure {
 		apply(&cfg)
 	}
-	var service *Service
-	if postgres {
-		service = openTestService(t, cfg)
-	} else {
-		seedHubDatabaseTemplate(t, cfg.DatabasePath)
-		var err error
-		service, err = Open(t.Context(), cfg)
-		if err != nil {
-			if listen {
-				server.Close()
-			}
-			t.Fatal(err)
-		}
-	}
+	service := openHostedPostgresService(t, cfg)
 	fixture := &browserHostedFixture{service: service, server: server, provider: provider, cookies: make(map[string]*http.Cookie), stop: make(chan struct{})}
 	accounts := make(map[string]auth.Identity)
 	t.Cleanup(func() {
 		if listen {
 			fixture.server.CloseClientConnections()
 			fixture.server.Close()
-		}
-		if !postgres {
-			if err := fixture.service.CloseContext(context.WithoutCancel(t.Context())); err != nil {
-				t.Error(err)
-			}
 		}
 	})
 	for _, account := range []struct {
@@ -377,10 +419,7 @@ func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization s
 		{name: "revoked", user: "user_browser_viewer", email: "viewer@example.test"},
 		{name: "expired", user: "user_browser_viewer", email: "viewer@example.test"},
 	} {
-		organization := ""
-		if postgres {
-			organization = service.config.Hosted.WorkOSOrganizationID
-		}
+		organization := service.config.Hosted.WorkOSOrganizationID
 		if allocated && (account.role != "" || account.support != "" || account.name == "revoked" || account.name == "expired") {
 			organization = provider.organization.ID
 		}
@@ -410,7 +449,7 @@ func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization s
 			}
 		}
 		token, session := browserHostedSession(t, service, identity)
-		if postgres && account.name == "wrong-organization" {
+		if account.name == "wrong-organization" {
 			verified, err := service.hostedSessions.Authenticate(t.Context(), token)
 			if err != nil || verified.Identity == nil || verified.Identity.OrganizationID != organization {
 				t.Fatalf("foreign organization session identity=%+v error=%v", verified.Identity, err)
@@ -492,7 +531,9 @@ func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization s
 		}
 		provider.invitations[invitation.ID] = invitation
 		provider.mu.Unlock()
-		if _, err := service.database.db.ExecContext(r.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?)", invitation.ID, invited.Email, service.config.Hosted.OrganizationID, "member", formatHubTime(time.Now())); err != nil {
+		if err := service.config.TenantRepository.WriteTenant(r.Context(), service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessInvitation(r.Context(), accessstore.Invitation{OrganizationID: service.accessOrganization(), ID: invitation.ID, Email: invited.Email, Role: "member", CreatedAt: service.config.now(), ExpiresAt: invitation.ExpiresAt})
+		}); err != nil {
 			t.Error(err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -571,23 +612,18 @@ func (f *browserHostedFixture) createProject(t *testing.T, name string) string {
 		t.Fatal("project form returned an invalid project location")
 	}
 	seedNativeFixturePolicy(t, f.service, f.service.config.Hosted.OrganizationID+"/"+project)
-	if f.service.database.postgres == nil {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project); err != nil {
-			t.Fatal(err)
-		}
-	} else {
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
-			record, err := w.ProjectRecord(t.Context(), tracker.ProjectID(project))
-			if err != nil {
-				return err
-			}
-			record.Settings.DuplicateChallenge = false
-			_, err = w.UpdateProjectRecord(t.Context(), record)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), tracker.ProjectID(project))
+		if err != nil {
 			return err
-		}); err != nil {
-			t.Fatal(err)
 		}
+		record.Settings.DuplicateChallenge = false
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
+
 	return project
 }
 
@@ -678,10 +714,15 @@ func TestHostedBrowserFirstOrganization(t *testing.T) {
 	response = f.form(t, "owner", "/organization/create", url.Values{"name": {"New browser organization"}})
 	browserHostedStatus(t, response, http.StatusSeeOther)
 	var organization, role string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT provider_id FROM hosted_tenant").Scan(&organization); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT role FROM hosted_members WHERE user_id = 'user_browser_owner'").Scan(&role); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		tenant, err := r.AccessTenant(t.Context())
+		if err != nil {
+			return err
+		}
+		member, err := r.AccessMember(t.Context(), "user_browser_owner")
+		organization, role = tenant.ProviderID, member.Role
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if organization != "org_browser_provider" || role != "owner" || response.Header().Get("Location") != "/auth/oidc/start" {
@@ -909,7 +950,7 @@ func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Han
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if _, err := f.service.database.db.ExecContext(r.Context(), "UPDATE hosted_sessions SET expires_at = ? WHERE token_hash = ?", formatHubTime(time.Now().Add(-time.Second)), apikey.HashToken(cookie.Value)); err != nil {
+			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(r.Context(), "UPDATE hosted_sessions SET expires_at = $1 WHERE token_hash = $2", formatHubTime(time.Now().Add(-time.Second)), apikey.HashToken(cookie.Value)); err != nil {
 				t.Error(err)
 				http.Error(w, "session expiry failed", http.StatusInternalServerError)
 				return

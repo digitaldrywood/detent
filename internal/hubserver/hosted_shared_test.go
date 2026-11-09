@@ -51,23 +51,9 @@ func newHostedSharedFixture(t *testing.T, configure ...func(*Config)) hostedShar
 	for _, apply := range configure {
 		apply(&cfg)
 	}
-	service := openTestService(t, cfg)
-	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
-	raw, err := json.Marshal(states)
-	if err != nil {
-		t.Fatal(err)
-	}
+	service := openHostedPostgresService(t, cfg)
 	project := tracker.ProjectID("prj_security")
-	now := formatHubTime(time.Now())
-	if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) VALUES (?,?,'private-project-sentinel','native',?,?,0)", project, "org_security", string(raw), now); err != nil {
-		t.Fatal(err)
-	}
-	for _, state := range states {
-		if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", project, state.Name, state.Name, state.Terminal, state.Dispatchable, now, now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	seedNativeFixturePolicy(t, service, "org_security/"+string(project))
+	seedHostedPostgresProject(t, service, project)
 	return hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}, key: key}
 }
 
