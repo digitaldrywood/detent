@@ -1,42 +1,19 @@
 package web
 
 import (
-	"path/filepath"
+	"context"
+	"math"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func TestBoardAttemptCostsLoadsMergedIssueHistory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
-	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "costs.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	history := backend.(store.WorkAttemptStore)
-	now := time.Now()
-	pr := int64(3421)
-	for _, project := range []string{"detent", "other"} {
-		for number := 1; number <= 21; number++ {
-			id, err := history.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: project, IssueID: "merged", Identifier: "owner/repo#3409", PRNumber: &pr, WorkerType: "code", WorkerHost: "sprite", AttemptNumber: number, StartedAt: now})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := history.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(time.Second), TerminalState: store.WorkAttemptTerminalSuccess, MetricsJSON: `{"total_tokens":41741,"token_usd":0.2255,"compute_usd":0.00012}`}); err != nil {
-				t.Fatal(err)
-			}
-		}
+	backend := &attemptCostsStore{}
+	for number := 1; number <= 21; number++ {
+		backend.attempts = append(backend.attempts, store.WorkAttempt{ID: int64(number), AttemptNumber: number, MetricsJSON: `{"total_tokens":41741,"token_usd":0.2255,"compute_usd":0.00012}`})
 	}
 	s := &Server{store: backend}
 	for _, tt := range []struct {
@@ -49,10 +26,18 @@ func TestBoardAttemptCostsLoadsMergedIssueHistory(t *testing.T) {
 		{"missing scope", "", "merged", "", 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			backend.queries = nil
 			var data templates.DashboardData
 			s.loadBoardAttemptCosts(t.Context(), &data, tt.project, tt.issue, tt.identifier)
 			if data.AttemptCostsError != "" || len(data.AttemptCosts) != tt.want {
 				t.Fatalf("cost rows = %d / %q, want %d", len(data.AttemptCosts), data.AttemptCostsError, tt.want)
+			}
+			if tt.project == "" {
+				if len(backend.queries) != 0 {
+					t.Fatal("unscoped history request")
+				}
+			} else if len(backend.queries) != 1 || backend.queries[0] != (store.WorkAttemptHistoryQuery{ProjectID: tt.project, IssueID: tt.issue, Identifier: tt.identifier, Limit: math.MaxInt32}) {
+				t.Fatalf("history selectors = %+v", backend.queries)
 			}
 			for _, row := range data.AttemptCosts {
 				if row.TokenUSD != "$0.23" || row.ComputeUSD != "$0.000120" {
@@ -61,4 +46,18 @@ func TestBoardAttemptCostsLoadsMergedIssueHistory(t *testing.T) {
 			}
 		})
 	}
+}
+
+type attemptCostsStore struct {
+	store.Store
+	attempts []store.WorkAttempt
+	queries  []store.WorkAttemptHistoryQuery
+}
+
+func (s *attemptCostsStore) ListRecentTerminalWorkAttempts(ctx context.Context, q store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	s.queries = append(s.queries, q)
+	if q.ProjectID != "detent" || q.IssueID != "merged" && q.Identifier != "owner/repo#3409" {
+		return nil, ctx.Err()
+	}
+	return append([]store.WorkAttempt(nil), s.attempts...), ctx.Err()
 }

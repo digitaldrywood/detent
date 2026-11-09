@@ -145,9 +145,6 @@
       "backend_sqlite": 1,
       "sqlite_open": 1
     },
-    "internal/cli/stop_recorded_run_test.go": {
-      "sqlite_open": 1
-    },
     "internal/cli/update_runtime_test.go": {
       "sqlite_open": 1
     },
@@ -2086,9 +2083,6 @@
     "internal/web/artifacts_test.go": {
       "database_path": 1
     },
-    "internal/web/attempt_costs_test.go": {
-      "sqlite_open": 1
-    },
     "internal/web/change_review_browser_test.go": {
       "database_path": 1
     },
@@ -2103,9 +2097,6 @@
     "internal/web/server_test.go": {
       "backend_sqlite": 1,
       "sqlite_open": 1
-    },
-    "internal/web/staleness_warning_test.go": {
-      "sqlite_open": 2
     },
     "internal/web/workflow_metrics_benchmark_test.go": {
       "backend_sqlite": 1,

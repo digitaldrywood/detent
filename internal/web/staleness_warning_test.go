@@ -1,10 +1,13 @@
 package web_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
-	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,16 +20,8 @@ import (
 )
 
 func TestStalenessWarningAcknowledgementSurvivesNextSSESnapshot(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
-	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = backend.Close() })
+	backend := &stalenessWebStore{}
 	now := time.Date(2026, 8, 20, 16, 0, 0, 0, time.UTC)
 	raw := telemetry.Snapshot{
 		Seq:         1,
@@ -107,16 +102,8 @@ func TestStalenessWarningAcknowledgementSurvivesNextSSESnapshot(t *testing.T) {
 }
 
 func TestBulkStalenessWarningAcknowledgementUsesExplicitTransactionalIDs(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
-	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = backend.Close() })
+	backend := &stalenessWebStore{}
 	now := time.Date(2026, 8, 20, 17, 0, 0, 0, time.UTC)
 	deps := testDeps(t)
 	deps.Store = backend
@@ -161,7 +148,10 @@ func TestBulkStalenessWarningAcknowledgementUsesExplicitTransactionalIDs(t *test
 		t.Fatalf("ListStalenessWarningStates() error = %v", err)
 	}
 	if len(states) != 2 {
-		t.Fatalf("persisted states = %#v, want exactly two explicit acknowledgements", states)
+		t.Fatalf("acknowledged states = %#v, want exactly two explicit acknowledgements", states)
+	}
+	if !reflect.DeepEqual(backend.batches, [][]string{{"warning-1", "warning-2"}, {"warning-1", "warning-2"}}) {
+		t.Fatalf("batch calls = %+v", backend.batches)
 	}
 
 	invalid := performJSON(t, server.Handler(), http.MethodPost, path, `{"warning_ids":["warning-after-render","unknown"]}`, headers)
@@ -180,6 +170,10 @@ func TestBulkStalenessWarningAcknowledgementUsesExplicitTransactionalIDs(t *test
 	if empty.Code != http.StatusBadRequest {
 		t.Fatalf("empty warning ID status = %d, want %d; body = %s", empty.Code, http.StatusBadRequest, empty.Body.String())
 	}
+	if len(backend.batches) != 2 {
+		t.Fatalf("invalid request called batch writer: %+v", backend.batches)
+	}
+
 }
 
 func assertFilteredStalenessSnapshot(t *testing.T, snapshot string) {
@@ -194,4 +188,43 @@ func assertFilteredStalenessSnapshot(t *testing.T, snapshot string) {
 			t.Fatalf("filtered snapshot restored %q:\n%s", forbidden, snapshot)
 		}
 	}
+}
+
+type stalenessWebStore struct {
+	storeProbe
+	mu      sync.Mutex
+	states  []store.StalenessWarningState
+	batches [][]string
+}
+
+func (s *stalenessWebStore) ListStalenessWarningStates(ctx context.Context, project string) ([]store.StalenessWarningState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := []store.StalenessWarningState{}
+	for _, state := range s.states {
+		if state.ProjectID == project {
+			result = append(result, state)
+		}
+	}
+	return result, ctx.Err()
+}
+
+func (s *stalenessWebStore) AcknowledgeStalenessWarnings(ctx context.Context, project string, ids []string, at time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.batches = append(s.batches, slices.Clone(ids))
+	for _, id := range ids {
+		index := slices.IndexFunc(s.states, func(state store.StalenessWarningState) bool {
+			return state.ProjectID == project && state.WarningID == id
+		})
+		if index < 0 {
+			s.states = append(s.states, store.StalenessWarningState{ProjectID: project, WarningID: id, AcknowledgedAt: new(at)})
+		} else {
+			s.states[index].AcknowledgedAt = new(at)
+		}
+	}
+	return nil
 }

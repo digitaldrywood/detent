@@ -121,7 +121,7 @@ func TestChatExplainItemUsesIssueExplanationReadModel(t *testing.T) {
 
 func TestChatMutationRequiresConfirmationAndUsesKanbanHandler(t *testing.T) {
 	t.Parallel()
-	backend := openWebTestStore(t)
+	backend := &workflowPhaseEventStoreProbe{}
 	actionConnector := &kanbanActionConnector{name: "memory"}
 	deps := testDeps(t)
 	deps.Store = backend
@@ -161,17 +161,13 @@ func TestChatMutationRequiresConfirmationAndUsesKanbanHandler(t *testing.T) {
 		t.Fatalf("confirmation response = %s", confirmed.Body.String())
 	}
 
-	activityBackend, ok := backend.(store.ActivityStore)
-	if !ok {
-		t.Fatalf("backend = %T, want store.ActivityStore", backend)
-	}
-	events, err := activityBackend.ListIssueActivity(context.Background(), store.IssueActivityQuery{ProjectID: "detent", IssueID: "issue-1362", Limit: 20})
-	if err != nil {
-		t.Fatalf("ListIssueActivity() error = %v", err)
-	}
+	backend.mu.Lock()
+	events := append([]store.WorkflowPhaseEvent(nil), backend.events...)
+	backend.mu.Unlock()
+
 	found := false
 	for _, event := range events {
-		if event.Kind == string(store.WorkflowPhaseTypeOperatorAction) && event.Name == string(chatpkg.ActionMoveItem) && event.Reason == "chat" {
+		if event.PhaseType == store.WorkflowPhaseTypeOperatorAction && event.PhaseName == string(chatpkg.ActionMoveItem) && event.Reason == "chat" {
 			found = true
 		}
 	}

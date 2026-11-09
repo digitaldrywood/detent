@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,10 +24,6 @@ import (
 )
 
 func TestStopRecordedRunBeforeProjectStartup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name           string
@@ -43,15 +41,9 @@ func TestStopRecordedRunBeforeProjectStartup(t *testing.T) {
 		{name: "stale identity", stale: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "stop.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { backend.Close() })
-			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "project", IssueID: "issue", WorkerType: "agent", StartedAt: time.Now().Add(-22 * time.Hour), DetentSessionID: 91})
-			if err != nil {
-				t.Fatal(err)
-			}
+			backend := &recordedStopStore{attempt: store.WorkAttempt{ID: 1, ProjectID: "project", IssueID: "issue", WorkerType: "agent", AttemptNumber: 1, StartedAt: time.Now().Add(-22 * time.Hour), DetentSessionID: 91, Status: store.WorkAttemptStatusActive, WorkerMetadataJSON: "{}"}}
+			id := backend.attempt.ID
+
 			registry := project.NewRegistry()
 			if tc.pending {
 				cfg := globalconfig.Project{ID: "project"}
@@ -108,6 +100,13 @@ Work`), 0600); err != nil {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+				defer cancel()
+				if err := server.Shutdown(ctx); err != nil {
+					t.Error(err)
+				}
+			})
 			body := fmt.Sprintf(`{"issue_id":"issue","work_attempt_id":%d,"detent_session_id":%d,"confirm":true,"destination":%q}`, id, sessionID, tc.destination)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/project/runs/1/stop", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -154,4 +153,37 @@ Work`), 0600); err != nil {
 			}
 		})
 	}
+}
+
+type recordedStopStore struct {
+	snapshotFixtureStore
+	attempt store.WorkAttempt
+}
+
+func (s *recordedStopStore) WorkAttempt(ctx context.Context, id int64) (store.WorkAttempt, error) {
+	if id != s.attempt.ID {
+		return store.WorkAttempt{}, store.ErrNotFound
+	}
+	return s.attempt, ctx.Err()
+}
+
+func (s *recordedStopStore) CompleteWorkAttempt(ctx context.Context, completion store.WorkAttemptCompletion) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if completion.AttemptID != s.attempt.ID {
+		return store.ErrNotFound
+	}
+	s.attempt.TerminalState = completion.TerminalState
+	s.attempt.CompletedAt = completion.CompletedAt
+	s.attempt.Status = store.WorkAttemptStatusTerminal
+	return nil
+}
+
+func (*recordedStopStore) ListActiveWorkerProcesses(ctx context.Context) ([]store.WorkerProcess, error) {
+	return nil, ctx.Err()
+}
+
+func (*recordedStopStore) MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error {
+	return errors.New("unexpected process reap")
 }
