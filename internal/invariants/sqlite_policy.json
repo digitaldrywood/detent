@@ -367,9 +367,6 @@
     "internal/hubserver/health_detector.go": {
       "sql_julianday": 2
     },
-    "internal/hubserver/health_issues.go": {
-      "sql_julianday": 6
-    },
     "internal/hubserver/health_rate_snapshot.go": {
       "sql_julianday": 18
     },
