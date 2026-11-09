@@ -80,6 +80,9 @@ func (s *session) DeleteProject(ctx context.Context, id tracker.ProjectID) error
 	if active.Bool {
 		return projectstore.ErrActiveWork
 	}
+	if err := s.pruneProjectArtifactBindings(ctx, id); err != nil {
+		return err
+	}
 
 	actions, err := s.ProjectActions(ctx, id)
 	if err != nil {

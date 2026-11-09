@@ -43,7 +43,9 @@ OR EXISTS(SELECT 1 FROM project_sprite_allocations a WHERE a.organization_id=sql
 OR EXISTS(SELECT 1 FROM onboarding_issue_intake b WHERE b.organization_id=sqlc.arg(organization_id) AND b.project_id=sqlc.arg(project_id) AND b.hub_owned AND b.batch_status IN ('discovering','importing'))
 OR EXISTS(SELECT 1 FROM artifact_upload_authorizations a WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(project_id) AND a.expires_at>sqlc.arg(now))
 OR EXISTS(SELECT 1 FROM health_finding_projects p JOIN health_slack_deliveries d ON d.organization_id=p.organization_id AND d.finding_id=p.finding_id WHERE p.organization_id=sqlc.arg(organization_id) AND p.project_id=sqlc.arg(project_id) AND d.completed_at IS NULL)
-OR EXISTS(SELECT 1 FROM artifact_catalog_uploads u WHERE u.organization_id=sqlc.arg(organization_id) AND u.project_id=sqlc.arg(project_id) AND u.state IN ('uploading','deletion_pending'));
+OR EXISTS(SELECT 1 FROM artifact_catalog_uploads u WHERE u.organization_id=sqlc.arg(organization_id) AND u.project_id=sqlc.arg(project_id))
+OR EXISTS(SELECT 1 FROM artifact_catalog_traffic t WHERE t.organization_id=sqlc.arg(organization_id) AND t.project_id=sqlc.arg(project_id))
+OR EXISTS(SELECT 1 FROM artifact_catalog_traffic_receipts r WHERE r.organization_id=sqlc.arg(organization_id) AND r.project_id=sqlc.arg(project_id));
 
 -- name: RetireProject :execrows
 UPDATE projects SET deleted_at=$3 WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL;

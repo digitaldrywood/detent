@@ -22,23 +22,28 @@ import (
 )
 
 func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
-	const version = int64(20261106222200)
+	assertConcurrentIndexMigrationRecovery(t, 20261106222200, "attachments_evidence_history_order", "CREATE INDEX attachments_evidence_history_order ON attachments (id)", "CREATE INDEX attachments_evidence_history_order ON public.attachments USING btree (organization_id, project_id, work_item_id, evidence_attempt_id, created_at, id)")
+}
+
+func assertConcurrentIndexMigrationRecovery(t *testing.T, version int64, index, initial, want string) {
+	t.Helper()
+	quotedIndex := `"` + strings.ReplaceAll(index, `"`, `""`) + `"`
 	_, fixture := migrationDatabaseAtVersion(t, version-1)
 	for _, state := range []string{"absent", "valid", "invalid"} {
 		t.Run(state, func(t *testing.T) {
 			db := fixture.Database(t)
 			db.SetMaxOpenConns(1)
 			if state != "absent" {
-				if _, err := db.ExecContext(t.Context(), `CREATE INDEX attachments_evidence_history_order ON attachments (id)`); err != nil {
+				if _, err := db.ExecContext(t.Context(), initial); err != nil {
 					t.Fatal(err)
 				}
 				if state == "invalid" {
-					if _, err := db.ExecContext(t.Context(), `UPDATE pg_index SET indisvalid=false WHERE indexrelid='attachments_evidence_history_order'::regclass`); err != nil {
+					if _, err := db.ExecContext(t.Context(), `UPDATE pg_index SET indisvalid=false WHERE indexrelid=$1::regclass`, index); err != nil {
 						t.Fatal(err)
 					}
 				}
 				var valid bool
-				if err := db.QueryRowContext(t.Context(), `SELECT indisvalid FROM pg_index WHERE indexrelid='attachments_evidence_history_order'::regclass`).Scan(&valid); err != nil || valid != (state == "valid") {
+				if err := db.QueryRowContext(t.Context(), `SELECT indisvalid FROM pg_index WHERE indexrelid=$1::regclass`, index).Scan(&valid); err != nil || valid != (state == "valid") {
 					t.Fatalf("initial index state=%s valid=%t error=%v", state, valid, err)
 				}
 			}
@@ -55,15 +60,14 @@ func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
 				}
 				var valid bool
 				var definition string
-				if err := db.QueryRowContext(t.Context(), `SELECT indisvalid AND indisready,pg_get_indexdef(indexrelid) FROM pg_index WHERE indexrelid='attachments_evidence_history_order'::regclass`).Scan(&valid, &definition); err != nil {
+				if err := db.QueryRowContext(t.Context(), `SELECT indisvalid AND indisready,pg_get_indexdef(indexrelid) FROM pg_index WHERE indexrelid=$1::regclass`, index).Scan(&valid, &definition); err != nil {
 					t.Fatal(err)
 				}
-				const want = "CREATE INDEX attachments_evidence_history_order ON public.attachments USING btree (organization_id, project_id, work_item_id, evidence_attempt_id, created_at, id)"
 				if !valid || definition != want {
 					t.Fatalf("rebuilt index valid=%t definition=%s", valid, definition)
 				}
 				if rollbackState == "already dropped" {
-					if _, err := db.ExecContext(t.Context(), `DROP INDEX CONCURRENTLY attachments_evidence_history_order`); err != nil {
+					if _, err := db.ExecContext(t.Context(), "DROP INDEX CONCURRENTLY "+quotedIndex); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -71,7 +75,7 @@ func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
 					t.Fatalf("resume Down with index %s: %v", rollbackState, err)
 				}
 				var exists bool
-				if err := db.QueryRowContext(t.Context(), `SELECT to_regclass('attachments_evidence_history_order') IS NOT NULL`).Scan(&exists); err != nil || exists {
+				if err := db.QueryRowContext(t.Context(), `SELECT to_regclass($1) IS NOT NULL`, index).Scan(&exists); err != nil || exists {
 					t.Fatalf("rolled back index exists=%t error=%v", exists, err)
 				}
 			}
