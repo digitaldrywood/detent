@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -14,12 +15,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
@@ -31,11 +34,20 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 		{"owner", "owner", "write"}, {"admin", "admin", "write"}, {"member", "member", "write"}, {"viewer", "viewer", "read"},
 	} {
 		t.Run(role.name, func(t *testing.T) {
-			f, _, record := coordinatorReadFixture(t)
+			f, owner, record := coordinatorReadFixture(t)
 			user := f.user(t, "catalog-viewer", role.role, "catalog@example.test", role.grant, "")
 			f.grant(t, user, role.role != "viewer", false)
-			first := string(f.seedIssue(t, 1))
-			second := string(f.seedIssue(t, 2))
+			createItem := func(key string) string {
+				response := createIndependentNativeIssue(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: key, Body: nativeContractTestBody, State: "Todo"}, func(draft tracker.CreateIssue) *httptest.ResponseRecorder {
+					return f.request(t, owner, http.MethodPost, f.base+"/work-items", draft)
+				})
+				requireNativeStatus(t, response, http.StatusOK)
+				var item tracker.NativeIssue
+				decodeHubResponse(t, response, &item)
+				return string(item.WorkItemID)
+			}
+			first := createItem("Catalog first item")
+			second := createItem("Catalog second item")
 			tools, ctx := coordinatorViewerTools(t, f, record, user)
 			want, err := f.service.coordinatorCatalog(ctx)
 			if err != nil {
@@ -98,7 +110,7 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 				t.Fatalf("stale confirmation did not name the conflict: %s", response.Body.String())
 			}
 			propose("1")
-			messages, err := f.service.conversations.store.listMessages(t.Context(), f.service.database.db, record.ID, 0, 100)
+			messages, err := f.service.conversations.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100, Oldest: true})
 			if err != nil {
 				t.Fatal(err)
 			}

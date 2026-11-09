@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -63,7 +64,7 @@ func coordinatorSettingsArguments(t *testing.T, f hostedSecurityFixture, tool, r
 
 func coordinatorSettingsProposal(t *testing.T, f hostedSecurityFixture, conversationID string) chat.Action {
 	t.Helper()
-	messages, err := f.service.conversations.store.listMessages(t.Context(), f.service.database.db, conversationID, 0, 100)
+	messages, err := f.service.conversations.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: conversationID, Limit: 100, Oldest: true})
 	if err != nil {
 		t.Fatal(err)
 	}

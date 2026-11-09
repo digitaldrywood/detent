@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -42,11 +43,19 @@ func coordinatorReadFixture(t *testing.T) (hostedSecurityFixture, hostedSecurity
 		} `json:"conversation"`
 	}
 	decodeHubResponse(t, response, &created)
-	operatorSQL(t, f, "UPDATE conversations SET visibility='shared' WHERE id=?", created.Conversation.ID)
 	c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
-	record, err := c.readConversation(t.Context(), f.service.database.db, created.Conversation.ID)
-	if err != nil {
+	if err := c.write(t.Context(), created.Conversation.ID, func(ctx context.Context, w tenantstore.Writer, record *conversationRecord, now time.Time) error {
+		record.Visibility = conversation.VisibilityShared
+		return c.saveConversation(ctx, w, record, now)
+	}, func(ctx context.Context, p *conversationPublicationPlan) error {
+		p.record.Visibility = conversation.VisibilityShared
+		return p.saveConversation(ctx)
+	}); err != nil {
 		t.Fatal(err)
+	}
+	record, err := c.readConversation(t.Context(), nil, created.Conversation.ID)
+	if err != nil || record.Visibility != conversation.VisibilityShared {
+		t.Fatalf("shared coordinator fixture visibility=%s error=%v", record.Visibility, err)
 	}
 	return f, owner, record
 }
