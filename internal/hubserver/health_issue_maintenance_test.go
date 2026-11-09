@@ -1,0 +1,134 @@
+package hubserver
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestHealthIssueMaintenanceStartsAndBoundsPublication(t *testing.T) {
+	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
+	now := service.config.now().UTC().Truncate(time.Microsecond)
+	fixtures := map[tracker.OrganizationID][]nativeFixture{}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		for _, name := range []string{"First", "Second"} {
+			f := newNativeFixture(t, service, org, name)
+			addHealthBacklog(t, f)
+			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+			runner.enroll(t)
+			observation := tracker.NativeAdmissionObservation{RunnerRevision: 1, ReceivedAt: now, Context: tracker.NativeAdmissionContext{ObservedAt: now, PolicyID: hubTestPolicy().ID, LastRefreshAt: now, RefreshDuration: time.Second}}
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.ReplaceRunnerAdmissionObservation(t.Context(), runner.binding.RunnerID, f.project.ID, observation)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			fixtures[org] = append(fixtures[org], f)
+		}
+		admin := healthFixtureDatabase(t, fixtures[org][0])
+		if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=$1,created_at=$2 WHERE organization_id=$3`, now.Add(-6*time.Minute), now.Add(-time.Hour), org); err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := service.readHealthSnapshotRecords(t.Context(), org, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		findings := evaluateHealth(now, snapshot)
+		if len(findings) != 2 {
+			t.Fatalf("organization=%s findings=%+v", org, findings)
+		}
+		if err := service.publishHealthEvaluation(t.Context(), org, now, findings); err != nil {
+			t.Fatal(err)
+		}
+	}
+	feature := service.HealthIssueMaintenanceFeature()
+	first := hubmaintenance.Tenant{Organization: "org_first", Generation: 1}
+	second := hubmaintenance.Tenant{Organization: "org_first_second", Generation: 1}
+	budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: feature.Bytes}
+	if err := feature.Step(t.Context(), first, budget); err == nil {
+		t.Fatal("maintenance accepted an unallocated context")
+	}
+	if err := feature.Step(budget.Context(t.Context(), first), second, budget); err == nil {
+		t.Fatal("maintenance accepted another tenant allocation")
+	}
+	insufficient := hubmaintenance.Budget{Items: 1, Bytes: feature.Bytes - 1}
+	if err := feature.Step(insufficient.Context(t.Context(), first), first, insufficient); err == nil {
+		t.Fatal("maintenance accepted an insufficient byte allocation")
+	}
+	cfg := service.config
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		cfg.Hosted = &HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}
+		ready := make(chan struct{})
+		ticks := make(chan chan error)
+		cfg.runMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, _ func(error)) error {
+			close(ready)
+			for {
+				select {
+				case result := <-ticks:
+					result <- scheduler.Tick(ctx)
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+		reopened, err := Open(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = reopened.Close() })
+		select {
+		case <-ready:
+		case <-t.Context().Done():
+			t.Fatal(t.Context().Err())
+		}
+		linked := 0
+		for range 32 {
+			result := make(chan error, 1)
+			select {
+			case ticks <- result:
+			case <-t.Context().Done():
+				t.Fatal(t.Context().Err())
+			}
+			select {
+			case err := <-result:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-t.Context().Done():
+				t.Fatal(t.Context().Err())
+			}
+			current := 0
+			for _, f := range fixtures[org] {
+				page, err := reopened.readHealthFindings(t.Context(), nativeScope{organization: org, project: f.project.ID}, "all", "", "", 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Items) != 1 || len(page.Items[0].Issues) > 1 {
+					t.Fatalf("organization=%s project=%s findings=%+v", org, f.project.ID, page)
+				}
+				current += len(page.Items[0].Issues)
+			}
+			if current < linked || current-linked > 1 {
+				t.Fatalf("organization=%s publication step advanced from %d to %d", org, linked, current)
+			}
+			linked = current
+			if linked == len(fixtures[org]) {
+				break
+			}
+		}
+		if linked != 2 {
+			t.Fatalf("organization=%s background publications=%d", org, linked)
+		}
+		if err := reopened.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
