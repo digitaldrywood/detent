@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/store/storetest"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -119,11 +118,9 @@ func (s *maintenanceStore) RecordSchedulerDecisions(ctx context.Context, d []sto
 	return ids, e
 }
 
-// Catch per-card autocommit regression and lost refusals beyond the bounded live
-// snapshot; every exclusion must still have durable per-issue evidence.
 func TestAuthorizationBatchRetainsEveryRefusal(t *testing.T) {
-	backend := storetest.Open(t)
-	evidence := &maintenanceStore{maintenanceBackend: backend.(maintenanceBackend)}
+	backend := &refreshMaintenanceFixture{}
+	evidence := &maintenanceStore{maintenanceBackend: backend}
 	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "latency"}, ActiveStates: []string{"In Progress"}, Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"owned"}}}})
 	state := newState(cfg)
 	var issues []connector.Issue
@@ -136,11 +133,20 @@ func TestAuthorizationBatchRetainsEveryRefusal(t *testing.T) {
 	if len(got.candidates) != 0 || len(got.status) != 0 || len(previous.pipeline) != 0 || evidence.batches != 1 || evidence.writes != 300 {
 		t.Fatalf("authorization batch: candidates=%d status=%d retained=%d batches=%d writes=%d", len(got.candidates), len(got.status), len(previous.pipeline), evidence.batches, evidence.writes)
 	}
-	reader := backend.(store.IssueSchedulerDecisionStore)
+	if len(backend.decisions) != len(issues) {
+		t.Fatalf("recorded refusals=%d, want %d", len(backend.decisions), len(issues))
+	}
+	byIssue := make(map[string][]store.SchedulerDecision)
+	for _, decision := range backend.decisions {
+		if decision.ProjectID != "latency" {
+			t.Fatalf("refusal project=%q, want latency", decision.ProjectID)
+		}
+		byIssue[decision.IssueID] = append(byIssue[decision.IssueID], decision)
+	}
 	for _, issue := range issues {
-		rows, err := reader.ListIssueSchedulerDecisions(t.Context(), store.IssueSchedulerDecisionQuery{Identity: store.IssueIdentity{ProjectID: "latency", IssueID: issue.ID}})
-		if err != nil || len(rows) != 1 || rows[0].Reason != dispatchSkipAuthorizationSelector || rows[0].MetadataJSON == "{}" {
-			t.Fatalf("lost refusal for %s: %v %v", issue.ID, rows, err)
+		rows := byIssue[issue.ID]
+		if len(rows) != 1 || rows[0].Reason != dispatchSkipAuthorizationSelector || rows[0].MetadataJSON == "{}" || strings.TrimSpace(rows[0].MetadataJSON) == "" {
+			t.Fatalf("lost refusal for %s: %v", issue.ID, rows)
 		}
 	}
 }
