@@ -45,6 +45,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		automatic         workspacesession.Run
 		pending           string
 		recording         string
+		shutdownRun       string
 		shutdownStream    string
 		shutdownRecording string
 		marker            string
@@ -100,8 +101,12 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		var listing projectActionRunList
 		decodeHubResponse(t, response, &listing)
-		if len(listing.Items) != 2 {
-			t.Fatalf("automatic admission replay left %d runs, want one requested and one automatic run", len(listing.Items))
+		wantRuns := 2
+		if record.shutdownRun != "" {
+			wantRuns++
+		}
+		if len(listing.Items) != wantRuns {
+			t.Fatalf("automatic admission replay left %d runs, want %d", len(listing.Items), wantRuns)
 		}
 	}
 	for tenant, hub := range hubs {
@@ -203,6 +208,19 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 			if frame := shutdownPerson.receive(); frame.Type != workspacesession.TypeTerminalOutput || frame.Stream != record.shutdownStream {
 				t.Fatalf("shutdown terminal output frame=%+v", frame)
 			}
+			record.shutdownRun = queueRun(record, "shutdown-"+f.workspace)
+			shutdownPerson.send(execRunFrame(record.shutdownRun, record.action))
+			forwarded := shutdownRunner.receive()
+			if forwarded.Type != workspacesession.TypeExecRun || forwarded.Actor == nil {
+				t.Fatalf("shutdown exec frame=%+v", forwarded)
+			}
+			if run := readRun(record, record.shutdownRun); run.Status != workspacesession.RunRunning || run.StartedAt == nil {
+				t.Fatalf("shutdown exec was not admitted: %+v", run)
+			}
+			shutdownRunner.send(execOutputFrame(forwarded.Stream, workspacesession.ExecOutput{Data: record.marker + "-partial"}))
+			if frame := shutdownPerson.receive(); frame.Type != workspacesession.TypeExecOutput || frame.Stream != forwarded.Stream {
+				t.Fatalf("shutdown exec output=%+v", frame)
+			}
 			saved = append(saved, record)
 		}
 	}
@@ -223,6 +241,9 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 				}
 				f.bind(t)
 				assertAutomaticReplay(record)
+				if run := readRun(record, record.shutdownRun); run.Status != workspacesession.RunFailed || run.Reason != workspacesession.RunReasonStreamClosed || run.FinishedAt == nil || run.OutputBytes != int64(len(record.marker+"-partial")) {
+					t.Fatalf("in-flight exec after Hub shutdown=%+v", run)
+				}
 				response := performHubAPIRequest(t, reopened, http.MethodGet, f.base+"/workspaces/"+f.workspace+"/terminal-recordings", f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				var listing struct {
@@ -323,7 +344,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-		for _, id := range []string{record.run, record.automatic.ID} {
+		for _, id := range []string{record.run, record.automatic.ID, record.shutdownRun} {
 			row, err := f.service.readActionRunRecordByID(t.Context(), scope, id)
 			if err != nil || row.ID != id || row.ActionID != record.action.ID {
 				t.Fatalf("scoped action-run lookup=%+v error=%v", row, err)
@@ -360,6 +381,14 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		requireNativeStatus(t, cast, http.StatusOK)
 		if !strings.Contains(cast.Body.String(), record.marker) || !strings.Contains(cast.Header().Get("Content-Type"), "asciicast") {
 			t.Fatalf("terminal recording after reopen=%q", cast.Body.String())
+		}
+		if run := readRun(record, record.shutdownRun); run.Status != workspacesession.RunFailed || run.Reason != workspacesession.RunReasonStreamClosed || run.OutputBytes != int64(len(record.marker+"-partial")) {
+			t.Fatalf("shutdown exec after final reopen=%+v", run)
+		}
+		shutdownOutput := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/actions/"+record.action.ID+"/runs/"+record.shutdownRun+"/output", f.token, nil)
+		requireNativeStatus(t, shutdownOutput, http.StatusOK)
+		if shutdownOutput.Body.String() != record.marker+"-partial" {
+			t.Fatalf("shutdown exec output after final reopen=%q", shutdownOutput.Body.String())
 		}
 		shutdownCast := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/workspaces/"+f.workspace+"/terminal-recordings/"+record.shutdownRecording, f.token, nil)
 		requireNativeStatus(t, shutdownCast, http.StatusOK)
