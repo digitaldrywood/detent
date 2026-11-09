@@ -740,7 +740,7 @@ func (s *Service) spritePlacementScopeRecord(ctx context.Context, scope nativeSc
 				if errors.Is(err, corestore.ErrNotFound) {
 					return nil
 				}
-				current.Pending = err == nil && (wake.Outcome == "committed" || wake.Outcome == "uncertain") && wake.UpdatedAt.After(current.LastHeartbeatAt)
+				current.Pending = err == nil && (wake.Outcome == "committed" || wake.Outcome == "uncertain") && wake.UpdatedAt.After(current.LastHeartbeatAt) && !now.Before(wake.UpdatedAt) && now.Sub(wake.UpdatedAt) < time.Minute
 				return err
 			}); err != nil {
 				return result, err

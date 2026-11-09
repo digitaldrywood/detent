@@ -375,6 +375,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 		organization           bool
 		wantDemand, wantLocal  int
 		wantPending            int
+		wakeWindow             bool
 	}{
 		{name: "ready Todo", wantDemand: 3},
 		{name: "Backlog excluded even if dispatchable", excluded: "backlog", wantDemand: 2},
@@ -390,6 +391,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 		{name: "pending creation is not double counted", pending: true, wantDemand: 3, wantPending: 1},
 		{name: "organization local capacity is counted once", organization: true, locals: 1, providerMax: 8, wantDemand: 6, wantLocal: 2},
 		{name: "organization pending member is counted once", organization: true, pending: true, wantDemand: 6, wantPending: 1},
+		{name: "wake reservation observes exact time boundaries", wakeWindow: true, wantDemand: 3, wantPending: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -471,6 +473,35 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 					return w.UpdateRunnerIdentity(t.Context(), identity)
 				})
 				storeSpriteWakeReceiptFixture(t, f, scope, sprite.binding.RunnerID, sprite.redemption.Hostname, "committed", now)
+			}
+			if test.wakeWindow {
+				f.service.spriteWakeWork.Wait()
+				wakeAt := f.service.config.now().UTC().Truncate(time.Microsecond)
+				clock := &leaseTestClock{value: wakeAt}
+				f.service.config.now = clock.Now
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), sprite.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					identity.LastHeartbeatAt = wakeAt.Add(-2 * time.Minute)
+					return w.UpdateRunnerIdentity(t.Context(), identity)
+				})
+				storeSpriteWakeReceiptFixture(t, f, scope, sprite.binding.RunnerID, sprite.redemption.Hostname, "committed", wakeAt)
+				for _, boundary := range []struct {
+					at      time.Duration
+					pending int
+				}{{-time.Microsecond, 0}, {0, 1}, {time.Minute - time.Microsecond, 1}, {time.Minute, 0}} {
+					clock.Advance(wakeAt.Add(boundary.at).Sub(clock.Now()))
+					decision, err := f.service.spriteProjectPlacementRecord(t.Context(), scope)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if decision.Pending != boundary.pending {
+						t.Errorf("wake age=%s pending=%d, want %d", boundary.at, decision.Pending, boundary.pending)
+					}
+				}
+				clock.Advance(wakeAt.Sub(clock.Now()))
 			}
 			if test.organization {
 				later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
