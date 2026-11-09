@@ -1824,6 +1824,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		})
 	}
 	var active leasestore.Lease
+	var activeAttempt leasestore.Attempt
 	if err := repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		row, err := w.WorkItem(t.Context(), "project_example", issue.WorkItemID)
 		if err != nil {
@@ -1836,31 +1837,47 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		if active.WorkItemRevision != int64(changed.Revision) || active.FencingToken <= historic.FencingToken {
 			return fmt.Errorf("new claim did not use current revision and fence")
 		}
-		_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "new_attempt", RunID: "new_run", Fence: leasestore.Fence{LeaseID: active.LeaseID, FencingToken: active.FencingToken}, Sequence: 1, Status: "running", StartedAt: clock, PayloadObjectKey: "example/new"})
+		activeAttempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "new_attempt", RunID: "new_run", Fence: leasestore.Fence{LeaseID: active.LeaseID, FencingToken: active.FencingToken}, Sequence: 1, Status: "running", StartedAt: clock, PayloadObjectKey: "example/new"})
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, test := range []struct {
-		target string
-		status int
-	}{{"Todo", http.StatusConflict}, {"Cancelled", http.StatusForbidden}} {
-		requireNativeStatus(t, call("owner", move(changed, "active_"+test.target, test.target)), test.status)
+	activeIntent := readIntent()
+	activeMove := move(changed, "active_Todo", "Todo")
+	moved := decode(call("owner", activeMove))
+	if moved.State != activeMove.TargetState || moved.Revision != changed.Revision+1 {
+		t.Fatal("authorized lane move did not advance the issue once")
 	}
+	beforeActiveReplay := archiveBytes()
+	if replayed := decode(call("owner", activeMove)); !reflect.DeepEqual(replayed, moved) || archiveBytes() != beforeActiveReplay {
+		t.Fatal("active lane move replay changed the result or archive accounting")
+	}
+	currentIntent := readIntent()
+	if currentIntent.Revision != int64(moved.Revision) || currentIntent.Generation != activeIntent.Generation || !reflect.DeepEqual(currentIntent.RequestedAt, activeIntent.RequestedAt) {
+		t.Fatal("active lane move or replay created another dispatch intent")
+	}
+	staleActiveMove := move(changed, "active_stale", "Rework")
+	requireNativeStatus(t, call("owner", staleActiveMove), http.StatusConflict)
+	changed = moved
+	for _, user := range []string{"reporter", "reader"} {
+		requireNativeStatus(t, call(user, activeMove), http.StatusForbidden)
+	}
+	requireNativeStatus(t, requestFor(other, "owner", "/internal/v1/keys/call", map[string]any{"name": operatortool.MoveItem, "arguments": activeMove, "connection_id": "foreign_active_move"}), http.StatusForbidden)
+	requireNativeStatus(t, call("owner", move(changed, "active_Cancelled", "Cancelled")), http.StatusForbidden)
 	if err := repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 		lease, err := r.Lease(t.Context(), active.LeaseID)
-		if err == nil && lease.ReleasedAt != nil {
-			return fmt.Errorf("refusal released active lease")
-		}
 		if err != nil {
 			return err
+		}
+		if !reflect.DeepEqual(lease, active) {
+			return fmt.Errorf("lane move, replay or refusal changed the active lease")
 		}
 		attempt, err := r.LatestAttempt(t.Context(), lease.IssueID)
 		if err != nil {
 			return err
 		}
-		if attempt.Status != "running" || attempt.Sequence != 1 {
-			return fmt.Errorf("missing run evidence cancellation changed the active attempt")
+		if !reflect.DeepEqual(attempt, activeAttempt) {
+			return fmt.Errorf("lane move, replay or refusal changed the active attempt")
 		}
 		row, err := r.WorkItem(t.Context(), "project_example", changed.WorkItemID)
 		if err != nil {

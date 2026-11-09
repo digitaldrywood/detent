@@ -62,7 +62,9 @@ and `TestStoredHoldRequiresProvenance` in `internal/orchestrator`, plus the
 lane writer's typed-intent and metadata validation.
 
 **Enforcement:** `TestRepositorySources` in `internal/invariants`;
-`TestAdmissionRequiresLedgerWriter` in `internal/admission`. Review rejects
+`TestPostgresEntryKeyMoveItem` and
+`TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays` in
+`internal/hubserver`. Review rejects
 lane-write bypasses and new ownership exceptions.
 `TestLocalSessionProcessOwnership` in `internal/runner`,
 `TestNativeDelayedResponsesPreserveSuccessor` in `internal/hubclient`, and
@@ -389,8 +391,9 @@ current facts, and admission reads never change eligibility.
 `TestRunDispatchesQueuedRequestsWithoutPolling`,
 `TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`, and
 `TestStandingDispatchSurvivesProjectRefresh` in `internal/orchestrator`;
-`TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` in
-`internal/admission`; `TestRepositorySources` in `internal/invariants`.
+`TestGlobalDispatchGateStrictPriorityDoesNotReserveIdleCapacity` in
+`internal/scheduler` and `TestProviderEmptyPreviewReachesClaim` in
+`internal/hubclient/dispatch`; `TestRepositorySources` in `internal/invariants`.
 `TestNativeAdmissionExplanation`, `TestNativeDependencyReadPermissions`,
 `TestNativeRuntimeReadHistoryCost`, `TestNativeRuntimeReadSharedCapacityCost`,
 `TestHostedAnalyticsReads` and `TestNativeAnalyticsRuntimePopulation` in

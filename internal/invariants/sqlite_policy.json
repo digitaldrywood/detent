@@ -14,14 +14,6 @@
       "sql_schema": 1,
       "sqlite_open": 1
     },
-    "internal/admission/candidate_progress_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 2
-    },
-    "internal/admission/manager_test.go": {
-      "backend_sqlite": 2,
-      "sqlite_open": 3
-    },
     "internal/apikey/service_test.go": {
       "backend_sqlite": 1,
       "sqlite_open": 1

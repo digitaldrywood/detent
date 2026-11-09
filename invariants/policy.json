@@ -143,9 +143,8 @@
       "TestWorkflowViolations",
       "TestMutationDocuments"
     ],
-    "./internal/admission": [
-      "TestAdmissionRequiresLedgerWriter",
-      "TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity"
+    "./internal/hubclient/dispatch": [
+      "TestProviderEmptyPreviewReachesClaim"
     ],
     "./internal/cli": [
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
@@ -164,6 +163,7 @@
       "TestPullRequestMergeTimeSurvivesLaterActivity"
     ],
     "./internal/scheduler": [
+      "TestGlobalDispatchGateStrictPriorityDoesNotReserveIdleCapacity",
       "TestGlobalDispatchGatePriorityOnlyPicksNextJob",
       "TestPoolRegistryRanksBorrowersAcrossPools",
       "TestPoolRegistryQueuedBorrowersUseFreedCapacity",
@@ -190,6 +190,8 @@
       "TestMergedCompletionEvidence"
     ],
     "./internal/hubserver": [
+      "TestPostgresEntryKeyMoveItem",
+      "TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays",
       "TestClaimCandidatesRequireUnansweredWorkItem",
       "TestNativeDerivedHoldDispatchEquivalence",
       "TestNativeRecordedDependencyUsesCurrentEdges",
