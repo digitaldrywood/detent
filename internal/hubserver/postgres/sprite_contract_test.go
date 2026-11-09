@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -424,6 +425,7 @@ func TestSpriteRunnerSelectionHonorsAllocationAndSharing(t *testing.T) {
 		for _, name := range []string{"first", "second"} {
 			id := string(organization) + "_" + name
 			seedRunnerIdentity(t, repository, organization, id, "machine_"+name, now, true)
+			seedRunnerIdentity(t, repository, organization, "unowned_"+id, "unowned_machine_"+name, now, true)
 		}
 		if err := repository.WriteSprite(t.Context(), organization, corestore.Serving, func(w postgres.SpriteWriter) error {
 			if _, err := w.PutSpritePool(t.Context(), postgres.SpritePool{OrganizationID: organization, MaxRunners: 2, IdleSeconds: 300, ConfiguredBy: "admin", IsolationTier: "native-trusted", PlacementMode: "blended"}, 0); err != nil {
@@ -458,6 +460,11 @@ func TestSpriteRunnerSelectionHonorsAllocationAndSharing(t *testing.T) {
 				other, want  bool
 			}{
 				{name: "own ready member", want: true},
+				{name: "unmanaged local obeys Sprites-only", change: "unowned local unmanaged"},
+				{name: "managed local obeys Sprites-only", change: "unowned local managed"},
+				{name: "unmanaged manual Sprite remains eligible", change: "unowned sprite unmanaged", want: true},
+				{name: "managed manual Sprite remains eligible", change: "unowned sprite managed", want: true},
+				{name: "unmanaged blended local remains eligible", change: "unowned local blended", want: true},
 				{name: "organization member", change: "unallocated", want: true},
 				{name: "disabled organization pool", change: "disabled"},
 				{name: "sharing requires consent", other: true},
@@ -484,6 +491,35 @@ func TestSpriteRunnerSelectionHonorsAllocationAndSharing(t *testing.T) {
 							}
 						}
 						switch test.change {
+						case "unowned local unmanaged", "unowned local managed", "unowned sprite unmanaged", "unowned sprite managed", "unowned local blended":
+							id = "unowned_" + id
+							if strings.HasSuffix(test.change, "unmanaged") || strings.HasSuffix(test.change, "blended") {
+								target = "prj_unmanaged"
+							}
+							if strings.Contains(test.change, "sprite") {
+								identity, err := writer.RunnerIdentity(t.Context(), id)
+								if err != nil {
+									return err
+								}
+								machine, err := writer.Machine(t.Context(), string(identity.MachineID))
+								if err != nil {
+									return err
+								}
+								machine.SpriteName = machine.Hostname
+								if err := writer.HeartbeatMachine(t.Context(), machine, now); err != nil {
+									return err
+								}
+							}
+							if !strings.HasSuffix(test.change, "blended") {
+								pool, err := w.SpritePool(t.Context())
+								if err != nil {
+									return err
+								}
+								pool.PlacementMode = "sprites_only"
+								if _, err := w.PutSpritePool(t.Context(), pool, pool.Revision); err != nil {
+									return err
+								}
+							}
 						case "unallocated", "disabled":
 							member, err := writer.RunnerSpriteMembershipByEnrollment(t.Context(), "enrollment_"+id)
 							if err != nil {

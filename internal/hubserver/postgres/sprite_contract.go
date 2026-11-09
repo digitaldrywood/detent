@@ -392,9 +392,6 @@ func (s *session) SpriteRunnerAllowed(ctx context.Context, runnerID string, proj
 	}
 	member, err := s.RunnerSpriteMembershipByEnrollment(ctx, identity.EnrollmentID)
 	if errors.Is(err, corestore.ErrNotFound) {
-		if !managed {
-			return true, nil
-		}
 		machine, err := s.Machine(ctx, string(identity.MachineID))
 		if err != nil {
 			return false, err
