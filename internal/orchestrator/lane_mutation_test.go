@@ -57,10 +57,20 @@ func openLaneMutationTestStore(
 	return runtimeStore, attemptID
 }
 
+type laneMutationHistory interface {
+	WorkflowMetricsRecorder
+	store.LaneLedgerStore
+}
+
+type laneMutationRecorder struct {
+	autoPromoteWorkflowMetricsRecorder
+	recordingLaneLedger
+}
+
 func newLaneMutationTestOrchestrator(
 	cfg Config,
 	tracker connector.Connector,
-	runtimeStore store.Store,
+	runtimeStore laneMutationHistory,
 	attempts store.WorkAttemptStore,
 	now time.Time,
 ) *Orchestrator {

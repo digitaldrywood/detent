@@ -23,10 +23,6 @@ import (
 )
 
 func TestCompletionFenceDeferralOutcomes(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -60,7 +56,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 				issue:                        issue,
 				firstErr:                     tt.fenceErr,
 			}
-			runtimeStore := openCompletionDeferralStore(t, filepath.Join(t.TempDir(), "detent.db"))
+			runtimeStore := &completionAttemptRecorder{}
 			cfg := completionDeferralConfig()
 			orch := Orchestrator{cfg: cfg, connector: tracker, workAttempts: runtimeStore, now: func() time.Time { return now }}
 			state := newState(cfg)
@@ -757,7 +753,7 @@ func completionDeferralEvent(issue connector.Issue, attemptID int64, now time.Ti
 	}
 }
 
-func startCompletionDeferralAttempt(t *testing.T, runtimeStore store.Store, issue connector.Issue, now time.Time) int64 {
+func startCompletionDeferralAttempt(t *testing.T, runtimeStore store.WorkAttemptStore, issue connector.Issue, now time.Time) int64 {
 	t.Helper()
 	attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
 		ProjectID:      "detent",
@@ -934,4 +930,68 @@ type perIssueRestoreScheduling struct {
 func (s *perIssueRestoreScheduling) RestoreCompletion(_ context.Context, _ SchedulingRequest, issue connector.Issue, _ json.RawMessage) (Claimed, error) {
 	s.restored = append(s.restored, issue.ID)
 	return Claimed{}, s.errs[issue.ID]
+}
+
+type completionAttemptRecorder struct {
+	recordingWorkAttemptStore
+	attempt store.WorkAttempt
+}
+
+func (s *completionAttemptRecorder) StartWorkAttempt(ctx context.Context, start store.WorkAttemptStart) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if s.attempt.ID != 0 {
+		return 0, errors.New("unexpected additional fixture attempt")
+	}
+	id, err := s.recordingWorkAttemptStore.StartWorkAttempt(ctx, start)
+	if err != nil {
+		return 0, err
+	}
+	s.attempt = store.WorkAttempt{
+		ID: id, ProjectID: start.ProjectID, IssueID: start.IssueID, Identifier: start.Identifier,
+		IssueURL: start.IssueURL, WorkerType: start.WorkerType, WorkerHost: start.WorkerHost,
+		Lane: start.Lane, AttemptNumber: start.AttemptNumber, StartedAt: start.StartedAt,
+		Status: store.WorkAttemptStatusActive, HeartbeatAt: start.StartedAt, LeaseExpiresAt: start.LeaseExpiresAt,
+	}
+	return id, nil
+}
+
+func (s *completionAttemptRecorder) WorkAttempt(ctx context.Context, id int64) (store.WorkAttempt, error) {
+	if err := ctx.Err(); err != nil {
+		return store.WorkAttempt{}, err
+	}
+	if id <= 0 || id != s.attempt.ID {
+		return store.WorkAttempt{}, store.ErrNotFound
+	}
+	return s.attempt, nil
+}
+
+func (s *completionAttemptRecorder) RecordWorkAttemptHeartbeat(ctx context.Context, heartbeat store.WorkAttemptHeartbeat) error {
+	if _, err := s.WorkAttempt(ctx, heartbeat.AttemptID); err != nil {
+		return err
+	}
+	if err := s.recordingWorkAttemptStore.RecordWorkAttemptHeartbeat(ctx, heartbeat); err != nil {
+		return err
+	}
+	s.attempt.HeartbeatAt, s.attempt.LeaseExpiresAt = heartbeat.HeartbeatAt, heartbeat.LeaseExpiresAt
+	s.attempt.Phase, s.attempt.WaitReason, s.attempt.NextAction = heartbeat.Phase, heartbeat.WaitReason, heartbeat.NextAction
+	s.attempt.ErrorClass, s.attempt.ErrorMessage = heartbeat.ErrorClass, heartbeat.ErrorMessage
+	s.attempt.WorkerMetadataJSON = heartbeat.WorkerMetadataJSON
+	return nil
+}
+
+func (s *completionAttemptRecorder) CompleteWorkAttempt(ctx context.Context, completion store.WorkAttemptCompletion) error {
+	if _, err := s.WorkAttempt(ctx, completion.AttemptID); err != nil {
+		return err
+	}
+	if err := s.recordingWorkAttemptStore.CompleteWorkAttempt(ctx, completion); err != nil {
+		return err
+	}
+	s.attempt.Status, s.attempt.TerminalState = completion.Status, completion.TerminalState
+	s.attempt.CompletedAt, s.attempt.Phase = completion.CompletedAt, completion.Phase
+	s.attempt.ErrorClass, s.attempt.ErrorMessage = completion.ErrorClass, completion.ErrorMessage
+	s.attempt.WaitReason, s.attempt.NextAction = completion.WaitReason, completion.NextAction
+	s.attempt.WorkerMetadataJSON = completion.WorkerMetadataJSON
+	return nil
 }

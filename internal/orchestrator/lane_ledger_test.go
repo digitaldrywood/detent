@@ -173,10 +173,6 @@ func (p lanePeerReader) CompareAndSwap(context.Context, string, string, []byte) 
 }
 
 func TestLaneMoveEntryPointsPreserveWorkerCompletionLane(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, entry := range []string{"targeted refresh", "kanban"} {
 		t.Run(entry, func(t *testing.T) {
@@ -184,7 +180,8 @@ func TestLaneMoveEntryPointsPreserveWorkerCompletionLane(t *testing.T) {
 			at := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 			issue := laneRevocationIssue("entry", "example/repo#3", "Blocked")
 			cfg := laneMutationTestConfig()
-			backend, attempt := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, at)
+			backend := &laneMutationRecorder{}
+			const attempt int64 = 1
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, backend, nil, at)
 			state := newState(cfg)
