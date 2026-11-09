@@ -787,17 +787,26 @@ func storeOrganizationSpritesSecret(t *testing.T, f nativeFixture, token string)
 
 func TestWakeManagedSpriteMembers(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		ready, drain bool
-		want         int
+		name                   string
+		ready, drain, replaced bool
+		want                   int
 	}{
 		{name: "verified sleeping member wakes for its project", ready: true, want: 1},
 		{name: "member awaiting logins stays asleep", ready: false},
 		{name: "draining member stays asleep", ready: true, drain: true},
+		{name: "same-name replacement is not woken", ready: true, replaced: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var calls atomic.Int32
-			client := &http.Client{Transport: spritesTestTransport(func(*http.Request) (*http.Response, error) {
+			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodGet {
+					name := strings.TrimPrefix(request.URL.Path, "/v1/sprites/")
+					id := "resource-" + name
+					if test.replaced {
+						id = "replacement-resource"
+					}
+					return spritesTestResponse(fmt.Sprintf(`{"name":%q,"id":%q}`, name, id), http.StatusOK), nil
+				}
 				calls.Add(1)
 				return spritesTestResponse(`{"type":"complete"}`, http.StatusOK), nil
 			})}
@@ -808,10 +817,36 @@ func TestWakeManagedSpriteMembers(t *testing.T) {
 			sprite := placementFixtureRunner(t, f, "managed-sprite", "sprite", true, 1, "gpt-6.1-sol")
 			f.create(t, "managed work")
 			setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
-			setSpriteAllocationFixture(t, f, 1, 0)
+			allocation := setSpriteAllocationFixture(t, f, 1, 0)
 			now := f.service.config.now()
+			settings, pool, err := f.service.spritePoolSettingsRecord(t.Context(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sealed, err := keys.Seal([]byte(sprite.enrollment.Token), secretAAD(string(scope.organization), sprite.enrollment.ID, "sprite-enrollment"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			requestKey, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleRequest{Actor: pool.ConfiguredBy, TokenProject: scope.project, Provider: "detent-test", Settings: settings, EnrollmentToken: sealed, Version: "v0.1.0"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resourceID := "resource-" + sprite.redemption.Hostname
+			receiptKey, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleReceipt{ResourceID: resourceID})
+			if err != nil {
+				t.Fatal(err)
+			}
 			writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
-				return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: scope.organization, AllocationProjectID: scope.project, TokenProjectID: scope.project, Name: sprite.redemption.Hostname, ProviderOrganization: "detent-test", EnrollmentID: sprite.enrollment.ID, State: "enrolled", IdleSince: now, CreatedAt: now})
+				if err := w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: scope.organization, AllocationProjectID: scope.project, AllocationRevision: int64(allocation.Revision), TokenProjectID: scope.project, Name: sprite.redemption.Hostname, ProviderOrganization: "detent-test", EnrollmentID: sprite.enrollment.ID, State: "enrolled", IdleSince: now, CreatedAt: now}); err != nil {
+					return err
+				}
+				owner := w.(postgres.SpriteWriter)
+				operation, err := owner.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: scope.organization, IdempotencyKey: "provision:" + sprite.enrollment.ID, Name: sprite.redemption.Hostname, Operation: "provision", TargetEnrollmentID: sprite.enrollment.ID, ProjectID: scope.project, RequestObjectKey: &requestKey, SourceRevision: "fixture:" + sprite.enrollment.ID, CreatedAt: now, NextAttemptAt: now})
+				if err != nil {
+					return err
+				}
+				operation.Outcome, operation.ProviderResourceID, operation.ReceiptObjectKey, operation.UpdatedAt = "committed", resourceID, &receiptKey, now
+				return owner.UpdateSpriteOperation(t.Context(), operation, operation.Attempts)
 			})
 			if test.ready {
 				setSpriteMemberChecks(t, f, spriteMemberReady)
@@ -838,7 +873,10 @@ func TestWakeManagedSpriteMembers(t *testing.T) {
 			})
 			f.service.config.SecretKeys = keys
 			woken, err := f.service.wakeOrganizationSpriteRunners(t.Context(), nativeScope{organization: scope.organization})
-			if err != nil || woken != test.want || int(calls.Load()) != test.want {
+			if test.replaced && err == nil {
+				t.Fatal("same-name replacement was accepted as the managed wake target")
+			}
+			if !test.replaced && err != nil || woken != test.want || int(calls.Load()) != test.want {
 				t.Fatalf("woken=%d calls=%d err=%v, want %d", woken, calls.Load(), err, test.want)
 			}
 		})

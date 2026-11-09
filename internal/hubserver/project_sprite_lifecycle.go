@@ -1023,6 +1023,48 @@ func spriteCreationLabel(op postgres.SpriteOperation) string {
 	return fmt.Sprintf("detent-owner-%x", digest[:16])
 }
 
+func spriteManagedResourceID(ctx context.Context, owner postgres.SpriteReader, name, enrollment string) (string, error) {
+	member, err := owner.SpriteMember(ctx, name)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if member.EnrollmentID != enrollment {
+		return "", errSpritesValidation
+	}
+	provision, err := owner.SpriteOperation(ctx, "provision:"+enrollment)
+	if err != nil {
+		return "", err
+	}
+	if provision.Name != name || provision.TargetEnrollmentID != enrollment || provision.Operation != "provision" || provision.Outcome != "committed" || provision.ProviderResourceID == "" {
+		return "", errSpritesValidation
+	}
+	return provision.ProviderResourceID, nil
+}
+
+func (s *Service) spriteOperationResource(ctx context.Context, op postgres.SpriteOperation, request spriteLifecycleRequest) (bool, error) {
+	status, raw, err := s.spriteOperationHTTP(ctx, op, request, http.MethodGet, "/"+url.PathEscape(op.Name), nil)
+	if err != nil {
+		return false, err
+	}
+	if status == http.StatusNotFound {
+		return false, nil
+	}
+	if status != http.StatusOK {
+		return false, spritesResponseError(status)
+	}
+	var resource struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(raw, &resource) != nil || resource.Name != op.Name || op.ProviderResourceID == "" || resource.ID != op.ProviderResourceID {
+		return false, errSpritesValidation
+	}
+	return true, nil
+}
+
 func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOperation) error {
 	request, err := s.spriteLifecyclePayload(ctx, op)
 	if err != nil {
@@ -1050,21 +1092,62 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 			return err
 		}
 	}
-	path := "/" + url.PathEscape(op.Name)
-	if op.Operation == "bootstrap" || op.Operation == "checkpoint" {
-		status, raw, err := s.spriteOperationHTTP(ctx, op, request, http.MethodGet, path, nil)
+	if op.Operation == "wake" {
+		err := s.config.TenantRepository.ReadTenant(ctx, op.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			owner, ok := r.(postgres.SpriteReader)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			id, err := spriteManagedResourceID(ctx, owner, op.Name, op.TargetEnrollmentID)
+			if err != nil {
+				return err
+			}
+			if id != "" {
+				if op.ProviderResourceID != "" && op.ProviderResourceID != id {
+					return errSpritesValidation
+				}
+				op.ProviderResourceID = id
+			}
+			return nil
+		})
 		if err != nil {
+			if op.Outcome == "pending" {
+				return errors.Join(err, s.spriteWakeRejected(ctx, op))
+			}
 			return err
 		}
-		if status != http.StatusOK {
-			return spritesResponseError(status)
+	}
+	if op.Operation == "delete" {
+		busy := false
+		if err := s.config.TenantRepository.ReadTenant(ctx, op.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			owner, ok := r.(postgres.SpriteReader)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			var err error
+			busy, err = owner.SpriteMemberBusy(ctx, op.Name)
+			return err
+		}); err != nil {
+			return err
 		}
-		var resource struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+		if busy {
+			return nil
 		}
-		if json.Unmarshal(raw, &resource) != nil || resource.Name != op.Name || op.ProviderResourceID == "" || resource.ID != op.ProviderResourceID {
-			return errSpritesValidation
+	}
+	path := "/" + url.PathEscape(op.Name)
+	if op.Operation == "bootstrap" || op.Operation == "checkpoint" || op.Operation == "delete" || op.Operation == "wake" && op.ProviderResourceID != "" {
+		found, err := s.spriteOperationResource(ctx, op, request)
+		if err == nil && !found && op.Operation == "delete" {
+			return s.completeSpriteOperation(ctx, op, spriteLifecycleReceipt{ResourceID: op.ProviderResourceID}, "", request)
+		}
+		if err == nil && !found {
+			err = errSpritesValidation
+		}
+		if err != nil {
+			if op.Operation == "wake" && op.Outcome == "pending" {
+				return errors.Join(err, s.spriteWakeRejected(ctx, op))
+			}
+			return err
 		}
 	}
 	if op.Operation == "wake" {
@@ -1105,42 +1188,10 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 		return s.completeSpriteOperation(ctx, op, spriteLifecycleReceipt{Log: "Runner service started"}, "", request)
 	}
 	if op.Operation == "delete" {
-		busy := false
-		if err := s.config.TenantRepository.ReadTenant(ctx, op.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			owner, ok := r.(postgres.SpriteReader)
-			if !ok {
-				return accessstore.ErrTransactionRequired
-			}
-			var err error
-			busy, err = owner.SpriteMemberBusy(ctx, op.Name)
-			return err
-		}); err != nil {
-			return err
-		}
-		if busy {
-			return nil
-		}
-		status, raw, err := s.spriteOperationHTTP(ctx, op, request, http.MethodGet, path, nil)
-		if err != nil {
-			return err
-		}
-		if status == http.StatusNotFound {
-			return s.completeSpriteOperation(ctx, op, spriteLifecycleReceipt{ResourceID: op.ProviderResourceID}, "", request)
-		}
-		if status != http.StatusOK {
-			return spritesResponseError(status)
-		}
-		var resource struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		}
-		if json.Unmarshal(raw, &resource) != nil || resource.Name != op.Name || resource.ID == "" || resource.ID != op.ProviderResourceID {
-			return errSpritesValidation
-		}
 		if err := s.saveSpriteOperation(ctx, &op, "uncertain", nil); err != nil {
 			return err
 		}
-		status, _, err = s.spriteOperationHTTP(ctx, op, request, http.MethodDelete, path, nil)
+		status, _, err := s.spriteOperationHTTP(ctx, op, request, http.MethodDelete, path, nil)
 		if err != nil {
 			return err
 		}
@@ -1150,7 +1201,7 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 		if status == http.StatusAccepted {
 			return nil
 		}
-		return s.completeSpriteOperation(ctx, op, spriteLifecycleReceipt{ResourceID: resource.ID}, "", request)
+		return s.completeSpriteOperation(ctx, op, spriteLifecycleReceipt{ResourceID: op.ProviderResourceID}, "", request)
 	}
 	if op.Operation == "provision" {
 		reconciling := op.Outcome == "uncertain"
