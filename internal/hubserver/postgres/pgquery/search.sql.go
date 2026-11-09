@@ -37,7 +37,7 @@ WITH scoped AS NOT MATERIALIZED (
         AND ($5::text = '' OR d.project_id = $5)
         AND (NOT $6::boolean OR d.project_id = ANY($7::text[]) OR d.scope = 'general')
         AND ($8::text = '' OR d.work_item_id = $8)
-        AND (($9::text = 'thread' AND d.kind = 'thread') OR ($9 = 'work' AND d.kind = 'issue'))
+        AND CASE d.kind WHEN 'issue' THEN 'work' WHEN 'thread' THEN 'thread' END = $9::text
         AND ($10::text = '' OR d.scope = $10)
         AND ($11::text = '' OR d.status = $11)
         AND (d.project_id IS NULL OR COALESCE((SELECT p.deleted_at IS NULL FROM projects p WHERE p.organization_id = d.organization_id AND p.id = d.project_id), false))
@@ -363,7 +363,7 @@ WITH document AS MATERIALIZED (
  WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term NOT IN ('~all','~pending')
   AND d.kind IN ('issue','thread')
   AND (NOT EXISTS(SELECT 1 FROM visibility v WHERE v.key=p.scope)
-   OR NOT EXISTS(SELECT 1 FROM current_terms t WHERE t.term=p.term))
+   OR p.term NOT IN (SELECT t.term FROM current_terms t WHERE t.term IS NOT NULL))
 ), removed AS (
  DELETE FROM search_postings p USING obsolete_keys k
  WHERE p.organization_id=k.organization_id AND p.scope=k.scope AND p.term=k.term AND p.document_id=k.document_id

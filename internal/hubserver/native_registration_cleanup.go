@@ -15,32 +15,37 @@ import (
 
 type tenantRunCleanupPredecessor struct {
 	attempt   leasestore.Attempt
+	lease     leasestore.Lease
 	event     eventstore.Event
 	committed map[int64]eventstore.Event
 }
 
-func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, scope nativeScope, request tracker.NativeRunEvent) (*tenantRunCleanupPredecessor, error) {
+func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, scope nativeScope, request tracker.NativeRunEvent) (*tenantRunCleanupPredecessor, bool, error) {
 	if request.Data.Sequence <= 1 {
-		return nil, nil
+		return nil, false, nil
 	}
 	attempt, err := r.Attempt(ctx, request.Data.AttemptID)
 	if errors.Is(err, corestore.ErrNotFound) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if attempt.LeaseID != string(request.Data.LeaseID) || attempt.FencingToken != int64(request.Data.FencingToken) || attempt.RunID != request.Data.RunID {
-		return nil, leasestore.ErrAttemptConflict
+		return nil, false, leasestore.ErrAttemptConflict
 	}
 	event, err := r.LatestRunEvent(ctx, scope.project, attempt.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	previous := &tenantRunCleanupPredecessor{attempt: attempt, event: event, committed: map[int64]eventstore.Event{}}
+	lease, err := r.Lease(ctx, attempt.LeaseID)
+	if err != nil {
+		return nil, false, err
+	}
+	previous := &tenantRunCleanupPredecessor{attempt: attempt, lease: lease, event: event, committed: map[int64]eventstore.Event{}}
 	reader, ok := r.(nativeRunEventReader)
 	if !ok {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, false, nativeRunEventStorageUnavailable()
 	}
 	for _, prefix := range request.PriorEvents {
 		if prefix.Data.Sequence > attempt.Sequence {
@@ -48,17 +53,17 @@ func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, 
 		}
 		row, err := reader.RunEvent(ctx, scope.project, event.WorkItemID, nativeAttemptHistoryID(prefix.Type, prefix.Data))
 		if errors.Is(err, corestore.ErrNotFound) {
-			return nil, leasestore.ErrAttemptConflict
+			return nil, false, leasestore.ErrAttemptConflict
 		}
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if row.OrganizationID != scope.organization || row.ProjectID != scope.project || row.WorkItemID != event.WorkItemID || row.Type != prefix.Type {
-			return nil, artifact.ErrIntegrity
+			return nil, false, artifact.ErrIntegrity
 		}
 		previous.committed[prefix.Data.Sequence] = row
 	}
-	return previous, nil
+	return previous, true, nil
 }
 
 func readTenantRunCleanupData(ctx context.Context, content *eventstore.Content, previous *tenantRunCleanupPredecessor) (*tracker.NativeRunData, map[int64]*tracker.NativeRunData, error) {
@@ -77,7 +82,17 @@ func readTenantRunCleanupData(ctx context.Context, content *eventstore.Content, 
 			return nil, nil, err
 		}
 		run := event.Data.Run
-		if run == nil || run.AttemptID != previous.attempt.ID || run.RunID != previous.attempt.RunID || run.LeaseID != tracker.LeaseID(previous.attempt.LeaseID) || run.FencingToken != tracker.FencingToken(previous.attempt.FencingToken) || run.Sequence != sequence {
+		if run == nil || run.AttemptID != previous.attempt.ID || run.RunID != previous.attempt.RunID || run.LeaseID != tracker.LeaseID(previous.attempt.LeaseID) || run.FencingToken != tracker.FencingToken(previous.attempt.FencingToken) {
+			return nil, nil, artifact.ErrIntegrity
+		}
+		if sequence == previous.attempt.Sequence {
+			if !nativeAttemptRunMatches(tenantAttemptSnapshot{attempt: previous.attempt, lease: previous.lease, event: row}, *run) {
+				return nil, nil, artifact.ErrIntegrity
+			}
+			copy := *run
+			copy.Sequence = sequence
+			run = &copy
+		} else if run.Sequence != sequence {
 			return nil, nil, artifact.ErrIntegrity
 		}
 		runs[sequence] = run
@@ -98,6 +113,9 @@ func preserveTenantRunCleanup(previous *tracker.NativeRunData, current *tracker.
 		identityMatches = *current.Identity == *previous.Identity
 	}
 	if current.AttemptID != previous.AttemptID || current.RunID != previous.RunID || current.LeaseID != previous.LeaseID || current.FencingToken != previous.FencingToken || current.Sequence != previous.Sequence && current.Sequence != previous.Sequence+1 || !identityMatches {
+		return leasestore.ErrAttemptConflict
+	}
+	if previous.Runtime != nil && current.Runtime != nil && previous.Runtime.LocalAttemptID > 0 && current.Runtime.LocalAttemptID > 0 && previous.Runtime.LocalAttemptID != current.Runtime.LocalAttemptID {
 		return leasestore.ErrAttemptConflict
 	}
 	if previous.Runtime == nil || previous.Runtime.WorkerLaunch == nil || previous.Runtime.WorkerLaunch.PID <= 0 || previous.Runtime.WorkerLaunch.ProcessStart.IsZero() {

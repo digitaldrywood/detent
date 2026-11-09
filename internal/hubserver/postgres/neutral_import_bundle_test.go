@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -20,9 +22,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+var neutralFixtureCatalog = sync.OnceValues(func() (storagecatalog.Catalog, error) {
+	return storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
+})
+
 func neutralFixtureTable(t *testing.T, name string, keys []postgres.NeutralImportKey) postgres.NeutralImportTable {
 	t.Helper()
-	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
+	catalog, err := neutralFixtureCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,6 +222,49 @@ func TestNeutralImportBundleVerifiesBeforeReadAndSeeksCompositeKeys(t *testing.T
 			return nil
 		})
 		if err != nil {
+			t.Fatal(err)
+		}
+		boundaries := []int64{math.MinInt64, -100, -10, -2, -1, 0, 1, 2, 10, 100, math.MaxInt64}
+		var boundaryRows []postgres.NeutralImportRow
+		for _, revision := range boundaries {
+			boundaryRows = append(boundaryRows, neutralFixtureRow(t, table, map[string]any{"organization_id": org, "provider": "example", "provider_account": "account", "source_id": "source", "period_start": "2026-11-01T00:00:00Z", "period_end": "2026-12-01T00:00:00Z", "revision": revision}))
+		}
+		directory, _ = writeNeutralFixture(t, org, []postgres.NeutralImportTable{table}, map[string][]postgres.NeutralImportRow{table.Name: boundaryRows}, 2)
+		if err := postgres.ReadNeutralImportBundle(t.Context(), directory, org, func(source *postgres.VerifiedNeutralImport) error {
+			var after []string
+			position := 0
+			for {
+				page, err := source.Page(t.Context(), table.Name, after, 2)
+				if err != nil {
+					return err
+				}
+				if len(page) == 0 {
+					break
+				}
+				for _, row := range page {
+					if position >= len(boundaries) || row.Key[6] != strconv.FormatInt(boundaries[position], 10) {
+						t.Fatalf("signed boundary %d returned %s", position, row.Key[6])
+					}
+					found, err := source.Lookup(t.Context(), table.Name, row.Key)
+					if err != nil || !slices.Equal(found.Key, row.Key) {
+						t.Fatalf("signed boundary lookup=%+v error=%v", found, err)
+					}
+					position++
+				}
+				after = page[len(page)-1].Key
+			}
+			if position != len(boundaries) {
+				t.Fatalf("read %d signed boundaries, want %d", position, len(boundaries))
+			}
+			for _, invalid := range []string{"-0", "9223372036854775808", "-9223372036854775809"} {
+				key := slices.Clone(boundaryRows[0].Key)
+				key[6] = invalid
+				if _, err := source.Page(t.Context(), table.Name, key, 1); !errors.Is(err, postgres.ErrNeutralImport) {
+					t.Fatalf("invalid integer cursor accepted: %v", err)
+				}
+			}
+			return nil
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}

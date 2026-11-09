@@ -76,13 +76,17 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 				t.Fatal(err)
 			}
 			defer stop()
-			head := strings.Repeat("c", 40)
+			head := nativeChangeFixtureHead("c")
 			execution.(runner.DiffExecution).SetDiffSource(nativeChangeDiff(head, "README.md"))
+			execution.(runner.ChangeSourceExecution).SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+				return nativeChangeSourceFixture(ctx, t, base, head), nil
+			})
 			execution.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
 			if err := execution.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
-			if err := execution.(runner.RuntimeExecution).ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 41}}); err != nil {
+			implementationSession := h.completedSession(t, ctx, execution, runner.RoleCode)
+			if err := execution.(runner.RuntimeExecution).ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: implementationSession}}); err != nil {
 				t.Fatal(err)
 			}
 			if err := execution.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
@@ -102,7 +106,7 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 			if err != nil || input.Version == nil {
 				t.Fatalf("required current-head review unavailable: %+v, %v", input, err)
 			}
-			result := gate.ValidatorResult{VersionID: input.Version.ID, HeadSHA: input.Version.HeadSHA, BaseSHA: input.Version.BaseSHA, Repository: input.Version.Repository, DiffDigest: input.Diff.Digest, Verdict: test.verdict, Summary: "Independent source result", SessionID: 123, Submitted: true, Score: 1, Commands: []gate.CommandResult{receipt}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: gate.EvidenceReceipt, Reference: "make check", Behavior: "The source command passes for the reviewed head and tree.", ReceiptIDs: []string{receipt.ReceiptID}}}}
+			result := gate.ValidatorResult{VersionID: input.Version.ID, HeadSHA: input.Version.HeadSHA, BaseSHA: input.Version.BaseSHA, Repository: input.Version.Repository, DiffDigest: input.Diff.Digest, Verdict: test.verdict, Summary: "Independent source result", SessionID: h.completedSession(t, ctx, execution, "review"), Submitted: true, Score: 1, Commands: []gate.CommandResult{receipt}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: gate.EvidenceReceipt, Reference: "make check", Behavior: "The source command passes for the reviewed head and tree.", ReceiptIDs: []string{receipt.ReceiptID}}}}
 			wrong := result
 			wrong.HeadSHA = strings.Repeat("d", 40)
 			if err := reviewer.RecordReview(ctx, wrong); err == nil {
@@ -208,6 +212,9 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 				if err := otherExecution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 					t.Fatal(err)
 				}
+				if err := otherExecution.Finish(t.Context(), "cancelled"); err != nil {
+					t.Fatal(err)
+				}
 				if err := h.connector.UpdateIssueState(t.Context(), other.ID, "Done"); err != nil {
 					t.Fatal(err)
 				}
@@ -221,7 +228,7 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 				if _, err := h.admin.CreateComment(t.Context(), current.WorkItemID, tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Unrelated context must preserve the technical hold."}); err != nil {
 					t.Fatal(err)
 				}
-				h.reopen(func(string) error { return nil })
+				h.restart()
 				if got := h.candidates(t); len(got) != 0 {
 					t.Fatalf("restart or comment redispatched held review: %+v", got)
 				}
@@ -240,11 +247,15 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 				}
 				defer stop()
 				execution.(runner.DiffExecution).SetDiffSource(nativeChangeDiff(head, "README.md"))
+				execution.(runner.ChangeSourceExecution).SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return nativeChangeSourceFixture(ctx, t, base, head), nil
+				})
 				execution.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
 				if err := execution.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 					t.Fatal(err)
 				}
-				if err := execution.(runner.RuntimeExecution).ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 42}}); err != nil {
+				implementationSession = h.completedSession(t, ctx, execution, runner.RoleCode)
+				if err := execution.(runner.RuntimeExecution).ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: implementationSession}}); err != nil {
 					t.Fatal(err)
 				}
 				if err := execution.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
@@ -259,7 +270,7 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 					t.Fatalf("operator resume changed version: %+v, %v", resumed, err)
 				}
 				result.Verdict = gate.ValidatorVerdictPass
-				result.SessionID = 125
+				result.SessionID = h.completedSession(t, ctx, execution, "review")
 				if err := reviewer.RecordReview(ctx, result); err != nil {
 					t.Fatal(err)
 				}
@@ -296,7 +307,7 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 						t.Fatalf("worker acceptance failure = %+v", failure)
 					}
 					if test.unsatisfiable {
-						result.SessionID++
+						result.SessionID = h.completedSession(t, ctx, execution, runner.RoleValidator)
 						result.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable, Reference: "Requires production"}}
 						gate.NormalizeCriterionEvidence(&result, []string{"Complete the requested work."}, receipt.TreeSHA)
 						cfg := gate.ValidatorConfig{Enabled: true}
@@ -314,7 +325,7 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 						}
 						return
 					}
-					result.SessionID++
+					result.SessionID = h.completedSession(t, ctx, execution, runner.RoleValidator)
 					result.Verdict = gate.ValidatorVerdictRework
 					failed := receipt
 					failed.ExitCode, failed.StartedAt = 7, receipt.StartedAt.Add(-2*time.Hour)
@@ -329,7 +340,7 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 					if err != nil || retry.Version == nil || !reflect.DeepEqual(retry.Commands, append(expectedCommands, failed)) {
 						t.Fatalf("acceptance retry lost trusted review order under runner clock skew: %+v, %v", retry, err)
 					}
-					result.SessionID++
+					result.SessionID = h.completedSession(t, ctx, execution, runner.RoleValidator)
 					result.Verdict = gate.ValidatorVerdictPass
 					result.Commands = []gate.CommandResult{receipt}
 					publicationCalls := 0

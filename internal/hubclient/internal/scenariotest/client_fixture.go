@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,16 +19,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
-	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func createTestClient(t testing.TB, config Config, constructors ...Constructors) (*Client, error) {
 	t.Helper()
-	config.SessionTimings = api.SessionTimings{FlushInterval: 20 * time.Millisecond, ReportBackoff: 10 * time.Millisecond, PollWait: time.Second}
+	config.SessionTimings = api.SessionTimings{FlushInterval: 20 * time.Millisecond, ReportBackoff: 10 * time.Millisecond}
 	if config.HTTPClient == nil {
 		transport := http.DefaultTransport
 		if standard, ok := transport.(*http.Transport); ok {
@@ -242,7 +239,7 @@ func fixtureConfigureScheduler(t testing.TB, h *nativeChangeHub, configure func(
 			if entry.RunnerID != file.Identity.RunnerID {
 				continue
 			}
-			entry.Routing.CapacityLimit = config.Machine.Capacity
+			entry.CapacityLimit = config.Machine.Capacity
 			if err := fleet.UpdateRunner(t.Context(), entry.RunnerID, runnerauth.RoutingChange{ExpectedRevision: entry.Revision, Routing: entry.Routing}); err != nil {
 				t.Fatal(err)
 			}
@@ -271,52 +268,5 @@ func SetSchedulerNow(scheduler *Scheduler, instant time.Time) {
 		value.(*schedulerFixture).now.Store(nil)
 	} else {
 		value.(*schedulerFixture).now.Store(&instant)
-	}
-}
-
-func dispatchEnableEnrollment(t *testing.T, h *nativeChangeHub) {
-	t.Helper()
-	original := fixtureClient(h.native.Transport())
-	config := original.config
-	saved, _ := schedulerFixtures.Load(h.scheduler)
-	schedulerConfig := saved.(*schedulerFixture).config
-	path := filepath.Join(t.TempDir(), "private", "identity.json")
-	file, err := hubclientInitializeIdentity(path, config.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enrollment, err := h.admin.Transport().CreateRunnerEnrollment(t.Context(), h.organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{h.project}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, TTLSeconds: 60})
-	if err != nil {
-		t.Fatal(err)
-	}
-	report := isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}
-	redemption := runnerauth.Redemption{Binding: file.Identity.Binding, Credential: file.Credential, Hostname: "host", DisplayName: "Fixture runner", Capacity: schedulerConfig.Machine.Capacity, Version: "test", BackendIsolation: report}
-	if err := fixtureRunnerRequest(t, h.admin.Transport(), enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/runner-enrollments/redeem", redemption, &file.Identity); err != nil {
-		t.Fatal(err)
-	}
-	if err := hubclientSaveIdentity(path, file); err != nil {
-		t.Fatal(err)
-	}
-	config.IdentityFile = path
-
-	client, err := createTestClient(t, config, original.constructors)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.native, err = client.Native(h.organization, h.project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.connector.worker, err = NewNativeConnector(h.native)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	schedulerConfig.Machine.ID = file.Identity.MachineID
-	schedulerConfig.Machine.BackendIsolation = report
-	schedulerConfig.Machine.DisplayName = redemption.DisplayName
-	h.scheduler, err = newTestScheduler(client, schedulerConfig)
-	if err != nil {
-		t.Fatal(err)
 	}
 }

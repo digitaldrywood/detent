@@ -55,7 +55,7 @@ func NativeChangeProject(t *testing.T, cfg hubserver.Config, states []tracker.Na
 	var project projectstore.Record
 	NativeChangeWrite(t, cfg, func(w tenantstore.Writer) error {
 		var err error
-		project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: "Example project", Profile: "native", RequireDependencies: dependencies}, States: states})
+		project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: "Example project " + string(id), Profile: "native", RequireDependencies: dependencies}, States: states})
 		if err != nil {
 			return err
 		}
@@ -108,7 +108,7 @@ func NativeChangeServiceCredential(t *testing.T, cfg hubserver.Config, project t
 	id, token := "publisher_"+uuid.NewString(), uuid.NewString()
 	now := cfg.Clock().UTC()
 	NativeChangeWrite(t, cfg, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(cfg.Hosted.OrganizationID), ID: id, Name: "Example publisher", Hash: apikey.HashToken(token), Scope: scope, NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(cfg.Hosted.OrganizationID), ID: id, Name: "Example publisher " + id, Hash: apikey.HashToken(token), Scope: scope, NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
 		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(cfg.Hosted.OrganizationID), TokenID: id, ProjectID: project})
@@ -117,6 +117,16 @@ func NativeChangeServiceCredential(t *testing.T, cfg hubserver.Config, project t
 }
 
 func NativeChangeRefreshBoard(ctx context.Context, service *hubserver.Service, organization tracker.OrganizationID) error {
+	for {
+		budget := (hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}).Context(ctx, hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
+		worked, err := service.MaintainWorkItemPage(budget, organization)
+		if err != nil {
+			return err
+		}
+		if !worked {
+			break
+		}
+	}
 	var after tracker.NativeWorkItemID
 	attempted := []tracker.NativeWorkItemID{}
 	for {

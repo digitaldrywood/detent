@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -102,6 +103,7 @@ func (s *session) Attempt(ctx context.Context, id string) (leasestore.Attempt, e
 
 func attemptFromPG(row pgquery.NativeAttempt) leasestore.Attempt {
 	result := leasestore.Attempt{
+		ClaimDisposition: row.ClaimDisposition, LocalAttemptIDRecorded: row.LocalAttemptIDRecorded,
 		OrganizationID: row.OrganizationID, ID: row.ID, IssueID: row.IssueID, LeaseID: row.LeaseID,
 		FencingToken: row.FencingToken, RunID: row.RunID, Sequence: row.Sequence, Status: row.Status,
 		WorkItemRevision: row.WorkItemRevision, DispatchGeneration: row.DispatchGeneration,
@@ -109,10 +111,31 @@ func attemptFromPG(row pgquery.NativeAttempt) leasestore.Attempt {
 		ArtifactsObjectKey: row.ArtifactsObjectKey, CleanupAcknowledgedAt: row.CleanupAcknowledgedAt,
 		StartedAt: row.StartedAt.Add(time.Duration(row.StartedAtSubmicroNs)), UpdatedAt: row.UpdatedAt, RuntimeHeartbeatAt: row.RuntimeHeartbeatAt,
 	}
+	if row.LocalAttemptID.Valid {
+		result.LocalAttemptID = row.LocalAttemptID.Int64
+	}
 	if row.RuntimeSummarySequence.Valid {
 		result.RuntimeSummarySequence = row.RuntimeSummarySequence.Int64
 	}
 	return result
+}
+
+func (s *session) LocalAttemptMatches(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, local int64) ([]string, error) {
+	if local <= 0 || project == "" || item == "" {
+		return nil, tracker.ErrInvalidClaimRequest
+	}
+	rows, err := s.queries.LocalAttemptMatches(ctx, pgquery.LocalAttemptMatchesParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, LocalAttemptID: pgtype.Int8{Int64: local, Valid: true}})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	matches := make([]string, 0, 2)
+	for _, row := range rows {
+		if row.CoverageUnknown {
+			return nil, leasestore.ErrLocalAttemptCoverageUnknown
+		}
+		matches = append(matches, row.ID)
+	}
+	return matches, nil
 }
 
 func (s *session) LatestAttempt(ctx context.Context, issueID int64) (leasestore.Attempt, error) {

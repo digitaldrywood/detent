@@ -1775,7 +1775,13 @@ With `native_runtime_evidence`, `GET /work-items/{item}/runtime` selects the
 latest fenced attempt or an exact `native_attempt_id` (typed native ID) or
 positive `attempt_id` (recorded local attempt ID). Selectors are mutually
 exclusive and ownership is scoped to the item and current project grant;
-ambiguous local IDs require the native selector. An absent selected attempt
+ambiguous local IDs require the native selector. The Hub records the local
+correlation from an accepted authenticated runtime observation, or from a
+verified execution import. Receipts expose this optional `local_attempt_id`
+independently of their latest runtime observation. Use `native_attempt_id` for
+attempts whose correlation was not recorded. Numeric absence or uniqueness is
+reported only when all retained attempts for the item have recorded correlation
+coverage; unknown historical coverage returns native-selector guidance. An absent selected attempt
 returns not found. An item with no recorded attempt returns explicit unavailable
 evidence. Older deployments return unsupported availability separately from
 grant denial.

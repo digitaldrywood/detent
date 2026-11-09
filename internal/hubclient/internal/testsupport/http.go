@@ -1,14 +1,8 @@
 package testsupport
 
 import (
-	"context"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-
-	"github.com/digitaldrywood/detent/internal/hubserver"
-	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 type RoundTrip func(*http.Request) (*http.Response, error)
@@ -23,7 +17,3 @@ func HandlerClient(handler http.Handler) *http.Client {
 		return recorder.Result(), nil
 	})}
 }
-
-var DatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
-	return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, Logger: slog.New(slog.DiscardHandler)})
-})

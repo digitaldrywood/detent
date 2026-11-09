@@ -18,7 +18,7 @@ import (
 
 func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("durable PostgreSQL integration")
 	}
 
 	t.Parallel()

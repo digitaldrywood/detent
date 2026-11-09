@@ -54,7 +54,7 @@ var dispatchPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *
 	if err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(migrations), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(migrations), goose.WithGoMigrations(postgres.ConversationMigrations(migrations)...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		return err
 	}
@@ -141,7 +141,7 @@ func dispatchPostgresConfig(t *testing.T, cfg hubserver.Config, admin *sql.DB, o
 			t.Error(err)
 		}
 	})
-	cfg.DatabaseBackend, cfg.DatabasePath = hubserver.DatabasePostgres, ""
+	cfg.DatabaseBackend = hubserver.DatabasePostgres
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}, LeaseClock: cfg.Clock}
 	cfg.Hosted = &hubserver.HostedConfig{OrganizationID: organization, WorkOSOrganizationID: provider, PublicURL: "https://hub.example.test", Provider: dispatchHostedProvider{member: auth.Membership{ID: membership, UserID: user, OrganizationID: provider, Status: "active"}}}
 	encoded, err := json.Marshal(map[string]string{"1": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x35}, 32))})

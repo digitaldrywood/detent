@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -139,6 +140,23 @@ func TestWorkItemDeletionRetainsHistoryAndReceipts(t *testing.T) {
 	}
 }
 
+func seedIdentityMigrationIssues(t *testing.T, admin *sql.DB, organization tracker.OrganizationID) {
+	t.Helper()
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, organization, historyAt()); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"first", "second"} {
+		for _, statement := range []string{
+			`INSERT INTO projects(organization_id,id,name,slug,profile) VALUES($1,'prj_'||$2,$2,$2,'native')`,
+			`INSERT INTO issues(organization_id,native_id,project_id,number,title,native_source_key) SELECT $1,'wi_'||$2||'_'||n,'prj_'||$2,n,'Example','source_'||n FROM generate_series(1,2) n`,
+		} {
+			if _, err := admin.ExecContext(t.Context(), statement, organization, suffix); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 	const migrationVersion = 20261107060339
 	admin, fixture := migrationDatabaseAtVersion(t, migrationVersion-1)
@@ -157,7 +175,7 @@ func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 		}
 	})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		seedIdentityMigrationIssues(t, admin, org)
 	}
 	if _, err := provider.UpTo(t.Context(), migrationVersion); err != nil {
 		t.Fatal(err)
@@ -393,23 +411,27 @@ func TestRetainedIdentityMigrationIncludesConcurrentIssueCreation(t *testing.T) 
 		}
 	})
 	admin.SetMaxOpenConns(2)
-	seedRepository(t, repository, "org_first")
+	seedIdentityMigrationIssues(t, admin, "org_first")
+	runtime := runtimeFor(t, pool, pool)
 	inserted, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	writer := startRepositoryTask(t, func(ctx context.Context) error {
-		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
-			if _, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: "org_first", ProjectID: "prj_first", NativeID: "wi_during_migration", Number: 3, Title: "Example"}); err != nil {
-				return err
-			}
-			close(inserted)
-			select {
-			case <-release:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		})
+		tx, err := runtime.Begin(ctx, "org_first", pgtransport.Options{})
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `INSERT INTO issues(organization_id,project_id,native_id,number,title) VALUES('org_first','prj_first','wi_during_migration',3,'Example')`); err != nil {
+			return err
+		}
+		close(inserted)
+		select {
+		case <-release:
+			return tx.Commit(ctx)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	})
 	waitRepositorySignal(t, inserted)
 	migration := startRepositoryTask(t, func(ctx context.Context) error { _, err := provider.UpTo(ctx, migrationVersion); return err })

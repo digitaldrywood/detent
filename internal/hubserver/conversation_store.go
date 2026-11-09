@@ -102,12 +102,13 @@ type conversationRecord struct {
 	// the permission set of the turn that opened it, so only a turn of the
 	// same kind resumes it. It is empty for threads
 	// recorded before the column existed, which therefore never resume.
-	ProviderThreadOrigin string
-	Execution            conversation.Execution
-	EventSeq             int64
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	LastMessageAt        *time.Time
+	ProviderThreadOrigin  string
+	Execution             conversation.Execution
+	ExecutionContinuation bool
+	EventSeq              int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	LastMessageAt         *time.Time
 	// SettledAt is when the conversation last became settled, nil while it
 	// is active.
 	SettledAt *time.Time
@@ -1257,106 +1258,4 @@ WHERE r.message_id IN (SELECT value FROM sql_rows(?)) ORDER BY r.message_id, r.r
 		message.References = byMessage[message.ID]
 	}
 	return nil
-}
-
-// workItemReference is one "referenced from" entry the target's activity
-// shows: which message in which conversation named it, and when.
-type workItemReference struct {
-	MessageID      string
-	ConversationID string
-	Excerpt        string
-	CreatedAt      time.Time
-	// Visibility and OwnerPrincipalID let the caller apply the conversation
-	// read rule: a private chat is invisible to anyone but its owner.
-	Visibility       conversation.Visibility
-	OwnerPrincipalID string
-	ReadAudience     string
-}
-
-// listWorkItemReferences returns the messages that reference a work item,
-// newest first, with the conversation audience of each so the caller can
-// drop the ones the reader may not see.
-func (s *conversationStore) listWorkItemReferences(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, project tracker.ProjectID, workItemID string, limit int) ([]workItemReference, error) {
-	if limit <= 0 {
-		limit = conversationReferencePage
-	}
-	rows, err := query.QueryContext(ctx, `SELECT r.message_id, r.conversation_id, m.text, r.created_at, c.visibility, c.owner_principal_id, c.read_audience, m.content_attachment_id, m.role, COALESCE(m.text_bytes,length(CAST(m.text AS BLOB)))
-FROM message_references r
-JOIN conversation_messages m ON m.id = r.message_id
-JOIN conversations c ON c.id = r.conversation_id
-WHERE r.target_kind = 'issue' AND r.target_id = ? AND c.organization_id = ? AND c.project_id = ?
-ORDER BY r.created_at DESC, r.message_id DESC LIMIT ?`, workItemID, organization, project, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list work item references: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	references := make([]workItemReference, 0, limit)
-	var messages []*conversationMessageRecord
-	for rows.Next() {
-		var reference workItemReference
-		var message conversationMessageRecord
-		var created string
-		if err := rows.Scan(&reference.MessageID, &reference.ConversationID, &reference.Excerpt, &created, &reference.Visibility, &reference.OwnerPrincipalID, &reference.ReadAudience, &message.ContentID, &message.Role, &message.TextBytes); err != nil {
-			return nil, fmt.Errorf("list work item references: %w", err)
-		}
-		if reference.CreatedAt, err = parseTimeValue(created); err != nil {
-			return nil, fmt.Errorf("decode reference %s created_at: %w", reference.MessageID, err)
-		}
-		message.ID, message.ConversationID, message.Text = reference.MessageID, reference.ConversationID, reference.Excerpt
-		messages = append(messages, &message)
-		references = append(references, reference)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("list work item references: %w", err)
-	}
-	if err := s.resolveMessageContents(withConversationArchiveReads(ctx), query, messages); err != nil {
-		return nil, err
-	}
-	for index, message := range messages {
-		references[index].Excerpt = message.Text
-	}
-	return references, nil
-}
-
-// listSettleCandidates returns the active conversations whose execution has
-// ended or never started and whose last activity is older than before. The
-// sweep settles them one transaction at a time, so the list is bounded.
-func (s *conversationStore) listSettleCandidates(ctx context.Context, query nativeQueryer, before time.Time, limit int) ([]conversationRecord, error) {
-	if limit <= 0 {
-		limit = conversationSettleBatch
-	}
-	rows, err := query.QueryContext(ctx, "SELECT "+conversationReadColumns+` FROM conversations
-WHERE status = 'active' AND COALESCE(last_message_at, updated_at) < ?
- AND (execution_status IS NULL OR execution_status IN (?, ?, ?, ?, ?))
-ORDER BY COALESCE(last_message_at, updated_at) LIMIT ?`, conversationTime(before),
-		conversation.ExecutionIdle, conversation.ExecutionCompleted, conversation.ExecutionInterrupted,
-		conversation.ExecutionFailed, conversation.ExecutionUnknown, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list settle candidates: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	records := make([]conversationRecord, 0, limit)
-	for rows.Next() {
-		record, err := scanConversation(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list settle candidates: %w", err)
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list settle candidates: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	settled := records[:0]
-	for i := range records {
-		if err := s.resolveConversationRecord(ctx, query, &records[i]); err != nil {
-			return nil, err
-		}
-		if records[i].Execution.Status == conversation.ExecutionIdle || records[i].Execution.Status.Terminal() {
-			settled = append(settled, records[i])
-		}
-	}
-	return settled, nil
 }

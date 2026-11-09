@@ -20,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -28,10 +27,7 @@ import (
 func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	newNativeChangeHubWithStates := func(t *testing.T, review string, states []tracker.NativeState) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, false, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
-	}
-	if testing.Short() {
-		t.Skip("git subprocess integration")
+		return newNativeChangeHubConfigured(t, review, states, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}, factories)
 	}
 	t.Setenv("TMPDIR", t.TempDir())
 	isolateNativeChangeGit(t)
@@ -120,12 +116,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						}
 					}
 				}
-				runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer runtimeStore.Close()
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -265,7 +256,18 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}); err != nil {
 				t.Fatal(err)
 			}
-			h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: "machine-air", Hostname: "Air", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+			h.native = h.otherWorker(t)
+			h.connector.worker, err = NewNativeConnector(h.native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, err := h.native.Transport().RunnerIdentity(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			machine := fixtureSchedulerMachine(h.scheduler)
+			machine.ID = identity.MachineID
+			h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -371,28 +373,14 @@ func RunNativeSourceResumesWithoutPreviousRuntime(t *testing.T, factories Constr
 		name          string
 		loseWorkspace bool
 	}{
-		{name: "previous database missing"},
-		{name: "previous database and workspace missing", loseWorkspace: true},
+		{name: "fresh runner"},
+		{name: "fresh runner without previous workspace", loseWorkspace: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			issue := h.createInProgress(t, "Resume published source")
 			h.claim(t, issue.ID)
 			firstMachine := h.scheduler.RunExecution(issue.ID).Recovery().Lease.MachineID
-			oldDatabase := nativeRuntimeDatabasePath(t)
-			firstStore, err := store.Open(t.Context(), store.Config{Path: oldDatabase})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := firstStore.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			attemptID, err := firstStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "local", IssueID: issue.ID, WorkerType: "agent", StartedAt: time.Now()})
-			if err != nil {
-				t.Fatal(err)
-			}
 			firstWorkspace := nativeChangeSourceRepo(t)
 			head := func(path string) string {
 				data, err := exec.CommandContext(t.Context(), "git", "-C", path, "rev-parse", "HEAD").Output()
@@ -432,36 +420,32 @@ func RunNativeSourceResumesWithoutPreviousRuntime(t *testing.T, factories Constr
 			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "checkpointed"); err != nil {
 				t.Fatal(err)
 			}
-			if err := firstStore.Close(); err != nil {
-				t.Fatal(err)
-			}
-			missing := []string{oldDatabase}
+			h.restart()
 			if tc.loseWorkspace {
-				missing = append(missing, firstWorkspace)
-			}
-			for _, path := range missing {
-				if err := os.Rename(path, path+"-unavailable"); err != nil {
+				if err := os.Rename(firstWorkspace, firstWorkspace+"-unavailable"); err != nil {
 					t.Fatal(err)
 				}
 			}
-			secondStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
+			h.native = h.otherWorker(t)
+			h.connector.worker, err = NewNativeConnector(h.native)
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() {
-				if err := secondStore.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			if _, err := secondStore.WorkAttempt(t.Context(), attemptID); !errors.Is(err, store.ErrNotFound) {
-				t.Fatalf("fresh runner inherited a local attempt: %v", err)
+			identity, err := h.native.Transport().RunnerIdentity(t.Context())
+			if err != nil {
+				t.Fatal(err)
 			}
-			h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: "machine-second", Hostname: "example", Capacity: 1, Version: "test"}, HeartbeatInterval: h.scheduler.HeartbeatInterval(), LeaseTTL: h.scheduler.LeaseDuration()})
+			machine := fixtureSchedulerMachine(h.scheduler)
+			machine.ID = identity.MachineID
+			h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: h.scheduler.HeartbeatInterval(), LeaseTTL: h.scheduler.LeaseDuration()})
 			if err != nil {
 				t.Fatal(err)
 			}
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
+			if data := execution.(*ownedExecution).CompletionData(); data.Sequence != 0 || data.Identity != nil {
+				t.Fatalf("fresh runner inherited prior execution authority: %+v", data)
+			}
 			if execution.Recovery().Lease.MachineID == firstMachine {
 				t.Fatal("second runner reused the first machine identity")
 			}
@@ -488,8 +472,8 @@ func RunNativeSourceResumesWithoutPreviousRuntime(t *testing.T, factories Constr
 			if err != nil || string(data) != "published work\n" {
 				t.Fatalf("fresh workspace lost published bytes: %q, %v", data, err)
 			}
-			for _, path := range missing {
-				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			if tc.loseWorkspace {
+				if _, err := os.Stat(firstWorkspace); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("recovery recreated old runner state: %v", err)
 				}
 			}

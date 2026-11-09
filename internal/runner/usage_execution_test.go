@@ -62,7 +62,7 @@ func TestTurnUsageEntry(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got, ok := turnUsageEntry(test.result, test.sessionModel, test.backendKind, func(string, int64, int64, int64, string) float64 { return 0 })
+			got, ok := turnUsageEntry(test.result, test.sessionModel, test.backendKind, func(string, int64, int64, int64, string) float64 { return 0 }, false)
 			if ok != (test.want != tracker.NativeUsage{}) {
 				t.Fatalf("turnUsageEntry() reported = %t, want %t", ok, !ok)
 			}
@@ -81,7 +81,7 @@ func TestTurnUsageEntryPricesTheTurn(t *testing.T) {
 	entry, ok := turnUsageEntry(result, "gpt-6-astra", "codex", func(model string, input, cached, output int64, kind string) float64 {
 		sawModel, sawKind, sawInput, sawCached, sawOutput = model, kind, input, cached, output
 		return 0.125
-	})
+	}, false)
 	if !ok {
 		t.Fatal("turnUsageEntry() reported nothing for a turn that spent tokens")
 	}
@@ -122,21 +122,77 @@ func TestReportTurnUsage(t *testing.T) {
 }
 
 func TestTurnUsageReporter(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		started        bool
+		refused        bool
+		finished       bool
+		model          string
+		source         string
+		want           int
+		wantError      bool
+		authorityError bool
+	}{
+		{name: "finished provider session", started: true, finished: true, model: "model", source: "session_42", want: 1},
+		{name: "started but refused", started: true, refused: true, finished: true, model: "model", source: "session_42"},
+		{name: "zero receipt authority refused", started: true, finished: true, model: "model", source: "session_42", want: 1, wantError: true, authorityError: true},
+		{name: "refused start", refused: true, finished: true, model: "model", source: "session_42"},
+		{name: "no observed start", finished: true, model: "model", source: "session_42"},
+		{name: "running zero usage", started: true, model: "auto", source: "session_42"},
+		{name: "no model", started: true, finished: true, source: "session_42"},
+		{name: "no session identity", started: true, finished: true, model: "model", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execution := &recordingUsageExecution{}
+			if test.authorityError {
+				execution.err = ErrExecutionAuthorityUnavailable
+			}
+			reporter := turnUsageReporter{sourceID: test.source, startedAt: time.Now()}
+			result := RunResult{TurnStarted: test.started, TurnStartRefused: test.refused}
+			err := reporter.report(t.Context(), execution, result, test.model, "codex", nil, test.finished)
+			if (err != nil) != test.wantError || len(execution.entries) != test.want {
+				t.Fatalf("zero usage entries = %+v, error = %v; want %d entries, error %t", execution.entries, err, test.want, test.wantError)
+			}
+			if test.authorityError && !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+				t.Fatalf("lost authority refusal: %v", err)
+			}
+			if test.want == 1 && !test.wantError {
+				if err := reporter.report(t.Context(), execution, result, test.model, "codex", nil, true); err != nil || len(execution.entries) != 1 {
+					t.Fatalf("zero usage replay = %+v, error = %v", execution.entries, err)
+				}
+				result.Tokens.InputTokens = 10
+				if err := reporter.report(t.Context(), execution, result, test.model, "codex", nil, true); err != nil || len(execution.entries) != 2 || execution.entries[1].Input != 10 || execution.entries[1].Revision != 2 || execution.entries[1].SourceID != test.source {
+					t.Fatalf("later usage = %+v, error = %v", execution.entries, err)
+				}
+			}
+		})
+	}
+	t.Run("final resolved model replaces silent alias", func(t *testing.T) {
+		execution := &recordingUsageExecution{}
+		reporter := turnUsageReporter{sourceID: "session_42", startedAt: time.Now()}
+		result := RunResult{TurnStarted: true}
+		if err := reporter.report(t.Context(), execution, result, "auto", "codex", nil, false); err != nil || len(execution.entries) != 0 {
+			t.Fatalf("unresolved running usage = %+v, error = %v", execution.entries, err)
+		}
+		result.Model = "resolved-model"
+		if err := reporter.report(t.Context(), execution, result, "auto", "codex", nil, true); err != nil || len(execution.entries) != 1 || execution.entries[0].Model != "resolved-model" {
+			t.Fatalf("final resolved usage = %+v, error = %v", execution.entries, err)
+		}
+	})
 	execution := &recordingUsageExecution{}
 	reporter := turnUsageReporter{sourceID: "session_42", startedAt: time.Now()}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	price := func(_ string, input, _, output int64, _ string) float64 { return float64(input+output) / 1000 }
 	result := RunResult{Tokens: TokenTotals{InputTokens: 100, OutputTokens: 10}}
-	reporter.report(t.Context(), execution, result, "test-model", "codex", price, logger)
+	reporter.report(t.Context(), execution, result, "test-model", "codex", price, false)
 	if len(execution.entries) != 1 || execution.entries[0].Input != 100 || execution.entries[0].CostEstimate <= 0 {
 		t.Fatalf("running turn usage = %+v", execution.entries)
 	}
-	reporter.report(t.Context(), execution, result, "test-model", "codex", price, logger)
+	reporter.report(t.Context(), execution, result, "test-model", "codex", price, false)
 	result.Tokens.InputTokens, result.Tokens.OutputTokens = 150, 15
-	reporter.report(t.Context(), execution, result, "test-model", "codex", price, logger)
+	reporter.report(t.Context(), execution, result, "test-model", "codex", price, false)
 	paid := int64(25000)
 	result.ReportedCostMicros, result.CostSource = &paid, "provider"
-	reporter.report(t.Context(), execution, result, "test-model", "codex", price, logger)
+	reporter.report(t.Context(), execution, result, "test-model", "codex", price, false)
 	if len(execution.entries) != 3 || execution.entries[2].Input != 150 || execution.entries[2].Output != 15 || execution.entries[2].ReportedCostMicros == nil || *execution.entries[2].ReportedCostMicros != paid {
 		t.Fatalf("cumulative turn observations lost final totals: %+v", execution.entries)
 	}
@@ -145,11 +201,11 @@ func TestTurnUsageReporter(t *testing.T) {
 	}
 	failing := &recordingUsageExecution{err: ErrExecutionAuthorityUnavailable}
 	reporter = turnUsageReporter{sourceID: "session_42", startedAt: time.Now()}
-	if err := reporter.report(t.Context(), failing, result, "test-model", "codex", price, logger); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+	if err := reporter.report(t.Context(), failing, result, "test-model", "codex", price, false); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("revoked usage publication did not fail execution: %v", err)
 	}
 	result.Tokens.InputTokens, result.Tokens.OutputTokens = 175, 18
-	if err := reporter.report(t.Context(), failing, result, "test-model", "codex", price, logger); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+	if err := reporter.report(t.Context(), failing, result, "test-model", "codex", price, false); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("revoked usage refusal was lost: %v", err)
 	}
 	if len(failing.entries) != 2 || failing.entries[0].SourceID != failing.entries[1].SourceID || failing.entries[1].Input != 175 || failing.entries[1].Output != 18 {

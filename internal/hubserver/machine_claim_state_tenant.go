@@ -19,8 +19,14 @@ func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope na
 		return nativeRunEventStorageUnavailable()
 	}
 	key := releasedExecutionCursorKey{organization: scope.organization, project: scope.project, runner: snapshot.RunnerID}
-	position, _ := s.cleanupPollCursors.Load(key)
-	after, _ := position.(string)
+	var after string
+	if position, found := s.cleanupPollCursors.Load(key); found {
+		var ok bool
+		after, ok = position.(string)
+		if !ok {
+			return errors.New("runner cleanup cursor has invalid type")
+		}
+	}
 	var page runnerstore.ClaimStatePage
 	var candidates []tenantAttemptSnapshot
 	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -127,6 +133,9 @@ func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope na
 func registrationCleanupRequired(candidate tenantAttemptSnapshot, run tracker.NativeRunData, runner string) (bool, error) {
 	if !nativeAttemptRunMatches(candidate, run) || run.RunnerID != runner {
 		return false, artifact.ErrIntegrity
+	}
+	if candidate.attempt.CleanupAcknowledgedAt != nil {
+		return false, nil
 	}
 
 	if run.Identity == nil || run.Identity.Role == "" || run.Runtime == nil || run.Runtime.WorkerLaunch == nil {

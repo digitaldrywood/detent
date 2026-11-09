@@ -2,10 +2,13 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -72,8 +76,8 @@ func TestPostgresConversationDispatchReachesFencedRunner(t *testing.T) {
 	decodeHubResponse(t, otherResponse, &other)
 
 	startedAt := clock.Now().UTC()
-	const runnerID = "runner_runtime_example"
-	const machineID = "machine_runtime_example"
+	binding := runnerauth.NewBinding()
+	runnerID, machineID := binding.RunnerID, binding.MachineID
 	const credentialID = "credential_runtime_example"
 	const enrollmentID = "enrollment_runtime_example"
 	const token = "example_runtime_runner_token"
@@ -92,7 +96,7 @@ func TestPostgresConversationDispatchReachesFencedRunner(t *testing.T) {
 		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runnerID, machineID, startedAt); err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: machineID, Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: string(machineID), Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
 			return err
 		}
 		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runnerID, MachineID: machineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: startedAt, ExpiresAt: expires, LastHeartbeatAt: startedAt}); err != nil {
@@ -120,7 +124,7 @@ func TestPostgresConversationDispatchReachesFencedRunner(t *testing.T) {
 	}
 	commandPath := projectPath + "/" + string(project.ID) + "/conversations/" + conversationID + "/commands"
 	command := conversation.Command{Key: "continue-dispatch", Kind: conversation.CommandContinue, Text: "Continue the example"}
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, commandPath, testHubAdminToken, command), http.StatusOK)
+	requireNativeStatus(t, conversationCommandWithBlockedItem(t, service, repository, admin, organization.ID, project.ID, issue.WorkItemID, conversationID, commandPath, command), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, commandPath, testHubAdminToken, command), http.StatusOK)
 	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "dispatch-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	lease, err := service.claimNativeIssueTenant(t.Context(), scope, request, 5*time.Minute)
@@ -135,6 +139,9 @@ func TestPostgresConversationDispatchReachesFencedRunner(t *testing.T) {
 		attempt, err := r.Attempt(t.Context(), started.Data.AttemptID)
 		if err != nil {
 			return err
+		}
+		if attempt.ClaimDisposition == nil || *attempt.ClaimDisposition != "" {
+			t.Fatalf("current attempt did not record known claim disposition: %+v", attempt)
 		}
 		if attempt.DispatchGeneration != 1 || attempt.WorkItemRevision != lease.WorkItemRevision {
 			t.Fatalf("runner capture = %+v", attempt)
@@ -273,4 +280,87 @@ func (w conversationDispatchProbeWriter) LatestAttempt(ctx context.Context, id i
 		return leasestore.Attempt{}, err
 	}
 	return w.Writer.LatestAttempt(ctx, id)
+}
+
+type conversationCommandOrderRepository struct {
+	*postgres.Repository
+	attempted chan struct{}
+	once      sync.Once
+}
+
+type conversationCommandOrderWriter struct {
+	tenantstore.Writer
+	tenantstore.DispatchWriter
+	order *conversationCommandOrderRepository
+}
+
+func (r *conversationCommandOrderRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error {
+		return write(conversationCommandOrderWriter{Writer: w, DispatchWriter: w.(tenantstore.DispatchWriter), order: r})
+	})
+}
+
+func (w conversationCommandOrderWriter) LockWorkItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	w.order.once.Do(func() { close(w.order.attempted) })
+	return w.Writer.LockWorkItem(ctx, project, item)
+}
+
+func (w conversationCommandOrderWriter) LockLease(ctx context.Context, id string) (leasestore.Lease, error) {
+	return w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
+}
+
+func conversationCommandWithBlockedItem(t *testing.T, service *Service, repository *postgres.Repository, admin *sql.DB, organization tracker.OrganizationID, project tracker.ProjectID, item tracker.NativeWorkItemID, conversationID, path string, command conversation.Command) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	blocker, err := admin.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback()
+	var itemID int64
+	if err := blocker.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE`, organization, project, item).Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+	previous := service.config.TenantRepository
+	order := &conversationCommandOrderRepository{Repository: repository, attempted: make(chan struct{})}
+	service.config.TenantRepository = order
+	request := newHubAPIRequest(t, http.MethodPost, path, testHubAdminToken, command).WithContext(ctx)
+	response := httptest.NewRecorder()
+	finished := make(chan struct{})
+	joined := false
+	defer func() {
+		blocker.Rollback()
+		cancel()
+		if !joined {
+			<-finished
+		}
+		service.config.TenantRepository = previous
+	}()
+	go func() {
+		defer close(finished)
+		service.Handler().ServeHTTP(response, request)
+	}()
+	select {
+	case <-order.attempted:
+	case <-finished:
+		joined = true
+		t.Fatalf("conversation command did not wait for linked work item: %d %s", response.Code, response.Body.String())
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var lockedConversation string
+	if err := blocker.QueryRowContext(ctx, `SELECT id FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE NOWAIT`, organization, project, conversationID).Scan(&lockedConversation); err != nil {
+		t.Fatalf("conversation command locked conversation before work item: %v", err)
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+		joined = true
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	return response
 }

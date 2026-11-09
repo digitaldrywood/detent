@@ -132,6 +132,7 @@ type WorkItem struct {
 	DispatchRequestedAt    *time.Time
 	RecoveryRunnerID       string
 	RecoveryVersionID      string
+	DoctorIdentityRevision *int64 `json:"-"`
 }
 
 type Comment struct {

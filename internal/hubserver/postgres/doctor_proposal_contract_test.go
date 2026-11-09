@@ -22,6 +22,8 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 	repository, _ := repositoryFor(t, admin, smallPool())
 	content := eventstore.NewContent(newHistoryObjects())
 	filer := tracker.Actor{Kind: "human", PrincipalID: "example"}
+	marker := "<!-- detent:self-improvement proposal_id=example-lane -->"
+	identities := postgres.DeriveDoctorProposalIdentities(marker)
 	var requests []postgres.DoctorProposalInitialization
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
@@ -57,11 +59,11 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 				if number == 2 {
 					state = "Todo"
 				}
-				before, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 1}, historyJSON(t, map[string]any{"id": item, "project": project, "revision": 1, "state": state}))
+				before, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 1}, historyJSON(t, map[string]any{"id": item, "project": project, "revision": 1, "state": state, "body": marker}))
 				if err != nil {
 					t.Fatal(err)
 				}
-				after, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 2}, historyJSON(t, map[string]any{"id": item, "project": project, "revision": 2, "state": "Todo"}))
+				after, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 2}, historyJSON(t, map[string]any{"id": item, "project": project, "revision": 2, "state": "Todo", "body": marker}))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -78,8 +80,12 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 					if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project, NativeID: item, Number: number, Title: "Example proposal", ActorKind: new(filer.Kind), ActorPrincipalID: new(filer.PrincipalID), WorkflowStateName: new(state)}); err != nil {
 						return err
 					}
-					_, err := w.CreateCollaborationVersion(t.Context(), before)
-					return err
+					if _, err := w.CreateCollaborationVersion(t.Context(), before); err != nil {
+						return err
+					}
+					return w.(interface {
+						BindDoctorProposalIdentities(context.Context, postgres.DoctorProposalIdentityBinding) error
+					}).BindDoctorProposalIdentities(t.Context(), postgres.DoctorProposalIdentityBinding{OrganizationID: org, ProjectID: project, WorkItemID: item, Revision: 1, VersionSHA256: before.PayloadSHA256, Identities: identities})
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -100,9 +106,25 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 		}
 	}
 	invoke := func(arg postgres.DoctorProposalInitialization, change postgres.DoctorProposalApply) error {
-		return repository.WriteDoctorProposals(t.Context(), arg.OrganizationID, corestore.Serving, func(w postgres.DoctorProposalWriter) error {
-			_, err := w.InitializeDoctorProposalLane(t.Context(), arg, change)
-			return err
+		return repository.WriteDoctorProposalIdentities(t.Context(), arg.OrganizationID, corestore.Serving, func(w postgres.DoctorProposalIdentityWriter) error {
+			applied := false
+			var apply postgres.DoctorProposalApply
+			if change != nil {
+				apply = func(ctx context.Context, writer tenantstore.Writer) error {
+					if err := change(ctx, writer); err != nil {
+						return err
+					}
+					applied = true
+					return nil
+				}
+			}
+			if _, err := w.InitializeDoctorProposalLane(t.Context(), arg, apply); err != nil {
+				return err
+			}
+			if applied {
+				return w.BindDoctorProposalIdentities(t.Context(), postgres.DoctorProposalIdentityBinding{OrganizationID: arg.OrganizationID, ProjectID: arg.ProjectID, WorkItemID: arg.WorkItemID, Revision: arg.Version.Revision, VersionSHA256: arg.Version.PayloadSHA256, Identities: identities})
+			}
+			return nil
 		})
 	}
 	for _, arg := range requests {
@@ -221,6 +243,9 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 			revision, eventsWant := int64(2), 1
 			if arg.ExpectedState == arg.TargetState {
 				revision, eventsWant = 1, 0
+			}
+			if row.DoctorIdentityRevision == nil || *row.DoctorIdentityRevision != revision {
+				return errors.New("proposal initialization lost current identity coverage")
 			}
 			if row.Revision != revision || row.WorkflowStateName == nil || *row.WorkflowStateName != "Todo" || row.EventSequence != int64(eventsWant) {
 				t.Fatalf("durable initialized item=%+v", row)

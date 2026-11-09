@@ -1,13 +1,19 @@
 package postgres_test
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -85,21 +91,11 @@ func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
 	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	previous := 0
 	for _, history := range []int{2, 50} {
-		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attachments
-				(organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at,work_item_id,evidence_attempt_id,deleted_at)
-				SELECT $1,CASE WHEN scope='other_project' THEN 'prj_other' ELSE 'prj_shared' END,
-				scope||'_'||attempt||'_'||lpad(n::text,6,'0'),'first','example.txt','text/plain',1,repeat('a',64),
-				$2::timestamptz+((n-1)/2)*interval '1 second',
-				CASE WHEN scope='other_item' THEN 'wi_other' ELSE 'wi_shared' END,
-				CASE WHEN scope='other_attempt' THEN 'unrequested' ELSE 'attempt_'||attempt END,
-				CASE WHEN n%2=0 THEN $2::timestamptz ELSE NULL END
-				FROM (VALUES ('target'),('other_project'),('other_item'),('other_attempt')) scopes(scope)
-				CROSS JOIN LATERAL generate_series(1,CASE WHEN scope='target' THEN 50 ELSE 1 END) attempt
-				CROSS JOIN generate_series($3::int+1,$4::int) n`, org, historyAt(), previous*201, history*201); err != nil {
-				t.Fatal(err)
-			}
+		started := time.Now()
+		if err := copyAttemptEvidenceHistory(t.Context(), admin, previous*201+1, history*201); err != nil {
+			t.Fatal(err)
 		}
+		t.Logf("history=%d fixture load=%v", history, time.Since(started))
 		previous = history
 		if _, err := admin.ExecContext(t.Context(), `ANALYZE attachments`); err != nil {
 			t.Fatal(err)
@@ -203,4 +199,181 @@ func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
 			}
 		}
 	}
+}
+
+func copyAttemptEvidenceHistory(ctx context.Context, admin *sql.DB, first, last int) (resultErr error) {
+	connection, err := admin.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, connection.Close()) }()
+	return connection.Raw(func(driverConnection any) (resultErr error) {
+		native, ok := driverConnection.(*stdlib.Conn)
+		if !ok {
+			return errors.New("native PostgreSQL fixture connection is required")
+		}
+		tx, err := native.Conn().Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+				resultErr = errors.Join(resultErr, err)
+			}
+		}()
+		foreignKeys, err := attemptEvidenceForeignKeys(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, constraint := range foreignKeys {
+			if _, err := tx.Exec(ctx, "ALTER TABLE attachments DROP CONSTRAINT "+pgx.Identifier{constraint.name}.Sanitize()); err != nil {
+				return err
+			}
+		}
+		indexes, err := attemptEvidenceIndexes(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, index := range indexes {
+			if _, err := tx.Exec(ctx, "DROP INDEX "+pgx.Identifier{"public", index.name}.Sanitize()); err != nil {
+				return fmt.Errorf("defer history index: %w", err)
+			}
+		}
+		type group struct{ prefix, project, item, attempt string }
+		groups := make([]group, 0, 53)
+		for attempt := 1; attempt <= 50; attempt++ {
+			groups = append(groups, group{fmt.Sprintf("target_%d_", attempt), "prj_shared", "wi_shared", fmt.Sprintf("attempt_%d", attempt)})
+		}
+		groups = append(groups, group{"other_project_1_", "prj_other", "wi_shared", "attempt_1"}, group{"other_item_1_", "prj_shared", "wi_other", "attempt_1"}, group{"other_attempt_1_", "prj_shared", "wi_shared", "unrequested"})
+		organizations := []string{"org_first", "org_second"}
+		count := last - first + 1
+		ids := make([]string, count)
+		timestamps := make([]time.Time, count)
+		for i := range count {
+			n := first + i
+			ids[i] = strconv.Itoa(n)
+			if len(ids[i]) < 6 {
+				ids[i] = strings.Repeat("0", 6-len(ids[i])) + ids[i]
+			} else {
+				ids[i] = ids[i][:6]
+			}
+			timestamps[i] = historyAt().Add(time.Duration((n-1)/2) * time.Second)
+		}
+		perTenant := count * len(groups)
+		want := len(organizations) * perTenant
+		row := 0
+		values := []any{nil, nil, nil, "first", "example.txt", "text/plain", int64(1), strings.Repeat("a", 64), nil, nil, nil, nil}
+		copied, err := tx.CopyFrom(ctx, pgx.Identifier{"attachments"}, []string{"organization_id", "project_id", "id", "uploader", "name", "content_type", "size", "sha256", "created_at", "work_item_id", "evidence_attempt_id", "deleted_at"}, pgx.CopyFromFunc(func() ([]any, error) {
+			if row == want {
+				return nil, nil
+			}
+			tenant := row / perTenant
+			offset := row % perTenant
+			nIndex := offset / len(groups)
+			g := groups[offset%len(groups)]
+			values[0], values[1], values[2] = organizations[tenant], g.project, g.prefix+ids[nIndex]
+			values[8], values[9], values[10] = timestamps[nIndex], g.item, g.attempt
+			values[11] = nil
+			if (first+nIndex)%2 == 0 {
+				values[11] = historyAt()
+			}
+			row++
+			return values, nil
+		}))
+		if err != nil {
+			return fmt.Errorf("copy attempt history: %w", err)
+		}
+		if copied != int64(want) {
+			return fmt.Errorf("history rows=%d, want%d", copied, want)
+		}
+		for _, index := range indexes {
+			if _, err := tx.Exec(ctx, index.definition); err != nil {
+				return fmt.Errorf("build history index: %w", err)
+			}
+		}
+		restoredIndexes, err := attemptEvidenceIndexes(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(restoredIndexes, indexes) {
+			return errors.New("history index definitions changed")
+		}
+		for _, constraint := range foreignKeys {
+			if _, err := tx.Exec(ctx, "ALTER TABLE attachments ADD CONSTRAINT "+pgx.Identifier{constraint.name}.Sanitize()+" "+constraint.definition); err != nil {
+				return fmt.Errorf("validate history foreign key: %w", err)
+			}
+		}
+		restored, err := attemptEvidenceForeignKeys(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(restored, foreignKeys) {
+			return errors.New("history foreign key definitions changed")
+		}
+		return tx.Commit(ctx)
+	})
+}
+
+type attemptEvidenceForeignKey struct{ name, definition string }
+
+type attemptEvidenceIndex struct{ name, definition string }
+
+func attemptEvidenceIndexes(ctx context.Context, tx pgx.Tx) ([]attemptEvidenceIndex, error) {
+	rows, err := tx.Query(ctx, `SELECT c.relname,pg_get_indexdef(i.indexrelid),i.indisvalid AND i.indisready
+FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
+WHERE i.indrelid='public.attachments'::regclass AND NOT i.indisprimary AND NOT i.indisunique
+ AND NOT EXISTS(SELECT 1 FROM pg_constraint k WHERE k.conindid=i.indexrelid)
+ORDER BY c.relname`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var indexes []attemptEvidenceIndex
+	for rows.Next() {
+		var index attemptEvidenceIndex
+		var ready bool
+		if err := rows.Scan(&index.name, &index.definition, &ready); err != nil {
+			return nil, err
+		}
+		if !ready {
+			return nil, errors.New("history fixture requires valid indexes")
+		}
+		indexes = append(indexes, index)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(indexes) == 0 {
+		return nil, errors.New("history fixture indexes are missing")
+	}
+	return indexes, nil
+}
+
+func attemptEvidenceForeignKeys(ctx context.Context, tx pgx.Tx) ([]attemptEvidenceForeignKey, error) {
+	rows, err := tx.Query(ctx, `SELECT conname,pg_get_constraintdef(oid),convalidated FROM pg_constraint WHERE conrelid='attachments'::regclass AND contype='f' ORDER BY conname`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var constraints []attemptEvidenceForeignKey
+	for rows.Next() {
+		var constraint attemptEvidenceForeignKey
+		var validated bool
+		if err := rows.Scan(&constraint.name, &constraint.definition, &validated); err != nil {
+			return nil, err
+		}
+		if !validated {
+			return nil, errors.New("history fixture requires validated foreign keys")
+		}
+		constraints = append(constraints, constraint)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(constraints) == 0 {
+		return nil, errors.New("history fixture foreign keys are missing")
+	}
+	return constraints, nil
 }

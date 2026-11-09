@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -21,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Service) getNativeRecoveryTenant(c echo.Context, params url.Values) error {
@@ -91,6 +92,7 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	var events []eventstore.Event
 	var mergeHistoryTruncated bool
 	var projectSequence int64
+	var continuationEligible *bool
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return tracker.NativeRecovery{}, nativeRunEventStorageUnavailable()
@@ -112,6 +114,13 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 		}
 		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
+		}
+		eligible, known, err := readRunnerRecoveryEligibility(ctx, r, scope, row.NativeID)
+		if err != nil {
+			return err
+		}
+		if known {
+			continuationEligible = &eligible
 		}
 		version, err = r.CollaborationVersion(ctx, item, row.Revision)
 		if err != nil {
@@ -368,6 +377,7 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	if err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &result.Issue); err != nil {
 		return result, fmt.Errorf("hydrate recovery work item relationships: %w", err)
 	}
+	result.ContinuationEligible = continuationEligible
 	result.Issue.OmittedFields = append(result.Issue.OmittedFields, "change_sequence")
 	if change.ID != "" {
 		var detail tracker.ChangeDetail
@@ -616,13 +626,13 @@ func (s *Service) readNativeRecoveryPageTenant(ctx context.Context, scope native
 	}
 	page := &tracker.NativeRecoveryPage{NativeReference: issue.NativeReference, Section: "complete"}
 	for selection.Section < 8 {
-		sequence, section, id, versionID, raw, err := s.readRecoveryEvidenceRecordTenant(ctx, scope, row, change, issue.Body, selection)
+		sequence, section, id, versionID, raw, err := s.readRecoveryEvidenceRecordTenant(ctx, scope, row, change, issue.Body, &selection)
 		if errors.Is(err, sql.ErrNoRows) {
 			if selection.Offset != 0 {
 				return tracker.NativeRecovery{}, nativeConflict(0)
 			}
 			selection.Section++
-			selection.After, selection.Offset, selection.Digest = 0, 0, ""
+			selection.After, selection.Offset, selection.Digest, selection.Attempt = 0, 0, "", nil
 			continue
 		}
 		if err != nil {
@@ -634,7 +644,7 @@ func (s *Service) readNativeRecoveryPageTenant(ctx context.Context, scope native
 		}
 		end := page.Offset + int64(len(page.Data))
 		if end == int64(len(raw)) {
-			selection.After, selection.Offset, selection.Digest = sequence, 0, ""
+			selection.After, selection.Offset, selection.Digest, selection.Attempt = sequence, 0, "", nil
 		} else {
 			selection.Offset, selection.Digest = end, page.SHA256
 		}
@@ -652,7 +662,7 @@ func (s *Service) readNativeRecoveryPageTenant(ctx context.Context, scope native
 	return tracker.NativeRecovery{Continuation: page}, nil
 }
 
-func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope nativeScope, item corestore.WorkItem, change eventstore.Change, body string, cursor recoveryEvidenceCursor) (int64, string, string, string, []byte, error) {
+func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope nativeScope, item corestore.WorkItem, change eventstore.Change, body string, cursor *recoveryEvidenceCursor) (int64, string, string, string, []byte, error) {
 	var sequence int64
 	var section, id, versionID string
 	var hydrate func() ([]byte, error)
@@ -747,10 +757,14 @@ func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope na
 			}
 			sequence, section, id = row.FencingToken, "attempts", row.ID
 			hydrate = func() ([]byte, error) {
-				value, err := s.readNativeAttemptTenant(ctx, scope, string(item.NativeID), row.ID)
+				if cursor.Offset > 0 && cursor.Attempt == nil {
+					return nil, nativeConflict(tracker.Revision(item.Revision))
+				}
+				value, pin, err := s.readRetainedAttemptTenant(ctx, scope, string(item.NativeID), row.ID, cursor.Attempt)
 				if err != nil {
 					return nil, err
 				}
+				cursor.Attempt = pin
 				return json.Marshal(value)
 			}
 		case 5:

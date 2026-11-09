@@ -273,7 +273,7 @@ func (i *AccessImporter) Step(ctx context.Context, limit int) (AccessImportProgr
 			return err
 		}
 		count := result.RowsAffected()
-		if err != nil || count != 1 {
+		if count != 1 {
 			return corestore.ErrRevisionConflict
 		}
 		progress = AccessImportProgress{Processed: next.processed, Done: next.done}

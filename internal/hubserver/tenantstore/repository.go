@@ -72,6 +72,8 @@ type ClaimPreviewPlanRowsReader interface {
 }
 
 type ClaimPreviewPlanRow struct {
+	Observations         *ChangeVersionRows
+	ReviewPolicy         *eventstore.ReviewPolicy
 	Err                  error
 	Item                 corestore.WorkItem
 	Version              eventstore.CollaborationVersion

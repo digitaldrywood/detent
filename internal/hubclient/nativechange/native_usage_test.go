@@ -37,6 +37,7 @@ func TestMergeNativeUsage(t *testing.T) {
 	observed.SourceID, observed.UsageKind, observed.Revision = "session_42", "incremental", 1
 	grown := observed
 	grown.Input, grown.Output, grown.Revision = 150, 30, 2
+	started := tracker.NativeUsage{Provider: "codex", Model: "gpt-6-astra", Currency: "USD", SourceID: "session_42", UsageKind: "incremental", Revision: 1}
 	cases := []struct {
 		name     string
 		existing []tracker.NativeUsage
@@ -44,6 +45,9 @@ func TestMergeNativeUsage(t *testing.T) {
 		want     []tracker.NativeUsage
 	}{
 
+		{name: "witnessed zero usage retains the session", entry: started, want: []tracker.NativeUsage{started}},
+		{name: "zero usage replay retains one session", existing: []tracker.NativeUsage{started}, entry: started, want: []tracker.NativeUsage{started}},
+		{name: "later tokens replace the zero session", existing: []tracker.NativeUsage{started}, entry: observed, want: []tracker.NativeUsage{observed}},
 		{name: "stable observation replay never doubles tokens", existing: []tracker.NativeUsage{observed}, entry: observed, want: []tracker.NativeUsage{observed}},
 		{name: "later observation replaces cumulative totals", existing: []tracker.NativeUsage{observed}, entry: grown, want: []tracker.NativeUsage{grown}},
 		{name: "older observation cannot lose accepted totals", existing: []tracker.NativeUsage{grown}, entry: observed, want: []tracker.NativeUsage{grown}},

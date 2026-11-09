@@ -1,13 +1,20 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/diffbody"
@@ -15,10 +22,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -161,7 +170,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 			},
 		}
 		path := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/attempts/"+fixture.attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
-		response := performHubAPIRequest(t, service, http.MethodPost, path, workerToken, request)
+		response := postAttemptDiffWithConcurrentAuthority(t, service, admin, organization, tokenID, path, workerToken, request, index == 0)
 		requireNativeStatus(t, response, http.StatusAccepted)
 		var receipt tracker.AttemptDiffReceipt
 		if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil || !receipt.Accepted || receipt.FileCount != 3 {
@@ -222,15 +231,11 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 		if !diff.Truncated || !diff.Files[2].Truncated || len(diff.Files[2].Patch) != tracker.MaxDiffPatchBytes || diff.Files[2].Additions != 5 {
 			t.Fatal("stored diff lost patch truncation or counts")
 		}
-		func() {
-			legacy := service.database
-			service.database = nil
-			defer func() { service.database = legacy }()
-			direct, err := service.readAttemptDiff(t.Context(), nativeScope{organization: organization, project: project}, string(fixture.item), fixture.attempt.ID, tracker.DiffSourceAttempt, 1)
-			if err != nil || direct.ID != receipt.DiffID || len(direct.Files) != 3 || direct.Files[0].Patch != "+example" {
-				t.Fatalf("diff without legacy database=%+v error=%v", direct, err)
-			}
-		}()
+		reader := &Service{config: Config{TenantRepository: repository, RunDetails: service.runDetailStore()}}
+		direct, err := reader.readAttemptDiff(t.Context(), nativeScope{organization: organization, project: project}, string(fixture.item), fixture.attempt.ID, tracker.DiffSourceAttempt, 1)
+		if err != nil || direct.ID != receipt.DiffID || len(direct.Files) != 3 || direct.Files[0].Patch != "+example" {
+			t.Fatalf("diff without legacy database=%+v error=%v", direct, err)
+		}
 		itemPath := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/work-items/"+string(fixture.item)+"/diff", ":organization", string(organization)), ":project", string(project))
 		itemRead := performHubAPIRequest(t, service, http.MethodGet, itemPath, workerToken, nil)
 		requireNativeStatus(t, itemRead, http.StatusOK)
@@ -443,4 +448,111 @@ func TestAttemptDiffReadsRequireTypedOwner(t *testing.T) {
 			}
 		})
 	}
+}
+
+type attemptDiffOrderRepository struct {
+	*postgres.Repository
+	attempting chan struct{}
+	once       sync.Once
+}
+
+type attemptDiffOrderWriter struct {
+	tenantstore.Writer
+	order *attemptDiffOrderRepository
+}
+
+func (r *attemptDiffOrderRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error {
+		return write(attemptDiffOrderWriter{Writer: w, order: r})
+	})
+}
+
+func (w attemptDiffOrderWriter) RunnerIdentityByCredential(ctx context.Context, id string) (runnerstore.Identity, error) {
+	w.order.once.Do(func() { close(w.order.attempting) })
+	return w.Writer.RunnerIdentityByCredential(ctx, id)
+}
+
+func postAttemptDiffWithConcurrentAuthority(t *testing.T, service *Service, admin *sql.DB, organization tracker.OrganizationID, credentialID, path, token string, body tracker.AttemptDiffRequest, blockedIdentity bool) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	blocker, err := admin.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback()
+	var blockerPID int
+	if err := blocker.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatal(err)
+	}
+	query := `SELECT id FROM api_tokens WHERE organization_id=$1 AND id=$2 FOR SHARE`
+	if blockedIdentity {
+		query = `SELECT runner_id FROM runner_identities WHERE organization_id=$1 AND token_id=$2 FOR UPDATE`
+	}
+	var lockedID string
+	if err := blocker.QueryRowContext(ctx, query, organization, credentialID).Scan(&lockedID); err != nil {
+		t.Fatal(err)
+	}
+	order := &attemptDiffOrderRepository{Repository: service.config.TenantRepository.(*postgres.Repository), attempting: make(chan struct{})}
+	fixture := &Service{config: service.config, database: service.database, echo: echo.New()}
+	fixture.config.TenantRepository = order
+	fixture.registerNativeRoutes(fixture.echo)
+	request := newHubAPIRequest(t, http.MethodPost, path, token, body).WithContext(ctx)
+	response := httptest.NewRecorder()
+	finished := make(chan struct{})
+	joined := false
+	defer func() {
+		blocker.Rollback()
+		cancel()
+		if !joined {
+			<-finished
+		}
+	}()
+	go func() {
+		defer close(finished)
+		fixture.echo.ServeHTTP(response, request)
+	}()
+	if blockedIdentity {
+		select {
+		case <-order.attempting:
+		case <-finished:
+			joined = true
+			t.Fatalf("attempt diff did not wait for runner authority: %d %s", response.Code, response.Body.String())
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		if err := blocker.QueryRowContext(ctx, `SELECT id FROM api_tokens WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT`, organization, credentialID).Scan(&lockedID); err != nil {
+			t.Fatalf("attempt diff locked credential before runner authority: %v", err)
+		}
+	} else {
+		blocked := false
+		testenv.WaitUntil(t, ctx, func() error {
+			select {
+			case <-finished:
+				joined = true
+				return nil
+			default:
+			}
+			if err := admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))`, blockerPID).Scan(&blocked); err != nil {
+				return err
+			}
+			if blocked {
+				return nil
+			}
+			return fmt.Errorf("attempt diff has not completed alongside shared credential validation")
+		})
+		if blocked {
+			t.Fatal("attempt diff requested exclusive credential ownership during shared validation")
+		}
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+		joined = true
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	return response
 }

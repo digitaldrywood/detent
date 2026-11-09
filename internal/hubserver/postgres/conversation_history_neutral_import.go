@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
@@ -49,6 +50,12 @@ func readNeutralConversationHistoryPage(ctx context.Context, source Conversation
 			return nil, storagecatalog.ErrValue
 		}
 		row := conversationSourceRow{rowID: raw.SourceRowID, cursor: raw.Ordinal, cells: raw.Values}
+		if table.source == "conversation_events" {
+			sequence, err := strconv.ParseInt(cellText(raw.Values["seq"]), 10, 64)
+			if err != nil || sequence <= 0 {
+				return nil, storagecatalog.ErrValue
+			}
+		}
 		parent, err := neutralConversationParent(ctx, source, table.source, raw)
 		if err != nil {
 			return nil, err

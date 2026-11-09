@@ -2,6 +2,7 @@ package nativechange
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -17,15 +18,21 @@ import (
 func TestNativeValidatorReceivesAcceptedSecurityAudit(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name          string
-		mutate        func(*tracker.ChangeReview)
-		want          bool
-		blockedBefore bool
-		blockedAfter  bool
-		restoredDiff  bool
-		stripPatches  bool
+		name                   string
+		mutate                 func(*tracker.ChangeReview)
+		want                   bool
+		blockedBefore          bool
+		blockedAfter           bool
+		restoredDiff           bool
+		stripPatches           bool
+		publicationUnavailable bool
+		missingVersion         bool
+		missingDiff            bool
 	}{
 		{name: "accepted exact source", want: true},
+		{name: "publication unavailable with retained version", publicationUnavailable: true},
+		{name: "publication unavailable before version", publicationUnavailable: true, missingVersion: true},
+		{name: "publication unavailable before diff", publicationUnavailable: true, missingVersion: true, missingDiff: true},
 		{name: "accepted audit survives normalized recovery diff", restoredDiff: true, want: true},
 		{name: "accepted audit survives stripped recovery diff", restoredDiff: true, stripPatches: true, want: true},
 		{name: "other version", mutate: func(r *tracker.ChangeReview) { r.VersionID = "version_other" }},
@@ -140,6 +147,23 @@ func TestNativeValidatorReceivesAcceptedSecurityAudit(t *testing.T) {
 				diff = storedDiff
 			}
 			execution := &nativeExecution{claim: nativeClaim{source: fixtureConnector(native), lease: tracker.NativeLease{WorkItemID: "wi_example"}}, change: &runner.NativeChange{ChangeID: detail.Change.ID, VersionID: version.ID}, data: tracker.NativeRunData{AttemptID: "attempt_example", PolicyID: version.PolicyID}, lastDiff: &diff}
+			if test.publicationUnavailable {
+				execution.change.Error = "source publication unavailable"
+				if test.missingVersion {
+					execution.change.VersionID = ""
+				}
+				if test.missingDiff {
+					execution.lastDiff = nil
+				}
+				change, retained := execution.change, execution.lastDiff
+				for _, stage := range []string{"review", "security_audit", "validator"} {
+					input, err := execution.validationVersion(t.Context(), stage)
+					if !errors.Is(err, ErrUnavailable) || input.Version != nil || execution.change != change || execution.lastDiff != retained || execution.change.Error != "source publication unavailable" {
+						t.Fatalf("%s publication failure: input=%+v error=%v", stage, input, err)
+					}
+				}
+				return
+			}
 			input, err := execution.ValidatorVersion(t.Context())
 			if err != nil || input.Version == nil {
 				t.Fatalf("validator context unavailable: %v", err)

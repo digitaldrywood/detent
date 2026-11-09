@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -350,6 +351,8 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 			return evidence, nil, false, err
 		}
 		evidence.Selection = "latest"
+	} else {
+		evidence.Unavailable = append(evidence.Unavailable, "native_attempt")
 	}
 	failures := make([]nativeFailure, 0, len(snapshots))
 	for _, snapshot := range snapshots {
@@ -367,9 +370,22 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 		}
 		failures = append(failures, nativeFailure{attemptID: attempt.AttemptID, workItem: item, at: at, started: attempt.StartedAt, finished: attempt.UpdatedAt, example: example, class: class})
 	}
+	var decisions eventstore.SchedulerDecisionRows
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return s.authorizeBulkExportItem(ctx, r, scope, issue.WorkItemID)
+		if err := s.authorizeBulkExportItem(ctx, r, scope, issue.WorkItemID); err != nil {
+			return err
+		}
+		reader, ok := r.(eventstore.SchedulerDecisionReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		var err error
+		decisions, err = reader.SchedulerDecisions(ctx, scope.project, issue.WorkItemID)
+		return err
 	})
+	if err == nil {
+		evidence, err = s.hydrateSchedulerDecisionRows(ctx, scope, issue.WorkItemID, evidence, decisions)
+	}
 	return evidence, failures, partial, err
 }
 

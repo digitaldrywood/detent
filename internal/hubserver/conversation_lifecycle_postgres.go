@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -218,9 +219,21 @@ func (c *conversationService) reconcileExecutionsPG(ctx context.Context, organiz
 }
 
 func (c *conversationService) reconcileExecutionPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation) (bool, error) {
+	if candidate.WorkItemID == "" || candidate.Execution.Owner.LeaseID == "" || candidate.Execution.Owner.AttemptID == "" {
+		return false, nil
+	}
 	changed := false
-	now := c.server.config.now()
 	err := c.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
+		locker, ok := writer.(leasestore.FencedLeaseLocker)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		if _, err := writer.LockWorkItem(ctx, candidate.ProjectID, tracker.NativeWorkItemID(candidate.WorkItemID)); err != nil && !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := locker.LockLease(ctx, candidate.Execution.Owner.LeaseID); err != nil && !errors.Is(err, tracker.ErrLeaseNotFound) && !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		stored, err := writer.LockConversation(ctx, candidate.ProjectID, candidate.ID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
@@ -228,10 +241,14 @@ func (c *conversationService) reconcileExecutionPG(ctx context.Context, organiza
 			}
 			return err
 		}
+		if stored.WorkItemID != candidate.WorkItemID || stored.Execution.Owner != candidate.Execution.Owner {
+			return nil
+		}
 		record := conversationRecordFromStore(stored)
 		if stored.WorkItemID == "" || record.Execution.Owner.LeaseID == "" || record.Execution.Owner.AttemptID == "" || (record.Execution.Status.Terminal() && record.Execution.Settled) {
 			return nil
 		}
+		now := c.server.config.now()
 		current, err := conversationLeaseCurrentPG(ctx, writer, record, now)
 		if err != nil {
 			return err
@@ -306,16 +323,28 @@ func conversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, 
 	if err != nil {
 		return false, err
 	}
-	attempt, err := reader.Attempt(ctx, record.Execution.Owner.AttemptID)
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+	owner := record.Execution.Owner
+	if lease.OrganizationID != record.OrganizationID || lease.IssueID != item.ID || lease.FencingToken != owner.FencingToken || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || lease.RenewedAt.After(now) {
 		return false, nil
+	}
+	attempt, err := reader.Attempt(ctx, owner.AttemptID)
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Settled || !validNativeID(owner.AttemptID, "attempt") || !validNativeID(owner.RunID, "run") {
+			return false, nil
+		}
+		latest, latestErr := reader.LatestAttempt(ctx, item.ID)
+		if errors.Is(latestErr, corestore.ErrNotFound) || errors.Is(latestErr, sql.ErrNoRows) {
+			return true, nil
+		}
+		if latestErr != nil {
+			return false, latestErr
+		}
+		return latest.LeaseID != lease.LeaseID, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	owner := record.Execution.Owner
-	return lease.OrganizationID == record.OrganizationID && lease.IssueID == item.ID && lease.FencingToken == owner.FencingToken && lease.ReleasedAt == nil && lease.ExpiresAt.After(now) && !lease.RenewedAt.After(now) &&
-		attempt.OrganizationID == record.OrganizationID && attempt.IssueID == item.ID && attempt.LeaseID == lease.LeaseID && attempt.FencingToken == owner.FencingToken && attempt.RunID == owner.RunID && attempt.Status == "running", nil
+	return attempt.OrganizationID == record.OrganizationID && attempt.IssueID == item.ID && attempt.LeaseID == lease.LeaseID && attempt.FencingToken == owner.FencingToken && attempt.RunID == owner.RunID && attempt.Status == "running", nil
 }
 
 func (c *conversationService) settleIdleConversationsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {

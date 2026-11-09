@@ -14,12 +14,17 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -27,11 +32,7 @@ import (
 )
 
 func RunNativeChangeLargeValidationFinalization(t *testing.T, factories Constructors) {
-	newNativeChangeHub := func(t *testing.T) *nativeChangeHub { return newScenarioHub(t, factories) }
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-	h := newNativeChangeHub(t)
+	h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Hosted: &hubserver.HostedConfig{OrganizationID: artifact.NewID("org"), WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: hubclientIdentityProvider{}}}, factories)
 	store, publisher := changeEvidenceArtifactService(t, h)
 	for _, test := range []struct {
 		name   string
@@ -232,15 +233,42 @@ func changeEvidenceArtifactService(t *testing.T, h *nativeChangeHub) (*artifact.
 		ID    string `json:"id"`
 		Token string `json:"token"`
 	}
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v1/tokens", map[string]string{"name": "artifacts", "scope": "worker"}, &publisher); err != nil {
+	var err error
+	publisher.ID = artifact.NewID("publisher")
+	publisher.Token, err = apikey.GenerateToken()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/tokens/"+publisher.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
-		t.Fatal(err)
-	}
+	h.seed(func(w tenantstore.Writer) error {
+		now := h.clock().UTC()
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: h.organization, ID: publisher.ID, Name: "Example publisher", Hash: apikey.HashToken(publisher.Token), Scope: "worker", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: h.organization, TokenID: publisher.ID, ProjectID: h.project})
+	})
 	serviceID := artifact.NewID("service")
-	remote := &artifact.RemoteHub{Client: fixtureClient(h.admin.Transport()).httpClient, Origin: fixtureClient(h.admin.Transport()).baseURL.String(), ServiceID: serviceID, OrganizationID: string(h.organization), ProjectID: string(h.project), PublisherToken: func() string { return publisher.Token }}
-	store, err := artifact.NewService(t.Context(), artifact.Config{ServiceID: serviceID, OrganizationID: string(h.organization), Mode: "customer", DatabasePath: filepath.Join(t.TempDir(), "artifacts.db"), Policy: artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: artifact.MaxChunkBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}, &changeEvidenceStorage{objects: map[string][]byte{}}, nil)
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+	remote := &artifact.RemoteHub{Client: &http.Client{Transport: transport}, Origin: fixtureClient(h.admin.Transport()).baseURL.String(), ServiceID: serviceID, OrganizationID: string(h.organization), ProjectID: string(h.project), PublisherToken: func() string { return publisher.Token }}
+	var active atomic.Pointer[artifact.HTTPServer]
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		handler := active.Load()
+		if handler == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		handler.ServeHTTP(w, request)
+	}))
+	t.Cleanup(server.Close)
+	binding := artifact.Binding{ServiceID: serviceID, Origin: server.URL, Mode: "customer", PublisherTokenID: publisher.ID}
+	if err := h.admin.Transport().Request(t.Context(), http.MethodPut, h.admin.Scope()+"/artifact-services/"+binding.ServiceID, binding, nil); err != nil {
+		t.Fatal(err)
+	}
+	policy := artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: artifact.MaxChunkBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}
+	if err := h.admin.Transport().Request(t.Context(), http.MethodPut, h.admin.Scope()+"/artifact-services/"+binding.ServiceID+"/catalog-policy", policy, nil); err != nil {
+		t.Fatal(err)
+	}
+	store, err := artifact.NewService(t.Context(), artifact.Config{ServiceID: serviceID, OrganizationID: string(h.organization), ProjectID: string(h.project), Mode: "customer", Policy: policy, Catalog: &artifact.RemoteCatalog{Hub: remote}}, &changeEvidenceStorage{objects: map[string][]byte{}}, nil, artifact.ServiceOptions{Now: h.clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,12 +281,7 @@ func changeEvidenceArtifactService(t *testing.T, h *nativeChangeHub) (*artifact.
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	binding := artifact.Binding{ServiceID: serviceID, Origin: server.URL, Mode: "customer", PublisherTokenID: publisher.ID}
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPut, h.admin.Scope()+"/artifact-services/"+binding.ServiceID, binding, nil); err != nil {
-		t.Fatal(err)
-	}
+	active.Store(handler)
 	fixtureArtifactConfiguration(t, h.scheduler, binding.ServiceID, 4<<20)
 	return store, remote
 }

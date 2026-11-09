@@ -17,10 +17,6 @@ import (
 
 func RunNativeExecutionLandingTargetRefusesUnreviewed(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	h := newPlannerHub(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"Merging", "Done"}},
@@ -56,10 +52,6 @@ func RunNativeExecutionLandingTargetRefusesUnreviewed(t *testing.T, factories Co
 
 func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	h := newPlannerHub(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
@@ -171,9 +163,6 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 
 func RunNativeLandingBatchClaimsOneCapacityUnit(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	t.Parallel()
 	h := newPlannerHub(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"Human Review", "Merging", "In Progress"}},

@@ -12,10 +12,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -110,9 +110,6 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 
 func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	for _, test := range []struct {
 		name         string
@@ -164,11 +161,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				t.Fatal(err)
 			}
 			loopWorkspace := &sourceLoopWorkspace{LocalGit: backend.(*workspace.LocalGit)}
-			sessions, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer sessions.Close()
+			sessions := api.NewRunnerSessions(h.native)
 			provider := &sourceRepairAgent{workspaceHooks: loopWorkspace, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
 			if test.sourceReview {
 				provider.sourceVerdict = "rework"

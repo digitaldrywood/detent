@@ -28,6 +28,61 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		head         string
+		effect       string
+		unchanged    bool
+		unsettled    bool
+		sourceError  string
+		versionError string
+		wantError    bool
+	}{
+		{name: "confirmed source", head: "published-head", effect: "confirmed"},
+		{name: "moved final head", head: "changed-head", effect: "confirmed", wantError: true},
+		{name: "ambiguous effect", head: "published-head", effect: "ambiguous", wantError: true},
+		{name: "unchanged source omits publication claim", head: "published-head", effect: "confirmed", unchanged: true},
+		{name: "unsettled source omits publication claim", head: "published-head", effect: "confirmed", unsettled: true},
+		{name: "unavailable source retains its failure", head: "published-head", effect: "confirmed", sourceError: "source unavailable"},
+		{name: "refused version retains its failure", head: "published-head", effect: "confirmed", versionError: "version refused"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			publication := &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
+			checkpoint := &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: test.effect, EffectID: publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
+			execution := &nativeExecution{
+				scheduler: &executionAuthority{now: time.Now},
+				role:      runner.RoleCode, settled: !test.unsettled, storedSeq: 2,
+				data:          tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleCode}, Handoff: checkpoint},
+				change:        &runner.NativeChange{Changed: !test.unchanged, ChangeID: "change", VersionID: "version", HeadSHA: "published-head", Error: test.sourceError, VersionError: test.versionError},
+				publication:   publication,
+				lastDiff:      &tracker.AttemptDiffRequest{HeadSHA: "published-head"},
+				worktreeState: "clean", worktreeHead: "published-head",
+				diffSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
+					return tracker.AttemptDiffRequest{HeadSHA: test.head}, true
+				},
+			}
+			if !test.unsettled {
+				if err := execution.prepareFinish(t.Context(), "succeeded"); (err != nil) != test.wantError {
+					t.Fatalf("prepared publication completion error = %v, want refusal %t", err, test.wantError)
+				}
+			}
+			if execution.data.Outcome != "" || execution.data.Finalization != nil {
+				t.Fatal("completion validation published a terminal outcome")
+			}
+			if test.unchanged || test.unsettled || test.sourceError != "" || test.versionError != "" {
+				finalization := execution.preparedFinalization()
+				if finalization.Publication != nil || finalization.Error != test.sourceError || finalization.VersionError != test.versionError {
+					t.Fatalf("incomplete source finalization = %+v", finalization)
+				}
+				if execution.publication != publication || execution.data.Handoff != checkpoint {
+					t.Fatal("incomplete settlement discarded publication recovery evidence")
+				}
+			}
+		})
+	}
+}
+
 func TestRecordSourceValidationInitialRuntimeUsesValidationPhase(t *testing.T) {
 	fallback := time.Now().UTC()
 	for _, test := range []struct {
@@ -69,6 +124,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		cleanupFailure bool
 		controller     bool
 		prepared       bool
+		prepareFinish  bool
 		retained       bool
 		terminal       bool
 		expired        bool
@@ -86,6 +142,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		{name: "superseded lease preserves its successor", controller: true, superseded: true},
 		{name: "prepared completion without publisher", controller: true, prepared: true},
 		{name: "prepared completion settles after claim loss", controller: true, prepared: true, retained: true},
+		{name: "prepared completion keeps ownership without controller", prepared: true, prepareFinish: true, retained: true},
 		{name: "released completion reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true},
 		{name: "released setup reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true, preProvider: true},
 		{name: "conflicting pending event preserves an unreleased lease", controller: true, prepared: true, retained: true, conflict: true, unreleased: true},
@@ -132,9 +189,18 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 				}()
 			}
 			if test.prepared {
-				e.preparedOutcome = "failed"
-				if test.retained {
-					e.RetainCompletion()
+				if test.prepareFinish {
+					if err := e.PrepareFinish(t.Context(), "failed", "The worker failed.", nil); err != nil {
+						t.Fatal(err)
+					}
+					if !e.preparedPublisher.Load() || e.completionOwner.Load() {
+						t.Fatal("preparing completion changed explicit handoff ownership")
+					}
+				} else {
+					e.preparedOutcome = "failed"
+					if test.retained {
+						e.RetainCompletion()
+					}
 				}
 				if !test.unreleased {
 					if err := h.native.Release(t.Context(), e.claim.lease, "cancelled"); err != nil {
@@ -1145,16 +1211,18 @@ func TestNativeRejectedReviewCheckpointReleasesClaim(t *testing.T) {
 
 func TestNativeDeterministicCompletionReleasesCapacity(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		observed bool
-		status   int
-		code     string
+		name           string
+		observed       bool
+		status         int
+		code           string
+		versionRefused bool
 	}{
-		{"lost identical acknowledgment", true, 200, ""},
-		{"review observation conflict", true, 409, "run_sequence_conflict"},
-		{"changed idempotency payload", true, 409, "idempotency_conflict"},
-		{"terminal issue contract rejection", false, 422, "invalid_request"},
-		{"review observation validation rejection", true, 422, "invalid_request"},
+		{name: "lost identical acknowledgment", observed: true, status: 200},
+		{name: "review observation conflict", observed: true, status: 409, code: "run_sequence_conflict"},
+		{name: "changed idempotency payload", observed: true, status: 409, code: "idempotency_conflict"},
+		{name: "terminal issue contract rejection", status: 422, code: "invalid_request"},
+		{name: "review observation validation rejection", observed: true, status: 422, code: "invalid_request"},
+		{name: "cached publication retains terminal version refusal", versionRefused: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
@@ -1176,6 +1244,26 @@ func TestNativeDeterministicCompletionReleasesCapacity(t *testing.T) {
 			}
 			publication := tracker.NativePRPublication{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Repository: "https://github.com/owner/repository", Branch: "work/completion", External: tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/owner/repository/pull/7"}}
 			e.publication = &publication
+			if test.versionRefused {
+				publication.PolicyID, publication.BaseRef = version.PolicyID, "main"
+				source.ExternalEffect, source.EffectState, source.EffectID = "pr_create", "confirmed", publication.EffectID("pr_create")
+				source.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+				e.data.Handoff = &source
+				e.settled, e.storedSeq = true, e.data.Sequence+1
+				e.lastDiff = &tracker.AttemptDiffRequest{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}
+				e.change = &runner.NativeChange{Changed: true, ChangeID: change.ID, VersionID: version.ID, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, VersionError: "source version refused"}
+				if err := e.Finish(t.Context(), "succeeded"); err != nil {
+					t.Fatalf("finish refused source: %v", err)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "failed" || recovery.Attempts[0].Finalization == nil || recovery.Attempts[0].Finalization.VersionError != "source version refused" || recovery.Attempts[0].Finalization.Publication != nil {
+					t.Fatalf("version refusal was not retained as terminal failure: %+v, %v", recovery.Attempts, err)
+				}
+				if e.publication != &publication || e.data.Handoff == nil || e.data.Handoff.EffectState != "confirmed" || e.data.Handoff.EffectID != publication.EffectID("pr_create") {
+					t.Fatal("terminal failure discarded confirmed publication recovery evidence")
+				}
+				return
+			}
 			client := e.claim.source.NativeClient().Transport()
 			next := fixtureClient(client).requests.Load()
 			committed := false
@@ -1675,6 +1763,53 @@ func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 	}
 }
 
+func TestRuntimeFlushPreservesNewerBufferedEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		observation tracker.NativeRuntimeObservation
+	}{
+		{name: "recovery", observation: tracker.NativeRuntimeObservation{Recovery: &tracker.NativeRecoveryDecision{Action: "retry", Reason: "progress unavailable"}}},
+		{name: "validation", observation: tracker.NativeRuntimeObservation{Validation: &gate.CommandResult{Command: "go test ./internal/example", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, ExitCode: 0}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Retain buffered runtime evidence")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			execution.claim.lease.RunDetailBatching = false
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now().UTC()
+			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: at}); err != nil {
+				t.Fatal(err)
+			}
+			execution.claim.lease.RunDetailBatching = true
+			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{Phase: "rework", HeartbeatAt: at}); err != nil {
+				t.Fatal(err)
+			}
+			if len(execution.observations) != 1 {
+				t.Fatal("older runtime observation was not queued")
+			}
+			if err := execution.ObserveRuntime(t.Context(), test.observation); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.FlushRuntime(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), execution.data.AttemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, runtime := range []*tracker.NativeRuntimeObservation{execution.data.Runtime, stored.Runtime} {
+				if runtime == nil || !reflect.DeepEqual(runtime.Recovery, test.observation.Recovery) || !reflect.DeepEqual(runtime.Validation, test.observation.Validation) || runtime.Phase != "rework" {
+					t.Fatalf("flushing older observation lost newer %s evidence: %+v", test.name, runtime)
+				}
+			}
+		})
+	}
+}
+
 func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 	t.Parallel()
 	for _, phase := range []string{"waiting_cache_admission", "waiting_cache_consumers"} {
@@ -1734,8 +1869,12 @@ func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 }
 
 func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
-	for _, status := range []int{502, 503, 0} {
-		t.Run(strconv.Itoa(status), func(t *testing.T) {
+	for _, test := range []struct {
+		status    int
+		published bool
+	}{{502, false}, {503, false}, {0, false}, {502, true}, {503, true}, {0, true}} {
+		t.Run(fmt.Sprintf("%d/published=%t", test.status, test.published), func(t *testing.T) {
+			status := test.status
 			start := time.Now()
 			descriptor := clientTestPolicy()
 			offline := true
@@ -1788,10 +1927,20 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 			execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
 			execution.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: start.Add(-11 * time.Minute)}
 			execution.preparedOutcome = "succeeded"
+			if test.published {
+				execution.publication = &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
+				execution.change = &runner.NativeChange{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
+				execution.lastDiff = &tracker.AttemptDiffRequest{HeadSHA: "published-head"}
+				execution.storedSeq = execution.data.Sequence + 1
+				execution.data.Handoff = &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: "confirmed", EffectID: execution.publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
+			}
 			if err := scheduler.ReleaseClaim(t.Context(), "wi_test", "completed"); !nativeTransportUnavailable(err) {
 				t.Fatalf("outage = %v", err)
 			}
 			deadline := execution.completionOutageDeadline
+			if deadline.IsZero() {
+				t.Fatal("completion outage did not retain its deadline")
+			}
 			fixtureSetNow(scheduler, start.Add(2*time.Minute))
 			if err := scheduler.ReleaseClaim(t.Context(), "wi_test", "completed"); !nativeTransportUnavailable(err) {
 				t.Fatalf("retry outage = %v", err)

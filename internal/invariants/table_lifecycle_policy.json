@@ -1,5 +1,7 @@
 {
   "tables": {
+    "doctor_proposal_identities": {"class": "index", "retention": "BindDoctorProposalIdentities replaces current full-body identity membership and known-empty header for one immutable issue head; source changes invalidate coverage and issue deletion cascades"},
+    "local_board_populations": {"class": "index", "retention": "Source issue and workflow lifecycle triggers retain current nonarchived project/state populations only; zero buckets are deleted and project deletion cascades"},
     "organization_sprite_pools": {"class": "hot_state", "retention": "PutSpritePool owns current organization pool configuration"},
     "project_sprite_allocations": {"class": "hot_state", "retention": "PutSpriteAllocation and RecordSpriteProvisionFailure own current project allocation"},
     "sprite_lifecycle_operations": {"class": "hot_state", "retention": "CreateSpriteOperation and UpdateSpriteOperation retain lifecycle and idempotency receipts with allocation history"},
@@ -323,6 +325,7 @@
     "runner_update_requests": {"class": "hot_state"},
     "runner_urgent_updates": {"class": "hot_state"},
     "runner_workspace_reports": {"class": "derived_with_retention", "retention": "latest runner workspace capability report"},
+    "scheduler_event_heads": {"class": "hot_state", "retention": "AppendEvent retains current per-item scheduler evidence heads with immutable event history and retained work item identity"},
     "search_documents": {"class": "index"},
     "search_document_index": {"class": "index"},
     "search_postings": {"class": "index"},

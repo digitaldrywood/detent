@@ -87,7 +87,7 @@ WITH document AS MATERIALIZED (
  WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term NOT IN ('~all','~pending')
   AND d.kind IN ('issue','thread')
   AND (NOT EXISTS(SELECT 1 FROM visibility v WHERE v.key=p.scope)
-   OR NOT EXISTS(SELECT 1 FROM current_terms t WHERE t.term=p.term))
+   OR p.term NOT IN (SELECT t.term FROM current_terms t WHERE t.term IS NOT NULL))
 ), removed AS (
  DELETE FROM search_postings p USING obsolete_keys k
  WHERE p.organization_id=k.organization_id AND p.scope=k.scope AND p.term=k.term AND p.document_id=k.document_id
@@ -164,7 +164,7 @@ WITH scoped AS NOT MATERIALIZED (
         AND (sqlc.arg(project_id)::text = '' OR d.project_id = sqlc.arg(project_id))
         AND (NOT sqlc.arg(restrict_projects)::boolean OR d.project_id = ANY(sqlc.arg(project_ids)::text[]) OR d.scope = 'general')
         AND (sqlc.arg(work_item_id)::text = '' OR d.work_item_id = sqlc.arg(work_item_id))
-        AND ((sqlc.arg(kind)::text = 'thread' AND d.kind = 'thread') OR (sqlc.arg(kind) = 'work' AND d.kind = 'issue'))
+        AND CASE d.kind WHEN 'issue' THEN 'work' WHEN 'thread' THEN 'thread' END = sqlc.arg(kind)::text
         AND (sqlc.arg(scope)::text = '' OR d.scope = sqlc.arg(scope))
         AND (sqlc.arg(status)::text = '' OR d.status = sqlc.arg(status))
         AND (d.project_id IS NULL OR COALESCE((SELECT p.deleted_at IS NULL FROM projects p WHERE p.organization_id = d.organization_id AND p.id = d.project_id), false))

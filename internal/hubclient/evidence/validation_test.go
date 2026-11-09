@@ -7,15 +7,21 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -161,7 +167,38 @@ func TestRetainChangeValidationRejectsForeignServiceReference(t *testing.T) {
 	}
 }
 
+type authorizedValidationUploader struct {
+	*artifact.Service
+	t      *testing.T
+	config hubserver.Config
+}
+
+func (u authorizedValidationUploader) Reserve(ctx context.Context, reservation artifact.Reservation) (artifact.Upload, error) {
+	testsupport.NativeChangeWrite(u.t, u.config, func(writer tenantstore.Writer) error {
+		return writer.AuthorizeArtifactUpload(ctx, reservation, u.config.Clock())
+	})
+	return u.Service.Reserve(ctx, reservation)
+}
+
 func TestUploadChangeValidationBudgetsPartialManifests(t *testing.T) {
+	now := time.Now().UTC()
+	clock := func() time.Time { return now }
+	cfg := testsupport.NativeChangePostgresConfig(t, hubserver.Config{InitialAdminToken: []byte("example-admin"), Clock: clock, Content: testsupport.ContentStore()})
+	hub, err := hubserver.Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := hub.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	server := httptest.NewServer(hub.Handler())
+	t.Cleanup(server.Close)
+	admin, err := api.New(api.Config{URL: server.URL, TokenSource: func() string { return string(cfg.InitialAdminToken) }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name        string
 		uploadBytes int64
@@ -171,8 +208,32 @@ func TestUploadChangeValidationBudgetsPartialManifests(t *testing.T) {
 		{name: "large receipt with large admitted parts", uploadBytes: 1 << 20, lines: 120000},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			organization, serviceID := artifact.NewID("org"), artifact.NewID("service")
-			service, err := artifact.NewService(t.Context(), artifact.Config{ServiceID: serviceID, OrganizationID: organization, Mode: "customer", DatabasePath: filepath.Join(t.TempDir(), "artifacts.db"), Policy: artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: test.uploadBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}, &changeEvidenceStorage{objects: map[string][]byte{}}, nil)
+			project := testsupport.NativeChangeProject(t, cfg, []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, false)
+			organization, serviceID := string(project.OrganizationID), artifact.NewID("service")
+			publisherID, publisherToken := testsupport.NativeChangePublisher(t, cfg, project.ID)
+			var active atomic.Pointer[artifact.HTTPServer]
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				handler := active.Load()
+				if handler == nil {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				handler.ServeHTTP(w, request)
+			}))
+			t.Cleanup(listener.Close)
+			scope := "/api/v2/organizations/" + organization + "/projects/" + string(project.ID)
+			binding := artifact.Binding{ServiceID: serviceID, Origin: listener.URL, Mode: "customer", PublisherTokenID: publisherID}
+			testsupport.NativeChangeWrite(t, cfg, func(writer tenantstore.Writer) error {
+				return writer.BindArtifactService(t.Context(), project.ID, binding)
+			})
+			policy := artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: test.uploadBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}
+			if err := admin.Request(t.Context(), http.MethodPut, scope+"/artifact-services/"+serviceID+"/catalog-policy", policy, nil); err != nil {
+				t.Fatal(err)
+			}
+			transport := &http.Transport{}
+			t.Cleanup(transport.CloseIdleConnections)
+			remote := &artifact.RemoteHub{Origin: server.URL, OrganizationID: organization, ProjectID: string(project.ID), ServiceID: serviceID, PublisherToken: func() string { return publisherToken }, Client: &http.Client{Transport: transport}}
+			service, err := artifact.NewService(t.Context(), artifact.Config{ServiceID: serviceID, OrganizationID: organization, ProjectID: string(project.ID), Mode: "customer", Policy: policy, Catalog: &artifact.RemoteCatalog{Hub: remote}}, &changeEvidenceStorage{objects: map[string][]byte{}}, nil, artifact.ServiceOptions{Now: clock})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -181,9 +242,32 @@ func TestUploadChangeValidationBudgetsPartialManifests(t *testing.T) {
 					t.Error(err)
 				}
 			})
+			handler, err := artifact.NewHTTPServer(service, remote)
+			if err != nil {
+				t.Fatal(err)
+			}
+			active.Store(handler)
 			raw := []byte(strings.Repeat("validation receipt 世界\n", test.lines))
-			reservation := artifact.Reservation{ServiceID: serviceID, Mode: "customer", Scope: artifact.Scope{OrganizationID: organization, ProjectID: artifact.NewID("prj"), WorkItemID: artifact.NewID("wi"), RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, Key: "validation-budget", Kind: "log"}
-			reference, err := Upload(t.Context(), service, reservation, raw)
+			reservation := artifact.Reservation{ServiceID: serviceID, Mode: "customer", Scope: artifact.Scope{OrganizationID: organization, ProjectID: string(project.ID), WorkItemID: artifact.NewID("wi"), RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, Key: "validation-budget", Kind: "log"}
+			var lease leasestore.Lease
+			testsupport.NativeChangeWrite(t, cfg, func(writer tenantstore.Writer) error {
+				machine := artifact.NewID("machine")
+				if err := writer.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: project.OrganizationID, ID: machine, Hostname: "example-worker", Capacity: 1}); err != nil {
+					return err
+				}
+				item, err := writer.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: project.OrganizationID, ProjectID: project.ID, NativeID: tracker.NativeWorkItemID(reservation.WorkItemID), Number: 1, Revision: 1, Title: "Example validation", WorkflowStateName: new("Todo"), CreatedAt: clock(), UpdatedAt: clock(), NativeCreatedAt: clock(), NativeUpdatedAt: clock()})
+				if err != nil {
+					return err
+				}
+				lease, err = writer.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: machine, SessionID: artifact.NewID("session"), LeaseID: artifact.NewID("lease"), TTL: time.Hour})
+				if err != nil {
+					return err
+				}
+				_, err = writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: reservation.AttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: reservation.RunID, Sequence: 1, Status: "running", StartedAt: clock(), PayloadObjectKey: "example/start"})
+				return err
+			})
+			reservation.LeaseID, reservation.FencingToken = lease.LeaseID, lease.FencingToken
+			reference, err := Upload(t.Context(), authorizedValidationUploader{Service: service, t: t, config: cfg}, reservation, raw)
 			if err != nil {
 				t.Fatalf("%d byte receipt: %v", len(raw), err)
 			}

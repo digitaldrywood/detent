@@ -636,7 +636,7 @@ func (s *session) UpdateOrganizationLogo(ctx context.Context, logo accessstore.L
 		return mapError(ctx, err)
 	}
 	n := result.RowsAffected()
-	if err == nil && n == 0 {
+	if n == 0 {
 		return corestore.ErrRevisionConflict
 	}
 	return err

@@ -2,7 +2,6 @@ package scenariotest
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -145,10 +146,6 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 	}
 
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
 	fixtureClient(h.admin.Transport()).baseURL.Scheme = "https"
 	transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -210,14 +207,17 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 				t.Fatal(err)
 			}
 			evidence, err := h.admin.RuntimeEvidence(t.Context(), selected.WorkItemID, "")
-			if err != nil || len(evidence.Admission) != 1 || evidence.Admission[0].Outcome != test.outcome || evidence.Admission[0].RunnerID != file.Identity.RunnerID || evidence.LatestDecision != nil || evidence.Issue.Body != "" {
+			index := slices.IndexFunc(evidence.Admission, func(admission tracker.NativeRuntimeAdmission) bool {
+				return admission.RunnerID == file.Identity.RunnerID
+			})
+			if err != nil || index < 0 || evidence.Admission[index].Outcome != test.outcome || evidence.LatestDecision != nil || evidence.Issue.Body != "" {
 				t.Fatalf("native runtime dropped current runner admission context: %#v, %v", evidence, err)
 			}
 			if test.outcome == "unknown" {
-				if evidence.Admission[0].SelectorObservedAt != nil {
+				if evidence.Admission[index].SelectorObservedAt != nil {
 					t.Fatalf("unrepresentable selectors were truncated into evidence: %#v", evidence)
 				}
-			} else if evidence.Admission[0].SelectorSource != "registered_runner_heartbeat" || evidence.Admission[0].SelectorObservedAt == nil || !evidence.Admission[0].SelectorObservedAt.Equal(observed) {
+			} else if evidence.Admission[index].SelectorSource != "registered_runner_heartbeat" || evidence.Admission[index].SelectorObservedAt == nil || !evidence.Admission[index].SelectorObservedAt.Equal(observed) {
 				t.Fatalf("heartbeat observation identity lost: %#v", evidence)
 			}
 		})
@@ -260,7 +260,7 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 	}
 
 	var foreignProject tracker.NativeProject
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "foreign", "idempotency_key": "foreign-project", "states": []tracker.NativeState{{Name: "Backlog"}}}, &foreignProject); err != nil {
+	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "foreign", "grant_access": true, "idempotency_key": "foreign-project", "states": []tracker.NativeState{{Name: "Backlog"}}}, &foreignProject); err != nil {
 		t.Fatal(err)
 	}
 	foreign, err := h.admin.Transport().Native(h.organization, foreignProject.ID)
@@ -640,9 +640,6 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 
 func RunNativeChangeOversizedReviewRecovery(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
 	type evidence struct {
 		name    string
@@ -663,6 +660,10 @@ func RunNativeChangeOversizedReviewRecovery(t *testing.T, factories Constructors
 		reviews := []tracker.ChangeReview{
 			{ID: fmt.Sprintf("review_small_%d", i), VersionID: version.ID, Decision: "approved", Body: "Initial review"},
 			{ID: fmt.Sprintf("review_large_%d", i), VersionID: version.ID, Decision: "changes_requested"},
+		}
+		for index := range reviews {
+			reviews[index].CreatedAt = h.clock().UTC()
+			reviews[index].Actor = tracker.Actor{Kind: "human", PrincipalID: "example_admin"}
 		}
 		large := &reviews[1]
 		text := strings.Repeat("<\\\"\n世界", 40000)
@@ -698,25 +699,25 @@ func RunNativeChangeOversizedReviewRecovery(t *testing.T, factories Constructors
 		}
 		fixtures = append(fixtures, evidence{name: field, item: item, change: change, version: version, reviews: reviews})
 	}
-	h.reopen(func(path string) error {
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+	h.seed(func(w tenantstore.Writer) error {
 		for _, fixture := range fixtures {
 			for _, review := range fixture.reviews {
 				raw, err := json.Marshal(review)
 				if err != nil {
 					return err
 				}
-				if _, err := db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, ?, 'review', ?, ?)", fixture.change.ID, review.VersionID, review.ID, string(raw)); err != nil {
+				row, err := h.prepareEvidence(eventstore.Evidence{OrganizationID: h.organization, ChangeID: fixture.change.ID, VersionID: new(review.VersionID), Kind: "review", SourceKey: new(review.ID)}, raw)
+				if err != nil {
+					return err
+				}
+				if _, err := w.AppendEvidence(t.Context(), row); err != nil {
 					return err
 				}
 			}
 		}
 		return nil
 	})
+	h.restart()
 	nativeTransport := fixtureClient(h.native.Transport()).requests.Load()
 	fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 		response, err := nativeTransport.RoundTrip(request)

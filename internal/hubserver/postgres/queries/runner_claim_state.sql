@@ -7,13 +7,13 @@ ORDER BY l.lease_id LIMIT 10001;
 
 -- name: RunnerReleasedAttemptCandidates :many
 WITH page AS MATERIALIZED (
-SELECT n.id,n.issue_id,n.lease_id,n.status FROM native_attempts n
+SELECT n.id,n.issue_id,n.lease_id,n.status,n.cleanup_acknowledged_at FROM native_attempts n
 WHERE n.organization_id=sqlc.arg(organization_id) AND n.id>sqlc.arg(after_id)
 ORDER BY n.id LIMIT sqlc.arg(page_size)
 )
 SELECT page.id AS scanned_id,
 CASE WHEN i.project_id=sqlc.arg(project_id) AND a.runner_id=sqlc.arg(runner_id)
-AND l.machine_id=sqlc.arg(machine_id) AND l.released_at IS NOT NULL AND page.status IN ('running','interrupted','cancelled')
+AND l.machine_id=sqlc.arg(machine_id) AND l.released_at IS NOT NULL AND page.cleanup_acknowledged_at IS NULL AND page.status IN ('running','interrupted','cancelled')
 THEN i.native_id ELSE '' END::text AS work_item_id
 FROM page
 JOIN leases l ON l.organization_id=sqlc.arg(organization_id) AND l.lease_id=page.lease_id

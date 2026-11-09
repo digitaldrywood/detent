@@ -233,6 +233,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		identity, prompt := plan.Chunk(index)
 		var output strings.Builder
 		previousUsage := runResult.Tokens
+		turnStarted := false
 		runResult.ReportedCostMicros, runResult.CostSource = nil, ""
 		usageReport := &turnUsageReporter{baseline: previousUsage, startedAt: r.now(), sourceID: fmt.Sprintf("session_%d_chunk_%d", sessionID, index)}
 		removeAuditWorkspace = false
@@ -275,11 +276,14 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 				update.Tokens = usage.normalize(update.Tokens)
 			}
 			applyAgentUpdate(&runResult, update)
+			if !update.AuxiliaryTurn && (update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "") {
+				turnStarted = true
+			}
 			if update.Type == AgentUpdateTokenUsage && update.Tokens.ThreadTotal == nil {
 				runResult.Tokens = addAgentTokenTotals(previousUsage, runResult.Tokens)
 			}
 			if update.Type == AgentUpdateTokenUsage {
-				if err := usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger); err != nil {
+				if err := usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, false); err != nil {
 					return err
 				}
 			}
@@ -304,7 +308,9 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		turnResult = currentTurn
 		runResult.ReportedCostMicros, runResult.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 		usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-		turnErr = errors.Join(turnErr, usageReport.report(usageCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger))
+		usageResult := runResult
+		usageResult.TurnStarted = turnStarted
+		turnErr = errors.Join(turnErr, usageReport.report(usageCtx, req.usageExecution, usageResult, sessionModel, backendConfig.Kind, r.usageCostUSD, true))
 		usageCancel()
 		execution.RuntimeIdentity = runResult.RuntimeIdentity
 		execution.SessionID = sessionID

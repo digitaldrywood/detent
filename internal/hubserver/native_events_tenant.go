@@ -67,12 +67,14 @@ type NativeLeaseResponseDetails struct {
 }
 
 type preparedNativeRunEvent struct {
-	completion      *attachmentEvidencePublication
-	authority       NativeRunEventAuthority
-	attempt         leasestore.AttemptEvent
-	history         eventstore.Event
-	previousAttempt leasestore.Attempt
-	previousEvent   eventstore.Event
+	dependencies     *preparedRunnerDependencies
+	claimDisposition string
+	completion       *attachmentEvidencePublication
+	authority        NativeRunEventAuthority
+	attempt          leasestore.AttemptEvent
+	history          eventstore.Event
+	previousAttempt  leasestore.Attempt
+	previousEvent    eventstore.Event
 }
 
 func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeScope, item string, request tracker.NativeRunEvent) (result json.RawMessage, resultErr error) {
@@ -135,6 +137,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	var previousRunEvent eventstore.Event
 	var previousRunEventFound bool
 	var cleanupPredecessor *tenantRunCleanupPredecessor
+	var checkpointSnapshot *tenantAttemptSnapshot
 	var usageFacts runnerUsageFacts
 	var usageFactsFound bool
 	var replay eventstore.Receipt
@@ -193,9 +196,19 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		cleanupPredecessor, err = readTenantRunCleanupPredecessor(ctx, r, scope, request)
+		previous, present, err := readTenantRunCleanupPredecessor(ctx, r, scope, request)
 		if err != nil {
 			return err
+		}
+		if present {
+			cleanupPredecessor = previous
+		}
+		if cleanupPredecessor != nil && cleanupPredecessor.attempt.CheckpointObjectKey != nil {
+			snapshot := tenantAttemptSnapshot{attempt: cleanupPredecessor.attempt, lease: cleanupPredecessor.lease, event: cleanupPredecessor.event}
+			if err := readTenantAttemptCheckpointPayload(ctx, r, &snapshot); err != nil {
+				return err
+			}
+			checkpointSnapshot = &snapshot
 		}
 		if request.Type == "run.finished" && request.Data.Sequence > 1 {
 			attempt, attemptErr := r.Attempt(ctx, request.Data.AttemptID)
@@ -281,6 +294,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		events = []tracker.NativeRunEvent{request}
 		previousRunEventFound = false
 	}
+	var effectiveCheckpoint *tracker.NativeCheckpoint
+	if checkpointSnapshot != nil {
+		effectiveCheckpoint, err = s.readNativeAttemptCheckpointTenant(ctx, *checkpointSnapshot)
+		if err != nil {
+			return nil, err
+		}
+	}
 	var previousRunData *tracker.NativeRunData
 	if previousRunEventFound {
 		previous, err := content.Event(ctx, previousRunEvent)
@@ -326,6 +346,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	request.Data.RunnerID = scope.credential.Runner.RunnerID
 	if previousRunEventFound {
 		s.recordWorkerHubVersion(previousRunData, &request.Data)
+	}
+	if disposition := request.Data.Disposition; !termination && request.Type == "run.finished" && request.Data.Outcome == "succeeded" && disposition != nil && disposition.Status == "blocked" && !disposition.HumanAction && disposition.ReasonCode == "" && len(disposition.BlockerEvidence) > 0 && (previousRunData == nil || !nativeUsageCorrection(*previousRunData, request.Data)) {
+		project, err := s.readTenantProjectRecord(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		normalizeRunnerDependencyDisposition(&request.Data, project)
 	}
 	request.PriorEvents = nil
 	events[len(events)-1] = request
@@ -375,6 +402,16 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			return nil, nativePublicInvalid("Execution identity must match the authenticated lease owner")
 		}
 		event.Data.MachineID, event.Data.SessionID, event.Data.RunnerID = tracker.MachineID(lease.MachineID), lease.SessionID, scope.credential.Runner.RunnerID
+		var dependencies *preparedRunnerDependencies
+		if !termination && (i != len(events)-1 || !usageCorrection) {
+			prepared, present, err := s.prepareRunnerDependencies(ctx, scope, workItem, event)
+			if err != nil {
+				return nil, err
+			}
+			if present {
+				dependencies = prepared
+			}
+		}
 		data, err := json.Marshal(event.Data)
 		if err != nil {
 			return nil, err
@@ -407,6 +444,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			DispatchGeneration: 0, PayloadObjectKey: ref.Key, PayloadReference: ref, UsageCorrection: i == len(events)-1 && usageCorrection, Termination: termination,
 		}
 		if event.Data.Runtime != nil {
+			attemptEvent.LocalAttemptID = event.Data.Runtime.LocalAttemptID
 			heartbeat := event.Data.Runtime.HeartbeatAt
 			attemptEvent.RuntimeHeartbeatAt = &heartbeat
 		}
@@ -453,6 +491,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 
 		if event.Type == "run.finished" && !termination {
 			dataRecord.Revision = tracker.Revision(workItem.Revision)
+			if dependencies != nil {
+				dataRecord.Revision = tracker.Revision(dependencies.final.Revision)
+			}
 		}
 		collaboration := tracker.CollaborationEvent{
 			ID: nativeAttemptHistoryID(event.Type, event.Data), OrganizationID: scope.organization, ProjectID: scope.project,
@@ -467,6 +508,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
+		history.HistoryHidden = i == len(events)-1 && usageCorrection || event.Type == "run.observed" && predecessor != nil && !nativeRuntimeHistoryChanged(predecessor.Runtime, event.Data.Runtime)
 		authority := NativeRunEventAuthority{BatchThrough: events[len(events)-1].Data.Sequence, Termination: termination, Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event}
 		if i == len(events)-1 && usageFactsFound && !termination {
 			facts := usageFacts
@@ -484,7 +526,10 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 			authority.Publication = &publication
 		}
-		preparedEvent := preparedNativeRunEvent{authority: authority, attempt: attemptEvent, history: history}
+		if event.Data.Handoff != nil && !termination && (cleanupPredecessor == nil || event.Data.Sequence > cleanupPredecessor.attempt.Sequence) {
+			effectiveCheckpoint = event.Data.Handoff
+		}
+		preparedEvent := preparedNativeRunEvent{dependencies: dependencies, authority: authority, attempt: attemptEvent, history: history, claimDisposition: nativeAttemptClaimDisposition(event.Data, effectiveCheckpoint, scope.project)}
 		if i == len(events)-1 && usageCorrection {
 			preparedEvent.previousAttempt, preparedEvent.previousEvent = previousAttempt, previousRunEvent
 		}
@@ -509,7 +554,11 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				}
 				var publication attachmentEvidencePublication
 				var err error
-				if completionSnapshot {
+				completionItem := workItem
+				if dependencies != nil {
+					completionItem = dependencies.final
+					publication, err = s.prepareEvidenceCommentRecord(ctx, scope, completionItem, dependencies.version, event.Data.CompletionBody, offset)
+				} else if completionSnapshot {
 					publication, err = s.prepareEvidenceCommentRecord(ctx, scope, workItem, completionVersion, event.Data.CompletionBody, offset)
 				} else {
 					publication, err = s.prepareEvidenceComment(ctx, scope, tracker.NativeWorkItemID(item), event.Data.CompletionBody, offset)
@@ -517,7 +566,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				if err != nil {
 					return nil, err
 				}
-				if publication.plan.current.EventSequence-offset != workItem.EventSequence || publication.plan.current.Revision != workItem.Revision {
+				if publication.plan.current.EventSequence-offset != completionItem.EventSequence || publication.plan.current.Revision != completionItem.Revision {
 					return nil, corestore.ErrSerializationFailure
 				}
 				preparedEvent.completion = &publication
@@ -537,6 +586,14 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		return nil, err
 	}
 	writeCommand := s.writeNativeRunCommand
+	for _, event := range prepared {
+		if event.dependencies != nil {
+			dependencies := event.dependencies
+			writeCommand = func(ctx context.Context, scope nativeScope, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
+				return s.writeRunnerDependenciesCommand(ctx, scope, command, dependencies, write)
+			}
+		}
+	}
 	if termination {
 		writeCommand = func(ctx context.Context, scope nativeScope, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
 			return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
@@ -606,6 +663,14 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 			if duplicate {
 				continue
+			}
+			if err := w.SetAttemptClaimFacts(ctx, attemptClaimFacts(attempt, event.claimDisposition, false)); err != nil {
+				return err
+			}
+			if event.dependencies != nil {
+				if err := applyRunnerDependencies(ctx, w, event.dependencies); err != nil {
+					return err
+				}
 			}
 			if event.completion != nil {
 				apply := func(writer tenantstore.Writer) error {

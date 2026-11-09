@@ -80,7 +80,7 @@ func (e *nativeExecution) FinishPrepared(ctx context.Context, reason string) err
 }
 func (e *nativeExecution) Cancel(cause error) { e.cancelExecution(cause) }
 func (e *nativeExecution) OwnsWork() bool {
-	pending := e.hasWorkers() || e.completionOwner.Load()
+	pending := e.hasWorkers() || e.completionOwner.Load() || e.preparedPublisher.Load()
 	e.cancelMu.Lock()
 	defer e.cancelMu.Unlock()
 	return pending || e.cancel != nil

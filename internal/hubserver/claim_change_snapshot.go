@@ -30,9 +30,11 @@ func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope
 	}
 	for i := range plans {
 		if row, ok := rows[plans[i].changeRecord.ID]; ok {
+			row.VersionObservations = plans[i].observations
 			plans[i].changeFacts = &row
 		}
 	}
+
 	return nil
 }
 

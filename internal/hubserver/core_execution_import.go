@@ -735,6 +735,13 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, con
 	if err != nil {
 		return postgres.CoreAttemptImport{}, err
 	}
+	if run.Runtime != nil {
+		if run.Runtime.LocalAttemptID < 0 {
+			return postgres.CoreAttemptImport{}, eventstore.ErrInvalidRecord
+		}
+		attempt.LocalAttemptID = run.Runtime.LocalAttemptID
+		attempt.LocalAttemptIDRecorded = attempt.LocalAttemptID > 0
+	}
 	attempt.PayloadObjectKey = payloadRef.Key
 	if row.Checkpoint.Valid && row.Checkpoint.String != "" && row.Checkpoint.String != "null" || row.CheckpointObject.Valid && row.CheckpointObject.String != "" {
 		checkpoint := []byte(row.Checkpoint.String)

@@ -99,7 +99,7 @@ VALUES (
     $23,
     $24,
     $25
-) RETURNING organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id
+) RETURNING organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision
 `
 
 type CreateWorkItemParams struct {
@@ -189,6 +189,7 @@ func (q *Queries) CreateWorkItem(ctx context.Context, arg CreateWorkItemParams) 
 		&i.DispatchRequestedAt,
 		&i.RecoveryRunnerID,
 		&i.RecoveryVersionID,
+		&i.DoctorIdentityRevision,
 	)
 	return i, err
 }
@@ -215,7 +216,7 @@ func (q *Queries) DeleteWorkItem(ctx context.Context, arg DeleteWorkItemParams) 
 }
 
 const getNativeWorkItemsByIDs = `-- name: GetNativeWorkItemsByIDs :many
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND native_id=ANY($3::text[])
@@ -266,6 +267,7 @@ func (q *Queries) GetNativeWorkItemsByIDs(ctx context.Context, arg GetNativeWork
 			&i.DispatchRequestedAt,
 			&i.RecoveryRunnerID,
 			&i.RecoveryVersionID,
+			&i.DoctorIdentityRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -278,7 +280,7 @@ func (q *Queries) GetNativeWorkItemsByIDs(ctx context.Context, arg GetNativeWork
 }
 
 const getWorkItem = `-- name: GetWorkItem :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND native_id=$3
@@ -323,12 +325,13 @@ func (q *Queries) GetWorkItem(ctx context.Context, arg GetWorkItemParams) (Issue
 		&i.DispatchRequestedAt,
 		&i.RecoveryRunnerID,
 		&i.RecoveryVersionID,
+		&i.DoctorIdentityRevision,
 	)
 	return i, err
 }
 
 const getWorkItemByID = `-- name: GetWorkItemByID :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND id=$3
@@ -373,12 +376,13 @@ func (q *Queries) GetWorkItemByID(ctx context.Context, arg GetWorkItemByIDParams
 		&i.DispatchRequestedAt,
 		&i.RecoveryRunnerID,
 		&i.RecoveryVersionID,
+		&i.DoctorIdentityRevision,
 	)
 	return i, err
 }
 
 const getWorkItemByNativeID = `-- name: GetWorkItemByNativeID :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues
 WHERE organization_id=$1
   AND native_id=$2
 `
@@ -421,12 +425,13 @@ func (q *Queries) GetWorkItemByNativeID(ctx context.Context, arg GetWorkItemByNa
 		&i.DispatchRequestedAt,
 		&i.RecoveryRunnerID,
 		&i.RecoveryVersionID,
+		&i.DoctorIdentityRevision,
 	)
 	return i, err
 }
 
 const getWorkItemByNumber = `-- name: GetWorkItemByNumber :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND number=$3
@@ -471,6 +476,7 @@ func (q *Queries) GetWorkItemByNumber(ctx context.Context, arg GetWorkItemByNumb
 		&i.DispatchRequestedAt,
 		&i.RecoveryRunnerID,
 		&i.RecoveryVersionID,
+		&i.DoctorIdentityRevision,
 	)
 	return i, err
 }
@@ -501,7 +507,7 @@ func (q *Queries) GetWorkItemCursor(ctx context.Context, arg GetWorkItemCursorPa
 }
 
 const getWorkItemsByIDs = `-- name: GetWorkItemsByIDs :many
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND id=ANY($3::bigint[])
@@ -552,6 +558,7 @@ func (q *Queries) GetWorkItemsByIDs(ctx context.Context, arg GetWorkItemsByIDsPa
 			&i.DispatchRequestedAt,
 			&i.RecoveryRunnerID,
 			&i.RecoveryVersionID,
+			&i.DoctorIdentityRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -564,7 +571,7 @@ func (q *Queries) GetWorkItemsByIDs(ctx context.Context, arg GetWorkItemsByIDsPa
 }
 
 const listLegacyWorkItems = `-- name: ListLegacyWorkItems :many
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND number>$3
@@ -622,6 +629,7 @@ func (q *Queries) ListLegacyWorkItems(ctx context.Context, arg ListLegacyWorkIte
 			&i.DispatchRequestedAt,
 			&i.RecoveryRunnerID,
 			&i.RecoveryVersionID,
+			&i.DoctorIdentityRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -634,7 +642,7 @@ func (q *Queries) ListLegacyWorkItems(ctx context.Context, arg ListLegacyWorkIte
 }
 
 const pageWorkItems = `-- name: PageWorkItems :many
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND (created_at, id) > ($3::timestamptz, $4::bigint)
@@ -694,6 +702,7 @@ func (q *Queries) PageWorkItems(ctx context.Context, arg PageWorkItemsParams) ([
 			&i.DispatchRequestedAt,
 			&i.RecoveryRunnerID,
 			&i.RecoveryVersionID,
+			&i.DoctorIdentityRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -706,7 +715,7 @@ func (q *Queries) PageWorkItems(ctx context.Context, arg PageWorkItemsParams) ([
 }
 
 const scanWorkItems = `-- name: ScanWorkItems :many
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND id>$3 AND id<=$4
@@ -766,6 +775,7 @@ func (q *Queries) ScanWorkItems(ctx context.Context, arg ScanWorkItemsParams) ([
 			&i.DispatchRequestedAt,
 			&i.RecoveryRunnerID,
 			&i.RecoveryVersionID,
+			&i.DoctorIdentityRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -814,7 +824,7 @@ UPDATE issues SET
     updated_at=CURRENT_TIMESTAMP,
     native_updated_at=CURRENT_TIMESTAMP
 FROM previous
-WHERE issues.id=previous.id AND issues.organization_id=$17 AND issues.project_id=$18 AND issues.native_id=$19 AND issues.revision=$20 RETURNING issues.organization_id, issues.id, issues.native_id, issues.project_id, issues.number, issues.revision, issues.event_sequence, issues.native_source_key, issues.title, issues.body_object_key, issues.issue_contract_object_key, issues.report_context_object_key, issues.actor_kind, issues.actor_principal_id, issues.provenance_provider, issues.provenance_external_id, issues.archived, issues.created_at, issues.updated_at, issues.native_created_at, issues.native_updated_at, issues.workflow_state_name, issues.last_activity_at, issues.issue_type, issues.priority, issues.dispatch_generation, issues.dispatch_requested_at, issues.recovery_runner_id, issues.recovery_version_id
+WHERE issues.id=previous.id AND issues.organization_id=$17 AND issues.project_id=$18 AND issues.native_id=$19 AND issues.revision=$20 RETURNING issues.organization_id, issues.id, issues.native_id, issues.project_id, issues.number, issues.revision, issues.event_sequence, issues.native_source_key, issues.title, issues.body_object_key, issues.issue_contract_object_key, issues.report_context_object_key, issues.actor_kind, issues.actor_principal_id, issues.provenance_provider, issues.provenance_external_id, issues.archived, issues.created_at, issues.updated_at, issues.native_created_at, issues.native_updated_at, issues.workflow_state_name, issues.last_activity_at, issues.issue_type, issues.priority, issues.dispatch_generation, issues.dispatch_requested_at, issues.recovery_runner_id, issues.recovery_version_id, issues.doctor_identity_revision
 `
 
 type UpdateWorkItemParams struct {
@@ -894,6 +904,7 @@ func (q *Queries) UpdateWorkItem(ctx context.Context, arg UpdateWorkItemParams) 
 		&i.DispatchRequestedAt,
 		&i.RecoveryRunnerID,
 		&i.RecoveryVersionID,
+		&i.DoctorIdentityRevision,
 	)
 	return i, err
 }

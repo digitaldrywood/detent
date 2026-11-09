@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
 	"github.com/digitaldrywood/detent/internal/hubclient/runtimeevidence"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestMain(m *testing.M) { os.Exit(testsupport.RunMain(m)) }
@@ -37,5 +38,40 @@ func TestMergeValidationObservationDoesNotInventPhase(t *testing.T) {
 	observation = runtimeevidence.Merge(previous, tracker.NativeRuntimeObservation{Validation: &validation})
 	if observation.Phase != previous.Phase || !reflect.DeepEqual(observation.Phases, previous.Phases) || observation.Validation == nil {
 		t.Fatalf("merged existing runtime = %+v, want prior phase history and validation", observation)
+	}
+}
+
+func TestMergeKeepsNativeSessionCorrelation(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		previous       *tracker.NativeRuntimeObservation
+		observation    tracker.NativeRuntimeObservation
+		wantAttempt    int64
+		wantGeneration uint64
+	}{
+		{name: "native session replaces legacy correlation", observation: tracker.NativeRuntimeObservation{Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 9}}, wantAttempt: 0, wantGeneration: 0},
+		{name: "native generation replaces legacy correlation", observation: tracker.NativeRuntimeObservation{Generation: 3, Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 9, Generation: 3}}, wantAttempt: 0, wantGeneration: 3},
+		{name: "conflicting generation remains distinct", observation: tracker.NativeRuntimeObservation{Generation: 4, Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 9, Generation: 3}}, wantAttempt: 0, wantGeneration: 4},
+		{name: "local session retains explicit correlation", observation: tracker.NativeRuntimeObservation{LocalAttemptID: 8, Generation: 3, Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 9, AttemptID: 8, Generation: 3}}, wantAttempt: 8, wantGeneration: 3},
+		{name: "sparse heartbeat retains correlation", wantAttempt: 7, wantGeneration: 2},
+		{name: "sparse heartbeat retains native generation", previous: &tracker.NativeRuntimeObservation{Generation: 3, Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 9, Generation: 3}}, wantAttempt: 0, wantGeneration: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			previous := &tracker.NativeRuntimeObservation{LocalAttemptID: 7, Generation: 2}
+			if test.previous != nil {
+				previous = test.previous
+			}
+			merged := runtimeevidence.Merge(previous, test.observation)
+			if merged.LocalAttemptID != test.wantAttempt || merged.Generation != test.wantGeneration {
+				t.Fatalf("merged correlation = %d/%d, want %d/%d", merged.LocalAttemptID, merged.Generation, test.wantAttempt, test.wantGeneration)
+			}
+			wantActivity := test.observation.Activity
+			if wantActivity == nil {
+				wantActivity = previous.Activity
+			}
+			if !reflect.DeepEqual(merged.Activity, wantActivity) {
+				t.Fatalf("merged activity = %+v, want %+v", merged.Activity, wantActivity)
+			}
+		})
 	}
 }

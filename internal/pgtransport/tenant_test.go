@@ -276,25 +276,90 @@ func TestPoolRoutingAndIsolation(t *testing.T) {
 	write.ConnConfig.RuntimeParams["application_name"] = "example-writer"
 	read.ConnConfig.RuntimeParams["default_transaction_isolation"] = "serializable"
 	write.ConnConfig.RuntimeParams["default_transaction_isolation"] = "serializable"
-	pools := openPools(t, read, write)
-	for _, readOnly := range []bool{true, false} {
-		tx := begin(t, pools, pgtransport.Options{ReadOnly: readOnly})
-		var app, isolation string
-		if err := tx.QueryRow(t.Context(), `SELECT current_setting('application_name'),current_setting('transaction_isolation')`).Scan(&app, &isolation); err != nil {
-			t.Fatal(err)
-		}
-		want := "example-writer"
-		if readOnly {
-			want = "example-reader"
-		}
-		if app != want || isolation != "read committed" {
-			t.Fatalf("route=%s isolation=%s", app, isolation)
-		}
-		if err := tx.Commit(t.Context()); err != nil {
-			t.Fatal(err)
+	read.ConnConfig.RuntimeParams["jit"] = "on"
+	write.ConnConfig.RuntimeParams["jit"] = "on"
+	read.MaxConns, write.MaxConns = 1, 1
+	reader, err := pgxpool.NewWithConfig(t.Context(), read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reader.Close)
+	writer, err := pgxpool.NewWithConfig(t.Context(), write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(writer.Close)
+	pools, err := pgtransport.Adopt(reader, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name             string
+		readOnly, commit bool
+	}{
+		{"reader commit", true, true}, {"reader rollback", true, false},
+		{"writer commit", false, true}, {"writer rollback", false, false},
+	} {
+		for _, tenant := range []tracker.OrganizationID{"first", "second"} {
+			for _, batched := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/batch=%t", test.name, tenant, batched), func(t *testing.T) {
+					pool, want := writer, "example-writer"
+					if test.readOnly {
+						pool, want = reader, "example-reader"
+					}
+					var ambient string
+					if err := pool.QueryRow(t.Context(), "SHOW jit").Scan(&ambient); err != nil || ambient != "on" {
+						t.Fatalf("ambient jit=%s error=%v", ambient, err)
+					}
+					var app, isolation, jit, actualTenant string
+					query := `SELECT current_setting('application_name'),current_setting('transaction_isolation'),current_setting('jit'),tenant FROM protected WHERE id=$1`
+					result := func(row pgx.Row) error { return row.Scan(&app, &isolation, &jit, &actualTenant) }
+					var tx *pgtransport.Transaction
+					var results pgx.BatchResults
+					var err error
+					if batched {
+						batch := &pgx.Batch{}
+						batch.Queue(query, "same").QueryRow(result)
+						tx, results, err = pools.BeginBatch(t.Context(), pgtransport.Scope{Organization: tenant}, pgtransport.Options{ReadOnly: test.readOnly}, batch)
+					} else {
+						tx, err = pools.Begin(t.Context(), pgtransport.Scope{Organization: tenant}, pgtransport.Options{ReadOnly: test.readOnly})
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						if err := tx.Rollback(t.Context()); err != nil {
+							t.Error(err)
+						}
+					})
+					if results != nil {
+						err = results.Close()
+					} else {
+						err = result(tx.QueryRow(t.Context(), query, "same"))
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if app != want || isolation != "read committed" || jit != "off" || actualTenant != string(tenant) {
+						t.Fatalf("route=%s isolation=%s jit=%s tenant=%s", app, isolation, jit, actualTenant)
+					}
+					if test.commit {
+						err = tx.Commit(t.Context())
+					} else {
+						err = tx.Rollback(t.Context())
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := pool.QueryRow(t.Context(), "SHOW jit").Scan(&ambient); err != nil || ambient != "on" {
+						t.Fatalf("released connection jit=%s error=%v", ambient, err)
+					}
+				})
+			}
 		}
 	}
 }
+
 func TestGuardDetectsBypass(t *testing.T) {
 	_, config := fixture(t)
 	violations := 0

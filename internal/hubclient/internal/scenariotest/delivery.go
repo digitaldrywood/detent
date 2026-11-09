@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -182,6 +183,7 @@ func RunReleaseDeliveryReconciliation(t *testing.T, factories Constructors) {
 			}
 			issue = claimed.Issue
 			execution := replaceRecovery(t, h, h.scheduler.RunExecution(issue.ID), &tracker.ReleaseDelivery{ReleasePickInput: f.input, ChangeID: "change_delivery"}, factories)
+			var terminalRenewal atomic.Bool
 			transport := fixtureClient(h.native.Transport()).requests.Load()
 			fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/release-pick") {
@@ -192,7 +194,27 @@ func RunReleaseDeliveryReconciliation(t *testing.T, factories Constructors) {
 					raw, err := json.Marshal(status)
 					return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(raw))), Request: request}, err
 				}
-				return transport.RoundTrip(request)
+				response, err := transport.RoundTrip(request)
+				if err == nil && test.delivered && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/workflow") && response.StatusCode == http.StatusOK {
+					raw, err := io.ReadAll(response.Body)
+					response.Body.Close()
+					if err != nil {
+						return nil, err
+					}
+					response.Body = io.NopCloser(strings.NewReader(string(raw)))
+					var current tracker.NativeIssue
+					if err := json.Unmarshal(raw, &current); err != nil {
+						return nil, err
+					}
+					if current.Terminal && terminalRenewal.CompareAndSwap(false, true) {
+						_, renewErr := h.scheduler.RenewClaimHeartbeat(request.Context(), issue.ID, h.scheduler.Now())
+						var refusal *APIError
+						if !errors.As(renewErr, &refusal) || refusal.Code != "stale_fencing_token" {
+							t.Errorf("terminal renewal did not refuse execution authority: %v", renewErr)
+						}
+					}
+				}
+				return response, err
 			}))
 			provider := &committingAgent{}
 			cfg := config.Config{}
@@ -227,6 +249,9 @@ func RunReleaseDeliveryReconciliation(t *testing.T, factories Constructors) {
 			}
 			if test.delivered && (result.NativeLanding == nil || result.NativeLanding.MergeSHA == deliveryHead || result.NativeLanding.HeadSHA != source) {
 				t.Fatalf("delivery did not reconcile the alternate source pick: %+v", result.NativeLanding)
+			}
+			if test.delivered && !terminalRenewal.Load() {
+				t.Fatal("delivery did not exercise terminal renewal before final cleanup")
 			}
 			if test.closed && !test.delivered {
 				disposition := runner.NativeDispositionFromMessage(result.FinalMessage)

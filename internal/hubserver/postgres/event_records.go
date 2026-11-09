@@ -77,6 +77,36 @@ func (s *session) EventsBefore(ctx context.Context, project tracker.ProjectID, i
 	return records, nil
 }
 
+func (s *session) HistoryEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, after int64, limit int) ([]eventstore.Event, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.RecordListHistoryEvent(ctx, pgquery.RecordListHistoryEventParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, After: after, PageLimit: int32(limit)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	records := make([]eventstore.Event, len(rows))
+	for i, row := range rows {
+		records[i] = eventRecord(row)
+	}
+	return records, nil
+}
+
+func (s *session) HistoryEventsBefore(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, before int64, limit int) ([]eventstore.Event, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.RecordListHistoryEventBefore(ctx, pgquery.RecordListHistoryEventBeforeParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, Before: before, PageLimit: int32(limit)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	records := make([]eventstore.Event, len(rows))
+	for i, row := range rows {
+		records[i] = eventRecord(row)
+	}
+	return records, nil
+}
+
 func (s *session) ProjectEventSequence(ctx context.Context, project tracker.ProjectID) (int64, error) {
 	sequence, err := s.queries.RecordProjectEventSequence(ctx, pgquery.RecordProjectEventSequenceParams{OrganizationID: s.organization, ProjectID: project})
 	return sequence, mapError(ctx, err)
@@ -375,7 +405,7 @@ func (s *session) CollaborationVersions(ctx context.Context, keys []eventstore.C
 }
 
 func (s *session) insertRecordEvent(ctx context.Context, record eventstore.Event) (eventstore.Event, error) {
-	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{PushKnown: record.PushKnown, PushChangeID: record.PushChangeID, PushVersionID: record.PushVersionID, PushHeadSha: record.PushHeadSHA, PushExternalEffect: record.PushExternalEffect, PushEffectState: record.PushEffectState, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, ProjectSequence: record.ProjectSequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
+	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{HistoryHidden: record.HistoryHidden, SchedulerOutcome: record.SchedulerOutcome, PushKnown: record.PushKnown, PushChangeID: record.PushChangeID, PushVersionID: record.PushVersionID, PushHeadSha: record.PushHeadSHA, PushExternalEffect: record.PushExternalEffect, PushEffectState: record.PushEffectState, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, ProjectSequence: record.ProjectSequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ActorEnvelopeKnown: record.ActorEnvelopeKnown, ActorViaKey: record.ActorViaKey, ActorDisplayName: record.ActorDisplayName, ActorAgent: record.ActorAgent, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
 	if err != nil {
 		return eventstore.Event{}, mapError(ctx, err)
 	}
@@ -451,6 +481,15 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 		if requested.RecordedAt.IsZero() || recordTime(requested.RecordedAt).Equal(previous.RecordedAt) {
 			requested.RecordedAt = previous.RecordedAt
 		}
+		requested = replayEventActor(requested, eventRecord(previous))
+		if previous.Type == "scheduler.decision" && previous.SchedulerOutcome == "" {
+			requested.SchedulerOutcome = ""
+		}
+		if previous.Type == "scheduler.decision" && !previous.PushKnown {
+			requested.PushKnown = false
+			requested.PushChangeID, requested.PushVersionID, requested.PushHeadSHA = previous.PushChangeID, previous.PushVersionID, previous.PushHeadSha
+			requested.PushExternalEffect, requested.PushEffectState = previous.PushExternalEffect, previous.PushEffectState
+		}
 		if !reflect.DeepEqual(eventRecord(previous), requested) {
 			return eventstore.Event{}, corestore.ErrRevisionConflict
 		}
@@ -461,6 +500,9 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return eventstore.Event{}, mapError(ctx, err)
+	}
+	if record.Type == "scheduler.decision" && record.SchedulerOutcome == "" {
+		return eventstore.Event{}, eventstore.ErrInvalidRecord
 	}
 	sequence, err := s.queries.RecordAdvanceIssue(ctx, pgquery.RecordAdvanceIssueParams{OrganizationID: s.organization, ProjectID: record.ProjectID, NativeID: record.WorkItemID, ImportedSequence: record.Sequence, ActivityAt: recordTime(record.RecordedAt)})
 	if err != nil {
@@ -742,7 +784,7 @@ func (s *session) ChangePublicationCheckpoints(ctx context.Context, project trac
 	}
 	records := make([]eventstore.Event, len(rows))
 	for i, row := range rows {
-		records[i] = eventRecord(pgquery.CollaborationEvent(row))
+		records[i] = eventRecord(row)
 	}
 	return records, nil
 }
@@ -813,4 +855,11 @@ func (s *session) PutPRPublication(ctx context.Context, record eventstore.Native
 func (s *session) LatestSchedulerDecision(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.Event, error) {
 	row, err := s.queries.RecordLatestSchedulerDecision(ctx, pgquery.RecordLatestSchedulerDecisionParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item})
 	return eventRecord(row), mapError(ctx, err)
+}
+
+func replayEventActor(requested, previous eventstore.Event) eventstore.Event {
+	if !previous.ActorEnvelopeKnown {
+		requested.ActorEnvelopeKnown, requested.ActorViaKey, requested.ActorDisplayName, requested.ActorAgent = false, previous.ActorViaKey, previous.ActorDisplayName, previous.ActorAgent
+	}
+	return requested
 }

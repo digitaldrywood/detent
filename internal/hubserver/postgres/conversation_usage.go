@@ -37,7 +37,7 @@ func (s *session) CreateConversationPrice(ctx context.Context, price billingstor
 		return mapError(ctx, err)
 	}
 	count := result.RowsAffected()
-	if err != nil || count == 1 {
+	if count == 1 {
 		return err
 	}
 	previous, err := s.ConversationPrice(ctx, price.Provider, price.Model, price.EffectiveAt)
@@ -86,7 +86,7 @@ func (s *session) RecordConversationUsage(ctx context.Context, usage billingstor
 		return false, mapError(ctx, err)
 	}
 	count := result.RowsAffected()
-	if err != nil || count == 1 {
+	if count == 1 {
 		return count == 1, err
 	}
 	previous, err := s.ConversationUsage(ctx, usage.TurnID)

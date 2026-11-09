@@ -41,21 +41,22 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 				return err
 			}
 			_, err := w.CreateConversation(ctx, conversationstore.Conversation{
-				OrganizationID:   organization,
-				ProjectID:        "prj_shared",
-				ID:               "conv_0123456789abcdef0123456789abcdef",
-				CreationKey:      "create_example",
-				CreationHash:     "hash_example",
-				OwnerPrincipalID: "owner",
-				Origin:           "user",
-				Title:            string(organization),
-				Visibility:       conversation.VisibilityPrivate,
-				Status:           conversation.StatusActive,
-				Revision:         1,
-				Execution:        conversation.Execution{Status: conversation.ExecutionIdle, Owner: conversation.Owner{LeaseID: "lease_" + string(organization), FencingToken: 1}},
-				Preferences:      conversation.DefaultPreferences(),
-				CreatedAt:        now,
-				UpdatedAt:        now,
+				OrganizationID:        organization,
+				ProjectID:             "prj_shared",
+				ID:                    "conv_0123456789abcdef0123456789abcdef",
+				CreationKey:           "create_example",
+				CreationHash:          "hash_example",
+				OwnerPrincipalID:      "owner",
+				Origin:                "user",
+				Title:                 string(organization),
+				Visibility:            conversation.VisibilityPrivate,
+				Status:                conversation.StatusActive,
+				Revision:              1,
+				ExecutionContinuation: true,
+				Execution:             conversation.Execution{Status: conversation.ExecutionIdle, Owner: conversation.Owner{LeaseID: "lease_" + string(organization), FencingToken: 1}},
+				Preferences:           conversation.DefaultPreferences(),
+				CreatedAt:             now,
+				UpdatedAt:             now,
 			})
 			return err
 		}); err != nil {
@@ -179,7 +180,7 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if got.OrganizationID != organization || got.Title != string(organization) || got.MessageCount != 1 {
+			if got.OrganizationID != organization || got.Title != string(organization) || got.MessageCount != 1 || !got.ExecutionContinuation {
 				t.Fatalf("conversation escaped tenant scope: %+v", got)
 			}
 			created, err := r.ConversationByCreationKey(ctx, "owner", "create_example")
@@ -232,6 +233,67 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 			}
 			if _, found, err := r.TurnBatch(ctx, "attempt_"+string(otherOrganization), "batch_"+string(otherOrganization)); err != nil || found {
 				return errors.Join(err, errors.New("turn batch escaped tenant scope"))
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for index, suppliedSequence := range []int64{0, 1000} {
+			if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+				conversationID := "conv_0123456789abcdef0123456789abcdef"
+				snapshot, err := w.LockConversation(ctx, "prj_shared", conversationID)
+				if err != nil {
+					return err
+				}
+				first, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: organization, ConversationID: conversationID, Event: conversation.Event{Type: conversation.EventExecutionUpdated, Data: json.RawMessage(`{}`), CreatedAt: now}})
+				if err != nil {
+					return err
+				}
+				wantSequence := int64(2 + index*2)
+				if first.Seq != wantSequence {
+					t.Fatalf("first event sequence = %d, want %d", first.Seq, wantSequence)
+				}
+				snapshot.EventSequence = suppliedSequence
+				snapshot.ExecutionContinuation = index == 1
+				snapshot.Title = string(organization) + " updated"
+				updated, err := w.UpdateConversation(ctx, snapshot, snapshot.Revision)
+				if err != nil {
+					return err
+				}
+				if updated.EventSequence != wantSequence || updated.Title != snapshot.Title || updated.Revision != snapshot.Revision+1 || updated.ExecutionContinuation != (index == 1) {
+					t.Fatalf("conversation update changed event ownership: %+v, want event sequence %d", updated, wantSequence)
+				}
+				second, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: organization, ConversationID: conversationID, Event: conversation.Event{Type: conversation.EventCommandReceipt, Data: json.RawMessage(`{}`), CreatedAt: now}})
+				if err != nil {
+					return err
+				}
+				stored, err := w.Conversation(ctx, "prj_shared", conversationID)
+				if err != nil {
+					return err
+				}
+				if second.Seq != wantSequence+1 || stored.EventSequence != wantSequence+1 || stored.Title != snapshot.Title || stored.ExecutionContinuation != (index == 1) {
+					t.Fatalf("subsequent event lost sequence: event=%+v conversation=%+v", second, stored)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+			events, err := r.ConversationEvents(ctx, "conv_0123456789abcdef0123456789abcdef", 0, 20)
+			if err != nil {
+				return err
+			}
+			if len(events.Items) != 5 {
+				t.Fatalf("conversation history = %+v, want five events", events.Items)
+			}
+			for index, event := range events.Items {
+				if event.OrganizationID != organization || event.Seq != int64(index+1) {
+					t.Fatalf("conversation history escaped its tenant or order: %+v", event)
+				}
 			}
 			return nil
 		}); err != nil {

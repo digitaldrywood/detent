@@ -678,10 +678,7 @@ func setBillingAssignmentSource(ctx context.Context, s *session, current, source
 		return mapError(ctx, err)
 	}
 	count := result.RowsAffected()
-	if err != nil || count != 1 {
-		if err != nil {
-			return mapError(ctx, err)
-		}
+	if count != 1 {
 		return corestore.ErrRevisionConflict
 	}
 	return nil

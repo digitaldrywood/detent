@@ -151,7 +151,11 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 			err = &boardRefreshError{item: candidate.WorkItemID, step: step, cause: err}
 		}
 	}()
-	err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+	owner, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return snapshot, nativeRunEventStorageUnavailable()
+	}
+	err = owner.ReadTenantSnapshot(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		snapshot.project.Core, err = r.Project(ctx, candidate.ProjectID)
 		if err != nil {
@@ -194,11 +198,18 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 			if err != nil {
 				return err
 			}
-			if boardAttemptCurrent(value, now) {
+			current := boardAttemptCurrent(value, now)
+			recoverClaim := attempt.Status == "succeeded" && attempt.ClaimDisposition == nil
+			if current || recoverClaim {
 				step = "run_event"
 				value.event, err = r.LatestRunEvent(ctx, candidate.ProjectID, attempt.ID)
-				if err != nil {
+				if err != nil && (current || !errors.Is(err, corestore.ErrNotFound)) {
 					return err
+				}
+				if recoverClaim && value.event.ID != "" {
+					if err := readTenantAttemptPayload(ctx, r, &value); err != nil {
+						return err
+					}
 				}
 			}
 			snapshot.attempt = &value
@@ -259,6 +270,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		return err
 	}
 	var runtimeSummary *leasestore.AttemptEvent
+	var recoveredClaimFacts *leasestore.AttemptClaimFacts
 	update := viewstore.BoardUpdate{ProjectID: candidate.ProjectID, WorkItemID: candidate.WorkItemID, ExpectedRevision: snapshot.item.Revision, ExpectedEventSequence: snapshot.item.EventSequence, ExpectedProjectRevision: snapshot.project.Core.ContentSettingsRevision}
 	if snapshot.item.ID != 0 && snapshot.project.Core.DeletedAt == nil && snapshot.project.Core.Profile == "native" {
 		step = "issue_payload"
@@ -269,12 +281,20 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		card := tracker.NativeBoardCard{Issue: issue}
 		var latest *tracker.NativeAttempt
 		if historical := snapshot.attempt; historical != nil {
+			if historical.attempt.Status == "succeeded" && historical.attempt.ClaimDisposition == nil && historical.event.ID != "" {
+				facts, recoverErr := s.prepareAttemptClaimFacts(ctx, *historical)
+				if recoverErr == nil {
+					recoveredClaimFacts = &facts
+				} else if s.config.Logger != nil {
+					s.config.Logger.Warn("attempt claim facts remain unavailable", "organization_id", organization, "project_id", candidate.ProjectID, "work_item_id", candidate.WorkItemID, "attempt_id", historical.attempt.ID, "error", recoverErr)
+				}
+			}
 			step = "attempt_payload"
-			attempt, err := s.boardAttemptDetails(ctx, *historical, now)
+			attempt, present, err := s.boardAttemptDetails(ctx, *historical, now)
 			if err != nil {
 				return err
 			}
-			if attempt != nil {
+			if present {
 				if historical.attempt.Status == "running" && historical.attempt.RuntimeSummarySequence != historical.attempt.Sequence {
 					runtimeSummary = &leasestore.AttemptEvent{ID: historical.attempt.ID, Sequence: historical.attempt.Sequence}
 					if attempt.Runtime != nil {
@@ -381,12 +401,20 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 	}
 	step = "replace_board_item"
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		if err := w.ReplaceBoardItem(ctx, update); err != nil {
+			return err
+		}
 		if runtimeSummary != nil {
 			if err := w.SetAttemptRuntimeHeartbeat(ctx, runtimeSummary.ID, runtimeSummary.Sequence, runtimeSummary.RuntimeHeartbeatAt); err != nil {
 				return err
 			}
 		}
-		return w.ReplaceBoardItem(ctx, update)
+		if recoveredClaimFacts != nil {
+			if err := w.SetAttemptClaimFacts(ctx, *recoveredClaimFacts); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err == nil && update.Current != nil && candidate.QueuedAt != nil && s.config.Logger != nil {
 		s.config.Logger.Info("board projection checkpoint", "organization_id", organization, "project_id", candidate.ProjectID, "work_item_id", candidate.WorkItemID, "source_revision", snapshot.item.Revision, "source_event_sequence", snapshot.item.EventSequence, "projected_at", now, "projection_lag", max(time.Duration(0), now.Sub(*candidate.QueuedAt)))
@@ -398,18 +426,18 @@ func boardAttemptCurrent(snapshot tenantAttemptSnapshot, now time.Time) bool {
 	return snapshot.attempt.Status == "running" && snapshot.lease.ReleasedAt == nil && now.Before(snapshot.lease.ExpiresAt)
 }
 
-func (s *Service) boardAttemptDetails(ctx context.Context, snapshot tenantAttemptSnapshot, now time.Time) (*tracker.NativeAttempt, error) {
+func (s *Service) boardAttemptDetails(ctx context.Context, snapshot tenantAttemptSnapshot, now time.Time) (*tracker.NativeAttempt, bool, error) {
 	if !boardAttemptCurrent(snapshot, now) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if snapshot.event.ID == "" {
-		return nil, corestore.ErrNotFound
+		return nil, false, corestore.ErrNotFound
 	}
 	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, now)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &attempt, nil
+	return &attempt, true, nil
 }
 
 func boardProjectionRecord(snapshot boardProjectionSnapshot, card tracker.NativeBoardCard) viewstore.BoardRecord {

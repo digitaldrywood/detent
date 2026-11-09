@@ -3,18 +3,17 @@ package scenariotest
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
-
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -23,36 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-var hubclientPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `SET synchronous_commit = off`); err != nil {
-		return err
-	}
-	roles, err := os.ReadFile("../../hubserver/postgres/roles.sql")
-	if err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, string(roles)); err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, `CREATE ROLE hubclient_test LOGIN; GRANT detent_runtime_v2 TO hubclient_test`); err != nil {
-		return err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration_v2`); err != nil {
-		return err
-	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../../hubserver/postgres/migrations")), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
-	if err != nil {
-		return err
-	}
-	_, err = provider.Up(ctx)
-	return err
-})
 
 type hubclientIdentityProvider struct{ auth.HostedProvider }
 
@@ -65,12 +36,12 @@ func (hubclientIdentityProvider) Memberships(_ context.Context, user, organizati
 func ClosePostgres() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return hubclientPostgresTemplate.Close(ctx)
+	return testsupport.CloseScenarioPostgres(ctx)
 }
 
 func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracker.NativeState, requireDependencies bool) hubserver.Config {
 	t.Helper()
-	admin := hubclientPostgresTemplate.Database(t)
+	admin := testsupport.ScenarioPostgresDatabase(t)
 	connection := pgtransport.Connection{User: "hubclient_test", Password: "test-only", SSLMode: "disable"}
 	var socket, data string
 	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer, current_setting('unix_socket_directories'), current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &socket, &data); err != nil {
@@ -83,9 +54,8 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 	if _, err := admin.ExecContext(t.Context(), `ALTER DATABASE `+`"`+connection.Database+`" CONNECTION LIMIT 10`); err != nil {
 		t.Fatal(err)
 	}
-	cfg.DatabasePath = ""
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
-	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 6, ServingConnections: 4, BackgroundConnections: 1}}
+	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 6, ServingConnections: 4, BackgroundConnections: 1}, LeaseClock: cfg.Clock}
 	if cfg.Hosted == nil {
 		cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: hubclientIdentityProvider{}}
 	}
@@ -105,6 +75,7 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		t.Fatal(err)
 	}
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+	project := hubclientPostgresProject(cfg)
 	now := cfg.Clock().UTC()
 	err = repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: "example", CreatedAt: now}); err != nil {
@@ -123,7 +94,7 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now}); err != nil {
 			return err
 		}
-		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_example", Name: "Example project", Profile: "native", RequireDependencies: requireDependencies}, States: states}); err != nil {
+		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Profile: "native", RequireDependencies: requireDependencies}, States: states}); err != nil {
 			return err
 		}
 		for _, credential := range []struct{ id, token, scope string }{{"example_admin", string(cfg.InitialAdminToken), "admin"}, {"example_ci", "example-ci", "operator"}} {
@@ -134,19 +105,23 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 			if err := w.CreateAccessCredential(t.Context(), row); err != nil {
 				return err
 			}
-			if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credential.id, ProjectID: "prj_example"}); err != nil {
+			if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credential.id, ProjectID: project}); err != nil {
 				return err
 			}
 		}
 		if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_example", MembershipID: "membership_example", Email: "owner@example.test", Role: "owner", Active: true, PrincipalID: "example_admin", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
-		return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: "user_example", ProjectID: "prj_example", CanWrite: true, ManageRunner: true})
+		return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: "user_example", ProjectID: project, CanWrite: true, ManageRunner: true})
 	})
 	if err := errors.Join(err, repository.Close()); err != nil {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func hubclientPostgresProject(cfg hubserver.Config) tracker.ProjectID {
+	return tracker.ProjectID("prj_" + strings.TrimPrefix(cfg.Hosted.OrganizationID, "org_"))
 }
 
 func hubclientSeedPostgres(t *testing.T, cfg hubserver.Config, organization tracker.OrganizationID, seed func(tenantstore.Writer) error) {
@@ -156,6 +131,18 @@ func hubclientSeedPostgres(t *testing.T, cfg hubserver.Config, organization trac
 		t.Fatal(err)
 	}
 	err = repository.WriteTenant(t.Context(), organization, corestore.Serving, seed)
+	if err := errors.Join(err, repository.Close()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hubclientReadPostgres(t *testing.T, cfg hubserver.Config, organization tracker.OrganizationID, read func(tenantstore.Reader) error) {
+	t.Helper()
+	repository, err := postgres.Open(t.Context(), *cfg.Postgres, os.DirFS("../../hubserver/postgres/migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = repository.ReadTenant(t.Context(), organization, corestore.Serving, read)
 	if err := errors.Join(err, repository.Close()); err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -54,7 +53,7 @@ var nativeChangeTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.
 	if err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(migrations), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(migrations), goose.WithGoMigrations(postgres.ConversationMigrations(migrations)...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		return err
 	}
@@ -64,10 +63,38 @@ var nativeChangeTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.
 
 func CloseNativeChangePostgres(ctx context.Context) error { return nativeChangeTemplate.Close(ctx) }
 
-func NativeChangeDatabasePath(t testing.TB) string {
+var scenarioPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `SET synchronous_commit = off`); err != nil {
+		return err
+	}
+	roles, err := os.ReadFile("../../hubserver/postgres/roles.sql")
+	if err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, string(roles)); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `CREATE ROLE hubclient_test LOGIN; GRANT detent_runtime_v2 TO hubclient_test`); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration_v2`); err != nil {
+		return err
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../../hubserver/postgres/migrations")), goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("../../hubserver/postgres/migrations"))...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	if err != nil {
+		return err
+	}
+	_, err = provider.Up(ctx)
+	return err
+})
+
+func ScenarioPostgresDatabase(t *testing.T) *sql.DB {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "unused.db")
+	return scenarioPostgresTemplate.Database(t)
 }
+
+func CloseScenarioPostgres(ctx context.Context) error { return scenarioPostgresTemplate.Close(ctx) }
 
 var nativeChangeDatabases sync.Map
 var nativeChangeRepositories sync.Map
@@ -106,7 +133,6 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 		}
 	})
 	admin.SetMaxIdleConns(0)
-	cfg.DatabasePath = ""
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
 	if cfg.Hosted == nil {

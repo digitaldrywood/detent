@@ -268,9 +268,12 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		var cancellation *preparedNativeLeaseCancellation
 		if human {
-			cancellation, err = s.prepareHumanWorkflowCancellation(ctx, scope, row.ID, request, stopState)
+			prepared, present, err := s.prepareHumanWorkflowCancellation(ctx, scope, row.ID, request, stopState)
 			if err != nil {
 				return nil, err
+			}
+			if present {
+				cancellation = prepared
 			}
 		}
 		var committed json.RawMessage

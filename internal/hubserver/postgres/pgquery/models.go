@@ -144,8 +144,9 @@ type ArchiveObjectOwner struct {
 }
 
 type ArchiveUsageCounter struct {
-	OrganizationID  tracker.OrganizationID
-	CompressedBytes int64
+	OrganizationID     tracker.OrganizationID
+	CompressedBytes    int64
+	PopulationRevision int64
 }
 
 type ArtifactCatalogManifest struct {
@@ -631,6 +632,12 @@ type CollaborationEvent struct {
 	PushHeadSha          string
 	PushExternalEffect   string
 	PushEffectState      string
+	HistoryHidden        bool
+	SchedulerOutcome     string
+	ActorEnvelopeKnown   bool
+	ActorViaKey          string
+	ActorDisplayName     string
+	ActorAgent           string
 }
 
 type CollaborationVersion struct {
@@ -681,6 +688,7 @@ type Conversation struct {
 	ConversionState        int16
 	DeletedAt              *time.Time
 	MessageCount           int64
+	ExecutionContinuation  bool
 }
 
 type ConversationAttachment struct {
@@ -1068,6 +1076,21 @@ type DailySummaryReceipt struct {
 	Status         string
 	Attempts       int32
 	RecordedAt     time.Time
+}
+
+type DoctorProposalIdentity struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	Kind           string
+	IdentityHash   string
+	IdentityValue  []byte
+	SourceRevision int64
+	VersionSha256  string
+	HasState       bool
+	StateName      string
+	Archived       bool
+	ItemNumber     int64
 }
 
 type GithubCutover struct {
@@ -1646,6 +1669,7 @@ type HostedUsageCounter struct {
 	OrganizationID tracker.OrganizationID
 	Name           string
 	Value          int64
+	Initialized    bool
 }
 
 type HostedUsageReceipt struct {
@@ -1748,6 +1772,7 @@ type Issue struct {
 	DispatchRequestedAt    *time.Time
 	RecoveryRunnerID       string
 	RecoveryVersionID      string
+	DoctorIdentityRevision *int64
 }
 
 type IssueArchiveSection struct {
@@ -1888,6 +1913,15 @@ type LocalBoardImport struct {
 	ImportedAt     time.Time
 }
 
+type LocalBoardPopulation struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Kind           string
+	HasState       bool
+	StateName      string
+	Value          int64
+}
+
 type Machine struct {
 	OrganizationID      tracker.OrganizationID
 	ID                  string
@@ -1963,6 +1997,9 @@ type NativeAttempt struct {
 	CleanupAcknowledgedAt  *time.Time
 	RuntimeHeartbeatAt     *time.Time
 	RuntimeSummarySequence pgtype.Int8
+	ClaimDisposition       *string
+	LocalAttemptID         pgtype.Int8
+	LocalAttemptIDRecorded bool
 }
 
 type NativeAttemptEvent struct {
@@ -2601,6 +2638,9 @@ type NativeCommandState struct {
 	ResponseReconciliationHash string
 	SourceSnapshotID           string
 	SourceRecordHash           string
+	ReservationProjectID       *string
+	ReservationCorrelationID   *string
+	ReservationClaimedAt       *time.Time
 }
 
 type NativeComment struct {
@@ -5009,6 +5049,45 @@ type ScheduledCiDecision struct {
 	Target         string
 	Reason         string
 	CreatedAt      time.Time
+}
+
+type SchedulerEventHead struct {
+	HeadKind             string
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	WorkItemID           string
+	ID                   string
+	Sequence             int64
+	Type                 string
+	SchemaVersion        int64
+	ActorKind            string
+	ActorPrincipalID     string
+	EventRevision        int64
+	ChangeID             string
+	VersionID            string
+	HeadSHA              string
+	RunID                string
+	AttemptID            string
+	FromState            string
+	ToState              string
+	RecordedAt           time.Time
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int64
+	LandingWaiting       bool
+	LandingChangeID      string
+	LandingVersionID     string
+	LandingHeadSHA       string
+	ProjectSequence      int64
+	PushKnown            bool
+	PushChangeID         string
+	PushVersionID        string
+	PushHeadSha          string
+	PushExternalEffect   string
+	PushEffectState      string
+	SchedulerOutcome     string
 }
 
 type SearchDocument struct {

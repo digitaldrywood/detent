@@ -16,6 +16,7 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -480,6 +481,145 @@ func TestNativeConversationSessionDeliversControlsInOrder(t *testing.T) {
 }
 
 func TestNativeConversationReportBatchesAndRetries(t *testing.T) {
+	for _, queued := range []bool{false, true} {
+		t.Run(fmt.Sprintf("decline question behind prefix=%t", queued), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				fourth, release, finished, providerDone := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var requests []ConversationTurnEventsRequest
+				committed := make(map[string]struct{})
+				var accepted []runner.ConversationTurnEvent
+				client, err := New(Config{URL: "https://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					var batch ConversationTurnEventsRequest
+					if err := json.NewDecoder(request.Body).Decode(&batch); err != nil {
+						return nil, err
+					}
+					requests = append(requests, batch)
+					if _, ok := committed[batch.BatchKey]; !ok {
+						committed[batch.BatchKey] = struct{}{}
+						accepted = append(accepted, batch.Events...)
+					}
+					if len(requests) < 4 {
+						return nil, io.ErrUnexpectedEOF
+					}
+					if len(requests) == 4 {
+						close(fourth)
+						select {
+						case <-release:
+						case <-request.Context().Done():
+							return nil, request.Context().Err()
+						}
+					}
+					return &http.Response{StatusCode: http.StatusAccepted, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"event_seq":1}`)), Request: request}, nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				question := runner.ConversationTurnEvent{Type: runner.ConversationEventQuestionOpened, ThreadID: "thread-1", TurnID: "turn-1", RequestID: "req-1", Prompts: json.RawMessage(`[{"id":"approach","question":"Which?","options":[],"free_text":true}]`)}
+				batch := []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"}}
+				session := &conversationSession{lifetimeDone: ctx.Done(), lifetimeCause: func() error { return context.Cause(ctx) }, client: native, id: "conv_test", identity: ConversationIdentity{LeaseID: "lease-1", FencingToken: 7, AttemptID: "attempt_1"}, commands: make(chan runner.AgentControl, 64), logger: slog.Default()}
+				if queued {
+					session.events = []runner.ConversationTurnEvent{question}
+				} else {
+					batch = append(batch, question)
+				}
+				resumed := make(chan runner.AgentControl, 1)
+				go func() {
+					defer close(providerDone)
+					select {
+					case command := <-session.commands:
+						resumed <- command
+					case <-ctx.Done():
+					}
+				}()
+				result := make(chan error, 1)
+				go func() { defer close(finished); result <- session.post(ctx, batch) }()
+				t.Cleanup(func() {
+					cancel()
+					select {
+					case <-release:
+					default:
+						close(release)
+					}
+					<-finished
+					<-providerDone
+				})
+				select {
+				case <-fourth:
+				case err := <-result:
+					t.Fatalf("discarded the uncertain prefix before recovery: %v", err)
+				}
+				synctest.Wait()
+				select {
+				case command := <-resumed:
+					if err := command.Validate(); err != nil {
+						t.Fatal(err)
+					}
+					if command.Kind != runner.AgentControlAnswer || command.RequestID != "req-1" || command.ThreadID != "thread-1" || command.TurnID != "turn-1" || len(command.Answers["approach"]) != 1 || !strings.Contains(command.Answers["approach"][0], "could not show this question") {
+						t.Fatalf("provider did not resume with the matching decline: %+v", command)
+					}
+				default:
+					t.Fatal("provider remained blocked behind an unavailable prefix")
+				}
+				close(release)
+				if err := <-result; err != nil {
+					t.Fatal(err)
+				}
+				if len(requests) != 4 || len(committed) != 1 || !reflect.DeepEqual(accepted, batch) {
+					t.Fatalf("uncertain batch duplicated or lost content: calls=%d receipts=%d events=%+v", len(requests), len(committed), accepted)
+				}
+				for _, request := range requests {
+					if request.BatchKey == "" || request.BatchKey != requests[0].BatchKey || !reflect.DeepEqual(request.Events, batch) {
+						t.Fatalf("question decline changed an uncertain batch: %+v", requests)
+					}
+				}
+				if len(session.commands) != 0 || len(session.events) != 0 {
+					t.Fatalf("question was queued again after decline: controls=%d events=%+v", len(session.commands), session.events)
+				}
+			})
+		})
+	}
+	for _, failures := range []int{3, 8} {
+		t.Run(fmt.Sprintf("recover after %d transient responses", failures), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				hub := &conversationHub{t: t, reportFailure: failures}
+				client, err := New(Config{URL: "https://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					hub.ServeHTTP(response, request)
+					return response.Result(), nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session := &conversationSession{client: native, id: "conv-1", identity: ConversationIdentity{LeaseID: "lease-1", FencingToken: 7, AttemptID: "attempt_1"}}
+				events := []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnStarted, ThreadID: "t", TurnID: "turn-1"}}
+				if err := session.postBatch(t.Context(), events, nil); err != nil {
+					t.Fatalf("discarded a batch before the Hub recovered: %v", err)
+				}
+				if got := hub.events(); !reflect.DeepEqual(got, events) {
+					t.Fatalf("recovered events = %+v, want %+v", got, events)
+				}
+				keys := hub.postedBatchKeys()
+				if len(keys) != failures+1 {
+					t.Fatalf("requests = %d, want %d", len(keys), failures+1)
+				}
+				for _, key := range keys {
+					if key == "" || key != keys[0] {
+						t.Fatalf("retry changed batch key: %q", keys)
+					}
+				}
+			})
+		})
+	}
 	hub, execution := newConversationHub(t)
 	hub.reportFailure = 1
 	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{}, "")
@@ -748,8 +888,6 @@ func TestNativeConversationCloseHonoursDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("close against a hung hub reported no error")
 	}
-	// Generous: the point is that Close does not wait out the report retries,
-	// which are three attempts of a 15 second timeout each.
 	if elapsed > 5*time.Second {
 		t.Fatalf("close took %v, want it bounded by the caller's %v deadline", elapsed, deadline)
 	}
@@ -799,11 +937,13 @@ func TestNativeConversationPublicationConflictPreservesBatch(t *testing.T) {
 	}{
 		{name: "concurrent publication", code: "revision_conflict", wantCalls: 2},
 		{name: "concurrent publication preserves multiple events", code: "revision_conflict", multiple: true, wantCalls: 2},
-		{name: "persistent conflict keeps the existing attempt limit", code: "revision_conflict", multiple: true, persistent: true, wantCalls: 3, wantError: true},
+		{name: "persistent conflict stops on cancellation", code: "revision_conflict", multiple: true, persistent: true, wantCalls: 3, wantError: true},
 		{name: "lost execution", code: "stale_execution", wantCalls: 1, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
 				var requests []ConversationTurnEventsRequest
 				client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					var batch ConversationTurnEventsRequest
@@ -811,6 +951,9 @@ func TestNativeConversationPublicationConflictPreservesBatch(t *testing.T) {
 						return nil, err
 					}
 					requests = append(requests, batch)
+					if test.persistent && len(requests) == test.wantCalls {
+						cancel()
+					}
 					status, body := http.StatusAccepted, `{"event_seq":1}`
 					if len(requests) == 1 || test.persistent {
 						status, body = http.StatusConflict, fmt.Sprintf(`{"code":%q,"message":"publication refused"}`, test.code)
@@ -829,7 +972,10 @@ func TestNativeConversationPublicationConflictPreservesBatch(t *testing.T) {
 				if test.multiple {
 					batch = append(batch, runner.ConversationTurnEvent{Type: runner.ConversationEventControlResult, Key: "continue_test", Status: runner.ConversationControlDelivered})
 				}
-				err = session.post(t.Context(), batch)
+				err = session.post(ctx, batch)
+				if test.persistent && !errors.Is(err, context.Canceled) {
+					t.Fatalf("persistent conflict lost cancellation: %v", err)
+				}
 				if (err != nil) != test.wantError || len(requests) != test.wantCalls {
 					t.Fatalf("report calls=%d error=%v, want calls=%d error=%t", len(requests), err, test.wantCalls, test.wantError)
 				}
@@ -1011,6 +1157,474 @@ func TestTrimConversationEvents(t *testing.T) {
 }
 
 func TestNativeConversationBoundsEventsWhileTheHubStalls(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		bytes   int
+		want    int
+		recover bool
+	}{
+		{name: "control results recover at count capacity", bytes: 1 << 20, want: 500, recover: true},
+		{name: "control results cancel at count capacity", bytes: 1 << 20, want: 500},
+		{name: "control results recover at byte capacity", bytes: 1024, want: 2, recover: true},
+		{name: "control results cancel at byte capacity", bytes: 1024, want: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				total := 2*test.want + 3
+				blocked, release, acceptedAll := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var accepted []runner.ConversationTurnEvent
+				attempts := 0
+				receipts := make(map[string]struct{})
+				client, err := New(Config{URL: "https://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					var batch ConversationTurnEventsRequest
+					if err := json.NewDecoder(request.Body).Decode(&batch); err != nil {
+						return nil, err
+					}
+					attempts++
+					if attempts < 4 {
+						return nil, io.ErrUnexpectedEOF
+					}
+					if attempts == 4 {
+						close(blocked)
+						select {
+						case <-release:
+						case <-request.Context().Done():
+							return nil, request.Context().Err()
+						}
+					}
+					if _, found := receipts[batch.BatchKey]; !found {
+						receipts[batch.BatchKey] = struct{}{}
+						accepted = append(accepted, batch.Events...)
+						if len(accepted) == total+2 {
+							close(acceptedAll)
+						}
+					}
+					return &http.Response{StatusCode: http.StatusAccepted, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session := &conversationSession{
+					lifetimeDone: ctx.Done(), lifetimeCause: func() error { return context.Cause(ctx) }, client: native, id: "conv_test",
+					identity: ConversationIdentity{LeaseID: "lease-1", FencingToken: 7, AttemptID: "attempt_1"},
+					timings:  SessionTimings{MaxQueuedBytes: test.bytes}, logger: slog.Default(),
+					thread: "thread-1", turn: "turn-1", turnEnded: make(chan struct{}), turnWaiters: &sync.WaitGroup{},
+					commands: make(chan runner.AgentControl, 64), kick: make(chan struct{}, 1), stop: make(chan struct{}), closed: make(chan struct{}),
+				}
+				prefixDone, producerDone, providerDone, consumedAll := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+				prefixResult, producerResult := make(chan error, 1), make(chan bool, 1)
+				received := make(chan string, total)
+				go func() {
+					defer close(prefixDone)
+					prefixResult <- session.post(ctx, []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"}})
+				}()
+				go func() {
+					defer close(providerDone)
+					for {
+						select {
+						case command := <-session.commands:
+							if err := command.Validate(); err != nil {
+								t.Errorf("invalid provider control: %v", err)
+							}
+							received <- command.MessageID
+							command.Reply <- fmt.Errorf("%w: %s", runner.ErrInvalidConversationControl, strings.Repeat("界", 1024))
+							if len(received) == total {
+								close(consumedAll)
+							}
+						case <-ctx.Done():
+							return
+						}
+					}
+				}()
+				go func() {
+					defer close(producerDone)
+					for i := range total {
+						if !session.deliver(ctx, ConversationControl{Cursor: int64(i + 1), Key: "control-" + strconv.Itoa(i), Kind: "message", MessageID: "msg_" + strconv.Itoa(i), Text: "Update the example.", Expected: ConversationExpected{AttemptID: "attempt_1"}}) {
+							producerResult <- false
+							return
+						}
+					}
+					producerResult <- true
+				}()
+				t.Cleanup(func() {
+					cancel()
+					select {
+					case <-release:
+					default:
+						close(release)
+					}
+					<-producerDone
+					session.FinishTurn()
+					<-providerDone
+					<-prefixDone
+					session.loops.Wait()
+				})
+				<-blocked
+				synctest.Wait()
+				session.mu.Lock()
+				cursor := session.cursor
+				session.mu.Unlock()
+				if cursor != int64(test.want) || len(received) != test.want {
+					t.Fatalf("unavailable reports admitted %d controls at cursor %d, want %d", len(received), cursor, test.want)
+				}
+				select {
+				case <-producerDone:
+					t.Fatal("control polling ignored report backpressure")
+				default:
+				}
+				if !test.recover {
+					cancel()
+					<-producerDone
+					if <-producerResult {
+						t.Fatal("cancelled delivery acknowledged controls without report capacity")
+					}
+					return
+				}
+				close(release)
+				if err := <-prefixResult; err != nil {
+					t.Fatal(err)
+				}
+				session.loops.Add(1)
+				go session.reportLoop(ctx, ctx)
+				<-producerDone
+				if !<-producerResult {
+					t.Fatal("recovered report capacity did not resume control delivery")
+				}
+				<-consumedAll
+				if err := session.Report(ctx, []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnCompleted, TurnID: "turn-1", Status: "completed"}}); err != nil {
+					t.Fatal(err)
+				}
+				session.FinishTurn()
+				<-acceptedAll
+				if len(accepted) != total+2 || accepted[0].Type != runner.ConversationEventTurnStarted || accepted[len(accepted)-1].Type != runner.ConversationEventTurnCompleted {
+					t.Fatal("recovery lost events or completed before all control results")
+				}
+				seen := make(map[string]bool)
+				for _, event := range accepted[1 : len(accepted)-1] {
+					if event.Type != runner.ConversationEventControlResult || event.Status != runner.ConversationControlRejected || seen[event.Key] || len(event.Error) > 500 || !utf8.ValidString(event.Error) || !strings.HasPrefix(event.Error, "invalid conversation control") {
+						t.Fatalf("control result lost identity, bounded reason or outcome: %+v", event)
+					}
+					seen[event.Key] = true
+				}
+				for i := range total {
+					if !seen["control-"+strconv.Itoa(i)] {
+						t.Fatalf("recovery lost control result %d", i)
+					}
+				}
+			})
+		})
+	}
+	t.Run("outstanding controls reserve ordinary report capacity", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			session := &conversationSession{
+				lifetimeDone: ctx.Done(), lifetimeCause: func() error { return context.Cause(ctx) }, timings: SessionTimings{MaxQueuedBytes: 1000}, logger: slog.Default(),
+				thread: "thread-1", turn: "turn-1", turnEnded: make(chan struct{}), turnWaiters: &sync.WaitGroup{},
+				commands: make(chan runner.AgentControl, 2), kick: make(chan struct{}, 1), stop: make(chan struct{}),
+			}
+			finished, result := make(chan struct{}), make(chan error, 1)
+			started := false
+			t.Cleanup(func() {
+				cancel()
+				session.FinishTurn()
+				if started {
+					<-finished
+				}
+			})
+			for i := range 2 {
+				if !session.deliver(ctx, ConversationControl{Cursor: int64(i + 1), Key: strconv.Itoa(i), Kind: "message", MessageID: "msg_" + strconv.Itoa(i), Text: "Update the example."}) {
+					t.Fatal("initial control delivery failed")
+				}
+			}
+			started = true
+			go func() {
+				defer close(finished)
+				result <- session.Report(context.Background(), []runner.ConversationTurnEvent{{Type: runner.ConversationEventItem, ProviderItemID: "tool-1", Kind: runner.ConversationItemTool, Summary: "Queued tool result"}})
+			}()
+			synctest.Wait()
+			select {
+			case err := <-result:
+				t.Fatalf("ordinary producer consumed reserved control capacity: %v", err)
+			default:
+			}
+			session.FinishTurn()
+			if err := <-result; err != nil {
+				t.Fatalf("settled controls did not restore ordinary report capacity: %v", err)
+			}
+			var controls, tools int
+			for _, event := range session.events {
+				switch event.Type {
+				case runner.ConversationEventControlResult:
+					if event.Status != runner.ConversationControlUnknown {
+						t.Fatal("unconsumed control lost its unknown outcome")
+					}
+					controls++
+				case runner.ConversationEventItem:
+					if event.ProviderItemID != "tool-1" {
+						t.Fatal("ordinary producer lost its queued result")
+					}
+					tools++
+				}
+			}
+			if controls != 2 || tools != 1 {
+				t.Fatalf("settled results: controls=%d tools=%d", controls, tools)
+			}
+		})
+	})
+	t.Run("cancelled flush preserves queue under production", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			lifetime, stopProducer := context.WithCancelCause(t.Context())
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			original := runner.ConversationTurnEvent{Type: runner.ConversationEventItem, ProviderItemID: "original", Kind: runner.ConversationItemTool, Summary: "Original queued work"}
+			session := &conversationSession{lifetimeDone: lifetime.Done(), lifetimeCause: func() error { return context.Cause(lifetime) }, events: []runner.ConversationTurnEvent{original}, kick: make(chan struct{}, 1), stop: make(chan struct{}), logger: slog.Default()}
+			events := make([]runner.ConversationTurnEvent, 1000)
+			for i := range events {
+				events[i] = runner.ConversationTurnEvent{Type: runner.ConversationEventItem, ProviderItemID: "later-" + strconv.Itoa(i), Kind: runner.ConversationItemTool, Summary: "More queued work"}
+			}
+			finished := make(chan struct{})
+			var reportErr error
+			go func() { defer close(finished); reportErr = session.Report(context.Background(), events) }()
+			t.Cleanup(func() { stopProducer(context.Canceled); <-finished })
+			synctest.Wait()
+			if err := session.flush(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled flush = %v", err)
+			}
+			session.mu.Lock()
+			preserved := len(session.events) > 0 && reflect.DeepEqual(session.events[0], original)
+			session.mu.Unlock()
+			if !preserved {
+				t.Fatal("cancelled flush kept draining producer records")
+			}
+			cause := errors.New("execution cancelled")
+			stopProducer(cause)
+			<-finished
+			if !errors.Is(reportErr, cause) {
+				t.Errorf("producer cancellation cause = %v, want %v", reportErr, cause)
+			}
+		})
+	})
+	t.Run("question callback refuses full queues", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			session := &conversationSession{lifetimeDone: ctx.Done(), lifetimeCause: func() error { return context.Cause(ctx) }, events: make([]runner.ConversationTurnEvent, 500), commands: make(chan runner.AgentControl, 64), kick: make(chan struct{}, 1), stop: make(chan struct{}), logger: slog.Default()}
+			for i := range session.events {
+				session.events[i] = runner.ConversationTurnEvent{Type: runner.ConversationEventItem, ProviderItemID: strconv.Itoa(i), Kind: runner.ConversationItemTool, Summary: "Queued work"}
+			}
+			for range 64 {
+				session.commands <- runner.AgentControl{Kind: runner.AgentControlMessage, ThreadID: "thread-1", TurnID: "turn-1", Text: "Queued message", Check: func(context.Context) error { return nil }, Reply: make(chan error, 1)}
+			}
+			control := session.Control(runner.ConversationTurnHooks{InputRequested: func(request runner.AgentInputRequest) error {
+				return session.Report(context.Background(), []runner.ConversationTurnEvent{{Type: runner.ConversationEventQuestionOpened, RequestID: request.ID, ThreadID: request.ThreadID, TurnID: request.TurnID}})
+			}})
+			result, finished := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				result <- control.InputRequested(runner.AgentInputRequest{ID: "req-full", ThreadID: "thread-1", TurnID: "turn-1"})
+			}()
+			t.Cleanup(func() { cancel(); <-finished })
+			synctest.Wait()
+			select {
+			case err := <-result:
+				if !errors.Is(err, ErrUnavailable) {
+					t.Fatalf("full-queue callback lost its infrastructure refusal: %v", err)
+				}
+			default:
+				t.Fatal("question callback blocked behind a full report and control queue")
+			}
+			if len(session.events) != 500 || len(session.commands) != 64 {
+				t.Fatal("refused question changed queued events or emitted a duplicate provider control")
+			}
+		})
+	})
+	for _, test := range []struct {
+		name            string
+		recoverHub      bool
+		cancelExecution bool
+		events          int
+		summary         string
+		wantCount       int
+		wantBytes       int
+	}{
+		{name: "ordered events recover", recoverHub: true, events: 5, summary: strings.Repeat("x", 64), wantCount: 2, wantBytes: 128},
+		{name: "ordered events stop", events: 5, summary: strings.Repeat("x", 64), wantCount: 2, wantBytes: 128},
+		{name: "execution cancels background callback", cancelExecution: true, events: 5, summary: strings.Repeat("x", 64), wantCount: 2, wantBytes: 128},
+		{name: "empty text frames recover", recoverHub: true, events: 1001, wantCount: 500},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				hub := &conversationHub{t: t, reportFailure: 10000}
+				posted := make(chan struct{}, 1)
+				client, err := New(Config{URL: "https://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if strings.HasSuffix(request.URL.Path, "/controls") {
+						<-request.Context().Done()
+						return nil, request.Context().Err()
+					}
+					if err := request.Context().Err(); err != nil {
+						return nil, err
+					}
+					if strings.HasSuffix(request.URL.Path, "/turn-events") {
+						select {
+						case posted <- struct{}{}:
+						default:
+						}
+					}
+					response := httptest.NewRecorder()
+					hub.ServeHTTP(response, request)
+					return response.Result(), nil
+				})}, SessionTimings: SessionTimings{MaxQueuedBytes: 128}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				lifetime, cancelExecution := context.WithCancel(t.Context())
+				defer cancelExecution()
+				session := newConversationSession(lifetime, native, tracker.NativeWorkItemID("wi_"+strings.Repeat("c", 32)), ConversationIdentity{LeaseID: "lease-1", FencingToken: 7, AttemptID: "attempt_1"}, ConversationBindResponse{ConversationID: "conv_test"}, nil, slog.Default(), nil)
+				t.Cleanup(func() { _ = session.Close(context.Background(), runner.ConversationOutcomeInterrupted, nil) })
+				events := make([]runner.ConversationTurnEvent, test.events)
+				for i := range events {
+					events[i] = runner.ConversationTurnEvent{Type: runner.ConversationEventItem, ProviderItemID: strconv.Itoa(i), Kind: runner.ConversationItemTool, Summary: test.summary}
+				}
+				reported := make(chan error, 1)
+				go func() { reported <- session.Report(context.Background(), events) }()
+				<-posted
+				synctest.Wait()
+				session.mu.Lock()
+				count, queued := len(session.events), conversationQueuedBytes(session.events)
+				session.mu.Unlock()
+				if count != test.wantCount || queued != test.wantBytes {
+					t.Fatalf("outage queue = %d events/%d bytes, want %d/%d", count, queued, test.wantCount, test.wantBytes)
+				}
+				select {
+				case err := <-reported:
+					t.Fatalf("producer did not wait for report capacity: %v", err)
+				default:
+				}
+				if test.cancelExecution {
+					cancelExecution()
+					synctest.Wait()
+					select {
+					case err := <-reported:
+						if !errors.Is(err, context.Canceled) {
+							t.Fatalf("background callback ignored execution cancellation: %v", err)
+						}
+					default:
+						t.Fatal("background callback remained blocked after execution cancellation")
+					}
+					hub.mu.Lock()
+					hub.reportFailure = 0
+					hub.mu.Unlock()
+					if err := session.Close(context.Background(), runner.ConversationOutcomeInterrupted, nil); err != nil {
+						t.Fatal(err)
+					}
+				} else if test.recoverHub {
+					hub.mu.Lock()
+					hub.reportFailure = 0
+					hub.mu.Unlock()
+					if err := <-reported; err != nil {
+						t.Fatal(err)
+					}
+					if err := session.Close(context.Background(), runner.ConversationOutcomeSucceeded, nil); err != nil {
+						t.Fatal(err)
+					}
+					if got := hub.events(); !reflect.DeepEqual(got, events) {
+						t.Fatalf("recovered ordered events = %+v, want %+v", got, events)
+					}
+				} else {
+					if err := session.Close(context.Background(), runner.ConversationOutcomeInterrupted, nil); !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("persistent outage shutdown = %v, want deadline exceeded", err)
+					}
+					if err := <-reported; !errors.Is(err, ErrStaleConversation) {
+						t.Fatalf("blocked producer shutdown = %v, want stale conversation", err)
+					}
+				}
+			})
+		})
+	}
+	for _, test := range []struct {
+		name            string
+		frames          int
+		summary         string
+		completionError string
+		wantAccepted    int
+	}{
+		{name: "held byte limit", frames: 3, summary: strings.Repeat("x", 64), wantAccepted: 3},
+		{name: "held frame limit", frames: 500, wantAccepted: 500},
+		{name: "oversized completion", completionError: strings.Repeat("x", 129)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				hub := &conversationHub{t: t}
+				client, err := New(Config{URL: "https://hub.example", TokenSource: func() string { return "test" }, HTTPClient: providerHandlerClient(hub)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session := &conversationSession{lifetimeDone: t.Context().Done(), lifetimeCause: func() error { return context.Cause(t.Context()) }, client: native, id: "conv_test", identity: ConversationIdentity{LeaseID: "lease-1", FencingToken: 7, AttemptID: "attempt_1"}, timings: SessionTimings{MaxQueuedBytes: 128}, turnEnded: make(chan struct{}), turnWaiters: &sync.WaitGroup{}, commands: make(chan runner.AgentControl), kick: make(chan struct{}, 1), logger: slog.Default()}
+				if !session.reserveControlResult(t.Context()) {
+					t.Fatal("initial control result has no report capacity")
+				}
+				session.waiters.Add(1)
+				session.turnWaiters.Add(1)
+				go session.await("control-1", runner.AgentControl{Reply: make(chan error)}, session.turnEnded, session.turnWaiters)
+				t.Cleanup(func() {
+					session.mu.Lock()
+					ended := session.turnEnded
+					session.mu.Unlock()
+					select {
+					case <-ended:
+					default:
+						close(ended)
+					}
+					session.waiters.Wait()
+				})
+				events := []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnCompleted, TurnID: "turn-1", Status: runner.ConversationTurnCompleted, Error: test.completionError}}
+				for i := range test.frames {
+					events = append(events, runner.ConversationTurnEvent{Type: runner.ConversationEventItem, ProviderItemID: strconv.Itoa(i), Kind: runner.ConversationItemTool, Summary: test.summary})
+				}
+				err = session.Report(t.Context(), events)
+				if err == nil || errors.Is(err, ErrUnavailable) {
+					t.Fatalf("held overflow = %v, want a non-retryable protocol refusal", err)
+				}
+				if !reflect.DeepEqual(session.held, events[:test.wantAccepted]) && (len(session.held) != 0 || test.wantAccepted != 0) {
+					t.Fatalf("partial admission lost accepted prefix: %+v", session.held)
+				}
+				session.FinishTurn()
+				session.waiters.Wait()
+				if err := session.flush(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				got := hub.events()
+				if len(got) != test.wantAccepted+1 || got[0].Type != runner.ConversationEventControlResult || got[0].Key != "control-1" || got[0].Status != runner.ConversationControlUnknown || !reflect.DeepEqual(got[1:], events[:test.wantAccepted]) {
+					t.Fatalf("overflow reordered completion/control receipts: %+v", got)
+				}
+				started := runner.ConversationTurnEvent{Type: runner.ConversationEventTurnStarted, ThreadID: "thread-2", TurnID: "turn-2"}
+				if err := session.Report(t.Context(), []runner.ConversationTurnEvent{started}); err != nil {
+					t.Fatalf("FinishTurn did not restore admission: %v", err)
+				}
+				if err := session.flush(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				got = hub.events()
+				if !reflect.DeepEqual(got[len(got)-1], started) {
+					t.Fatalf("next turn was lost: %+v", got)
+				}
+			})
+		})
+	}
 	const queueLimit = 4096
 	hub, execution := newConversationHub(t)
 	execution.client.client.sessionTimings.MaxQueuedBytes = queueLimit

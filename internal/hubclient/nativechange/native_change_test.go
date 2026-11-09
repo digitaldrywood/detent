@@ -191,7 +191,7 @@ func newNativeChangeHubTransport(t *testing.T, review string, states []tracker.N
 
 func newNativeChangeHubDependencies(t *testing.T, review string, states []tracker.NativeState, inMemory, requireDependencies bool, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	t.Helper()
-	config := hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}
+	config := hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}
 	return newNativeChangeHubConfigured(t, review, states, inMemory, requireDependencies, config, repositoryBackend...)
 }
 
@@ -723,8 +723,10 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 		version        bool
 		restart        bool
 		ackLost        bool
+		sourceOutage   bool
 	}{
 		{name: "finish event"},
+		{name: "deferred publication outage cannot skip review", sourceOutage: true},
 		{name: "pending finish event survives completion restore", restart: true},
 		{name: "acknowledged finish event survives completion restore", restart: true, ackLost: true},
 		{name: "version publication", version: true},
@@ -764,6 +766,31 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 				t.Fatal(err)
 			}
 			originalLease := execution.claim.lease
+			if test.sourceOutage {
+				h.failChanges.failDiffs.Store(true)
+				if err := execution.PrepareFinish(guarded, "succeeded", "Completed source", nil); err != nil {
+					t.Fatal(err)
+				}
+				change := execution.NativeChange()
+				if change == nil || change.Error == "" || change.VersionID != "" || execution.data.Outcome != "" {
+					t.Fatalf("publication outage lost deferred source: change=%+v outcome=%q", change, execution.data.Outcome)
+				}
+				h.failChanges.failDiffs.Store(false)
+				for _, stage := range []string{"review", "security_audit", "validator"} {
+					input, err := execution.validationVersion(guarded, stage)
+					if !errors.Is(err, ErrUnavailable) || input.Version != nil {
+						t.Fatalf("recovered transport silently skipped %s: input=%+v error=%v", stage, input, err)
+					}
+				}
+				if err := execution.Finish(guarded, "failed"); err != nil {
+					t.Fatal(err)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "failed" || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Finalization == nil || !strings.Contains(recovery.Attempts[0].Finalization.Error, "diff storage unavailable") || recovery.Attempts[0].Finalization.Reviewed || recovery.Attempts[0].LeaseID != originalLease.ID || recovery.Attempts[0].FencingToken != originalLease.FencingToken || len(h.changes(t, issue.ID)) != 0 {
+					t.Fatalf("unreviewed outage completed source: recovery=%+v error=%v", recovery, err)
+				}
+				return
+			}
 			if test.restart {
 				if err := execution.PrepareFinish(guarded, "succeeded", "", nil); err != nil {
 					t.Fatal(err)

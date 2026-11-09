@@ -17,7 +17,14 @@ func NativeRuntimeResult(name string, request WorkReadRequest, evidence tracker.
 		}
 		return nativeRuntimeEnvelope(request, evidence, data)
 	}
-	if name == WorkAttemptReceipt && (evidence.Attempt == nil || request.NativeAttemptID != "" && evidence.Attempt.AttemptID != request.NativeAttemptID || request.AttemptID != 0 && (evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.LocalAttemptID != request.AttemptID)) {
+	localAttemptID := int64(0)
+	if evidence.Attempt != nil {
+		localAttemptID = evidence.Attempt.LocalAttemptID
+		if localAttemptID == 0 && evidence.Attempt.Runtime != nil {
+			localAttemptID = evidence.Attempt.Runtime.LocalAttemptID
+		}
+	}
+	if name == WorkAttemptReceipt && (evidence.Attempt == nil || request.NativeAttemptID != "" && evidence.Attempt.AttemptID != request.NativeAttemptID || request.AttemptID != 0 && localAttemptID != request.AttemptID) {
 		return Result{}, explain.ErrNotFound
 	}
 	if name == BoardSessionHistory {

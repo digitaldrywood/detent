@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -29,9 +30,7 @@ type usagePricer func(model string, input, cachedInput, output int64, backendKin
 // estimate means when it arrives.
 const usageCurrency = "USD"
 
-// turnUsageEntry describes what one turn spent. It reports false when there
-// is nothing worth storing: no tokens, or no model to attribute them to.
-func turnUsageEntry(result RunResult, sessionModel, backendKind string, price usagePricer) (tracker.NativeUsage, bool) {
+func turnUsageEntry(result RunResult, sessionModel, backendKind string, price usagePricer, includeSession bool) (tracker.NativeUsage, bool) {
 	model := strings.TrimSpace(effectiveModel(
 		effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model),
 		strings.TrimSpace(sessionModel),
@@ -50,7 +49,7 @@ func turnUsageEntry(result RunResult, sessionModel, backendKind string, price us
 		Output:             max(result.Tokens.OutputTokens, 0),
 		Currency:           usageCurrency,
 	}
-	if entry.Input == 0 && entry.CachedInput == 0 && entry.Output == 0 && entry.ReportedCostMicros == nil {
+	if entry.Input == 0 && entry.CachedInput == 0 && entry.Output == 0 && entry.ReportedCostMicros == nil && !includeSession {
 		return tracker.NativeUsage{}, false
 	}
 	if price != nil {
@@ -64,7 +63,7 @@ func reportTurnUsage(ctx context.Context, execution Execution, result RunResult,
 	if !ok || recorder == nil {
 		return nil
 	}
-	entry, reportable := turnUsageEntry(result, sessionModel, backendKind, price)
+	entry, reportable := turnUsageEntry(result, sessionModel, backendKind, price, false)
 	if !reportable {
 		return nil
 	}
@@ -82,7 +81,7 @@ type turnUsageReporter struct {
 	published *tracker.NativeUsage
 }
 
-func (u *turnUsageReporter) report(ctx context.Context, execution Execution, result RunResult, model, backend string, price usagePricer, logger *slog.Logger) error {
+func (u *turnUsageReporter) report(ctx context.Context, execution Execution, result RunResult, model, backend string, price usagePricer, finished bool) error {
 	recorder, ok := execution.(UsageExecution)
 	if !ok {
 		return nil
@@ -90,12 +89,12 @@ func (u *turnUsageReporter) report(ctx context.Context, execution Execution, res
 	result.Tokens.InputTokens = max(0, result.Tokens.InputTokens-u.baseline.InputTokens)
 	result.Tokens.CachedInputTokens = max(0, result.Tokens.CachedInputTokens-u.baseline.CachedInputTokens)
 	result.Tokens.OutputTokens = max(0, result.Tokens.OutputTokens-u.baseline.OutputTokens)
-	entry, reportable := turnUsageEntry(result, model, backend, price)
+	entry, reportable := turnUsageEntry(result, model, backend, price, finished && result.TurnStarted && !result.TurnStartRefused)
 	if !reportable {
 		return nil
 	}
 	if u.sourceID == "" {
-		return fmt.Errorf("publish Hub usage: session identity is required")
+		return errors.New("publish Hub usage: session identity is required")
 	}
 	if u.published != nil {
 		previous := *u.published

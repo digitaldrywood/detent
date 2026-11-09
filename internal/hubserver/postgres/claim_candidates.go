@@ -68,7 +68,7 @@ func (s *session) WorkItemFacts(ctx context.Context, project tracker.ProjectID, 
 	if err != nil {
 		return claimstore.WorkItemFacts{}, mapError(ctx, err)
 	}
-	facts.Assignees = []string(assignees)
+	facts.Assignees = assignees
 	if wait.Valid {
 		facts.DispatchWaitSince = &wait.Time
 	}
@@ -312,8 +312,8 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		}
 		item.OrganizationID = s.organization
 		item.ProjectID = query.ProjectID
-		item.Assignees = []string(assignees)
-		item.Labels = []string(labels)
+		item.Assignees = assignees
+		item.Labels = labels
 		if wait.Valid {
 			value := wait.Time
 			item.DispatchWaitSince = &value

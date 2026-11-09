@@ -15,7 +15,7 @@ type hubclientFixtureConnector struct {
 
 func (c *hubclientFixtureConnector) UpdateIssueState(ctx context.Context, id, state string) error {
 	mutation := tracker.MutationForContext(ctx, nativeMutationKey().IdempotencyKey)
-	mutation = c.admin.FencedMutation(ctx, tracker.NativeWorkItemID(id), mutation)
+	mutation = c.worker.NativeClient().FencedMutation(ctx, tracker.NativeWorkItemID(id), mutation)
 	if mutation.LeaseID != "" {
 		return c.worker.SetIntakeIssueState(ctx, id, state)
 	}

@@ -69,7 +69,7 @@ func startupMigrationProvider(pool *sql.DB) (*goose.Provider, error) {
 		return nil, err
 	}
 	return goose.NewProvider(goose.DialectPostgres, pool, postgres.RoleMigrations(migrations),
-		goose.WithDisableGlobalRegistry(true), goose.WithSlog(discardLogger()))
+		goose.WithGoMigrations(postgres.ConversationMigrations(migrations)...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(discardLogger()))
 }
 
 func startupConnection(t *testing.T, admin *sql.DB, group, attributes string) pgtransport.Connection {

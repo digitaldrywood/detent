@@ -122,11 +122,11 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 	record.UpdatedAt = now
 	var response conversationBindResponse
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
-		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
-			return err
-		}
 		if _, err := writer.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
 			return fmt.Errorf("lock bind runner: %w", err)
+		}
+		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
+			return err
 		}
 		if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
@@ -222,7 +222,7 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 			return err
 		}
 		record = conversationRecordFromStore(stored)
-		response = conversationBindResponse{ConversationID: record.ID, Resume: resume, Pending: pending, Preferences: record.Preferences.Normalized()}
+		response = conversationBindResponse{ConversationID: record.ID, Continuation: record.Origin == conversationOriginUser || record.ExecutionContinuation, Resume: resume, Pending: pending, Preferences: record.Preferences.Normalized()}
 		if len(pending) > 0 {
 			response.Cursor = pending[len(pending)-1].Cursor
 		}
@@ -355,6 +355,9 @@ func (r *conversationWorkerRouter) unbindPostgres(e echo.Context, request conver
 	now := s.config.now()
 	var record conversationRecord
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if _, err := writer.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+			return fmt.Errorf("lock unbind runner: %w", err)
+		}
 		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return fmt.Errorf("authorize conversation unbind access: %w", err)
 		}
@@ -397,6 +400,9 @@ func (r *conversationWorkerRouter) unbindPostgres(e echo.Context, request conver
 			return fmt.Errorf("refresh conversation event head before unbind: %w", err)
 		}
 		stored.Execution, stored.UpdatedAt = execution, now
+		if status == conversation.ExecutionCompleted {
+			stored.ExecutionContinuation = false
+		}
 		stored, err = writer.UpdateConversation(ctx, stored, stored.Revision)
 		if err != nil {
 			return fmt.Errorf("update conversation worker execution: %w", err)
@@ -583,6 +589,9 @@ func (c *conversationService) leaseReleasedTenant(ctx context.Context, writer te
 		return err
 	}
 	current.Execution, current.UpdatedAt = record.Execution, now
+	if current.Execution.Status == conversation.ExecutionCompleted {
+		current.ExecutionContinuation = false
+	}
 	updated, err := writer.UpdateConversation(ctx, current, current.Revision)
 	if err != nil {
 		return err
@@ -672,6 +681,9 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 	var result conversationTurnEventsResponse
 	changed := false
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if _, err := writer.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+			return fmt.Errorf("lock turn event runner: %w", err)
+		}
 		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return err
 		}
@@ -718,6 +730,9 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 		if stateChanged {
 			execution.UpdatedAt = now
 			latest.Execution, latest.UpdatedAt = execution, now
+			if execution.Status == conversation.ExecutionCompleted {
+				latest.ExecutionContinuation = false
+			}
 			latest.ProviderThreadID = record.ProviderThreadID
 			latest.ProviderThreadRunnerID = record.ProviderThreadRunnerID
 			latest.ProviderThreadOrigin = record.ProviderThreadOrigin
@@ -1122,8 +1137,15 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 		}
 		content[messageID] = payload
 	}
+	loadedMessages := make(map[string]conversationstore.Message, len(candidates))
+	for _, message := range candidates {
+		loadedMessages[message.ID] = message
+	}
 	changed := false
 	err = r.service.server.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if _, err := writer.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+			return fmt.Errorf("lock control poll runner: %w", err)
+		}
 		if err := r.service.server.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return err
 		}
@@ -1135,8 +1157,11 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			return err
 		}
 		record := conversationRecordFromStore(stored)
-		if stored.Revision != snapshot.Revision || stored.Execution.Owner.AttemptID != snapshot.Execution.Owner.AttemptID {
-			return conversationStale("The conversation changed; retry the control poll")
+		if stored.Execution.Owner.AttemptID != snapshot.Execution.Owner.AttemptID {
+			return conversationStale("The conversation worker changed")
+		}
+		if stored.Revision != snapshot.Revision {
+			return nativeConflict(tracker.Revision(stored.Revision))
 		}
 		acknowledged, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: id, AttemptID: identity.AttemptID, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliverySending}, BeforeSequence: after + 1, Limit: limit})
 		if err != nil {
@@ -1157,6 +1182,10 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			return err
 		}
 		for _, storedMessage := range messages.Items {
+			loaded, found := loadedMessages[storedMessage.ID]
+			if !found || loaded.Revision != storedMessage.Revision || loaded.ContentReference != storedMessage.ContentReference {
+				break
+			}
 			message := storedMessage
 			if message.Kind != conversation.MessageText && message.Kind != conversation.MessageContinue && message.Kind != conversation.MessageAnswer && message.Kind != conversation.MessageInterrupt {
 				continue
@@ -1176,6 +1205,9 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			switch message.Kind {
 			case conversation.MessageText, conversation.MessageContinue:
 				control.Kind, control.Text = "message", payload.Text
+				if message.ContentReference == "" {
+					control.Text = message.Text
+				}
 			case conversation.MessageInterrupt:
 				control.Kind = "interrupt"
 			case conversation.MessageAnswer:

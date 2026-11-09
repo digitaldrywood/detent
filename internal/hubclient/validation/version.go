@@ -114,6 +114,9 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 			}
 			diff.Patch = capture.Patch
 			diff.Digest = capture.Source.DiffSHA256
+			if stage == "security_audit" && capture.Patch == "" && capture.Source.DiffSHA256 != tracker.ChangeSourceDigest(nil) {
+				return runner.NativeValidation{}, errors.New("security audit retained source patch is unavailable")
+			}
 		}
 		runtime, err := reader.RuntimeEvidence(ctx, state.Lease.WorkItemID, state.Data.AttemptID)
 		if err != nil {

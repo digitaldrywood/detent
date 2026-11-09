@@ -11,6 +11,8 @@ import (
 )
 
 type Event struct {
+	SchedulerOutcome     string
+	HistoryHidden        bool
 	PushKnown            bool
 	PushChangeID         string
 	PushVersionID        string
@@ -26,6 +28,10 @@ type Event struct {
 	SchemaVersion        int64
 	ActorKind            string
 	ActorPrincipalID     string
+	ActorEnvelopeKnown   bool
+	ActorViaKey          string
+	ActorDisplayName     string
+	ActorAgent           string
 	EventRevision        int64
 	ChangeID             string
 	VersionID            string
@@ -46,6 +52,11 @@ type Event struct {
 	LandingHeadSHA       string
 	ProjectSequence      int64
 	Report               *reportstore.EventProjection
+}
+
+type HistoryReader interface {
+	HistoryEvents(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
+	HistoryEventsBefore(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 }
 
 type ProjectChange struct {
@@ -247,6 +258,7 @@ type LinkedSource struct {
 type Receipt = receiptstore.Record
 
 type Reader interface {
+	HistoryReader
 	PRPublication(context.Context, string) (NativePRPublication, error)
 	ReleaseDelivery(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (ReleaseDelivery, error)
 	ReviewPolicy(context.Context, tracker.ProjectID) (ReviewPolicy, error)
@@ -324,4 +336,14 @@ type LandingObservation struct {
 type WorkflowTransitionReader interface {
 	LatestWorkflowTransition(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
 	LatestSchedulerDecision(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
+}
+
+type SchedulerDecisionRows struct {
+	Available   bool
+	Latest      *Event
+	Exclusion   *Event
+	Unprojected *Event
+}
+type SchedulerDecisionReader interface {
+	SchedulerDecisions(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (SchedulerDecisionRows, error)
 }

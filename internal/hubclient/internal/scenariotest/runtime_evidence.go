@@ -21,10 +21,6 @@ import (
 )
 
 func RunNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T, factories Constructors) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	construct := factories.New
 	factories.New = func(host executioncontract.ExecutionHost, view executioncontract.ExecutionClaim) executioncontract.Execution {
@@ -34,7 +30,7 @@ func RunNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T, factories Constru
 	h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "Done", Terminal: true},
-	}, true, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+	}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	issue := h.createInProgress(t, "Activity checkpoints")
 	item := tracker.NativeWorkItemID(issue.ID)
 	h.claim(t, issue.ID)
@@ -254,7 +250,7 @@ func RunNativeAttemptTerminalActivityReceipts(t *testing.T, factories Constructo
 			h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
 				{Name: "Done", Terminal: true},
-			}, true, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+			}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 			issue := h.createInProgress(t, tt.name)
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
@@ -289,8 +285,7 @@ func RunNativeAttemptTerminalActivityReceipts(t *testing.T, factories Constructo
 			clock = at.Add(tt.duration)
 			SetSchedulerNow(h.scheduler, clock)
 			if tt.olderHub {
-				client := execution.claim.source.NativeClient().Transport()
-				fixtureWithoutFeature(t, client, tracker.NativePreProviderFailureCapability)
+				fixtureWithoutFeature(t, execution.claim.source.NativeClient(), tracker.NativePreProviderFailureCapability)
 			}
 			if err := execution.Finish(t.Context(), tt.outcome); err != nil {
 				t.Fatal(err)
@@ -337,8 +332,9 @@ func RunNativeAttemptTerminalActivityReceipts(t *testing.T, factories Constructo
 	}
 }
 
-func fixtureWithoutFeature(t testing.TB, client *Client, feature string) {
+func fixtureWithoutFeature(t testing.TB, native *NativeClient, feature string) {
 	t.Helper()
+	client := native.Transport()
 	fixture := fixtureClient(client)
 	next := fixture.requests.Load()
 	fixture.requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -364,5 +360,6 @@ func fixtureWithoutFeature(t testing.TB, client *Client, feature string) {
 		response.ContentLength = int64(len(encoded))
 		return response, nil
 	}))
+	native.ApplyHeartbeatChanges(nil)
 	fixture.offset.Add(int64(2 * time.Hour))
 }

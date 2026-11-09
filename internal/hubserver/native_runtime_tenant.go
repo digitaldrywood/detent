@@ -57,11 +57,13 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		}
 		return evidence, nil
 	}
+	var localAttemptID int64
 	if !validNativeID(attemptID, "attempt") {
-		if local, err := strconv.ParseInt(attemptID, 10, 64); err == nil && local > 0 {
-			return tracker.NativeRuntimeEvidence{}, nativeRunEventStorageUnavailable()
+		local, err := strconv.ParseInt(attemptID, 10, 64)
+		if err != nil || local <= 0 {
+			return tracker.NativeRuntimeEvidence{}, nativePublicInvalid("Invalid attempt identity")
 		}
-		return tracker.NativeRuntimeEvidence{}, nativePublicInvalid("Invalid attempt identity")
+		localAttemptID = local
 	}
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok || s.runDetailStoreFor(ctx) == nil {
@@ -89,6 +91,23 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		version, err := r.CollaborationVersion(ctx, item, row.Revision)
 		if err != nil {
 			return err
+		}
+		if localAttemptID > 0 {
+			matches, err := r.LocalAttemptMatches(ctx, scope.project, row.NativeID, localAttemptID)
+			if errors.Is(err, leasestore.ErrLocalAttemptCoverageUnknown) {
+				return nativePublicInvalid("Historical local attempt coverage is incomplete; select native_attempt_id")
+			}
+			if err != nil {
+				return err
+			}
+			switch len(matches) {
+			case 0:
+				return nativeNotFound()
+			case 1:
+				attemptID = matches[0]
+			default:
+				return nativePublicInvalid("Local attempt identity is ambiguous; select native_attempt_id")
+			}
 		}
 		attempt, err := r.Attempt(ctx, attemptID)
 		if err != nil {

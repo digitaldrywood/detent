@@ -58,7 +58,7 @@ var clihangHubTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB
 	}
 	provider, err := goose.NewProvider(goose.DialectPostgres, db,
 		postgres.RoleMigrations(os.DirFS(filepath.Join("..", "hubserver", "postgres", "migrations"))),
-		goose.WithDisableGlobalRegistry(true))
+		goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS(filepath.Join("..", "hubserver", "postgres", "migrations")))...), goose.WithDisableGlobalRegistry(true))
 	if err != nil {
 		return err
 	}

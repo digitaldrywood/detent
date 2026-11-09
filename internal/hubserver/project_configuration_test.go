@@ -280,7 +280,11 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 				result, err := executor.Execute(ctx, operatortool.Call{Name: name, Arguments: raw})
 				if err == nil && name != operatortool.LocalProjectConfiguration && strings.Contains(string(result.Content), `"pending":true`) {
-					requireCommandPayloadObject(t, f.service, f.project.OrganizationID, name+" "+args.RunnerID+" "+args.ProjectID, args.RequestID, result.Content)
+					credential, err := currentHubOperator(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					requireCommandPayloadObject(t, f.service, f.project.OrganizationID, name+" "+args.RunnerID+" "+args.ProjectID, args.RequestID, result.Content, credential.ID)
 				}
 				return result, err
 			}

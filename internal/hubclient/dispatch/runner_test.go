@@ -32,7 +32,7 @@ import (
 
 func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("durable PostgreSQL integration")
 	}
 
 	const adminToken = "runner-client-test-admin"

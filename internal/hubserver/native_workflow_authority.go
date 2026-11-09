@@ -109,7 +109,7 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 		if err := (tenantNativeRunEventParticipant{service: s}).validateNativeRunEvent(ctx, w, &authority, true); err != nil {
 			return err
 		}
-		event := leasestore.AttemptEvent{ID: attempt.ID, Fence: fence, RunID: attempt.RunID, Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: authority.DispatchGeneration, PayloadObjectKey: prepared.payloadObjectKey}
+		event := leasestore.AttemptEvent{ID: attempt.ID, Fence: fence, RunID: attempt.RunID, Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: authority.DispatchGeneration, PayloadObjectKey: prepared.payloadReference.Key, PayloadReference: prepared.payloadReference}
 		stored, duplicate, err := w.RecordAttemptEvent(ctx, event)
 		if err != nil {
 			return err
@@ -136,12 +136,12 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 	return nil
 }
 
-func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope nativeScope, issueID int64, request tracker.Transition, stopState string) (*preparedNativeLeaseCancellation, error) {
+func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope nativeScope, issueID int64, request tracker.Transition, stopState string) (*preparedNativeLeaseCancellation, bool, error) {
 	if request.State != "Cancelled" && !strings.EqualFold(request.State, "Blocked") && request.State != stopState {
-		return nil, nil
+		return nil, false, nil
 	}
 	if s.config.NativeRunEvents == nil {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, false, nativeRunEventStorageUnavailable()
 	}
 	var lease leasestore.Lease
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -156,10 +156,11 @@ func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope na
 		return nil
 	})
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return s.prepareLeaseCancellationTenant(ctx, scope, lease.LeaseID, tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(lease.FencingToken), Reason: "cancelled", CancelAttempt: true}, true)
+	prepared, err := s.prepareLeaseCancellationTenant(ctx, scope, lease.LeaseID, tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(lease.FencingToken), Reason: "cancelled", CancelAttempt: true}, true)
+	return prepared, err == nil, err
 }

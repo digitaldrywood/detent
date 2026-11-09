@@ -207,6 +207,13 @@ func resolveAttemptDiffTenant(ctx context.Context, r tenantstore.Reader, scope n
 	if scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization {
 		return "", nativeStaleExecution("The authenticated runner does not own the producer lease")
 	}
+	identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+	if err != nil {
+		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+			return "", runnerUnauthorized()
+		}
+		return "", err
+	}
 	credential, err := r.AccessCredential(ctx, scope.credential.ID)
 	if err != nil {
 		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
@@ -216,13 +223,6 @@ func resolveAttemptDiffTenant(ctx context.Context, r tenantstore.Reader, scope n
 	}
 	if credential.OrganizationID != scope.organization || credential.Kind != "service" || credential.Scope != string(apiScopeWorker) || !credential.Valid(scope.credential.Hash, now) {
 		return "", runnerUnauthorized()
-	}
-	identity, err := r.RunnerIdentityByCredential(ctx, credential.ID)
-	if err != nil {
-		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-			return "", runnerUnauthorized()
-		}
-		return "", err
 	}
 	if identity.OrganizationID != scope.organization || identity.RunnerID != scope.credential.Runner.RunnerID || identity.TokenID != credential.ID || identity.RemovedAt != nil || identity.State == "disabled" || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
 		return "", runnerUnauthorized()

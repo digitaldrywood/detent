@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -18,8 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/labstack/echo/v4"
-
-	"github.com/pressly/goose/v3"
 
 	"time"
 
@@ -36,7 +33,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/testenv"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -49,37 +45,7 @@ func projectRecordPostgres(t *testing.T) *postgres.Repository {
 
 func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int, configure ...func(*pgxpool.Config)) (*postgres.Repository, *sql.DB) {
 	t.Helper()
-	template := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-		roles, err := os.ReadFile("postgres/roles.sql")
-		if err != nil {
-			return err
-		}
-		if _, err := db.ExecContext(ctx, string(roles)); err != nil {
-			return err
-		}
-		db.SetMaxOpenConns(1)
-		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
-			return err
-		}
-		provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("postgres/migrations")), goose.WithDisableGlobalRegistry(true))
-		if err != nil {
-			return err
-		}
-		_, err = provider.Up(ctx)
-		return err
-	})
-	t.Cleanup(func() {
-		deadline, ok := t.Deadline()
-		if !ok {
-			t.Error("missing test deadline")
-			return
-		}
-		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
-		defer cancel()
-		if err := template.Close(ctx); err != nil {
-			t.Error(err)
-		}
-	})
+	template := postgresStartupTemplate
 	admin := template.Database(t)
 	var databaseName string
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&databaseName); err != nil {

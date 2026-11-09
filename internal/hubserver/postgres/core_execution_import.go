@@ -286,14 +286,13 @@ func (r *Repository) ImportCoreLease(ctx context.Context, record CoreLeaseImport
 		return corestore.ErrTenantMismatch
 	}
 	return r.transaction(ctx, lease.OrganizationID, corestore.Background, false, func(s *session) error {
-		replayed, err := checkCoreImportReceipt(ctx, s, record.Receipt)
-		if err != nil {
+		if _, err := checkCoreImportReceipt(ctx, s, record.Receipt); err != nil {
 			return err
 		}
 		if err := s.lockAttemptScope(ctx, lease.IssueID); err != nil {
 			return err
 		}
-		replayed, err = checkCoreImportReceipt(ctx, s, record.Receipt)
+		replayed, err := checkCoreImportReceipt(ctx, s, record.Receipt)
 		if err != nil {
 			return err
 		}
@@ -347,7 +346,7 @@ FROM leases WHERE organization_id=$1 AND lease_id=$2`, lease.OrganizationID, lea
 
 func (r *Repository) ImportCoreAttempt(ctx context.Context, record CoreAttemptImport) error {
 	attempt := record.Attempt
-	if attempt.OrganizationID == "" || strings.TrimSpace(attempt.ID) == "" || attempt.IssueID < 1 || strings.TrimSpace(attempt.LeaseID) == "" || attempt.FencingToken < 1 || strings.TrimSpace(attempt.RunID) == "" || attempt.Sequence < 1 || !validCoreAttemptStatus(attempt.Status) || attempt.WorkItemRevision < 0 || attempt.DispatchGeneration < 0 || strings.TrimSpace(attempt.PayloadObjectKey) == "" || attempt.StartedAt.IsZero() || attempt.UpdatedAt.IsZero() || record.Receipt.OrganizationID != attempt.OrganizationID || !validCoreImportReceipt(record.Receipt, "core-attempt", attempt.ID) {
+	if attempt.OrganizationID == "" || strings.TrimSpace(attempt.ID) == "" || attempt.IssueID < 1 || strings.TrimSpace(attempt.LeaseID) == "" || attempt.FencingToken < 1 || strings.TrimSpace(attempt.RunID) == "" || attempt.Sequence < 1 || !validCoreAttemptStatus(attempt.Status) || attempt.WorkItemRevision < 0 || attempt.DispatchGeneration < 0 || attempt.LocalAttemptID < 0 || strings.TrimSpace(attempt.PayloadObjectKey) == "" || attempt.StartedAt.IsZero() || attempt.UpdatedAt.IsZero() || record.Receipt.OrganizationID != attempt.OrganizationID || !validCoreImportReceipt(record.Receipt, "core-attempt", attempt.ID) {
 		return corestore.ErrTenantMismatch
 	}
 	return r.transaction(ctx, attempt.OrganizationID, corestore.Background, false, func(s *session) error {
@@ -374,16 +373,17 @@ func (r *Repository) ImportCoreAttempt(ctx context.Context, record CoreAttemptIm
 		started := attempt.StartedAt.UTC()
 		startedSubmicro := int16(started.Nanosecond() % 1000)
 		started = started.Truncate(time.Microsecond)
-		_, err = s.db.Exec(ctx, `INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (organization_id,id) DO NOTHING`, attempt.OrganizationID, attempt.ID, attempt.IssueID, attempt.LeaseID, attempt.FencingToken, attempt.RunID, attempt.Sequence, attempt.Status, attempt.WorkItemRevision, attempt.DispatchGeneration, attempt.PayloadObjectKey, attempt.CheckpointObjectKey, attempt.ArtifactsObjectKey, started, startedSubmicro, recordTime(attempt.UpdatedAt))
+		_, err = s.db.Exec(ctx, `INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,local_attempt_id,local_attempt_id_recorded)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NULLIF($17::bigint,0),$17::bigint>0) ON CONFLICT (organization_id,id) DO UPDATE SET local_attempt_id=EXCLUDED.local_attempt_id,local_attempt_id_recorded=true
+WHERE native_attempts.local_attempt_id IS NULL AND EXCLUDED.local_attempt_id IS NOT NULL`, attempt.OrganizationID, attempt.ID, attempt.IssueID, attempt.LeaseID, attempt.FencingToken, attempt.RunID, attempt.Sequence, attempt.Status, attempt.WorkItemRevision, attempt.DispatchGeneration, attempt.PayloadObjectKey, attempt.CheckpointObjectKey, attempt.ArtifactsObjectKey, started, startedSubmicro, recordTime(attempt.UpdatedAt), attempt.LocalAttemptID)
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		var current leasestore.Attempt
 		var startedAt time.Time
 		var startedSubmicroNs int16
-		if err := s.db.QueryRow(ctx, `SELECT organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at
-FROM native_attempts WHERE organization_id=$1 AND id=$2`, attempt.OrganizationID, attempt.ID).Scan(&current.OrganizationID, &current.ID, &current.IssueID, &current.LeaseID, &current.FencingToken, &current.RunID, &current.Sequence, &current.Status, &current.WorkItemRevision, &current.DispatchGeneration, &current.PayloadObjectKey, &current.CheckpointObjectKey, &current.ArtifactsObjectKey, &startedAt, &startedSubmicroNs, &current.UpdatedAt); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,COALESCE(local_attempt_id,0),local_attempt_id_recorded
+FROM native_attempts WHERE organization_id=$1 AND id=$2`, attempt.OrganizationID, attempt.ID).Scan(&current.OrganizationID, &current.ID, &current.IssueID, &current.LeaseID, &current.FencingToken, &current.RunID, &current.Sequence, &current.Status, &current.WorkItemRevision, &current.DispatchGeneration, &current.PayloadObjectKey, &current.CheckpointObjectKey, &current.ArtifactsObjectKey, &startedAt, &startedSubmicroNs, &current.UpdatedAt, &current.LocalAttemptID, &current.LocalAttemptIDRecorded); err != nil {
 			return mapError(ctx, err)
 		}
 		current.StartedAt = startedAt.Add(time.Duration(startedSubmicroNs))
@@ -484,8 +484,8 @@ func (r *Repository) CompleteCoreAttemptImport(ctx context.Context, attempt leas
 		var current leasestore.Attempt
 		var startedAt time.Time
 		var startedSubmicro int16
-		if err := s.db.QueryRow(ctx, `SELECT organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at
-FROM native_attempts WHERE organization_id=$1 AND id=$2`, attempt.OrganizationID, attempt.ID).Scan(&current.OrganizationID, &current.ID, &current.IssueID, &current.LeaseID, &current.FencingToken, &current.RunID, &current.Sequence, &current.Status, &current.WorkItemRevision, &current.DispatchGeneration, &current.PayloadObjectKey, &current.CheckpointObjectKey, &current.ArtifactsObjectKey, &startedAt, &startedSubmicro, &current.UpdatedAt); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,COALESCE(local_attempt_id,0),local_attempt_id_recorded
+FROM native_attempts WHERE organization_id=$1 AND id=$2`, attempt.OrganizationID, attempt.ID).Scan(&current.OrganizationID, &current.ID, &current.IssueID, &current.LeaseID, &current.FencingToken, &current.RunID, &current.Sequence, &current.Status, &current.WorkItemRevision, &current.DispatchGeneration, &current.PayloadObjectKey, &current.CheckpointObjectKey, &current.ArtifactsObjectKey, &startedAt, &startedSubmicro, &current.UpdatedAt, &current.LocalAttemptID, &current.LocalAttemptIDRecorded); err != nil {
 			return mapError(ctx, err)
 		}
 		current.StartedAt = startedAt.Add(time.Duration(startedSubmicro))
@@ -542,7 +542,7 @@ func sameCoreImportLease(left, right leasestore.Lease) bool {
 }
 
 func sameCoreImportAttempt(left, right leasestore.Attempt) bool {
-	return left.OrganizationID == right.OrganizationID && left.ID == right.ID && left.IssueID == right.IssueID && left.LeaseID == right.LeaseID && left.FencingToken == right.FencingToken && left.RunID == right.RunID && left.Sequence == right.Sequence && left.Status == right.Status && left.WorkItemRevision == right.WorkItemRevision && left.DispatchGeneration == right.DispatchGeneration && left.PayloadObjectKey == right.PayloadObjectKey && sameCoreImportOptionalString(left.CheckpointObjectKey, right.CheckpointObjectKey) && sameCoreImportOptionalString(left.ArtifactsObjectKey, right.ArtifactsObjectKey) && left.StartedAt.Equal(right.StartedAt) && left.UpdatedAt.Equal(recordTime(right.UpdatedAt))
+	return left.LocalAttemptID == right.LocalAttemptID && left.LocalAttemptIDRecorded == right.LocalAttemptIDRecorded && left.OrganizationID == right.OrganizationID && left.ID == right.ID && left.IssueID == right.IssueID && left.LeaseID == right.LeaseID && left.FencingToken == right.FencingToken && left.RunID == right.RunID && left.Sequence == right.Sequence && left.Status == right.Status && left.WorkItemRevision == right.WorkItemRevision && left.DispatchGeneration == right.DispatchGeneration && left.PayloadObjectKey == right.PayloadObjectKey && sameCoreImportOptionalString(left.CheckpointObjectKey, right.CheckpointObjectKey) && sameCoreImportOptionalString(left.ArtifactsObjectKey, right.ArtifactsObjectKey) && left.StartedAt.Equal(right.StartedAt) && left.UpdatedAt.Equal(recordTime(right.UpdatedAt))
 }
 
 func sameCoreImportOptionalTime(left, right *time.Time) bool {

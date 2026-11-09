@@ -229,7 +229,7 @@ func (q *Queries) NotificationAuthor(ctx context.Context, arg NotificationAuthor
 }
 
 const notificationEvents = `-- name: NotificationEvents :many
-SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, coalesce((SELECT c.sequence FROM issue_notification_cursors c WHERE c.organization_id=e.organization_id AND c.work_item_id=e.work_item_id),0)::bigint AS consumed_sequence
+SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, e.history_hidden, e.scheduler_outcome, e.actor_envelope_known, e.actor_via_key, e.actor_display_name, e.actor_agent, coalesce((SELECT c.sequence FROM issue_notification_cursors c WHERE c.organization_id=e.organization_id AND c.work_item_id=e.work_item_id),0)::bigint AS consumed_sequence
 FROM collaboration_events e
 WHERE e.organization_id=$1 AND e.project_id=$2 AND e.project_sequence>$3
 ORDER BY e.project_sequence,e.work_item_id LIMIT 256
@@ -290,6 +290,12 @@ func (q *Queries) NotificationEvents(ctx context.Context, arg NotificationEvents
 			&i.CollaborationEvent.PushHeadSha,
 			&i.CollaborationEvent.PushExternalEffect,
 			&i.CollaborationEvent.PushEffectState,
+			&i.CollaborationEvent.HistoryHidden,
+			&i.CollaborationEvent.SchedulerOutcome,
+			&i.CollaborationEvent.ActorEnvelopeKnown,
+			&i.CollaborationEvent.ActorViaKey,
+			&i.CollaborationEvent.ActorDisplayName,
+			&i.CollaborationEvent.ActorAgent,
 			&i.ConsumedSequence,
 		); err != nil {
 			return nil, err

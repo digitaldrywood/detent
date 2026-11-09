@@ -75,9 +75,9 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 			return nativeNotFound()
 		}
 		if newest {
-			records, err = r.EventsBefore(ctx, scope.project, workItem.NativeID, boundary, limit)
+			records, err = r.HistoryEventsBefore(ctx, scope.project, workItem.NativeID, boundary, limit)
 		} else {
-			records, err = r.Events(ctx, scope.project, workItem.NativeID, boundary, limit)
+			records, err = r.HistoryEvents(ctx, scope.project, workItem.NativeID, boundary, limit)
 		}
 		if err != nil || len(records) < limit {
 			return err
@@ -85,9 +85,9 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 		last := records[len(records)-1].Sequence
 		var lookahead []eventstore.Event
 		if newest {
-			lookahead, err = r.EventsBefore(ctx, scope.project, workItem.NativeID, last, 1)
+			lookahead, err = r.HistoryEventsBefore(ctx, scope.project, workItem.NativeID, last, 1)
 		} else {
-			lookahead, err = r.Events(ctx, scope.project, workItem.NativeID, last, 1)
+			lookahead, err = r.HistoryEvents(ctx, scope.project, workItem.NativeID, last, 1)
 		}
 		hasMore = len(lookahead) != 0
 		return err
@@ -98,6 +98,11 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 	events := make([]tracker.CollaborationEvent, 0, len(records))
 	payloads := make([][]byte, 0, len(records))
 	for _, record := range records {
+		if view == "timeline" && strings.HasPrefix(record.Type, "run.") && record.ActorEnvelopeKnown {
+			events = append(events, tracker.CollaborationEvent{ID: record.ID, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, AggregateType: "issue", AggregateID: record.WorkItemID, AggregateSequence: record.Sequence, Type: record.Type, SchemaVersion: int(record.SchemaVersion), Actor: tracker.Actor{Kind: record.ActorKind, PrincipalID: record.ActorPrincipalID, ViaKey: record.ActorViaKey, DisplayName: record.ActorDisplayName, Agent: record.ActorAgent}, RecordedAt: record.RecordedAt})
+			payloads = append(payloads, nil)
+			continue
+		}
 		event, raw, err := s.readTenantCollaborationEvent(ctx, record)
 		if err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err

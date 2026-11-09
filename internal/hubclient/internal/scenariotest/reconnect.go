@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -84,7 +86,7 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 				{Name: "Blocked", Transitions: []string{"In Progress"}},
 				{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
 				{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-			}, true, true, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+			}, true, true, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 			fixtureClient(h.admin.Transport()).baseURL.Scheme = "https"
 			issue := h.createInProgress(t, "Retained execution")
 			path := filepath.Join(t.TempDir(), "private", "identity.json")
@@ -155,7 +157,7 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 			h.scheduler = newScheduler()
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-			executionIdentity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test", ReasoningEffort: test.effort}
+			executionIdentity := tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test", ReasoningEffort: test.effort}
 			if err := execution.Start(t.Context(), executionIdentity); err != nil {
 				t.Fatal(err)
 			}
@@ -209,11 +211,15 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 			if test.released {
 				execution.SetRepository(nativeChangeRepository)
 				diff, _ := nativeChangeDiff(nativeChangeFixtureHead("b"), "README.md")(t.Context())
+				execution.SetDiffSource(nativeChangeDiff(diff.HeadSHA, "README.md"))
 				checkpoint.HeadSHA = diff.HeadSHA
 				checkpoint.WorktreeState = "clean"
 				execution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 					return nativeChangeSourceFixture(ctx, t, base, head), nil
 				})
+				if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
+					t.Fatal(err)
+				}
 				change, err := changecreation.Open(t.Context(), execution.claim.source.NativeClient(), changecreation.Input{Item: execution.claim.lease.WorkItemID, AttemptID: execution.CompletionData().AttemptID, Title: execution.claim.recovery.Issue.Title, Lease: execution.claim.lease, Diff: diff})
 				if err != nil {
 					t.Fatal(err)
@@ -286,7 +292,7 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 			}
 			if test.hiddenDependency {
 				var private tracker.NativeProject
-				if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "Private prerequisites", "idempotency_key": "private-project", "states": []tracker.NativeState{{Name: "Backlog"}}}, &private); err != nil {
+				if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "Private prerequisites", "grant_access": true, "idempotency_key": "private-project", "states": []tracker.NativeState{{Name: "Backlog"}}}, &private); err != nil {
 					t.Fatal(err)
 				}
 				privateClient, err := h.admin.Transport().Native(h.organization, private.ID)
@@ -302,7 +308,7 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 					t.Fatal(err)
 				}
 				projected, err := execution.claim.source.NativeClient().Issue(t.Context(), current.WorkItemID)
-				if err != nil || !projected.DependencyReady || len(projected.Blockers) != 0 {
+				if err != nil || projected.DependencyReady || !slices.Contains(projected.OmittedFields, "dependency_ready") || len(projected.Blockers) != 0 || len(projected.Dependencies) != 0 {
 					t.Fatalf("hidden blocker projection = %+v, %v", projected, err)
 				}
 			}
@@ -455,7 +461,16 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 				}
 
 				if want == "cancelled" && !test.hold {
-					h.claim(t, issue.ID)
+					candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
+						Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"},
+						CandidateReady: func(_ context.Context, candidate connector.Issue) bool { return candidate.ID == issue.ID },
+					})
+					if err != nil || len(candidates) != 1 || candidates[0].ID != issue.ID {
+						t.Fatalf("retained source was not claimable: candidates=%+v error=%v", candidates, err)
+					}
+					if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], h.clock()); err != nil {
+						t.Fatal(err)
+					}
 					resumed := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 					recovered := resumed.Recovery().SourceAttempt()
 					if recovered == nil || recovered.AttemptID != execution.CompletionData().AttemptID || recovered.Checkpoint.Change.VersionID != retained.Change.CurrentVersion || resumed.claim.lease.FencingToken <= original.FencingToken {

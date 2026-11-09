@@ -16,14 +16,15 @@ import (
 )
 
 type CoreWorkItemImport struct {
-	Item     corestore.WorkItem
-	Labels   []string
-	Facts    claimstore.WorkItemFacts
-	Queues   []claimstore.QueueEntry
-	Comments []corestore.Comment
-	Versions []eventstore.CollaborationVersion
-	Events   []eventstore.Event
-	Receipt  eventstore.Receipt
+	Item             corestore.WorkItem
+	Labels           []string
+	Facts            claimstore.WorkItemFacts
+	Queues           []claimstore.QueueEntry
+	Comments         []corestore.Comment
+	Versions         []eventstore.CollaborationVersion
+	Events           []eventstore.Event
+	Receipt          eventstore.Receipt
+	DoctorIdentities *DoctorProposalIdentityBinding `json:"-"`
 }
 
 type CoreDependencyImport struct {
@@ -72,13 +73,27 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 	if item.Revision != maxImportedVersionRevision(record.Versions, string(item.NativeID)) {
 		return eventstore.ErrInvalidRecord
 	}
+	if binding := record.DoctorIdentities; binding != nil {
+		if binding.OrganizationID != item.OrganizationID || binding.ProjectID != item.ProjectID || binding.WorkItemID != item.NativeID || binding.Revision != item.Revision {
+			return corestore.ErrTenantMismatch
+		}
+		matched := false
+		for _, version := range record.Versions {
+			if version.RecordID == string(item.NativeID) && version.Revision == item.Revision && version.PayloadSHA256 == binding.VersionSHA256 {
+				matched = true
+			}
+		}
+		if !matched {
+			return eventstore.ErrInvalidRecord
+		}
+	}
 	return r.transaction(ctx, item.OrganizationID, corestore.Background, false, func(s *session) error {
 		previous, err := s.Receipt(ctx, record.Receipt.ActorID, record.Receipt.Operation, record.Receipt.CommandKey)
 		if err == nil {
 			if previous.RequestHash != record.Receipt.RequestHash {
 				return mutation.ErrConflict
 			}
-			return nil
+			return s.repairImportedDoctorProposalIdentities(ctx, record)
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
@@ -91,7 +106,7 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 			if previous.RequestHash != record.Receipt.RequestHash {
 				return mutation.ErrConflict
 			}
-			return nil
+			return s.repairImportedDoctorProposalIdentities(ctx, record)
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
@@ -122,6 +137,11 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 		}
 		for _, event := range record.Events {
 			if _, err := s.AppendEvent(ctx, event); err != nil {
+				return err
+			}
+		}
+		if record.DoctorIdentities != nil {
+			if err := s.BindDoctorProposalIdentities(ctx, *record.DoctorIdentities); err != nil {
 				return err
 			}
 		}

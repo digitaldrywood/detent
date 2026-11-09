@@ -46,7 +46,11 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 	var candidates []claimstore.Candidate
 	var plans []nativeClaimPlan
 	var projectPolicy policystore.Revision
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return tracker.NativeCapacityPage{}, nativeRunEventStorageUnavailable()
+	}
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -94,7 +98,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		candidates = page.Items
 		shared := nativeClaimPlan{project: project, policy: projectPolicy}
 		batchReader, canBatch := r.(tenantstore.ClaimPreviewPlanRowsReader)
-		if canBatch && request.NativeClaim.SessionID == "" && len(candidates) > 0 {
+		if canBatch && request.SessionID == "" && len(candidates) > 0 {
 			rows, err := batchReader.ClaimPreviewPlanRows(ctx, scope.project, candidates)
 			if err != nil {
 				return err
@@ -102,12 +106,6 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 			if len(rows) != len(candidates) {
 				return corestore.ErrRevisionConflict
 			}
-			needsChangePolicy := make([]bool, len(rows))
-			planIndexes := make([]int, len(rows))
-			for index := range planIndexes {
-				planIndexes[index] = -1
-			}
-			needsSharedChangePolicy := false
 			for index, row := range rows {
 				candidate := candidates[index]
 				if errors.Is(row.Err, corestore.ErrNotFound) {
@@ -120,51 +118,14 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 				if row.Item.Revision != candidate.Revision || row.Item.Archived {
 					continue
 				}
-				plan := shared
-				plan.candidate = candidate
-				plan.item = row.Item
-				plan.version = row.Version
-				if row.Item.NativeSourceKey != nil {
-					plan.linkedRecord = row.LinkedSource
-				}
-				if row.Change != nil {
-					plan.changeRecord = *row.Change
-				}
-				if row.ChangeVersion != nil {
-					if row.Change == nil || row.ChangePolicyRevision == nil {
-						s.reportIncompletePreviewCandidate(ctx, scope, candidate, corestore.ErrNotFound)
-						continue
-					}
-					plan.changeVersion = *row.ChangeVersion
-					plan.changePolicyRevision = *row.ChangePolicyRevision
-					plan.change = tracker.NativeChangeReference{ChangeID: plan.changeRecord.ID, VersionID: plan.changeVersion.ID, HeadSHA: plan.changeVersion.HeadSHA}
-				}
-				if row.LatestAttempt != nil {
-					plan.latestAttempt = *row.LatestAttempt
-					plan.latestAttemptFound = true
-				}
-				if row.LatestRunEvent != nil {
-					plan.latestRunEvent = *row.LatestRunEvent
-					plan.latestRunEventFound = true
-				}
-				plan.landingPending = nativeClaimPendingLanding(plan)
-				if (stringsEqualFold(candidate.State, "Merging") || plan.landingPending) && plan.changeRecord.ID != "" {
-					needsChangePolicy[index] = true
-					needsSharedChangePolicy = true
-				}
-				plans = append(plans, plan)
-				planIndexes[index] = len(plans) - 1
-			}
-			if needsSharedChangePolicy {
-				changePolicy, err := readChangeSummaryPolicyRows(ctx, r, scope)
-				if err != nil {
+				plan := nativeClaimPlanFromBatch(shared, candidate, row)
+				if err := validateClaimSnapshotPolicy(scope, plan); err != nil {
 					return err
 				}
-				for index, needed := range needsChangePolicy {
-					if needed && planIndexes[index] >= 0 {
-						plans[planIndexes[index]].changePolicy = changePolicy
-					}
-				}
+				plans = append(plans, plan)
+			}
+			if err := readNativeClaimChangeFacts(ctx, r, scope, plans); err != nil {
+				return err
 			}
 		} else {
 			for _, candidate := range candidates {
@@ -187,6 +148,12 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		return nil
 	})
 	if err != nil {
+		return tracker.NativeCapacityPage{}, err
+	}
+	if err := s.prepareNativeClaimLegacyAuditFacts(ctx, scope, plans); err != nil {
+		return tracker.NativeCapacityPage{}, err
+	}
+	if err := s.prepareNativeClaimApprovals(ctx, scope, plans); err != nil {
 		return tracker.NativeCapacityPage{}, err
 	}
 	refs := []attachment.ArchiveReference{}

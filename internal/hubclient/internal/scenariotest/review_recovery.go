@@ -19,13 +19,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -92,9 +92,6 @@ func (a *recoveringReviewAgent) RunTurnWithTools(ctx context.Context, request ru
 
 func RunReviewRecovery(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	for _, test := range []struct {
 		name, stage, verdict string
@@ -164,15 +161,6 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := runtimeStore.Close(); err != nil {
-					t.Error(err)
-				}
-			})
 			provider := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: test.stage, malformed: test.malformed}
 			var rejectedVersion tracker.ChangeVersion
 			var publicationRefusals atomic.Int32
@@ -288,7 +276,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					provider.validator = test.verdict
 				}
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Logger: logger, Store: runtimeStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Logger: logger, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
 				return context.WithCancel(testenv.WaitContext(t, ctx))
 			}})
 			if err != nil {
@@ -298,7 +286,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			if test.hostHandoff {
 				cfg.ActiveStates = append(cfg.ActiveStates, "Rework")
 			}
-			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			orch, err := orchestrator.New(cfg, dependencies)
 			if err != nil {
 				t.Fatal(err)
@@ -317,6 +305,20 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				return stop
 			}
 			stopOrchestrator := start(orch)
+			publishedSource := func() *runner.NativeChange {
+				t.Helper()
+				detail, err := h.admin.CurrentChange(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, version := range detail.Versions {
+					if version.ID == detail.Change.CurrentVersion {
+						return &runner.NativeChange{ChangeID: detail.Change.ID, VersionID: version.ID, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}
+					}
+				}
+				t.Fatal("deferred review has no current published source")
+				return nil
+			}
 			deadline, stop := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			defer stop()
 			ticker := time.NewTicker(20 * time.Millisecond)
@@ -385,9 +387,8 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						rejectedVersion = detail.Versions[0]
 					}
 					if !deferred && test.stopped {
-						stopOrchestrator()
 						owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-						change := owner.NativeChange()
+						change := publishedSource()
 						if err := owner.KeepWorker(func(context.Context) error { return nil }, nil); err != nil {
 							t.Fatal(err)
 						}
@@ -407,6 +408,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						if err := h.admin.Transport().Request(t.Context(), "GET", h.admin.Scope()+"/work-items/"+issue.ID+"/source-recovery", nil, &sourceRecovery); err != nil || !sourceRecovery.Quiesced || sourceRecovery.VersionID != change.VersionID || sourceRecovery.HeadSHA != change.HeadSHA {
 							t.Fatalf("confirmed worker cleanup lost recoverable source: %+v, %v", sourceRecovery, err)
 						}
+						stopOrchestrator()
 						provider.available.Store(true)
 						candidate := h.claim(t, issue.ID)
 						replacement := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
@@ -422,9 +424,8 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						return
 					}
 					if !deferred && test.refusal != "" {
-						stopOrchestrator()
 						owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-						change := owner.NativeChange()
+						change := publishedSource()
 						if test.refusal == "lease" {
 							if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
 								t.Fatal(err)
@@ -446,6 +447,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 							}
 							h.publishCaptured(t, current.WorkItemID, change.ChangeID, head, &capture, change.VersionID, change.BaseSHA)
 						}
+						stopOrchestrator()
 						provider.available.Store(true)
 						result, err := agent.Run(t.Context(), runner.RunRequest{Execution: owner, DeferExecutionFinish: true, Issue: state.Retry[issue.ID].Issue, Mode: runner.RunModeImplement, NativeReviewContinuation: &runner.NativeReviewContinuation{Source: tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: change.HeadSHA}, FinalMessage: owner.CompletionSnapshot().PreparedMessage}})
 						if err == nil || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && !errors.Is(err, runner.ErrNativeRecoveryRequired) || provider.writableCalls != 1 || provider.sourceCalls.Load() != 1 || result.TurnStarted {
@@ -461,9 +463,11 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						return
 					}
 					if !deferred && test.name == "source" {
-						stopOrchestrator()
 						owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-						change := owner.NativeChange()
+						if err := owner.Validate(t.Context()); err != nil {
+							t.Fatalf("source premise lost live execution authority: %v", err)
+						}
+						change := publishedSource()
 						for _, ref := range []tracker.NativeChangeReference{{ChangeID: change.ChangeID, VersionID: "version_other", HeadSHA: change.HeadSHA}, {ChangeID: "change_other", VersionID: change.VersionID, HeadSHA: change.HeadSHA}, {ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: strings.Repeat("a", 40)}} {
 							if err := owner.PrepareReview(t.Context(), ref); !errors.Is(err, runner.ErrNativeRecoveryRequired) {
 								t.Fatalf("changed source admitted: %+v, %v", ref, err)
@@ -499,6 +503,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 								t.Fatalf("changed %s authority admitted: %v", field, err)
 							}
 						}
+						stopOrchestrator()
 						nativeChangeGit(t, provider.workspace, "reset", "--hard", change.BaseSHA)
 						for _, content := range []string{"staged source\n", "unstaged source\n"} {
 							if err := os.WriteFile(filepath.Join(provider.workspace, "README.md"), []byte(content), 0o600); err != nil {

@@ -20,6 +20,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
@@ -49,7 +50,7 @@ var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 
 func migrationProvider(db *sql.DB) (*goose.Provider, error) {
 	return goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("migrations")),
-		goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+		goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("migrations"))...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 }
 
 func TestMain(m *testing.M) {
@@ -123,6 +124,28 @@ func TestCoreMigrationsFromEmpty(t *testing.T) {
 		t.Run(step, func(t *testing.T) {
 			if _, err := provider.Up(t.Context()); err != nil {
 				t.Fatal(err)
+			}
+			rows, err := db.QueryContext(t.Context(), `SELECT version_id FROM (SELECT version_id,is_applied,ROW_NUMBER() OVER(PARTITION BY version_id ORDER BY id DESC) AS state_rank FROM goose_db_version WHERE version_id>0) v WHERE state_rank=1 AND is_applied ORDER BY version_id`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var applied []int64
+			for rows.Next() {
+				var version int64
+				if err := rows.Scan(&version); err != nil {
+					t.Fatal(err)
+				}
+				applied = append(applied, version)
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				t.Fatal(err)
+			}
+			fingerprint, err := postgres.LatestSchemaFingerprint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fingerprint != schemafingerprint.Versions(applied) {
+				t.Fatalf("declared PostgreSQL fingerprint omits applied migrations: %s", fingerprint)
 			}
 			for _, table := range []string{"projects", "issues", "native_comments", "collaboration_events", "collaboration_versions", "change_requests", "change_issue_links", "change_versions", "change_evidence", "native_commands"} {
 				var exists bool

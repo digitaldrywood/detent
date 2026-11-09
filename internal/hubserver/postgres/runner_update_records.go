@@ -185,7 +185,7 @@ func (s *session) CreateRunnerUpdateRequest(ctx context.Context, record runnerst
 		return mapError(ctx, err)
 	}
 	count := result.RowsAffected()
-	if err != nil || count == 1 {
+	if count == 1 {
 		return err
 	}
 	previous, err := s.runnerUpdateRequest(ctx, request.ID)

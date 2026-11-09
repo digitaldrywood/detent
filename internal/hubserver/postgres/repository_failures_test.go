@@ -121,6 +121,9 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 	close(ready)
 	first := startRepositoryTask(t, run("first", "second", secondLocked, ready, firstLocked))
 	waitRepositorySignal(t, firstLocked)
+	if _, err := admin.ExecContext(t.Context(), `SELECT 1 FROM archive_usage_counters WHERE organization_id='org_first' FOR UPDATE NOWAIT`); err != nil {
+		t.Fatalf("title-only update locked organization population accounting: %v", err)
+	}
 	second := startRepositoryTask(t, run("second", "first", firstLocked, finishSecond, secondLocked))
 	waitRepositorySignal(t, secondLocked)
 	testenv.WaitUntil(t, t.Context(), func() error {

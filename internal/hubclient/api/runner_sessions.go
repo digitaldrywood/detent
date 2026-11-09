@@ -28,6 +28,18 @@ type RunnerSessions struct {
 	keys         map[int64]string
 	workers      map[int64]store.WorkerProcessRegistration
 	acknowledged map[int64]acknowledgedSessionMetadata
+	lastRevision acknowledgedSessionRevision
+}
+
+type acknowledgedSessionRevision struct {
+	sessionID    int64
+	revision     int64
+	leaseID      tracker.LeaseID
+	fencingToken tracker.FencingToken
+}
+
+func (r acknowledgedSessionRevision) matches(id int64, authority nativeMutationAuthority) bool {
+	return id > 0 && r.sessionID == id && r.revision > 0 && r.leaseID == authority.lease.ID && r.fencingToken == authority.lease.FencingToken
 }
 
 type acknowledgedSessionMetadata struct {
@@ -89,9 +101,11 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 	defer s.mu.Unlock()
 	authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
 	if !ok || authority.scope != s.base() || authority.lease.ID == "" {
+		s.lastRevision = acknowledgedSessionRevision{}
 		return runnersession.Snapshot{}, runner.ErrExecutionAuthorityUnavailable
 	}
 	if err := nativeEffectError(ctx); err != nil {
+		s.lastRevision = acknowledgedSessionRevision{}
 		return runnersession.Snapshot{}, err
 	}
 	metadata := s.acknowledged[request.SessionID]
@@ -100,15 +114,43 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 	}
 	request.Key = uuid.NewString()
 	request.LeaseID, request.FencingToken = authority.lease.ID, authority.lease.FencingToken
+	cached := s.lastRevision.matches(request.SessionID, authority)
 	if request.SessionID > 0 {
-		current, err := s.snapshot(ctx, request.SessionID)
-		if err != nil {
-			return current, err
+		if cached {
+			request.ExpectedRevision = s.lastRevision.revision
+		} else {
+			current, err := s.snapshot(ctx, request.SessionID)
+			if err != nil {
+				s.lastRevision = acknowledgedSessionRevision{}
+				return current, err
+			}
+			request.ExpectedRevision = current.Revision
 		}
-		request.ExpectedRevision = current.Revision
 	}
 	var result runnersession.Snapshot
-	err := s.client.Request(ctx, http.MethodPost, s.base()+"/runner-sessions", request, &result)
+	send := func() error {
+		if err := nativeEffectError(ctx); err != nil {
+			return err
+		}
+		return s.client.Request(ctx, http.MethodPost, s.base()+"/runner-sessions", request, &result)
+	}
+	err := send()
+	var conflict *APIError
+	if cached && errors.As(err, &conflict) && conflict.Status == http.StatusConflict && conflict.Code == "revision_conflict" {
+		current, readErr := s.snapshot(ctx, request.SessionID)
+		err = readErr
+		if err == nil {
+			request.Key = uuid.NewString()
+			request.ExpectedRevision = current.Revision
+			err = send()
+		}
+	}
+	if err != nil {
+		s.lastRevision = acknowledgedSessionRevision{}
+	} else {
+		s.lastRevision = acknowledgedSessionRevision{sessionID: result.ID, revision: result.Revision, leaseID: authority.lease.ID, fencingToken: authority.lease.FencingToken}
+	}
+
 	var api *APIError
 	if err != nil && (!errors.As(err, &api) || api == nil || api.Status < 400 || api.Status >= 500) {
 		delete(s.acknowledged, request.SessionID)
@@ -239,12 +281,12 @@ func (s *RunnerSessions) UpdateSessionWorkerProcess(ctx context.Context, id int6
 	return err
 }
 func (s *RunnerSessions) ListActiveWorkerProcesses(ctx context.Context) ([]store.WorkerProcess, error) {
-	result, err := s.NativeClient.runnerProcesses(ctx, "")
+	result, err := s.runnerProcesses(ctx, "")
 	if err != nil {
 		return nil, err
 	}
 	if result.More {
-		return nil, errors.New("Hub process registrations are incomplete")
+		return nil, errors.New("hub process registrations are incomplete")
 	}
 	s.workersMu.Lock()
 	defer s.workersMu.Unlock()

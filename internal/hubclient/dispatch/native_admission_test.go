@@ -25,7 +25,7 @@ import (
 
 func TestNativeAdmissionBatch(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("durable PostgreSQL integration")
 	}
 
 	t.Parallel()
@@ -424,7 +424,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 
 func TestNativeAdmissionCompetingRunners(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("durable PostgreSQL integration")
 	}
 
 	t.Parallel()

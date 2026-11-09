@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -11,6 +12,7 @@ import (
 )
 
 func TestDeletionContractRefusesEachActiveFamilyIndependently(t *testing.T) {
+	admin := template.Database(t)
 	cases := []struct {
 		name    string
 		queries []string
@@ -27,12 +29,33 @@ func TestDeletionContractRefusesEachActiveFamilyIndependently(t *testing.T) {
 		{"artifact-authorization", []string{`INSERT INTO artifact_services(organization_id,project_id,id,origin,binding_mode,hosted_opt_in,publisher_token_id) SELECT org,project,'service','https://example.invalid','customer',false,'first' FROM seed`, `INSERT INTO artifact_upload_authorizations(organization_id,project_id,service_id,idempotency_key,work_item_id,run_id,attempt_id,kind,bytes,created_at,expires_at) SELECT org,project,'service','upload',item,'run','attempt','log',1,at,clock_timestamp()+interval '1 hour' FROM seed`}},
 		{"slack-delivery", []string{`INSERT INTO health_findings(organization_id,id,fingerprint,signal,class,subject_kind,subject_id,opened_at,last_seen_at,severity,summary,next_action,evidence_object_key,evidence_sha256,evidence_bytes,evidence_content_bytes) SELECT org,project,project,'signal','class','work_item',item,at,at,'attention','example','inspect','','',0,0 FROM seed`, `INSERT INTO health_finding_projects(organization_id,finding_id,project_id) SELECT org,project,project FROM seed`, `INSERT INTO health_slack_deliveries(organization_id,id,finding_id,event,event_at,queued_at,next_attempt_at) SELECT org,project,project,'opened',at,at,at FROM seed`}},
 	}
+	for _, state := range []string{"complete", "interrupted"} {
+		cases = append(cases, struct {
+			name    string
+			queries []string
+		}{"artifact-retained-" + state, []string{
+			`INSERT INTO artifact_services(organization_id,project_id,id,origin,binding_mode,hosted_opt_in,publisher_token_id) SELECT org,project,'service','https://example.invalid','customer',false,'first' FROM seed`,
+			`INSERT INTO artifact_catalog_uploads(organization_id,project_id,service_id,id,idempotency_key,request_hash,work_item_id,run_id,attempt_id,version_id,kind,lease_id,fencing_token,requested_bytes,part_limit,state,reserved_bytes,retained_bytes,created_at,upload_deadline,expires_at) SELECT org,project,'service','upload','upload',repeat('a',64),item,'run','attempt','version','log','lease',1,1,1,'` + state + `',0,1,at,at+interval '1 hour',at+interval '2 hours' FROM seed`,
+		}})
+	}
+	for _, state := range []string{"reserved", "executing"} {
+		claimedAt := "NULL"
+		if state == "executing" {
+			claimedAt = "at"
+		}
+		cases = append(cases, struct {
+			name    string
+			queries []string
+		}{"operator-" + state, []string{`INSERT INTO native_command_states(organization_id,actor_id,operation,command_key,request_hash,created_at,response_claimed,response_pending,reservation_project_id,reservation_correlation_id,reservation_claimed_at) SELECT org,'first','example.command',project,repeat('a',64),at,true,true,project,'correlation_'||project,` + claimedAt + ` FROM seed`}})
+	}
+
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			admin := template.Database(t)
 			repository, _ := repositoryFor(t, admin, smallPool())
 			now := historyAt()
-			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			family := strings.ReplaceAll(test.name, "-", "_")
+			organizations := []tracker.OrganizationID{tracker.OrganizationID("org_first_" + family), tracker.OrganizationID("org_second_" + family)}
+			for _, org := range organizations {
 				seedRepository(t, repository, org)
 				for _, id := range []string{"first", "second"} {
 					seedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
@@ -68,9 +91,20 @@ func TestDeletionContractRefusesEachActiveFamilyIndependently(t *testing.T) {
 				t.Fatal(err)
 			}
 			repository, _ = repositoryFor(t, admin, smallPool())
-			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			for _, org := range organizations {
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.RequireProjectIdle(t.Context(), "prj_first", now) }); !errors.Is(err, projectstore.ErrActiveWork) {
 					t.Fatalf("reopened activity=%v", err)
+				}
+				if strings.HasPrefix(test.name, "artifact-retained-") {
+					if _, err := admin.ExecContext(t.Context(), `UPDATE artifact_catalog_uploads SET state='deleted',retained_bytes=0,deleted_at=$2,deletion_receipt_object_key='confirmed' WHERE organization_id=$1 AND project_id='prj_first'`, org, now); err != nil {
+						t.Fatal(err)
+					}
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.RequireProjectIdle(t.Context(), "prj_first", now) }); err != nil {
+						t.Fatalf("accounted catalog deletion still holds project: %v", err)
+					}
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.RequireProjectIdle(t.Context(), "prj_second", now) }); !errors.Is(err, projectstore.ErrActiveWork) {
+						t.Fatalf("one project's cleanup released another project: %v", err)
+					}
 				}
 				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error { return w.DeleteProject(t.Context(), "prj_idle") }); err != nil {
 					t.Fatalf("idle delete=%v", err)

@@ -37,7 +37,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 
 	t.Parallel()
 	const admin = "native-integration-admin"
-	cfg := testsupport.NativeChangePostgresConfig(t, hubserver.Config{Clock: time.Now, Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)})
+	cfg := testsupport.NativeChangePostgresConfig(t, hubserver.Config{Clock: time.Now, Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, InitialAdminToken: []byte(admin)})
 	service, err := hubserver.Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

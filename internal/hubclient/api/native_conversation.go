@@ -43,10 +43,10 @@ const (
 )
 
 const (
-	conversationCommandQueueSize = 64
-	conversationMaxBatchEvents   = 500
-	conversationReportAttempts   = 3
-	conversationReportTimeout    = 15 * time.Second
+	conversationCommandQueueSize       = 64
+	conversationMaxBatchEvents         = 500
+	conversationReportTimeout          = 15 * time.Second
+	conversationQuestionReportAttempts = 3
 )
 
 // ConversationIdentity is the owner tuple every worker request carries.
@@ -215,18 +215,20 @@ func conversationError(err error) error {
 // batches turn events; a waiter per control turns its Reply into a
 // control_result.
 type conversationSession struct {
-	timings      SessionTimings
-	client       *NativeClient
-	item         tracker.NativeWorkItemID
-	id           string
-	identity     ConversationIdentity
-	resume       string
-	resumeMode   string
-	threadOrigin string
-	continuation bool
-	preferences  runner.ConversationPreferences
-	pending      string
-	pendingKey   []string
+	lifetimeDone  <-chan struct{}
+	lifetimeCause func() error
+	timings       SessionTimings
+	client        *NativeClient
+	item          tracker.NativeWorkItemID
+	id            string
+	identity      ConversationIdentity
+	resume        string
+	resumeMode    string
+	threadOrigin  string
+	continuation  bool
+	preferences   runner.ConversationPreferences
+	pending       string
+	pendingKey    []string
 	// pendingAttachments are the files of the messages the bind handed over,
 	// fetched once so the first turn can hand them to the provider.
 	pendingAttachments []runner.AgentAttachment
@@ -251,9 +253,11 @@ type conversationSession struct {
 	turnEnded chan struct{}
 	// turnWaiters counts the control waiters of the current turn, so the
 	// turn's end is reported only after every control it consumed.
-	turnWaiters *sync.WaitGroup
-	cursor      int64
-	events      []runner.ConversationTurnEvent
+	turnWaiters    *sync.WaitGroup
+	cursor         int64
+	controlResults int
+	events         []runner.ConversationTurnEvent
+	reportRoom     chan struct{}
 	// held keeps a reported turn_completed, and anything after it, until
 	// FinishTurn has settled the turn's controls. The hub refuses turn events
 	// once a turn has ended, so a control result posted after the turn's end
@@ -268,8 +272,10 @@ func newConversationSession(ctx context.Context, client *NativeClient, item trac
 	pollCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	flushCtx, flushCancel := context.WithCancel(context.WithoutCancel(ctx))
 	s := &conversationSession{
-		timings: client.client.sessionTimings.withDefaults(),
-		client:  client, item: item, id: response.ConversationID, identity: identity, resume: response.Resume.ThreadID,
+		lifetimeDone:  ctx.Done(),
+		lifetimeCause: func() error { return context.Cause(ctx) },
+		timings:       client.client.sessionTimings.withDefaults(),
+		client:        client, item: item, id: response.ConversationID, identity: identity, resume: response.Resume.ThreadID,
 		continuation: response.Continuation == nil || *response.Continuation,
 		resumeMode:   conversationResumeMode(response),
 		threadOrigin: response.Resume.ThreadOrigin,
@@ -428,16 +434,70 @@ func (s *conversationSession) drainCommands() {
 
 // Report queues events in order and tracks the live thread and turn so
 // controls can be addressed before the hub has processed turn_started.
-func (s *conversationSession) Report(_ context.Context, events []runner.ConversationTurnEvent) error {
+func (s *conversationSession) Report(ctx context.Context, events []runner.ConversationTurnEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
+	lifetimeDone := ctx.Done()
+	lifetimeCause := func() error { return context.Cause(ctx) }
+	if s.lifetimeCause != nil {
+		lifetimeDone, lifetimeCause = s.lifetimeDone, s.lifetimeCause
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closing {
-		return fmt.Errorf("report conversation turn events: %w", ErrStaleConversation)
-	}
+	defer func() {
+		select {
+		case s.kick <- struct{}{}:
+		default:
+		}
+	}()
 	for _, event := range events {
+		for {
+			if s.closing {
+				return fmt.Errorf("report conversation turn events: %w", ErrStaleConversation)
+			}
+			if len(s.held) > 0 || event.Type == runner.ConversationEventTurnCompleted {
+				if len(s.held) >= conversationMaxBatchEvents || conversationQueuedBytes(s.held)+conversationEventBytes(event) > s.timings.withDefaults().MaxQueuedBytes {
+					if len(s.held) == 0 {
+						return errors.New("conversation turn completion exceeds report capacity")
+					}
+					return errors.New("finish the previous conversation turn before reporting more events")
+				}
+				s.held = append(s.held, event)
+				break
+			}
+			if event.Type == runner.ConversationEventQuestionOpened && (len(s.events)+s.controlResults >= conversationMaxBatchEvents || conversationQueuedBytes(s.events)+s.controlResults*s.controlResultBytes() >= s.timings.withDefaults().MaxQueuedBytes) {
+				return fmt.Errorf("conversation question publication has no report capacity: %w", ErrUnavailable)
+			}
+			if len(s.events)+s.controlResults < conversationMaxBatchEvents && (event.Type == runner.ConversationEventDelta || conversationQueuedBytes(s.events)+s.controlResults*s.controlResultBytes() < s.timings.withDefaults().MaxQueuedBytes) {
+				s.events = append(s.events, event)
+				s.boundQueuedLocked()
+				break
+			}
+			if s.reportRoom == nil {
+				s.reportRoom = make(chan struct{})
+			}
+			room := s.reportRoom
+			select {
+			case s.kick <- struct{}{}:
+			default:
+			}
+			s.mu.Unlock()
+			var err error
+			select {
+			case <-room:
+			case <-s.stop:
+				err = ErrStaleConversation
+			case <-ctx.Done():
+				err = ctx.Err()
+			case <-lifetimeDone:
+				err = lifetimeCause()
+			}
+			s.mu.Lock()
+			if err != nil {
+				return fmt.Errorf("queue conversation turn events: %w", err)
+			}
+		}
 		switch event.Type {
 		case runner.ConversationEventTurnStarted:
 			if event.ThreadID != "" {
@@ -448,18 +508,6 @@ func (s *conversationSession) Report(_ context.Context, events []runner.Conversa
 			s.lastStatus = event.Status
 		}
 	}
-	for _, event := range events {
-		if len(s.held) > 0 || event.Type == runner.ConversationEventTurnCompleted {
-			s.held = append(s.held, event)
-			continue
-		}
-		s.events = append(s.events, event)
-	}
-	s.boundQueuedLocked()
-	select {
-	case s.kick <- struct{}{}:
-	default:
-	}
 	return nil
 }
 
@@ -468,13 +516,14 @@ func (s *conversationSession) Report(_ context.Context, events []runner.Conversa
 // the oldest deltas are dropped. Turn, question, item and control events are
 // never dropped. s.mu is held by the caller.
 func (s *conversationSession) boundQueuedLocked() {
-	if conversationQueuedBytes(s.events) <= s.timings.withDefaults().MaxQueuedBytes {
+	limit := max(0, s.timings.withDefaults().MaxQueuedBytes-s.controlResults*s.controlResultBytes())
+	if conversationQueuedBytes(s.events) <= limit {
 		return
 	}
 	var dropped int
-	s.events, dropped = trimConversationEvents(coalesceConversationDeltas(s.events), s.timings.withDefaults().MaxQueuedBytes)
+	s.events, dropped = trimConversationEvents(coalesceConversationDeltas(s.events), limit)
 	if dropped > 0 {
-		s.logger.Warn("conversation deltas dropped while the hub is slow", "dropped", dropped, "limit_bytes", s.timings.withDefaults().MaxQueuedBytes)
+		s.logger.Warn("conversation deltas dropped while the hub is slow", "dropped", dropped, "limit_bytes", limit)
 	}
 }
 
@@ -519,6 +568,8 @@ func (s *conversationSession) Close(ctx context.Context, outcome string, runErr 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancel := context.WithTimeout(ctx, conversationReportTimeout)
+	defer cancel()
 	var closeErr error
 	s.closeOnce.Do(func() {
 		// A report already in flight keeps its own bounded context, but no
@@ -533,26 +584,28 @@ func (s *conversationSession) Close(ctx context.Context, outcome string, runErr 
 			case <-bounded:
 			}
 		}()
+		s.mu.Lock()
+		s.closing = true
+		s.mu.Unlock()
 		s.cancel()
 		close(s.stop)
 		s.loops.Wait()
 		close(s.closed)
 		s.waiters.Wait()
 		s.mu.Lock()
-		s.closing = true
 		s.releaseHeldLocked()
 		s.mu.Unlock()
 		s.drainCommands()
 		close(s.commands)
 		if err := s.flush(ctx); err != nil {
-			s.logger.Warn("conversation turn events dropped at close", "error", err)
+			closeErr = fmt.Errorf("flush conversation turn events: %w", err)
 		}
 		request := ConversationUnbindRequest{ConversationIdentity: s.identity, Outcome: outcome}
 		if runErr != nil {
 			request.Error = runErr.Error()
 		}
 		if err := s.client.UnbindConversation(ctx, s.item, request); err != nil {
-			closeErr = fmt.Errorf("unbind conversation: %w", err)
+			closeErr = errors.Join(closeErr, fmt.Errorf("unbind conversation: %w", err))
 		}
 	})
 	return closeErr
@@ -626,12 +679,20 @@ func conversationPollRefused(err error) bool {
 // deliver converts one control, starts its waiter and queues it. It blocks
 // while the queue is full and reports false once the session is stopping.
 func (s *conversationSession) deliver(ctx context.Context, control ConversationControl) bool {
+	if !s.reserveControlResult(ctx) {
+		return false
+	}
 	command := runner.AgentControl{
 		Kind: runner.AgentControlKind(control.Kind), MessageID: control.MessageID, Text: control.Text,
 		RequestID: control.RequestID, Answers: control.Answers, Reply: make(chan error, 1),
 		Attachments: s.fetchAttachments(ctx, control.Attachments),
 	}
 	s.mu.Lock()
+	if s.closing || ctx.Err() != nil || s.lifetimeCause != nil && s.lifetimeCause() != nil {
+		s.releaseControlResultLocked()
+		s.mu.Unlock()
+		return false
+	}
 	command.ThreadID = s.thread
 	command.TurnID = control.Expected.TurnID
 	if command.TurnID == "" {
@@ -663,6 +724,60 @@ func (s *conversationSession) deliver(ctx context.Context, control ConversationC
 		s.drainCommands()
 	}
 	return true
+}
+
+func (s *conversationSession) controlResultBytes() int {
+	return min(conversationControlErrorBytes, s.timings.withDefaults().MaxQueuedBytes)
+}
+
+func (s *conversationSession) reserveControlResult(ctx context.Context) bool {
+	lifetimeDone := ctx.Done()
+	lifetimeCause := func() error { return context.Cause(ctx) }
+	if s.lifetimeCause != nil {
+		lifetimeDone, lifetimeCause = s.lifetimeDone, s.lifetimeCause
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for {
+		if s.closing || ctx.Err() != nil || lifetimeCause() != nil {
+			return false
+		}
+		if len(s.events)+s.controlResults < conversationMaxBatchEvents && conversationQueuedBytes(s.events)+(s.controlResults+1)*s.controlResultBytes() <= s.timings.withDefaults().MaxQueuedBytes {
+			s.controlResults++
+			return true
+		}
+		if s.reportRoom == nil {
+			s.reportRoom = make(chan struct{})
+		}
+		room := s.reportRoom
+		select {
+		case s.kick <- struct{}{}:
+		default:
+		}
+		s.mu.Unlock()
+		interrupted := false
+		select {
+		case <-room:
+		case <-s.stop:
+			interrupted = true
+		case <-ctx.Done():
+			interrupted = true
+		case <-lifetimeDone:
+			interrupted = true
+		}
+		s.mu.Lock()
+		if interrupted {
+			return false
+		}
+	}
+}
+
+func (s *conversationSession) releaseControlResultLocked() {
+	s.controlResults--
+	if s.reportRoom != nil {
+		close(s.reportRoom)
+		s.reportRoom = nil
+	}
 }
 
 // ownerCheck is the check a control runs immediately before it is written to
@@ -712,8 +827,10 @@ func (s *conversationSession) await(key string, command runner.AgentControl, end
 	default:
 		event.Status, event.Error = runner.ConversationControlUnknown, err.Error()
 	}
+	event.Error = conversationTruncateBytes(event.Error, s.controlResultBytes())
 	s.mu.Lock()
 	s.events = append(s.events, event)
+	s.releaseControlResultLocked()
 	s.mu.Unlock()
 	select {
 	case s.kick <- struct{}{}:
@@ -746,19 +863,29 @@ func (s *conversationSession) reportLoop(ctx context.Context, reportCtx context.
 // item and retrying transient failures. Events of a batch that still fails
 // are dropped: the hub's unknown path covers the uncertainty.
 func (s *conversationSession) flush(ctx context.Context) error {
-	s.mu.Lock()
-	events := coalesceConversationDeltas(s.events)
-	s.events = nil
-	s.mu.Unlock()
-	var errs []error
-	for len(events) > 0 {
-		batch := events[:min(len(events), conversationMaxBatchEvents)]
-		events = events[len(batch):]
-		if err := s.post(ctx, batch); err != nil {
-			errs = append(errs, err)
+	var firstErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(firstErr, err)
+		}
+		s.mu.Lock()
+		events := coalesceConversationDeltas(s.events)
+		if len(events) == 0 {
+			s.mu.Unlock()
+			return firstErr
+		}
+		count := min(len(events), conversationMaxBatchEvents)
+		batch := events[:count]
+		s.events = events[count:]
+		if s.reportRoom != nil {
+			close(s.reportRoom)
+			s.reportRoom = nil
+		}
+		s.mu.Unlock()
+		if err := s.post(ctx, batch); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	return errors.Join(errs...)
 }
 
 // post delivers one batch. A batch the hub refuses for its content is retried
@@ -769,38 +896,48 @@ func (s *conversationSession) flush(ctx context.Context) error {
 // question_opened event is declined to the provider straight away rather
 // than leaving the turn waiting for an answer nobody can give.
 func (s *conversationSession) post(ctx context.Context, batch []runner.ConversationTurnEvent) error {
-	err := s.postBatch(ctx, batch)
+	declined := make(map[conversationQuestionIdentity]struct{})
+	err := s.postBatch(ctx, batch, declined)
 	if err == nil {
 		return nil
 	}
 	if len(batch) < 2 || !conversationBatchRejected(err) {
-		s.declineQuestions(batch, err)
+		s.declineQuestions(batch, err, declined)
 		return err
 	}
 	var errs []error
 	for _, event := range batch {
-		if err := s.postBatch(ctx, []runner.ConversationTurnEvent{event}); err != nil {
+		if err := s.postBatch(ctx, []runner.ConversationTurnEvent{event}, declined); err != nil {
 			s.logger.Warn("conversation turn event dropped", "event_type", event.Type, "event_key", event.Key, "error", err)
-			s.declineQuestions([]runner.ConversationTurnEvent{event}, err)
+			s.declineQuestions([]runner.ConversationTurnEvent{event}, err, declined)
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// conversationDeclineCauseBytes bounds the hub error quoted to the provider.
-const conversationDeclineCauseBytes = 500
+const conversationControlErrorBytes = 500
 
-// declineQuestions answers every question the hub did not record with a
-// reason instead of an answer, through the turn's own control queue so the
-// transport writes it the way it writes a human answer. A session that is
-// closing has no live turn left to answer.
-func (s *conversationSession) declineQuestions(events []runner.ConversationTurnEvent, cause error) {
+type conversationQuestionIdentity struct {
+	requestID string
+	threadID  string
+	turnID    string
+}
+
+func conversationQuestionIdentityFor(event runner.ConversationTurnEvent) conversationQuestionIdentity {
+	return conversationQuestionIdentity{requestID: event.RequestID, threadID: event.ThreadID, turnID: event.TurnID}
+}
+
+func (s *conversationSession) declineQuestions(events []runner.ConversationTurnEvent, cause error, declined map[conversationQuestionIdentity]struct{}) {
 	for _, event := range events {
 		if event.Type != runner.ConversationEventQuestionOpened || event.RequestID == "" {
 			continue
 		}
-		reason := "Detent could not show this question to the user (" + conversationTruncateBytes(cause.Error(), conversationDeclineCauseBytes) + "). No answer will come; continue without one."
+		identity := conversationQuestionIdentityFor(event)
+		if _, exists := declined[identity]; exists {
+			continue
+		}
+		reason := "Detent could not show this question to the user (" + conversationTruncateBytes(cause.Error(), conversationControlErrorBytes) + "). No answer will come; continue without one."
 		var prompts []struct {
 			ID string `json:"id"`
 		}
@@ -825,8 +962,55 @@ func (s *conversationSession) declineQuestions(events []runner.ConversationTurnE
 			}
 		}
 		s.mu.Unlock()
+		if queued {
+			declined[identity] = struct{}{}
+		}
 		s.logger.Warn("conversation question declined to the provider", "request_id", event.RequestID, "queued", queued, "error", cause)
 	}
+}
+
+func (s *conversationSession) declineQueuedQuestions(cause error, inFlight map[conversationQuestionIdentity]struct{}) {
+	s.mu.Lock()
+	var questions []runner.ConversationTurnEvent
+	for _, events := range [][]runner.ConversationTurnEvent{s.events, s.held} {
+		for _, event := range events {
+			if event.Type == runner.ConversationEventQuestionOpened && event.RequestID != "" {
+				questions = append(questions, event)
+			}
+		}
+	}
+	s.mu.Unlock()
+	if len(questions) == 0 {
+		return
+	}
+	declined := make(map[conversationQuestionIdentity]struct{}, len(inFlight)+len(questions))
+	for identity := range inFlight {
+		declined[identity] = struct{}{}
+	}
+	s.declineQuestions(questions, cause, declined)
+	if len(declined) == 0 {
+		return
+	}
+	remove := func(events []runner.ConversationTurnEvent) []runner.ConversationTurnEvent {
+		kept := events[:0]
+		for _, event := range events {
+			if event.Type == runner.ConversationEventQuestionOpened {
+				if _, ok := declined[conversationQuestionIdentityFor(event)]; ok {
+					continue
+				}
+			}
+			kept = append(kept, event)
+		}
+		clear(events[len(kept):])
+		return kept
+	}
+	s.mu.Lock()
+	s.events, s.held = remove(s.events), remove(s.held)
+	if s.reportRoom != nil {
+		close(s.reportRoom)
+		s.reportRoom = nil
+	}
+	s.mu.Unlock()
 }
 
 // conversationTruncateBytes cuts value to at most limit bytes on a rune
@@ -856,14 +1040,18 @@ func conversationBatchRejected(err error) bool {
 	return apiErr.Status >= 400 && apiErr.Status < 500
 }
 
-func (s *conversationSession) postBatch(ctx context.Context, batch []runner.ConversationTurnEvent) error {
-	var errs []error
-	// One key for the batch, repeated by every attempt: a retry of a batch the
-	// hub already applied is a duplicate it can drop.
+func (s *conversationSession) postBatch(ctx context.Context, batch []runner.ConversationTurnEvent, declined map[conversationQuestionIdentity]struct{}) error {
+	if declined == nil {
+		declined = make(map[conversationQuestionIdentity]struct{})
+	}
+	var lastErr error
 	key := conversationBatchKey()
-	for attempt := range conversationReportAttempts {
-		if attempt > 0 && !sleepContext(ctx, s.timings.withDefaults().ReportBackoff<<uint(attempt-1)) {
-			break
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("report %d conversation turn events: %w", len(batch), errors.Join(lastErr, err))
+		}
+		if attempt > 0 && !sleepContext(ctx, s.timings.withDefaults().ReportBackoff<<uint(min(attempt-1, 3))) {
+			return fmt.Errorf("report %d conversation turn events: %w", len(batch), errors.Join(lastErr, ctx.Err()))
 		}
 		postCtx, cancel := context.WithTimeout(ctx, conversationReportTimeout)
 		_, err := s.client.ReportConversationTurnEvents(postCtx, s.id, ConversationTurnEventsRequest{ConversationIdentity: s.identity, BatchKey: key, Events: batch})
@@ -871,12 +1059,15 @@ func (s *conversationSession) postBatch(ctx context.Context, batch []runner.Conv
 		if err == nil {
 			return nil
 		}
-		errs = append(errs, fmt.Errorf("attempt %d: %w", attempt+1, err))
+		lastErr = fmt.Errorf("attempt %d: %w", attempt+1, err)
 		if !errors.Is(err, ErrUnavailable) {
-			break
+			return fmt.Errorf("report %d conversation turn events: %w", len(batch), lastErr)
+		}
+		if attempt+1 >= conversationQuestionReportAttempts {
+			s.declineQuestions(batch, lastErr, declined)
+			s.declineQueuedQuestions(lastErr, declined)
 		}
 	}
-	return fmt.Errorf("report %d conversation turn events: %w", len(batch), errors.Join(errs...))
 }
 
 // conversationBatchKey mints the idempotency key of one turn-events batch. A

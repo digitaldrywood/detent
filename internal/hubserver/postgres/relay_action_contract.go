@@ -3,12 +3,14 @@ package postgres
 import (
 	"context"
 	"errors"
+
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
-	"github.com/jackc/pgx/v5"
 )
 
 type ActionRun = pgquery.ProjectActionRun

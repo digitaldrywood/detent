@@ -88,6 +88,10 @@ sql:
             go_type:
               type: "int"
               pointer: true
+          - column: "issues.doctor_identity_revision"
+            go_type:
+              type: "int64"
+              pointer: true
           - column: "native_comments.work_item_id"
             go_type:
               import: "github.com/digitaldrywood/detent/internal/tracker"

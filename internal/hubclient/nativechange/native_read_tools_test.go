@@ -51,6 +51,14 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "rework", Backend: "codex", Model: "test"}); err != nil {
 		t.Fatal(err)
 	}
+	heartbeat := func(t *testing.T) (time.Time, time.Time) {
+		t.Helper()
+		claim, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now())
+		if err != nil {
+			t.Fatalf("renew retained-read execution: %v", err)
+		}
+		return claim.LeaseRenewedAt, claim.LeaseExpiresAt
+	}
 	tools, handler := execution.(runner.ToolExecution).AgentTools()
 	var schema json.RawMessage
 	for _, tool := range tools {
@@ -71,6 +79,7 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 	}
 	wants := make(map[tracker.NativeWorkItemID]evidence)
 	for i, item := range items {
+		heartbeat(t)
 		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: fmt.Sprintf("Retained change %d", i)})
 		if err != nil {
 			t.Fatal(err)
@@ -81,6 +90,7 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		heartbeat(t)
 		reviews := []tracker.ChangeReview{
 			{ID: fmt.Sprintf("review_human_%d", i), VersionID: current.ID, Decision: "changes_requested", Body: strings.Repeat("human feedback <\n", 65536), Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}, CreatedAt: current.CreatedAt},
 			{ID: fmt.Sprintf("review_commands_%d", i), VersionID: old.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: old.CreatedAt, ImplementationReview: &gate.ValidatorResult{Attribution: "unknown", VersionID: old.ID, Repository: old.Repository, BaseSHA: old.BaseSHA, HeadSHA: old.HeadSHA, Submitted: true, Verdict: "pass", Commands: []gate.CommandResult{{Attribution: "unknown", Command: "make check-land", Output: strings.Repeat("command output <\n", 40000)}}}},
@@ -114,6 +124,7 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 		}
 		wants[item] = evidence{change: change, versions: []tracker.ChangeVersion{old, current}, reviews: reviews, comment: comment, landing: landing}
 	}
+	heartbeat(t)
 	h.reopen(func(w tenantstore.Writer) error {
 		for _, want := range wants {
 			for _, review := range want.reviews {
@@ -133,8 +144,11 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 		}
 		return nil
 	})
+	heartbeat(t)
+	var pinnedAttemptCursor string
 	for _, item := range items {
 		t.Run(string(item), func(t *testing.T) {
+			heartbeat(t)
 			want := wants[item]
 			recovery, err := h.native.Recovery(t.Context(), item)
 			if err != nil {
@@ -200,6 +214,7 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 			cursor := ""
 			var record []byte
 			var identity tracker.NativeRecoveryPage
+			var firstRenewedAt, firstExpiresAt time.Time
 			for pages := 0; ; pages++ {
 				if pages > 200 {
 					t.Fatal("retained traversal did not terminate")
@@ -212,6 +227,7 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				renewedAt, expiresAt := heartbeat(t)
 				result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: raw})
 				var response operatortool.WorkReadResult[tracker.NativeRecoveryPage]
 				if err != nil || !result.Success || len(result.Content) > operatortool.MaxResultBytes || json.Unmarshal([]byte(result.Content), &response) != nil {
@@ -234,6 +250,10 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 					t.Fatal("unbounded or non-progressing fragment")
 				}
 				if page.Offset == 0 {
+					firstRenewedAt, firstExpiresAt = renewedAt, expiresAt
+					if page.Section == "attempts" && item == tracker.NativeWorkItemID(issue.ID) {
+						pinnedAttemptCursor = page.NextCursor
+					}
 					identity = page
 				} else if page.Section != identity.Section || page.RecordID != identity.RecordID || page.VersionID != identity.VersionID || page.TotalBytes != identity.TotalBytes || page.SHA256 != identity.SHA256 {
 					t.Fatal("fragment identity changed")
@@ -293,6 +313,11 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 						if err := json.Unmarshal(record, &got); err != nil {
 							t.Fatal(err)
 						}
+						if item == tracker.NativeWorkItemID(issue.ID) && got.AttemptID == execution.(*nativeExecution).CompletionData().AttemptID {
+							if !got.LeaseRenewedAt.Equal(firstRenewedAt) || !got.LeaseExpiresAt.Equal(firstExpiresAt) || !renewedAt.After(firstRenewedAt) || !got.Current || got.ClaimReleasedAt != nil {
+								t.Fatalf("retained attempt mixed renewed lease presentation: first=%s current=%s retained=%s expires=%s", firstRenewedAt, renewedAt, got.LeaseRenewedAt, got.LeaseExpiresAt)
+							}
+						}
 						if want.landing != nil && got.Runtime != nil && got.Runtime.Landing != nil {
 							if !reflect.DeepEqual(got.Runtime.Landing.SecurityAudit, want.landing) || !got.Runtime.Landing.GateFailed {
 								t.Fatal("worker lost exact attempt landing audit")
@@ -323,5 +348,14 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 				t.Fatalf("worker lost retained evidence: %v", seen)
 			}
 		})
+	}
+	if pinnedAttemptCursor == "" {
+		t.Fatal("retained attempt did not expose a continuation")
+	}
+	if err := execution.(*nativeExecution).append(t.Context(), "run.observed", "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.native.RecoveryEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), pinnedAttemptCursor); hubErrorCode(err) != "revision_conflict" {
+		t.Fatalf("retained cursor accepted a changed attempt source: %v", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -91,8 +92,11 @@ func TestNeutralCoreImportsRejectWellFormedSchemaDriftBeforePin(t *testing.T) {
 			}
 			t.Run(target.table+"_"+change, func(t *testing.T) {
 				org := tracker.OrganizationID("org_" + target.table + "_" + change)
-				seedTenantAccess(t, repository, org)
-				seedLeaseFamily(t, repository, org)
+				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+					return seedCoreOrganization(t.Context(), w, org)
+				}); err != nil {
+					t.Fatal(err)
+				}
 				path := corePolicyCopy(t, org, time.Date(2026, 11, 1, 21, 0, 0, 0, time.UTC))
 				if target.family == "project" {
 					path = coreProjectCopy(t, org)

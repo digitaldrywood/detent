@@ -38,7 +38,7 @@ AND fencing_token=sqlc.arg(fencing_token)::bigint AND released_at IS NULL AND ex
 RETURNING *;
 
 -- name: CancelLeaseAttempt :exec
-UPDATE native_attempts SET status='cancelled',sequence=sequence+1,updated_at=$4
+UPDATE native_attempts SET status='cancelled',updated_at=$4
 WHERE organization_id=$1 AND lease_id=$2 AND fencing_token=$3 AND status='running';
 
 -- name: HeartbeatLeaseMachine :exec
@@ -93,11 +93,12 @@ ORDER BY fencing_token LIMIT sqlc.arg(page_limit);
 SELECT request_hash FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2 AND sequence=$3;
 
 -- name: InsertLeaseAttempt :one
-INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence)
-VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(started_at),sqlc.arg(started_at_submicro_ns),sqlc.arg(now),sqlc.narg(runtime_heartbeat_at),1) RETURNING *;
+INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence,local_attempt_id,local_attempt_id_recorded)
+VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(started_at),sqlc.arg(started_at_submicro_ns),sqlc.arg(now),sqlc.narg(runtime_heartbeat_at),1,NULLIF(sqlc.arg(local_attempt_id)::bigint,0),true) RETURNING *;
 
 -- name: AdvanceLeaseAttempt :one
 UPDATE native_attempts SET sequence=sqlc.arg(next_sequence),
+local_attempt_id=CASE WHEN local_attempt_id_recorded THEN COALESCE(local_attempt_id,NULLIF(sqlc.arg(local_attempt_id)::bigint,0)) ELSE local_attempt_id END,
 runtime_heartbeat_at=sqlc.narg(runtime_heartbeat_at),runtime_summary_sequence=sqlc.arg(next_sequence),
 cleanup_acknowledged_at=CASE WHEN sqlc.arg(termination)::boolean THEN sqlc.arg(now) ELSE cleanup_acknowledged_at END,
 status=CASE WHEN sqlc.arg(usage_correction)::boolean THEN status ELSE sqlc.arg(status) END,
@@ -107,6 +108,7 @@ artifacts_object_key=COALESCE(sqlc.narg(artifacts_object_key),artifacts_object_k
 updated_at=CASE WHEN sqlc.arg(usage_correction)::boolean THEN updated_at ELSE sqlc.arg(now) END
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND lease_id=sqlc.arg(lease_id)
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND run_id=sqlc.arg(run_id)
+AND (sqlc.arg(local_attempt_id)::bigint=0 OR local_attempt_id IS NULL OR local_attempt_id=sqlc.arg(local_attempt_id))
 AND dispatch_generation=sqlc.arg(dispatch_generation) AND sequence=sqlc.arg(next_sequence)-1
 AND (status='running' OR status='interrupted' AND sqlc.arg(status)='running' OR sqlc.arg(usage_correction)::boolean AND status=sqlc.arg(status) OR sqlc.arg(termination)::boolean AND status IN ('interrupted','cancelled') AND sqlc.arg(status)='cancelled')
 RETURNING *;
@@ -212,3 +214,20 @@ ORDER BY c.kind,CASE WHEN c.kind=2 THEN c.model_id ELSE '' END,c.position;
 UPDATE native_attempts SET runtime_heartbeat_at=sqlc.narg(runtime_heartbeat_at),runtime_summary_sequence=sqlc.arg(sequence)
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND sequence=sqlc.arg(sequence)
 AND runtime_summary_sequence IS DISTINCT FROM sequence;
+
+-- name: LocalAttemptMatches :many
+WITH owned_item AS MATERIALIZED (
+    SELECT item.id FROM issues item
+    WHERE item.organization_id=sqlc.arg(organization_id) AND item.project_id=sqlc.arg(project_id)
+    AND item.native_id=sqlc.arg(work_item_id)
+), matches AS (
+    SELECT a.id FROM native_attempts a JOIN owned_item i ON i.id=a.issue_id
+    WHERE a.organization_id=sqlc.arg(organization_id) AND a.local_attempt_id=sqlc.arg(local_attempt_id)
+    LIMIT 2
+), unprojected AS (
+    SELECT true AS coverage_unknown FROM native_attempts a JOIN owned_item i ON i.id=a.issue_id
+    WHERE a.organization_id=sqlc.arg(organization_id) AND NOT a.local_attempt_id_recorded
+    LIMIT 1
+)
+SELECT id,false AS coverage_unknown FROM matches
+UNION ALL SELECT '' AS id,coverage_unknown FROM unprojected;

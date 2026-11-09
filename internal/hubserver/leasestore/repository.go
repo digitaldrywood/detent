@@ -2,6 +2,7 @@ package leasestore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+var ErrLocalAttemptCoverageUnknown = errors.New("local attempt history coverage is not recorded")
 
 var ErrAttemptConflict = fmt.Errorf("attempt identity or sequence has changed: %w", mutation.ErrConflict)
 
@@ -37,6 +40,7 @@ type Reader interface {
 	LeaseBySession(context.Context, string) (Lease, error)
 	ActiveLeaseForIssue(context.Context, int64) (Lease, error)
 	Attempt(context.Context, string) (Attempt, error)
+	LocalAttemptMatches(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64) ([]string, error)
 	LatestAttempt(context.Context, int64) (Attempt, error)
 	AttemptPage(context.Context, int64, AttemptCursor, int) (AttemptPage, error)
 	AttemptDiff(context.Context, tracker.ProjectID, string, tracker.DiffGeneration) (AttemptDiff, error)
@@ -51,6 +55,7 @@ type CheckpointAttemptReader interface {
 }
 
 type Writer interface {
+	ClaimFactsWriter
 	IndexAttemptDiffBodies(context.Context, tracker.ProjectID, string, []string) error
 	Reader
 	LockMachine(context.Context, string) (Machine, error)
@@ -123,6 +128,9 @@ type Lease struct {
 }
 
 type Attempt struct {
+	LocalAttemptID         int64 `json:"-"`
+	LocalAttemptIDRecorded bool  `json:"-"`
+	ClaimDisposition       *string
 	RuntimeHeartbeatAt     *time.Time
 	RuntimeSummarySequence int64
 	CleanupAcknowledgedAt  *time.Time
@@ -176,6 +184,7 @@ type AttemptDiff struct {
 }
 
 type AttemptEvent struct {
+	LocalAttemptID      int64                       `json:"-"`
 	RuntimeHeartbeatAt  *time.Time                  `json:"-"`
 	CheckpointReference attachment.ArchiveReference `json:"-"`
 	Termination         bool                        `json:"termination,omitempty"`

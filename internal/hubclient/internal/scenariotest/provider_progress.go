@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -41,7 +44,7 @@ func (nativeOutageProgressBackend) Decide(_ context.Context, evidence progressch
 
 func RunNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T, factories Constructors) {
 	newNativeChangeHubTransport := func(t *testing.T, review string, states []tracker.NativeState, memory bool) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	}
 
 	t.Parallel()
@@ -75,15 +78,20 @@ func RunNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T, factories
 		if err != nil || !checked || record.DefectIssueID == "" {
 			t.Fatalf("outage progress publication failed: record=%+v checked=%v error=%v", record, checked, err)
 		}
-		persisted, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
-		if err != nil || len(persisted.Dependencies) != 1 || string(persisted.Dependencies[0]) != record.DefectIssueID {
-			t.Fatalf("missing persisted defect reference: issue=%+v record=%+v error=%v", persisted, record, err)
+		var persisted corestore.RelationshipPage
+		hubclientReadPostgres(t, h.config, h.organization, func(reader tenantstore.Reader) error {
+			var err error
+			persisted, err = reader.Relationships(t.Context(), h.project, tracker.NativeWorkItemID(issue.ID), corestore.RelationshipCursor{}, 2)
+			return err
+		})
+		if len(persisted.Items) != 1 || persisted.Items[0].OrganizationID != h.organization || persisted.Items[0].ProjectID != h.project || persisted.Items[0].WorkItemID != tracker.NativeWorkItemID(issue.ID) || persisted.Items[0].Type != "dependency" || persisted.Items[0].Direction != "blocked_by" || string(persisted.Items[0].RelatedWorkItemID) != record.DefectIssueID || persisted.Items[0].RelatedProjectID != h.project || persisted.Next != (corestore.RelationshipCursor{}) {
+			t.Fatalf("missing persisted defect reference: relationships=%+v record=%+v", persisted, record)
 		}
 		if defectID == "" {
-			defectID = persisted.Dependencies[0]
+			defectID = persisted.Items[0].RelatedWorkItemID
 		}
-		if persisted.Dependencies[0] != defectID {
-			t.Fatalf("outage created another defect: got %s want %s", persisted.Dependencies[0], defectID)
+		if persisted.Items[0].RelatedWorkItemID != defectID {
+			t.Fatalf("outage created another defect: got %s want %s", persisted.Items[0].RelatedWorkItemID, defectID)
 		}
 		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "In Review"); err != nil {
 			t.Fatal(err)
@@ -108,7 +116,15 @@ func RunNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T, factories
 }
 
 func RunNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T, factories Constructors) {
-	newNativeChangeHub := func(t *testing.T, memory ...bool) *nativeChangeHub { return newScenarioHub(t, factories, memory...) }
+	newNativeChangeHub := func(t *testing.T) *nativeChangeHub {
+		return newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
+			{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+			{Name: "In Progress", Dispatchable: true, Transitions: []string{"Rework", "Done"}},
+			{Name: "Rework", Dispatchable: true, Transitions: []string{"In Review", "Done"}},
+			{Name: "In Review", Transitions: []string{"Rework", "Done"}},
+			{Name: "Done", Terminal: true},
+		}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+	}
 
 	t.Parallel()
 	base, head := strings.Repeat("a", 40), strings.Repeat("b", 40)
@@ -124,11 +140,30 @@ func RunNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T, factories 
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			h := newNativeChangeHub(t, true)
+			h := newNativeChangeHub(t)
 			issue := h.createInProgress(t, "Retry landing refusal")
+			current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
+				t.Fatal(err)
+			}
+			claim := func() connector.Issue {
+				t.Helper()
+				candidates := h.candidatesIn(t, "Rework")
+				if len(candidates) != 1 || candidates[0].ID != issue.ID {
+					t.Fatalf("Rework candidates = %+v, want %s", candidates, issue.ID)
+				}
+				claimed, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				return claimed.Issue
+			}
 			var attempts []string
 			for _, source := range []struct{ base, head string }{{base, head}, {test.base, test.head}} {
-				h.claim(t, issue.ID)
+				issue = claim()
 				execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 				if err := execution.StartLanding(t.Context(), 1, 0); err != nil {
 					t.Fatal(err)
@@ -147,14 +182,14 @@ func RunNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T, factories 
 					t.Fatal(err)
 				}
 			}
-			h.claim(t, issue.ID)
-			claim := h.scheduler.RunExecution(issue.ID).(*ownedExecution).claim
-			for _, attempt := range claim.recovery.Attempts {
+			issue = claim()
+			currentClaim := h.scheduler.RunExecution(issue.ID).(*ownedExecution).claim
+			for _, attempt := range currentClaim.recovery.Attempts {
 				if attempt.AttemptID == attempts[0] {
 					t.Fatal("sparse claim recovery unexpectedly retained the preceding refusal")
 				}
 			}
-			client := fixtureClient(claim.source.NativeClient().Transport()).requests
+			client := fixtureClient(currentClaim.source.NativeClient().Transport()).requests
 			transport := client.Load()
 			reads := 0
 			client.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -310,7 +345,7 @@ func RunNativeRetryProgressRerouteExecutionIdentity(t *testing.T, factories Cons
 
 func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool, factories Constructors) {
 	newNativeChangeHubTransport := func(t *testing.T, review string, states []tracker.NativeState, memory bool) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	}
 
 	t.Helper()
@@ -331,10 +366,13 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool, factor
 		if err != nil {
 			return err
 		}
-		if len(current.Runners) != 1 {
-			return errors.New("expected one fixture runner")
+		index := slices.IndexFunc(current.Runners, func(r runnerauth.Runner) bool {
+			return r.MachineID == fixtureSchedulerMachine(h.scheduler).ID
+		})
+		if index < 0 {
+			return errors.New("fixture runner is missing from the fleet")
 		}
-		r := current.Runners[0]
+		r := current.Runners[index]
 		routing := r.Routing
 		routing.IsolationTier = tier
 		return fleet.UpdateRunner(ctx, r.RunnerID, runnerauth.RoutingChange{ExpectedRevision: r.Revision, Routing: routing})
@@ -465,7 +503,7 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool, factor
 
 func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factories Constructors) {
 	newNativeChangeHubTransport := func(t *testing.T, review string, states []tracker.NativeState, memory bool) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	}
 
 	t.Parallel()
@@ -608,9 +646,19 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("ordinary retry did not start")
 			}
+			if admissionErr != nil {
+				t.Fatalf("ordinary retry admission failed: %v", admissionErr)
+			}
+			implementation := started.request.Execution.(*ownedExecution)
+			if err := implementation.FlushRuntime(t.Context()); err != nil {
+				t.Fatal(err)
+			}
 			check, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), original.CompletionData().AttemptID)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if check.Identity == nil || check.Identity.Role != runner.RoleRework || check.Identity.Model != "code-model" || check.Outcome != "" || check.ClaimReleasedAt != nil || implementation.CompletionData().AttemptID != check.AttemptID {
+				t.Fatalf("failed advisory progress check changed its admitted implementation identity: %+v", check)
 			}
 			if tt.effort != "" {
 				if check.Identity == nil || check.Identity.Role != runner.RoleRework || check.Identity.Model != "code-model" || check.Identity.ReasoningEffort != tt.effort {
@@ -630,12 +678,6 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 				}
 				return
 			}
-			if check.Identity == nil || check.Identity.Role != runner.RoleRework || check.Outcome != "cancelled" || check.ClaimReleasedAt == nil {
-				t.Fatalf("failed progress check retained its rework identity: %+v", check)
-			}
-			if admissionErr != nil {
-				t.Fatalf("ordinary retry admission failed: %v", admissionErr)
-			}
 			if started.request.Mode != runner.RunModeImplement || started.request.ProgressDecision.RequestID != "" || strings.Count(started.request.PriorAttempt.Reason, tt.reason) != 1 {
 				t.Fatalf("ordinary retry lost advisory failure: %+v", started.request)
 			}
@@ -645,9 +687,8 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 			if check.Runtime == nil || check.Runtime.Recovery == nil || strings.Count(check.Runtime.Recovery.Reason, tt.reason) != 1 {
 				t.Fatalf("progress failure evidence missing: %+v", check.Runtime)
 			}
-			implementation := started.request.Execution.(*ownedExecution)
-			if implementation.CompletionData().AttemptID == check.AttemptID || implementation.claim.lease.ID == check.LeaseID {
-				t.Fatal("implementation retry reused progress admission")
+			if implementation.CompletionData().AttemptID != check.AttemptID || implementation.claim.lease.ID != check.LeaseID {
+				t.Fatal("failed advisory progress check replaced its admitted implementation")
 			}
 
 			changedIdentity := *check.Identity

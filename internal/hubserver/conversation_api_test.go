@@ -18,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -52,23 +51,31 @@ func newConversationAPIFixture(t *testing.T, cfg *ConversationConfig, clocks ...
 		config.now = clocks[0]
 	}
 	f := newDefaultNativeFixture(t, config)
-	service := f.service
-	service.registerConversationRoutes(service.echo)
-	owner, _, err := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	token := tokenResponse{ID: newNativeID("credential"), Token: newNativeID("token")}
-	now := service.config.now()
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "Example second operator", Hash: apikey.HashToken(token.Token), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
-			return err
+	f.service.registerConversationRoutes(f.service.echo)
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	tokens := []tokenResponse{{ID: newNativeID("credential"), Token: newNativeID("token")}, {ID: newNativeID("credential"), Token: newNativeID("token")}}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		for _, token := range tokens {
+			hash := apikey.HashToken(token.Token)
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "Example conversation operator " + token.ID, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: string(apiScopeOperator), NativeOnly: true, Kind: "personal", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: token.ID, ProjectID: f.project.ID}); err != nil {
+				return err
+			}
 		}
-		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: token.ID, ProjectID: f.project.ID})
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return conversationAPIFixture{nativeFixture: f, ownerID: owner.ID, other: token.Token, otherID: token.ID}
+	for _, token := range tokens {
+		credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(token.Token), "", "")
+		if err != nil || credential.ID != token.ID {
+			t.Fatalf("conversation credential status=%d id=%s error=%v", status, credential.ID, err)
+		}
+	}
+	f.token = tokens[0].Token
+	return conversationAPIFixture{nativeFixture: f, ownerID: tokens[0].ID, other: tokens[1].Token, otherID: tokens[1].ID}
 }
 
 type conversationCreateResponse struct {
@@ -986,12 +993,17 @@ func TestConversationCreateIsIdempotent(t *testing.T) {
 		if replay.Conversation.ID != first.Conversation.ID {
 			t.Fatalf("replayed id = %q, want %q", replay.Conversation.ID, first.Conversation.ID)
 		}
-		var count int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations WHERE project_id = ?", f.project.ID).Scan(&count); err != nil {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			page, err := r.Conversations(t.Context(), conversationstore.ConversationQuery{ProjectID: f.project.ID, PrincipalID: f.ownerID, Limit: 2})
+			if err != nil {
+				return err
+			}
+			if len(page.Items) != 1 || page.Next != "" || page.Items[0].ID != first.Conversation.ID {
+				t.Fatalf("conversations=%+v, want exactly the original conversation", page)
+			}
+			return nil
+		}); err != nil {
 			t.Fatal(err)
-		}
-		if count != 1 {
-			t.Fatalf("conversations = %d, want exactly 1", count)
 		}
 	})
 
@@ -1014,40 +1026,7 @@ func TestConversationCreateIsIdempotent(t *testing.T) {
 
 func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
-	f.service.config.RunDetails = &memoryRunDetails{}
-	repository := projectRecordPostgres(t)
-	var credential accessstore.Credential
-	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT id,name,token_hash,token_fingerprint,scope,native_only FROM api_tokens WHERE id=?`, f.ownerID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Fingerprint, &credential.Scope, &credential.NativeOnly); err != nil {
-		t.Fatal(err)
-	}
-	credential.OrganizationID = f.project.OrganizationID
-	credential.ProjectAccess = "all"
-	credential.Kind = "personal"
-	credential.CreatedAt, credential.UpdatedAt = time.Now().UTC(), time.Now().UTC()
-	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: f.project.OrganizationID, Name: "Example organization", Slug: "example-organization", Local: true, CreatedAt: time.Now().UTC()}); err != nil {
-			return err
-		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: f.project.OrganizationID, ProviderID: "provider_example", AllocationGeneration: 1}); err != nil {
-			return err
-		}
-		if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
-			return err
-		}
-		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
-			Core:     corestore.Project{OrganizationID: f.project.OrganizationID, ID: f.project.ID, Name: f.project.Name, Slug: f.project.Slug, Profile: f.project.Profile, RequireDependencies: f.project.RequireDependencies, CreatedAt: time.Now().UTC()},
-			Settings: projectstore.Settings{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID},
-			States:   f.project.States,
-		})
-		if err != nil {
-			return err
-		}
-		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: credential.ID, ProjectID: f.project.ID})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f.service.config.TenantRepository = repository
-	f.service.config.AccessRepository = repository
+	repository := f.service.config.TenantRepository
 
 	contents := f.service.conversations.store.contents.(*conversationContentFixture)
 	contents.setFail(true)
@@ -1096,7 +1075,12 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 	if record.Title != "Renamed in PostgreSQL" || record.Revision < 2 {
 		t.Fatalf("patched conversation = %+v", record)
 	}
-	unsupported := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+created.Conversation.ID, f.token, map[string]any{"preferences": map[string]any{"reasoning_effort": "low"}})
+	preferences := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+created.Conversation.ID, f.token, map[string]any{"preferences": map[string]any{"reasoning_effort": "low"}})
+	requireNativeStatus(t, preferences, http.StatusOK)
+	if updated := f.snapshot(t, f.token, created.Conversation.ID); updated.Conversation.Preferences.ReasoningEffort != conversation.EffortLow || updated.Conversation.Title != "Renamed in PostgreSQL" {
+		t.Fatalf("persisted preference patch=%+v", updated.Conversation)
+	}
+	unsupported := f.command(t, f.token, created.Conversation.ID, conversation.Command{Key: "pg-unlinked-continue", Kind: conversation.CommandContinue})
 	requireNativeError(t, unsupported, http.StatusUnprocessableEntity, "unsupported_control")
 	linked := f.link(t, f.token, created.Conversation.ID, "pg-link", true, "Example linked issue")
 	requireNativeStatus(t, linked, http.StatusOK)
@@ -1147,6 +1131,7 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 	continueCommand := conversation.Command{Key: "pg-continue", Kind: conversation.CommandContinue, Text: "Continue the example issue", Expected: conversation.Expected{AttemptID: "attempt-finished"}}
 	missingExpected := f.command(t, f.token, created.Conversation.ID, conversation.Command{Key: "pg-continue-missing-attempt", Kind: conversation.CommandContinue, Text: "Continue the example issue"})
 	requireNativeError(t, missingExpected, http.StatusUnprocessableEntity, "invalid_request")
+	f.service.config.ConversationDispatch = nil
 	refused := f.command(t, f.token, created.Conversation.ID, continueCommand)
 	requireNativeError(t, refused, http.StatusServiceUnavailable, "unavailable")
 	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -1247,54 +1232,16 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 
 func TestConversationPostgresScopeUsesTenantRecords(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
-	f.service.config.RunDetails = &memoryRunDetails{}
-	repository := projectRecordPostgres(t)
-	var credential accessstore.Credential
-	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT id,name,token_hash,token_fingerprint,scope,native_only FROM api_tokens WHERE id=?`, f.ownerID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Fingerprint, &credential.Scope, &credential.NativeOnly); err != nil {
-		t.Fatal(err)
-	}
-	credential.OrganizationID = f.project.OrganizationID
-	credential.ProjectAccess = "selected"
-	credential.Kind = "personal"
-	credential.CreatedAt, credential.UpdatedAt = time.Now().UTC(), time.Now().UTC()
-	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: f.project.OrganizationID, Name: "Example organization", Slug: "example-organization", Local: true, CreatedAt: time.Now().UTC()}); err != nil {
-			return err
-		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: f.project.OrganizationID, ProviderID: "provider_example", AllocationGeneration: 1}); err != nil {
-			return err
-		}
-		if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
-			return err
-		}
-		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
-			Core:     corestore.Project{OrganizationID: f.project.OrganizationID, ID: f.project.ID, Name: f.project.Name, Slug: f.project.Slug, Profile: f.project.Profile, RequireDependencies: f.project.RequireDependencies, CreatedAt: time.Now().UTC()},
-			Settings: projectstore.Settings{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID},
-			States:   f.project.States,
-		})
-		if err != nil {
-			return err
-		}
-		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: credential.ID, ProjectID: f.project.ID})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f.service.config.TenantRepository = repository
-	f.service.config.AccessRepository = repository
+	repository := f.service.config.TenantRepository
 	created := f.create(t, f.token, map[string]any{"title": "Scoped conversation"}).Conversation
 	linked := f.link(t, f.token, created.ID, "scope-link", true, "Scoped work item")
 	requireNativeStatus(t, linked, http.StatusOK)
 	var linkedResult conversationLinkResponse
 	decodeHubResponse(t, linked, &linkedResult)
 
-	legacyDB, legacyReader := f.service.database.db, f.service.database.reader
-	legacyAuthReader, legacyClaimReader := f.service.database.authReader, f.service.database.claimReader
-	f.service.database.db, f.service.database.reader = nil, nil
-	f.service.database.authReader, f.service.database.claimReader = nil, nil
-	t.Cleanup(func() {
-		f.service.database.db, f.service.database.reader = legacyDB, legacyReader
-		f.service.database.authReader, f.service.database.claimReader = legacyAuthReader, legacyClaimReader
-	})
+	if f.service.database.db != nil || f.service.database.reader != nil || f.service.database.authReader != nil || f.service.database.claimReader != nil {
+		t.Fatal("conversation fixture retained legacy SQL handles")
+	}
 
 	projectList := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations", f.token, nil)
 	requireNativeStatus(t, projectList, http.StatusOK)
@@ -1345,8 +1292,9 @@ func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 	})
 
 	// Record an attempt the way a bind does.
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"INSERT INTO conversation_starts (attempt_id, conversation_id, created_at) VALUES (?, ?, ?)", "att_past", record.ID, testTimestamp); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RecordStart(t.Context(), "att_past", record.ID, f.service.config.now())
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1364,13 +1312,7 @@ func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 	t.Run("null is refused while an attempt owns the conversation", func(t *testing.T) {
 		owned := f.create(t, f.token, map[string]any{"title": "Owned"}).Conversation
 		requireNativeStatus(t, f.link(t, f.token, owned.ID, "link-owned", true, "Owned"), http.StatusOK)
-		if _, err := f.service.database.db.ExecContext(t.Context(),
-			`UPDATE conversations SET content_attachment_id='', execution_json = ? WHERE id = ?`, mustMarshalConversationExecution(t, f.service.conversations.store, owned.ID, func(execution *conversation.Execution) {
-				execution.Owner.AttemptID = "att_live"
-				execution.Status = conversation.ExecutionCompleted
-			}), owned.ID); err != nil {
-			t.Fatal(err)
-		}
+		f.setExecution(t, owned.ID, conversation.Execution{Owner: conversation.Owner{AttemptID: "att_live"}, Status: conversation.ExecutionCompleted, UpdatedAt: f.service.config.now()})
 		requireNativeError(t, f.command(t, f.token, owned.ID, conversation.Command{Key: "continue-4", Kind: conversation.CommandContinue}), http.StatusUnprocessableEntity, "invalid_request")
 	})
 }

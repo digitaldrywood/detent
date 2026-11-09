@@ -155,7 +155,7 @@ func (s *session) SetBillingEventProcessed(ctx context.Context, eventID string, 
 		return mapError(ctx, err)
 	}
 	count := result.RowsAffected()
-	if err == nil && count == 0 {
+	if count == 0 {
 		var exists bool
 		err = s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM hosted_billing_events WHERE organization_id=$1 AND event_id=$2 AND processed_at IS NOT NULL)`, s.organization, eventID).Scan(&exists)
 		if err == nil && !exists {
@@ -174,7 +174,7 @@ func (s *session) SetBillingEventCreditProcessed(ctx context.Context, eventID st
 		return mapError(ctx, err)
 	}
 	count := result.RowsAffected()
-	if err == nil && count == 0 {
+	if count == 0 {
 		var exists bool
 		err = s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM hosted_billing_events WHERE organization_id=$1 AND event_id=$2 AND credit_processed)`, s.organization, eventID).Scan(&exists)
 		if err == nil && !exists {
@@ -224,7 +224,7 @@ func (s *session) CreateBillingPlanAudit(ctx context.Context, row billingstore.P
 		return false, mapError(ctx, err)
 	}
 	count := result.RowsAffected()
-	if err != nil || count != 0 {
+	if count != 0 {
 		return count == 1, mapError(ctx, err)
 	}
 	previous, err := s.BillingPlanAudit(ctx, row.CommandID)

@@ -12,8 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// RecordUsage adds one turn's usage to the attempt's running total. A report
-// that names no provider or model, or that spent nothing, changes nothing.
 func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeUsage) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -64,7 +62,7 @@ func mergeNativeUsage(existing []tracker.NativeUsage, entry tracker.NativeUsage)
 	if entry.Provider == "" || entry.Model == "" {
 		return existing
 	}
-	if entry.Input <= 0 && entry.CachedInput <= 0 && entry.Output <= 0 && entry.CostEstimate <= 0 && entry.ReportedCostMicros == nil {
+	if entry.Input <= 0 && entry.CachedInput <= 0 && entry.Output <= 0 && entry.CostEstimate <= 0 && entry.ReportedCostMicros == nil && strings.TrimSpace(entry.SourceID) == "" {
 		return existing
 	}
 	merged := slices.Clone(existing)

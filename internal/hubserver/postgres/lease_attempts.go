@@ -37,7 +37,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 	if event.PayloadReference != (attachment.ArchiveReference{}) && (event.PayloadReference.Validate(string(s.organization)) != nil || event.PayloadReference.Key != event.PayloadObjectKey || event.PayloadReference.SchemaVersion != 1 || event.PayloadReference.BindingID != "" || event.PayloadReference.CustomerOwned) {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
-	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.RunID) == "" || strings.TrimSpace(event.PayloadObjectKey) == "" || event.Sequence < 1 || event.DispatchGeneration < 0 {
+	if event.LocalAttemptID < 0 || strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.RunID) == "" || strings.TrimSpace(event.PayloadObjectKey) == "" || event.Sequence < 1 || event.DispatchGeneration < 0 {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	switch event.Status {
@@ -77,6 +77,9 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 			return leasestore.Attempt{}, false, err
 		}
 		attempt, err := s.Attempt(ctx, event.ID)
+		if err == nil && event.LocalAttemptID != 0 && attempt.LocalAttemptID != 0 && attempt.LocalAttemptID != event.LocalAttemptID {
+			return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
+		}
 		return attempt, err == nil, err
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -110,14 +113,14 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 			OrganizationID: s.organization, ID: event.ID, IssueID: lease.IssueID, LeaseID: lease.LeaseID,
 			FencingToken: lease.FencingToken, RunID: event.RunID, Status: event.Status, WorkItemRevision: lease.WorkItemRevision,
 			DispatchGeneration: event.DispatchGeneration, PayloadObjectKey: event.PayloadObjectKey,
-			CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt,
+			CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt, LocalAttemptID: event.LocalAttemptID,
 			StartedAt: startedAt, StartedAtSubmicroNs: int16(startedAtSubmicro), Now: now,
 		})
 	} else {
 		row, err = s.queries.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{
 			OrganizationID: s.organization, ID: event.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken,
 			RunID: event.RunID, NextSequence: event.Sequence, Status: event.Status, DispatchGeneration: event.DispatchGeneration,
-			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt,
+			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt, LocalAttemptID: event.LocalAttemptID,
 			UsageCorrection: event.UsageCorrection, Termination: event.Termination, Now: &now,
 		})
 	}

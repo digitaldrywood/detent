@@ -85,7 +85,18 @@ func (b *chunkAuditBackend) RunTurn(ctx context.Context, req AgentTurnRequest, u
 			return result, err
 		}
 	}
+	if strings.Contains(b.mode, "zero") {
+		if b.mode == "refused zero after started" && input.Chunk.Index > 0 {
+			return result, errors.New("provider start refused")
+		}
+		if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, TurnID: "audit-turn", AuxiliaryTurn: b.mode == "auxiliary zero usage"}); err != nil {
+			return result, err
+		}
+	}
 	tokens := AgentTokenUsage{TotalTokens: 10}
+	if strings.Contains(b.mode, "zero") {
+		tokens = AgentTokenUsage{}
+	}
 	if b.mode == "reported cost" {
 		if err := update(AgentUpdate{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{InputTokens: 4, OutputTokens: 1, TotalTokens: 5}}); err != nil {
 			return result, err
@@ -167,7 +178,7 @@ func (b *chunkAuditBackend) RunTurn(ctx context.Context, req AgentTurnRequest, u
 
 func TestRunnerChunkedAudit(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"pass", "chunked verification", "chunked verification late confirmation", "chunked verification late rejection", "chunked verification early confirmation", "chunked verification early rejection", "cumulative usage", "reported cost", "early finding", "late finding", "provider failure", "malformed", "mismatched conversation", "missing conversation", "missing process", "tool use", "cancelled", "usage budget", "resume unavailable", "timeout", "process reap failure", "artifact reap failure"} {
+	for _, mode := range []string{"pass", "zero usage", "auxiliary zero usage", "refused zero after started", "chunked verification", "chunked verification late confirmation", "chunked verification late rejection", "chunked verification early confirmation", "chunked verification early rejection", "cumulative usage", "reported cost", "early finding", "late finding", "provider failure", "malformed", "mismatched conversation", "missing conversation", "missing process", "tool use", "cancelled", "usage budget", "resume unavailable", "timeout", "process reap failure", "artifact reap failure"} {
 		t.Run(mode, func(t *testing.T) {
 			run := func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -229,7 +240,24 @@ func TestRunnerChunkedAudit(t *testing.T) {
 					}
 					return nil
 				}})
-				wantError := !strings.HasPrefix(mode, "chunked verification") && mode != "pass" && mode != "early finding" && mode != "late finding" && mode != "cumulative usage" && mode != "reported cost"
+				if strings.Contains(mode, "zero") {
+					want := len(backend.requests)
+					if mode == "auxiliary zero usage" {
+						want = 0
+					}
+					if mode == "refused zero after started" {
+						want = 1
+					}
+					if len(usageExecution.entries) != want {
+						t.Fatalf("witnessed audit usage = %+v, want %d sessions", usageExecution.entries, want)
+					}
+					for _, entry := range usageExecution.entries {
+						if entry.SourceID == "" || entry.Input != 0 || entry.CachedInput != 0 || entry.Output != 0 || entry.ReportedCostMicros != nil {
+							t.Fatalf("zero session fabricated consumption: %+v", entry)
+						}
+					}
+				}
+				wantError := !strings.HasPrefix(mode, "chunked verification") && mode != "pass" && mode != "early finding" && mode != "late finding" && mode != "cumulative usage" && mode != "reported cost" && mode != "zero usage" && mode != "auxiliary zero usage"
 				if (err != nil) != wantError {
 					t.Fatalf("audit error = %v", err)
 				}
@@ -264,7 +292,11 @@ func TestRunnerChunkedAudit(t *testing.T) {
 				if backend.covered.String() != snapshot.Diff || sessionStore.finished.Turns != int64(len(backend.requests)-backend.sequenceStart) || execution.SessionID != 73 || execution.InvocationID == "" || execution.ProviderThreadID != "audit-thread" {
 					t.Fatal("aggregate lost complete source or runtime attribution")
 				}
-				if sessionStore.finished.TotalTokens != int64(10*(len(backend.requests)-backend.sequenceStart)) {
+				wantTokens := int64(10 * (len(backend.requests) - backend.sequenceStart))
+				if strings.Contains(mode, "zero") {
+					wantTokens = 0
+				}
+				if sessionStore.finished.TotalTokens != wantTokens {
 					t.Fatalf("usage was reset across chunks: %d", sessionStore.finished.TotalTokens)
 				}
 				if mode == "reported cost" {

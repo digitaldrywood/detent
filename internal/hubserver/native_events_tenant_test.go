@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -127,17 +128,39 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	requireNativeStatus(t, itemResponse, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, itemResponse, &issue)
+	binding := runnerauth.NewBinding()
+	credentialID, enrollmentID := "credential_"+binding.RunnerID, "enrollment_"+binding.RunnerID
+	expires := now.Add(4 * time.Hour)
+	operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}
 	var lease leasestore.Lease
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		workItem, err := w.WorkItem(t.Context(), project.ID, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: apikey.HashToken("example_" + binding.RunnerID), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
-		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "machine", SessionID: "session", LeaseID: "lease", TTL: time.Hour})
-		return err
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credentialID, ProjectID: project.ID}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: enrollmentID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("enrollment_" + binding.RunnerID), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, binding.RunnerID, binding.MachineID, now); err != nil {
+			return err
+		}
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+			return err
+		}
+		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "session", LeaseID: "lease", TTL: time.Hour})
+		if err != nil {
+			return err
+		}
+		return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, LeaseID: lease.LeaseID, RunnerID: binding.RunnerID, AssignedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +260,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	stale.IdempotencyKey = "stale"
 	stale.Data.Sequence = 4
 	var conflict *nativeError
-	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), stale); !errors.As(err, &conflict) || conflict.Code != "revision_conflict" {
+	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), stale); !errors.As(err, &conflict) || conflict.Code != "run_sequence_conflict" {
 		t.Fatalf("stale event sequence error=%v", err)
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -286,8 +309,11 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		if err != nil {
 			return err
 		}
-		secondLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "machine", SessionID: "second-session", LeaseID: "second-lease", TTL: time.Hour})
-		return err
+		secondLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "second-session", LeaseID: "second-lease", TTL: time.Hour})
+		if err != nil {
+			return err
+		}
+		return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, LeaseID: secondLease.LeaseID, RunnerID: binding.RunnerID, AssignedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -311,8 +337,26 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	laterObservation := observation
 	laterObservation.IdempotencyKey = "later-observation"
 	laterObservation.Data.Sequence = 3
-	laterObservation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.now().UTC().Add(time.Second)}
+	laterObservation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: service.config.now().UTC().Add(time.Second)}
+	laterObservation.Type = "run.checkpointed"
+	pendingCheckpoint := *nativeTestCheckpoint()
+	pendingCheckpoint.ExternalEffect, pendingCheckpoint.EffectState, pendingCheckpoint.EffectID = "git_push", "pending", newNativeID("effect")
+	pendingCheckpoint.WorktreeState, pendingCheckpoint.HeadSHA = "unpushed", strings.Repeat("a", 40)
+	laterObservation.Data.Handoff = &pendingCheckpoint
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), laterObservation); err != nil {
+		t.Fatal(err)
+	}
+	var retainedCheckpointKey string
+	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		attempt, err := r.Attempt(t.Context(), secondStart.Data.AttemptID)
+		if err == nil && attempt.CheckpointObjectKey == nil {
+			t.Fatal("pending publication checkpoint was not retained")
+		}
+		if err == nil {
+			retainedCheckpointKey = *attempt.CheckpointObjectKey
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	batchFinish := secondStart
@@ -320,9 +364,34 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	batchFinish.Type = "run.finished"
 	batchFinish.Data.Sequence = 4
 	batchFinish.Data.Outcome = "succeeded"
+	batchFinish.Data.Disposition = &tracker.NativeDisposition{Status: "blocked", HumanAction: true}
 	batchFinish.PriorEvents = []tracker.NativeRunEvent{observation}
+	rejectedCheckpointPrefix := batchFinish
+	rejectedCheckpointPrefix.IdempotencyKey = "checkpoint-prefix-refused"
+	rejectedCheckpointPrefix.PriorEvents = []tracker.NativeRunEvent{laterObservation}
+	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), rejectedCheckpointPrefix); err == nil {
+		t.Fatal("checkpoint replay prefix was accepted")
+	}
+	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		attempt, err := r.Attempt(t.Context(), secondStart.Data.AttemptID)
+		if err == nil && (attempt.Sequence != 3 || attempt.ClaimDisposition == nil || *attempt.ClaimDisposition != "progress" || attempt.CheckpointObjectKey == nil || *attempt.CheckpointObjectKey != retainedCheckpointKey) {
+			t.Fatalf("rejected prefix changed current publication claim facts: %+v", attempt)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), batchFinish); err != nil {
 		t.Fatalf("historical observation prefix and finish batch: %v", err)
+	}
+	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		attempt, err := r.Attempt(t.Context(), secondStart.Data.AttemptID)
+		if err == nil && (attempt.ClaimDisposition == nil || *attempt.ClaimDisposition != "progress" || attempt.CheckpointObjectKey == nil || *attempt.CheckpointObjectKey != retainedCheckpointKey) {
+			t.Fatalf("replayed prefix replaced current publication claim facts: %+v", attempt)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 	previousAccessRepository := service.config.AccessRepository
 	service.config.AccessRepository = repository
@@ -332,7 +401,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}
 	newestParams := url.Values{"direction": {"newest"}, "limit": {"2"}, "view": {"timeline"}}
 	newest, err := service.readHistory(t.Context(), scope, string(secondIssue.WorkItemID), newestParams)
-	if err != nil || len(newest.Items) != 2 || newest.Items[0].Type != "run.finished" || newest.Items[1].Type != "run.observed" || newest.NextCursor == "" {
+	if err != nil || len(newest.Items) != 2 || newest.Items[0].Type != "run.finished" || newest.Items[1].Type != "run.checkpointed" || newest.NextCursor == "" {
 		t.Fatalf("typed newest history page=%+v error=%v", newest, err)
 	}
 	if newest.Items[0].Data.Run != nil || newest.Items[1].Data.Run != nil {
@@ -441,7 +510,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		t.Fatal("nested prior-event batch was accepted")
 	}
 	runnerScope := scope
-	runnerScope.credential.Runner = runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner", MachineID: "machine"}, OrganizationID: organization.ID}
+	runnerScope.credential = apiCredential{ID: credentialID, Hash: apikey.HashToken("example_" + binding.RunnerID), Scope: apiScopeWorker, NativeOnly: true, Runner: runnerauth.Identity{Binding: binding, Scope: "projects", OrganizationID: organization.ID, ProjectIDs: []tracker.ProjectID{project.ID}, Operations: operations, ExpiresAt: expires}}
 	renewRequest := tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(secondLease.FencingToken), TTLSeconds: 7200, LandingCapacity: 3}
 	renewBody, err := json.Marshal(renewRequest)
 	if err != nil {
@@ -500,8 +569,11 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		if err != nil {
 			return err
 		}
-		thirdLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "machine", SessionID: "third-session", LeaseID: "third-lease", TTL: time.Hour})
-		return err
+		thirdLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "third-session", LeaseID: "third-lease", TTL: time.Hour})
+		if err != nil {
+			return err
+		}
+		return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, LeaseID: thirdLease.LeaseID, RunnerID: binding.RunnerID, AssignedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +597,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 			LinkedAt: &conversationNow, Revision: 1,
 			Execution: conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{
 				AttemptID: cancelStart.Data.AttemptID, RunID: cancelStart.Data.RunID, LeaseID: string(thirdLease.LeaseID),
-				FencingToken: int64(thirdLease.FencingToken), RunnerID: "runner", MachineID: "machine",
+				FencingToken: int64(thirdLease.FencingToken), RunnerID: binding.RunnerID, MachineID: string(binding.MachineID),
 			}, UpdatedAt: conversationNow},
 			Preferences: conversation.DefaultPreferences(), CreatedAt: conversationNow, UpdatedAt: conversationNow,
 		})
@@ -875,6 +947,14 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 					if scenario == "dispatch start" && response.Code == http.StatusOK {
 						next := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "after-start", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: issue.Revision + 1, State: "Todo", Reason: "worker_progress"}
 						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/workflow", token, next), http.StatusOK)
+						checkpoint := start
+						checkpoint.IdempotencyKey, checkpoint.Type, checkpoint.Data.Sequence = "checkpoint", "run.checkpointed", 2
+						checkpoint.Data.Handoff = nativeTestCheckpoint()
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, checkpoint), http.StatusOK)
+						observation := start
+						observation.IdempotencyKey, observation.Type, observation.Data.Sequence = "after-checkpoint", "run.observed", 3
+						observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.now().UTC()}
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, observation), http.StatusOK)
 					}
 					response = performHubAPIRequest(t, service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/release", token, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"})
 					requireNativeStatus(t, response, http.StatusNoContent)
@@ -887,5 +967,87 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestRuntimeRefreshPreservesAuditWithoutGrowingHistory(t *testing.T) {
+	f := newRunnerPGFixture(t)
+	f.service.config.SecretKeys = secretTestKeys(t, "1", "1")
+	envelope, err := f.service.config.SecretKeys.Seal(bytes.Repeat([]byte{0x35}, 32), accessstore.SecretAAD("org_startup", "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: time.Now().UTC()}, accessstore.SecretAudit{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index, lease := range f.leases {
+		itemPath := "/api/v2/organizations/org_startup/projects/prj_runner/work-items/" + string(lease.WorkItemID)
+		credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), "org_startup", apikey.HashToken(f.tokens[index]), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}
+		data := f.data[index]
+		var pending []tracker.NativeRunEvent
+		var last tracker.NativeRunEvent
+		for sequence := int64(2); sequence <= 5; sequence++ {
+			data.Sequence = sequence
+			phase := "implementation"
+			if sequence == 5 {
+				phase = "validation"
+			}
+			data.Runtime = &tracker.NativeRuntimeObservation{Phase: phase, HeartbeatAt: time.Now().UTC()}
+			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + "-history-" + strconv.FormatInt(sequence, 10)}, Type: "run.observed", SchemaVersion: 1, Data: data}
+			if index == 1 && sequence > 2 && sequence < 5 {
+				pending = append(pending, event)
+				continue
+			}
+			event.PriorEvents = pending
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", f.tokens[index], event), http.StatusOK)
+			last = event
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", f.tokens[index], last), http.StatusOK)
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			rows, err := r.Events(t.Context(), scope.project, lease.WorkItemID, 0, 10)
+			if err == nil && len(rows) != 5 {
+				t.Fatalf("immutable audit rows = %d, want 5", len(rows))
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, direction := range []string{"oldest", "newest"} {
+			query := url.Values{"view": {"timeline"}, "limit": {"2"}, "direction": {direction}}
+			first, err := f.service.readHistoryTenant(t.Context(), scope, string(lease.WorkItemID), query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(first.Items) != 2 || first.NextCursor == "" {
+				t.Fatalf("first history page = %+v", first)
+			}
+			query.Set("cursor", first.NextCursor)
+			next, err := f.service.readHistoryTenant(t.Context(), scope, string(lease.WorkItemID), query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(next.Items) != 1 || next.NextCursor != "" {
+				t.Fatalf("runtime refresh grew %s history: %+v", direction, next)
+			}
+			if direction == "oldest" && (first.Items[0].Type != "run.started" || next.Items[0].ID != nativeAttemptHistoryID("run.observed", last.Data)) {
+				t.Fatal("meaningful oldest history lost order or identity")
+			}
+			if direction == "newest" && (first.Items[0].ID != nativeAttemptHistoryID("run.observed", last.Data) || next.Items[0].Type != "run.started") {
+				t.Fatal("meaningful newest history lost order or identity")
+			}
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/attempts/"+data.AttemptID, f.tokens[index], nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var attempt tracker.NativeAttempt
+		decodeHubResponse(t, response, &attempt)
+		if attempt.Sequence != 5 || attempt.Runtime == nil || attempt.Runtime.Phase != "validation" {
+			t.Fatalf("latest immutable attempt changed: %+v", attempt)
+		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -229,13 +230,45 @@ func (p *searchPlanProbe) Query(ctx context.Context, statement string, args ...a
 
 func TestSearchIndexedQueryPlan(t *testing.T) {
 	f := newSearchFixture(t)
-	d := searchstore.Document{OrganizationID: "org_first", ID: "target", SourceID: "target", Kind: "thread", Scope: "general", Status: "open", Revision: 1}
-	d = f.put(t, d, searchstore.Text{Title: "rareplanterm"}, 0)
-	f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "rareplanterm"}, 0)
-	f.drain(t, "org_first")
-	seedSearchThreadPlanHistory(t, f, d, 10000)
+	var first searchstore.Document
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		d := searchstore.Document{OrganizationID: org, ID: "target", SourceID: "target", Kind: "thread", Scope: "general", Status: "open", Revision: 1}
+		d = f.put(t, d, searchstore.Text{Title: "rareplanterm"}, 0)
+		if org == "org_first" {
+			first = d
+		}
+		f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: "rareplanterm"}, 0)
+		f.drain(t, org)
+	}
+	seedSearchThreadPlanHistory(t, f, first, 10000)
 	if _, err := f.admin.ExecContext(t.Context(), `ANALYZE search_documents`); err != nil {
 		t.Fatal(err)
+	}
+	historical, err := os.ReadFile("testdata/search_candidates_before_scope_capture.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.admin.ExecContext(t.Context(), string(historical)); err != nil {
+		t.Fatal(err)
+	}
+	roles, err := os.ReadFile("roles.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.admin.ExecContext(t.Context(), string(roles)); err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, kind := range []string{"work", "thread"} {
+			query := searchstore.Query{Kind: kind, Text: "rareplanterm"}
+			if kind == "work" {
+				query.ProjectID = "prj_first"
+			}
+			page := f.find(t, org, query)
+			if len(page.Items) != 1 || page.Items[0].Document.OrganizationID != org {
+				t.Fatalf("reprovisioned %s/%s search=%+v", org, kind, page)
+			}
+		}
 	}
 	runtime, err := postgres.NewRuntime(t.Context(), f.pool, f.pool)
 	if err != nil {
@@ -251,54 +284,75 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 	}
 	body = strings.TrimSuffix(strings.TrimSpace(body), "END")
 	body = strings.TrimSuffix(strings.TrimSpace(body), ";")
-	for _, kind := range []string{"thread", "work"} {
-		for _, test := range []struct {
-			name, text string
-			exact      bool
-		}{
-			{"ordinary", "rareplanterm", false},
-			{"exact", "rareplanterm", true},
-			{"prefix", "rareplan", false},
-		} {
-			t.Run(kind+"/"+test.name, func(t *testing.T) {
-				q := searchstore.Query{Kind: kind, Text: test.text, Exact: test.exact}
-				if kind == "work" {
-					q.ProjectID = "prj_first"
-				}
-				expression := strings.Join(searchstore.Expressions("org_first", q), " | ")
-				terms := searchstore.CandidateTerms("org_first", q)
-				tx, err := runtime.Begin(t.Context(), "org_first", pgtransport.Options{ReadOnly: true})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback(t.Context())
-				probe := &searchPlanProbe{DBTX: tx}
-				if _, err := pgquery.New(probe).SearchCandidates(t.Context(), pgquery.SearchCandidatesParams{OrganizationID: "org_first", Kind: kind, ProjectID: string(q.ProjectID), Expression: expression, SearchTerms: terms, Exact: q.Exact, ProjectIds: []string{}}); err != nil {
-					t.Fatal(err)
-				}
-				if err := tx.Commit(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-				planTx, err := f.admin.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer planTx.Rollback()
-				if _, err := planTx.ExecContext(t.Context(), `SET LOCAL ROLE detent_platform_v2; SELECT set_config('detent.organization_id', 'org_first', true)`); err != nil {
-					t.Fatal(err)
-				}
-				var raw []byte
-				if err := planTx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, expression, string(q.ProjectID), []string{}, false, "", kind, "", "", "", false, "", historyAt(), "", int64(0), terms, q.Exact, []string{}, []string{}, []float64{}, []string{}, []int64{}, []bool{}).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
-				var plan []struct{ Plan searchPlanNode }
-				if err := json.Unmarshal(raw, &plan); err != nil {
-					t.Fatal(err)
-				}
-				if len(plan) != 1 || !plan[0].Plan.usesIndex("search_documents_vector_idx") {
-					t.Fatalf("search did not execute its GIN vector index: %s", raw)
-				}
-			})
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, kind := range []string{"thread", "work"} {
+			for _, test := range []struct {
+				name, text string
+				exact      bool
+			}{
+				{"ordinary", "rareplanterm", false},
+				{"exact", "rareplanterm", true},
+				{"prefix", "rareplan", false},
+			} {
+				t.Run(string(org)+"/"+kind+"/"+test.name, func(t *testing.T) {
+					q := searchstore.Query{Kind: kind, Text: test.text, Exact: test.exact}
+					if kind == "work" {
+						q.ProjectID = "prj_first"
+					}
+					expression := strings.Join(searchstore.Expressions(org, q), " | ")
+					terms := searchstore.CandidateTerms(org, q)
+					tx, err := runtime.Begin(t.Context(), org, pgtransport.Options{ReadOnly: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback(t.Context())
+					probe := &searchPlanProbe{DBTX: tx}
+					if _, err := pgquery.New(probe).SearchCandidates(t.Context(), pgquery.SearchCandidatesParams{OrganizationID: org, Kind: kind, ProjectID: string(q.ProjectID), Expression: expression, SearchTerms: terms, Exact: q.Exact, ProjectIds: []string{}}); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Commit(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					planTx, err := f.admin.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer planTx.Rollback()
+					if _, err := planTx.ExecContext(t.Context(), "SET LOCAL ROLE detent_platform_v2"); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := planTx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true),set_config('jit','off',true)", org); err != nil {
+						t.Fatal(err)
+					}
+					var raw []byte
+					if err := planTx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, expression, string(q.ProjectID), []string{}, false, "", kind, "", "", "", false, "", historyAt(), "", int64(0), terms, q.Exact, []string{}, []string{}, []float64{}, []string{}, []int64{}, []bool{}).Scan(&raw); err != nil {
+						t.Fatal(err)
+					}
+					var plan []struct{ Plan searchPlanNode }
+					if err := json.Unmarshal(raw, &plan); err != nil {
+						t.Fatal(err)
+					}
+					if len(plan) != 1 || org == "org_first" && !plan[0].Plan.usesIndex("search_documents_vector_idx") {
+						t.Fatalf("search did not execute its GIN vector index: %s", raw)
+					}
+					if kind == "work" {
+						var visits float64
+						var inspect func(searchPlanNode)
+						inspect = func(node searchPlanNode) {
+							if node.Relation == "issues" {
+								visits += node.Rows * node.Loops
+							}
+							for _, child := range node.Plans {
+								inspect(child)
+							}
+						}
+						inspect(plan[0].Plan)
+						if visits != 1 {
+							t.Errorf("candidate authority matched %.0f issue rows, want 1", visits)
+						}
+					}
+				})
+			}
 		}
 	}
 }
@@ -361,6 +415,13 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 	body = strings.TrimSuffix(strings.TrimSpace(body), ";")
 	for _, size := range []int{2000, 10000} {
 		seedSearchPlanHistory(t, f, d, map[int]int{2000: 1, 10000: 2001}[size], size)
+		var pending bool
+		if err := f.admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM search_documents WHERE organization_id='org_first' AND project_id='prj_first' AND kind='issue' AND source_id='wi_first_1' AND indexed_revision<>revision)").Scan(&pending); err != nil {
+			t.Fatal(err)
+		}
+		if !pending {
+			t.Fatal("history source effects lost the pending parent")
+		}
 		for _, statement := range []string{"VACUUM (ANALYZE) search_documents", "VACUUM (ANALYZE) search_postings", "VACUUM (ANALYZE) search_scope_documents"} {
 			if _, err := f.admin.ExecContext(t.Context(), statement); err != nil {
 				t.Fatal(err)
@@ -644,7 +705,7 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
  SELECT 'org_first','history_'||n,'prj_first','wi_first_1',n+10,$1,'human','other-principal' FROM generate_series($2::int,$3::int) n`, d.Payload.Key, start, end); err != nil {
 		t.Fatal(err)
 	}
-	insert := func(first, last int) error {
+	insertBatch := func(first, last int) error {
 		ids, keys, hashes := []string{}, []string{}, []string{}
 		compressed, raw, nanos := []int64{}, []int64{}, []int64{}
 		times := []time.Time{}
@@ -681,6 +742,17 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
 			searchstore.Vector(searchstore.Document{OrganizationID: d.OrganizationID, ProjectID: d.ProjectID, Kind: "thread"}, searchstore.Text{Title: "commonterm"}), ids, keys, hashes, compressed, raw, times, nanos)
 		return err
 	}
+	insert := func(first, last int) error {
+		const historyBatchSize = 100
+		for first <= last {
+			end := min(first+historyBatchSize-1, last)
+			if err := insertBatch(first, end); err != nil {
+				return err
+			}
+			first = end + 1
+		}
+		return nil
+	}
 	var indexed bool
 	if err := f.admin.QueryRowContext(t.Context(), `SELECT to_regclass('search_postings') IS NOT NULL`).Scan(&indexed); err != nil {
 		t.Fatal(err)
@@ -697,13 +769,30 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
 		}
 		start++
 	}
+	var beforeBulk int64
+	if start <= end {
+		if err := f.admin.QueryRowContext(t.Context(), "SELECT duplicate_source_sequence FROM projects WHERE organization_id='org_first' AND id='prj_first'").Scan(&beforeBulk); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := f.admin.ExecContext(t.Context(), `ALTER TABLE search_documents DISABLE TRIGGER search_document_postings`); err != nil {
 		t.Fatal(err)
 	}
 	insertErr := insert(start, end)
-	_, enableErr := f.admin.ExecContext(t.Context(), `ALTER TABLE search_documents ENABLE TRIGGER search_document_postings`)
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+	_, enableErr := f.admin.ExecContext(cleanup, `ALTER TABLE search_documents ENABLE TRIGGER search_document_postings`)
+	cancel()
 	if err := errors.Join(insertErr, enableErr); err != nil {
 		t.Fatal(err)
+	}
+	if start <= end {
+		var afterBulk int64
+		if err := f.admin.QueryRowContext(t.Context(), "SELECT duplicate_source_sequence FROM projects WHERE organization_id='org_first' AND id='prj_first'").Scan(&afterBulk); err != nil {
+			t.Fatal(err)
+		}
+		if afterBulk <= beforeBulk {
+			t.Fatal("bulk history bypassed source invalidation")
+		}
 	}
 	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_scope_documents(organization_id,project_id,work_item_id,id)
  SELECT p.organization_id,p.project_id,p.work_item_id,'history_'||n FROM search_scope_documents p CROSS JOIN generate_series($1::int,$2::int) n

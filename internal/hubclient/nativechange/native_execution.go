@@ -22,6 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
 	"github.com/digitaldrywood/detent/internal/hubclient/planner"
+	"github.com/digitaldrywood/detent/internal/hubclient/publication"
+	"github.com/digitaldrywood/detent/internal/hubclient/runtimeevidence"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -31,6 +33,7 @@ import (
 
 type nativeExecution struct {
 	completionOwner   atomic.Bool
+	preparedPublisher atomic.Bool
 	recovery          atomic.Pointer[tracker.NativeRecovery]
 	stepReviews       *tracker.ChangeDetail
 	stepDiscussion    []tracker.NativeComment
@@ -426,6 +429,9 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) (err error) {
 	e.mu.Lock()
 	defer func() {
+		if err == nil && e.preparedOutcome != "" {
+			e.preparedPublisher.Store(true)
+		}
 		e.mu.Unlock()
 		if err == nil {
 			e.refreshReasons(ctx, false)
@@ -547,9 +553,29 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 				e.settled = true
 			}
 		}
+		if e.publication != nil {
+			diff := e.lastDiff
+			if e.diffSource != nil {
+				captured, ok := e.diffSource(ctx)
+				if !ok {
+					return errors.New("the final publication source is unavailable")
+				}
+				diff = &captured
+			}
+			if err := publication.ValidateReceipt(e.change, e.publication, diff, e.data.Handoff); err != nil {
+				return err
+			}
+		}
 		return api.MutationEffectError(ctx)
 	}
 	return nil
+}
+
+func (e *nativeExecution) settledPublication() *tracker.NativePRPublication {
+	if e.change == nil || !e.settled || !e.change.Changed || e.change.Error != "" || e.change.VersionError != "" {
+		return nil
+	}
+	return e.publication
 }
 
 func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
@@ -558,7 +584,7 @@ func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
 		return nil
 	}
 	finalization := (tracker.NativeFinalization{
-		NoChange: change.NoChange, Publication: e.publication,
+		NoChange: change.NoChange, Publication: e.settledPublication(),
 		ObservedAt: e.scheduler.now().UTC(), Settled: e.settled,
 		Changed: change.Changed, Files: change.Files, ChangeID: change.ChangeID,
 		VersionID: change.VersionID, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA,
@@ -589,6 +615,9 @@ func (e *nativeExecution) finish(ctx context.Context, outcome string) (err error
 		return preparationErr
 	}
 	if errors.Is(preparationErr, runner.ErrExecutionAuthorityUnavailable) {
+		return preparationErr
+	}
+	if outcome == "succeeded" && preparationErr != nil && e.publication != nil {
 		return preparationErr
 	}
 	if outcome == "succeeded" && e.change != nil && e.change.Error != "" {
@@ -1023,6 +1052,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 				failure = *e.pending.Data.TerminalFailure
 				e.data.TerminalFailure, e.pending = &failure, nil
 				e.preparedOutcome = ""
+				e.preparedPublisher.Store(false)
 				return &nativeCompletionRejection{failure: failure}
 			}
 			e.preparedOutcome, e.preparedFailure = "failed", &failure
@@ -1056,8 +1086,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 		if e.data.Runtime == nil {
 			e.data.Runtime = runtime
 		} else {
-			observation := *e.data.Runtime
-			observation.Pipeline, observation.PipelineDropped = gate.MergePipeline(observation.Pipeline, runtime.Pipeline, max(observation.PipelineDropped, runtime.PipelineDropped))
+			observation := runtimeevidence.Merge(e.data.Runtime, *runtime)
 			e.data.Runtime = &observation
 		}
 		e.runtimeDirty = true

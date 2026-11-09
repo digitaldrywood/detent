@@ -70,8 +70,7 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 	if err != nil {
 		return leasestore.Lease{}, leasestore.Attempt{}, err
 	}
-	now := s.config.now()
-	if credential.Scope != string(apiScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) {
+	if credential.Scope != string(apiScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, s.config.now()) {
 		return leasestore.Lease{}, leasestore.Attempt{}, accessstore.ErrDenied
 	}
 	if s.config.ConversationWorkerAuthority == nil {
@@ -92,9 +91,6 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 	if lease.OrganizationID != scope.organization || lease.MachineID != string(scope.credential.Runner.MachineID) || lease.IssueID != item.ID || lease.FencingToken != int64(identity.FencingToken) {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease does not belong to this worker and work item")
 	}
-	if lease.RenewedAt.After(now) || !allowReleased && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
-		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is no longer current")
-	}
 	attempt, err := reader.Attempt(ctx, identity.AttemptID)
 	if errors.Is(err, corestore.ErrNotFound) && allowUnstarted && !allowReleased && validNativeID(runID, "run") && validNativeID(identity.AttemptID, "attempt") {
 		latest, latestErr := reader.LatestAttempt(ctx, item.ID)
@@ -104,6 +100,10 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 		if latestErr == nil && latest.LeaseID == lease.LeaseID {
 			return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is already bound to another attempt")
 		}
+		now := s.config.now()
+		if lease.RenewedAt.After(now) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
+			return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is no longer current")
+		}
 		return lease, leasestore.Attempt{OrganizationID: scope.organization, ID: identity.AttemptID, IssueID: item.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: runID, Status: "running"}, nil
 	}
 	if err != nil {
@@ -112,6 +112,7 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 	if attempt.OrganizationID != scope.organization || attempt.IssueID != item.ID || attempt.LeaseID != string(identity.LeaseID) || attempt.FencingToken != int64(identity.FencingToken) || (runID != "" && attempt.RunID != runID) {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The attempt is not the current work item owner")
 	}
+	now := s.config.now()
 	if !allowReleased && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || attempt.Status != "running") {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is no longer current")
 	}
@@ -464,7 +465,7 @@ func conversationRecordFromStore(record conversationstore.Conversation) conversa
 		Archived: record.Archived, SubjectWorkItemID: record.SubjectWorkItemID, WorkItemID: record.WorkItemID,
 		LinkedAt: record.LinkedAt, Revision: record.Revision, ProviderThreadID: record.ProviderThreadID,
 		ProviderThreadRunnerID: record.ProviderThreadRunnerID, ProviderThreadOrigin: record.ProviderThreadOrigin,
-		Execution: record.Execution, EventSeq: record.EventSequence, CreatedAt: record.CreatedAt,
+		Execution: record.Execution, ExecutionContinuation: record.ExecutionContinuation, EventSeq: record.EventSequence, CreatedAt: record.CreatedAt,
 		UpdatedAt: record.UpdatedAt, LastMessageAt: record.LastMessageAt, SettledAt: record.SettledAt,
 		Preferences: record.Preferences, MessageCount: record.MessageCount, ContentID: record.ContentReference,
 	}
@@ -651,8 +652,8 @@ func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeSc
 			if err := s.readConversationObject(ctx, string(scope.organization), refs[stored.ContentReference], &payload); err != nil {
 				return cursor, err
 			}
-			stored.Event.Data = payload.Data
-			if stored.Event.Type == conversation.EventMessageAccepted {
+			stored.Data = payload.Data
+			if stored.Type == conversation.EventMessageAccepted {
 				var message conversationMessageResource
 				if err := json.Unmarshal(payload.Data, &message); err != nil {
 					return cursor, err
@@ -701,7 +702,7 @@ func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeSc
 					if err != nil {
 						return err
 					}
-					page.Items[index].Event.Data = data
+					page.Items[index].Data = data
 				}
 				return nil
 			}); err != nil {
@@ -941,6 +942,11 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		if err := s.authorizeAccessScope(ctx, writer, scope, true); err != nil {
 			return err
 		}
+		if current.WorkItemID != "" && (command.Kind == conversation.CommandContinue || command.Kind == conversation.CommandRetry) {
+			if _, err := writer.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(current.WorkItemID)); err != nil {
+				return err
+			}
+		}
 		if err := registerPreparedConversationObjects(ctx, writer, scope.organization, plan.prepared, plan.now); err != nil {
 			return err
 		}
@@ -948,7 +954,7 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		if storedConversation.Revision != current.Revision {
+		if storedConversation.Revision != current.Revision || storedConversation.WorkItemID != current.WorkItemID {
 			return conversationStale("The conversation changed; retry the command")
 		}
 		if storedConversation.ReadAudience != "" {
@@ -1096,6 +1102,9 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			}
 			if command.Kind == conversation.CommandInterrupt || command.Kind == conversation.CommandContinue {
 				storedConversation.Execution = current.Execution
+			}
+			if command.Kind == conversation.CommandContinue {
+				storedConversation.ExecutionContinuation = true
 			}
 			storedConversation.UpdatedAt = plan.now
 			storedConversation, err = writer.UpdateConversation(ctx, storedConversation, previousRevision)
@@ -1344,7 +1353,7 @@ func conversationRecordToStore(record conversationRecord) conversationstore.Conv
 		Status: record.Status, SubjectWorkItemID: record.SubjectWorkItemID, WorkItemID: record.WorkItemID,
 		LinkedAt: record.LinkedAt, Revision: record.Revision, ProviderThreadID: record.ProviderThreadID,
 		ProviderThreadRunnerID: record.ProviderThreadRunnerID, ProviderThreadOrigin: record.ProviderThreadOrigin,
-		Execution: record.Execution, EventSequence: record.EventSeq, Preferences: record.Preferences,
+		Execution: record.Execution, ExecutionContinuation: record.ExecutionContinuation, EventSequence: record.EventSeq, Preferences: record.Preferences,
 		ReadAudience: record.ReadAudience, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 		LastMessageAt: record.LastMessageAt, SettledAt: record.SettledAt, Archived: record.Archived,
 		ContentReference: record.ContentID,

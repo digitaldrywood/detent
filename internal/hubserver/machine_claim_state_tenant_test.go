@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -58,6 +60,21 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 		}
 		scope := nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}
 		snapshot := runnerauth.RoutingSnapshot{RunnerID: f.bindings[index].RunnerID}
+		t.Run("invalid cleanup cursor", func(t *testing.T) {
+			key := releasedExecutionCursorKey{organization: scope.organization, project: scope.project, runner: snapshot.RunnerID}
+			previous, present := f.service.cleanupPollCursors.Load(key)
+			t.Cleanup(func() {
+				if present {
+					f.service.cleanupPollCursors.Store(key, previous)
+				} else {
+					f.service.cleanupPollCursors.Delete(key)
+				}
+			})
+			f.service.cleanupPollCursors.Store(key, 17)
+			if err := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot); err == nil {
+				t.Fatal("invalid cleanup cursor was accepted")
+			}
+		})
 		if err := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot); err != nil {
 			t.Fatal(err)
 		}
@@ -97,6 +114,26 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			if !errors.Is(err, artifact.ErrIntegrity) || !errors.Is(cleanupErr, artifact.ErrIntegrity) {
 				t.Fatalf("corrupt archive errors: registration=%v cleanup=%v", err, cleanupErr)
 			}
+			var cleanup tracker.NativeAttempt
+			decodeHubResponse(t, response, &cleanup)
+			finished := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "cleanup_finished_" + data.AttemptID}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, Sequence: cleanup.Sequence + 1, LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: cleanup.PolicyID, Identity: cleanup.Identity, Outcome: "cancelled"}}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], finished), http.StatusOK)
+			if err := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
+				t.Fatalf("acknowledged cleanup remained eligible: %+v", snapshot.ClaimState)
+			}
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				claims, err := r.(runnerstore.ClaimStateReader).RunnerClaimState(t.Context(), snapshot.RunnerID, scope.project, "", 100, time.Now().UTC())
+				if err == nil && len(claims.Candidates) != 0 {
+					t.Fatalf("heartbeat reoffered acknowledged cleanup: %+v", claims.Candidates)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, cleanupPath, f.tokens[index], nil), http.StatusNotFound)
 		}
 	}
 }
@@ -110,23 +147,30 @@ func (invalidRegistrationArchive) ReadDetail(context.Context, string, attachment
 func TestRegistrationCleanupDoesNotInferAcknowledgment(t *testing.T) {
 	released := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
-		name    string
-		receipt time.Duration
-		role    string
-		pid     int
-		corrupt bool
-		want    bool
+		name         string
+		receipt      time.Duration
+		role         string
+		pid          int
+		corrupt      bool
+		acknowledged bool
+		want         bool
 	}{
-		{"before release", -time.Microsecond, "code", 123, false, true},
-		{"at release", 0, "code", 123, false, true},
-		{"after release", time.Microsecond, "code", 123, false, true},
-		{"no execution role", -time.Microsecond, "", 123, false, false},
-		{"no worker process", -time.Microsecond, "code", 0, false, false},
-		{"wrong archived fence", -time.Microsecond, "code", 123, true, false},
+		{"before release", -time.Microsecond, "code", 123, false, false, true},
+		{"at release", 0, "code", 123, false, false, true},
+		{"after release", time.Microsecond, "code", 123, false, false, true},
+		{"explicit cleanup acknowledgment", time.Microsecond, "code", 123, false, true, false},
+		{"no execution role", -time.Microsecond, "", 123, false, false, false},
+		{"no worker process", -time.Microsecond, "code", 0, false, false, false},
+		{"wrong archived fence", -time.Microsecond, "code", 123, true, false, false},
+		{"acknowledged wrong archived fence", time.Microsecond, "code", 123, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			snapshot := tenantAttemptSnapshot{attempt: leasestore.Attempt{ID: "attempt", RunID: "run", Sequence: 2, Status: "cancelled"}, lease: leasestore.Lease{LeaseID: "lease", FencingToken: 1, ReleasedAt: &released}, event: eventstore.Event{Type: "run.finished", RecordedAt: released.Add(tc.receipt)}}
 			run := tracker.NativeRunData{AttemptID: "attempt", RunID: "run", Sequence: 2, LeaseID: "lease", FencingToken: 1, RunnerID: "runner", Outcome: "cancelled", Identity: &tracker.NativeExecutionIdentity{Role: tc.role}, Runtime: &tracker.NativeRuntimeObservation{WorkerLaunch: &tracker.NativeWorkerLaunch{PID: tc.pid, ProcessStart: released.Add(-time.Hour)}}}
+			if tc.acknowledged {
+				at := released.Add(time.Microsecond)
+				snapshot.attempt.CleanupAcknowledgedAt = &at
+			}
 			if tc.corrupt {
 				run.FencingToken = 2
 			}
@@ -164,6 +208,20 @@ func TestRegistrationCleanupRejectsStalePayload(t *testing.T) {
 			_, err := registrationCleanupRequired(snapshot, run, "runner")
 			if errors.Is(err, artifact.ErrIntegrity) != tc.invalid {
 				t.Fatalf("archive identity error = %v, invalid=%t", err, tc.invalid)
+			}
+			content := eventstore.NewContent(&memoryRunDetails{})
+			raw, err := json.Marshal(tracker.CollaborationEvent{ID: "event", OrganizationID: "org_example", ProjectID: "prj_example", AggregateID: "wi_example", Type: "run.observed", SchemaVersion: 1, RecordedAt: released.Add(-time.Hour), Data: tracker.CollaborationData{Run: &run}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, err := content.PrepareEvent(t.Context(), "org_example", raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot.attempt.LeaseID, snapshot.attempt.FencingToken = "lease", 1
+			_, _, err = readTenantRunCleanupData(t.Context(), content, &tenantRunCleanupPredecessor{attempt: snapshot.attempt, lease: snapshot.lease, event: event})
+			if errors.Is(err, artifact.ErrIntegrity) != tc.invalid {
+				t.Fatalf("cleanup archive error = %v, invalid=%t", err, tc.invalid)
 			}
 		})
 	}

@@ -7,7 +7,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -18,242 +17,344 @@ var _ tenantstore.ClaimPreviewPlanRowsReader = (*session)(nil)
 const claimPreviewBatchLimit = corestore.MaxPageSize
 
 func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.ProjectID, candidates []claimstore.Candidate) ([]tenantstore.ClaimPreviewPlanRow, error) {
-	if len(candidates) == 0 {
-		return []tenantstore.ClaimPreviewPlanRow{}, nil
-	}
 	if len(candidates) > claimPreviewBatchLimit {
 		return nil, corestore.ErrInvalidPage
 	}
-	itemIDs := make([]int64, len(candidates))
+	result := make([]tenantstore.ClaimPreviewPlanRow, len(candidates))
+	if len(candidates) == 0 {
+		return result, nil
+	}
+	ids, revisions := make([]int64, len(candidates)), make([]int64, len(candidates))
 	for index, candidate := range candidates {
 		if candidate.OrganizationID != s.organization || candidate.ProjectID != project || candidate.ID <= 0 || candidate.WorkItemID == "" {
 			return nil, corestore.ErrTenantMismatch
 		}
-		itemIDs[index] = candidate.ID
+		ids[index], revisions[index] = candidate.ID, candidate.Revision
 	}
-
-	items, err := s.queries.GetWorkItemsByIDs(ctx, pgquery.GetWorkItemsByIDsParams{OrganizationID: s.organization, ProjectID: project, Ids: itemIDs})
+	rows, err := s.queries.ClaimSnapshotRows(ctx, pgquery.ClaimSnapshotRowsParams{OrganizationID: string(s.organization), ProjectID: string(project), ItemIds: ids, Revisions: revisions})
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
-	result := make([]tenantstore.ClaimPreviewPlanRow, len(candidates))
-	indexesByItemID := make(map[int64]int, len(candidates))
-	indexesByNativeID := make(map[string]int, len(candidates))
-	for index, candidate := range candidates {
-		indexesByItemID[candidate.ID] = index
-		indexesByNativeID[string(candidate.WorkItemID)] = index
-	}
-	for _, row := range items {
-		index, ok := indexesByItemID[row.ID]
-		if !ok {
-			continue
+	count := 0
+	for _, record := range rows {
+		if record.Ordinality != int64(count+1) || count >= len(result) || record.BoundOrganization != string(s.organization) || record.BoundProject != string(project) {
+			return nil, corestore.ErrRevisionConflict
 		}
-		result[index].Item = corestore.WorkItem(row)
-	}
-	for index := range result {
-		if result[index].Item.ID == 0 {
-			result[index].Err = fmt.Errorf("read work item: %w", corestore.ErrNotFound)
+		item := pgquery.Issue{
+			OrganizationID:         record.ItemOrganizationID,
+			ID:                     record.ItemID,
+			NativeID:               record.ItemNativeID,
+			ProjectID:              record.ItemProjectID,
+			Number:                 record.ItemNumber,
+			Revision:               record.ItemRevision,
+			EventSequence:          record.ItemEventSequence,
+			NativeSourceKey:        record.ItemNativeSourceKey,
+			Title:                  record.ItemTitle,
+			BodyObjectKey:          record.ItemBodyObjectKey,
+			IssueContractObjectKey: record.ItemIssueContractObjectKey,
+			ReportContextObjectKey: record.ItemReportContextObjectKey,
+			ActorKind:              record.ItemActorKind,
+			ActorPrincipalID:       record.ItemActorPrincipalID,
+			ProvenanceProvider:     record.ItemProvenanceProvider,
+			ProvenanceExternalID:   record.ItemProvenanceExternalID,
+			Archived:               record.ItemArchived,
+			CreatedAt:              record.ItemCreatedAt,
+			UpdatedAt:              record.ItemUpdatedAt,
+			NativeCreatedAt:        record.ItemNativeCreatedAt,
+			NativeUpdatedAt:        record.ItemNativeUpdatedAt,
+			WorkflowStateName:      record.ItemWorkflowStateName,
+			LastActivityAt:         record.ItemLastActivityAt,
+			IssueType:              record.ItemIssueType,
+			Priority:               record.ItemPriority,
+			DispatchGeneration:     record.ItemDispatchGeneration,
+			DispatchRequestedAt:    record.ItemDispatchRequestedAt,
+			RecoveryRunnerID:       record.ItemRecoveryRunnerID,
+			RecoveryVersionID:      record.ItemRecoveryVersionID,
 		}
-	}
-	activeItemIDs := make([]int64, 0, len(candidates))
-	activeRecordIDs := make([]string, 0, len(candidates))
-	activeRevisions := make([]int64, 0, len(candidates))
-	activeWorkItemIDs := make([]string, 0, len(candidates))
-	for index, candidate := range candidates {
-		item := result[index].Item
-		if item.Revision != candidate.Revision || item.Archived {
-			continue
+		version := pgquery.CollaborationVersion{
+			OrganizationID:      record.VersionOrganizationID,
+			ProjectID:           record.VersionProjectID,
+			WorkItemID:          record.VersionWorkItemID,
+			RecordID:            record.VersionRecordID,
+			Revision:            record.VersionRevision,
+			PayloadObjectKey:    record.VersionPayloadObjectKey,
+			PayloadSHA256:       record.VersionPayloadSha256,
+			PayloadBytes:        record.VersionPayloadBytes,
+			PayloadContentBytes: record.VersionPayloadContentBytes,
 		}
-		activeItemIDs = append(activeItemIDs, candidate.ID)
-		activeRecordIDs = append(activeRecordIDs, string(candidate.WorkItemID))
-		activeRevisions = append(activeRevisions, candidate.Revision)
-		activeWorkItemIDs = append(activeWorkItemIDs, string(candidate.WorkItemID))
-	}
-	if len(activeItemIDs) == 0 {
-		return result, nil
-	}
+		linked := pgquery.LinkedIssueSource{
+			OrganizationID:       record.LinkedOrganizationID,
+			ProjectID:            record.LinkedProjectID,
+			WorkItemID:           record.LinkedWorkItemID,
+			SourceUrl:            record.LinkedSourceUrl,
+			TitleSupplied:        record.LinkedTitleSupplied,
+			BodySupplied:         record.LinkedBodySupplied,
+			TitleOwned:           record.LinkedTitleOwned,
+			BodyOwned:            record.LinkedBodyOwned,
+			SnapshotObjectKey:    record.LinkedSnapshotObjectKey,
+			SnapshotSha256:       record.LinkedSnapshotSha256,
+			SnapshotBytes:        record.LinkedSnapshotBytes,
+			SnapshotContentBytes: record.LinkedSnapshotContentBytes,
+		}
+		change := pgquery.ChangeRequest{
+			OrganizationID:         record.ChangeOrganizationID,
+			ProjectID:              record.ChangeProjectID,
+			WorkItemID:             record.ChangeWorkItemID,
+			ID:                     record.ChangeID,
+			Revision:               record.ChangeRevision,
+			Title:                  record.ChangeTitle,
+			CurrentVersionID:       record.ChangeCurrentVersionID,
+			EvidenceSequence:       record.ChangeEvidenceSequence,
+			CreatedAt:              record.ChangeCreatedAt,
+			UpdatedAt:              record.ChangeUpdatedAt,
+			PayloadObjectKey:       record.ChangePayloadObjectKey,
+			PayloadSHA256:          record.ChangePayloadSha256,
+			PayloadBytes:           record.ChangePayloadBytes,
+			PayloadContentBytes:    record.ChangePayloadContentBytes,
+			LandedVersionID:        record.ChangeLandedVersionID,
+			LandedAt:               record.ChangeLandedAt,
+			LandedHeadSHA:          record.ChangeLandedHeadSha,
+			LandedMergeSHA:         record.ChangeLandedMergeSha,
+			LandedBaseRef:          record.ChangeLandedBaseRef,
+			ReviewSummarySequence:  record.ChangeReviewSummarySequence,
+			ReviewEvidenceRevision: record.ChangeReviewEvidenceRevision,
+		}
+		changeVersion := pgquery.ChangeVersion{
+			OrganizationID:        record.ChangeVersionOrganizationID,
+			ID:                    record.ChangeVersionID,
+			ChangeID:              record.ChangeVersionChangeID,
+			Number:                record.ChangeVersionNumber,
+			HeadSHA:               record.ChangeVersionHeadSha,
+			BaseSHA:               record.ChangeVersionBaseSha,
+			MergeBaseSHA:          record.ChangeVersionMergeBaseSha,
+			Repository:            record.ChangeVersionRepository,
+			PolicyRevisionID:      record.ChangeVersionPolicyRevisionID,
+			AttemptID:             record.ChangeVersionAttemptID,
+			ActorKind:             record.ChangeVersionActorKind,
+			ActorPrincipalID:      record.ChangeVersionActorPrincipalID,
+			ExternalProvider:      record.ChangeVersionExternalProvider,
+			ExternalID:            record.ChangeVersionExternalID,
+			ExternalURL:           record.ChangeVersionExternalUrl,
+			CreatedAt:             record.ChangeVersionCreatedAt,
+			PayloadObjectKey:      record.ChangeVersionPayloadObjectKey,
+			PayloadSHA256:         record.ChangeVersionPayloadSha256,
+			PayloadBytes:          record.ChangeVersionPayloadBytes,
+			PayloadContentBytes:   record.ChangeVersionPayloadContentBytes,
+			PayloadFormatVersion:  record.ChangeVersionPayloadFormatVersion,
+			SourceObjectKey:       record.ChangeVersionSourceObjectKey,
+			SourceSha256:          record.ChangeVersionSourceSha256,
+			SourceBytes:           record.ChangeVersionSourceBytes,
+			SourceContentBytes:    record.ChangeVersionSourceContentBytes,
+			ImplementingSessionID: record.ChangeVersionImplementingSessionID,
+			ImplementingMachineID: record.ChangeVersionImplementingMachineID,
+		}
+		policy := pgquery.PolicyRevision{
+			OrganizationID:        record.PolicyOrganizationID,
+			ProjectID:             record.PolicyProjectID,
+			PolicyID:              record.PolicyPolicyID,
+			ApprovedBy:            record.PolicyApprovedBy,
+			ApprovedAt:            record.PolicyApprovedAt,
+			PayloadObjectKey:      record.PolicyPayloadObjectKey,
+			PayloadSHA256:         record.PolicyPayloadSha256,
+			PayloadBytes:          record.PolicyPayloadBytes,
+			PayloadContentBytes:   record.PolicyPayloadContentBytes,
+			GateGithubPullRequest: record.PolicyGateGithubPullRequest,
+		}
+		attempt := pgquery.NativeAttempt{
+			ClaimDisposition:       record.AttemptClaimDisposition,
+			LocalAttemptID:         record.AttemptLocalAttemptID,
+			LocalAttemptIDRecorded: record.AttemptLocalAttemptIDRecorded,
+			OrganizationID:         record.AttemptOrganizationID,
+			ID:                     record.AttemptID,
+			IssueID:                record.AttemptIssueID,
+			LeaseID:                record.AttemptLeaseID,
+			FencingToken:           record.AttemptFencingToken,
+			RunID:                  record.AttemptRunID,
+			Sequence:               record.AttemptSequence,
+			Status:                 record.AttemptStatus,
+			WorkItemRevision:       record.AttemptWorkItemRevision,
+			DispatchGeneration:     record.AttemptDispatchGeneration,
+			PayloadObjectKey:       record.AttemptPayloadObjectKey,
+			CheckpointObjectKey:    record.AttemptCheckpointObjectKey,
+			ArtifactsObjectKey:     record.AttemptArtifactsObjectKey,
+			StartedAt:              record.AttemptStartedAt,
+			UpdatedAt:              record.AttemptUpdatedAt,
+			StartedAtSubmicroNs:    record.AttemptStartedAtSubmicroNs,
+			RunnerTokensRecorded:   record.AttemptRunnerTokensRecorded,
+			CleanupAcknowledgedAt:  record.AttemptCleanupAcknowledgedAt,
+			RuntimeHeartbeatAt:     record.AttemptRuntimeHeartbeatAt,
+			RuntimeSummarySequence: record.AttemptRuntimeSummarySequence,
+		}
+		event := pgquery.CollaborationEvent{
+			HistoryHidden:        record.EventHistoryHidden,
+			OrganizationID:       record.EventOrganizationID,
+			ProjectID:            record.EventProjectID,
+			WorkItemID:           record.EventWorkItemID,
+			ID:                   record.EventID,
+			Sequence:             record.EventSequence,
+			Type:                 record.EventType,
+			SchemaVersion:        record.EventSchemaVersion,
+			ActorKind:            record.EventActorKind,
+			ActorPrincipalID:     record.EventActorPrincipalID,
+			EventRevision:        record.EventEventRevision,
+			ChangeID:             record.EventChangeID,
+			VersionID:            record.EventVersionID,
+			HeadSHA:              record.EventHeadSha,
+			RunID:                record.EventRunID,
+			AttemptID:            record.EventAttemptID,
+			FromState:            record.EventFromState,
+			ToState:              record.EventToState,
+			RecordedAt:           record.EventRecordedAt,
+			PayloadObjectKey:     record.EventPayloadObjectKey,
+			PayloadSHA256:        record.EventPayloadSha256,
+			PayloadBytes:         record.EventPayloadBytes,
+			PayloadContentBytes:  record.EventPayloadContentBytes,
+			PayloadFormatVersion: record.EventPayloadFormatVersion,
+			LandingWaiting:       record.EventLandingWaiting,
+			LandingChangeID:      record.EventLandingChangeID,
+			LandingVersionID:     record.EventLandingVersionID,
+			LandingHeadSHA:       record.EventLandingHeadSha,
+			ProjectSequence:      record.EventProjectSequence,
+			PushKnown:            record.EventPushKnown,
+			PushChangeID:         record.EventPushChangeID,
+			PushVersionID:        record.EventPushVersionID,
+			PushHeadSha:          record.EventPushHeadSha,
+			PushExternalEffect:   record.EventPushExternalEffect,
+			PushEffectState:      record.EventPushEffectState,
+			SchedulerOutcome:     record.EventSchedulerOutcome,
+			ActorEnvelopeKnown:   record.EventActorEnvelopeKnown,
+			ActorViaKey:          record.EventActorViaKey,
+			ActorDisplayName:     record.EventActorDisplayName,
+			ActorAgent:           record.EventActorAgent,
+		}
+		publication := pgquery.NativePrPublication{
+			OrganizationID:    record.PublicationOrganizationID,
+			VersionID:         record.PublicationVersionID,
+			ChangeID:          record.PublicationChangeID,
+			Repository:        record.PublicationRepository,
+			BaseRef:           record.PublicationBaseRef,
+			Branch:            record.PublicationBranch,
+			HeadSHA:           record.PublicationHeadSha,
+			PolicyID:          record.PublicationPolicyID,
+			SourceAttemptID:   record.PublicationSourceAttemptID,
+			RecorderAttemptID: record.PublicationRecorderAttemptID,
+			Provider:          record.PublicationProvider,
+			ExternalID:        record.PublicationExternalID,
+			ExternalURL:       record.PublicationExternalUrl,
+		}
+		landing := pgquery.CollaborationEvent{
+			OrganizationID:       record.LandingOrganizationID,
+			ProjectID:            record.LandingProjectID,
+			WorkItemID:           record.LandingWorkItemID,
+			ID:                   record.LandingID,
+			Sequence:             record.LandingSequence,
+			Type:                 record.LandingType,
+			SchemaVersion:        record.LandingSchemaVersion,
+			ActorKind:            record.LandingActorKind,
+			ActorPrincipalID:     record.LandingActorPrincipalID,
+			EventRevision:        record.LandingEventRevision,
+			ChangeID:             record.LandingChangeID,
+			VersionID:            record.LandingVersionID,
+			HeadSHA:              record.LandingHeadSHA,
+			RunID:                record.LandingRunID,
+			AttemptID:            record.LandingAttemptID,
+			FromState:            record.LandingFromState,
+			ToState:              record.LandingToState,
+			RecordedAt:           record.LandingRecordedAt,
+			PayloadObjectKey:     record.LandingPayloadObjectKey,
+			PayloadSHA256:        record.LandingPayloadSha256,
+			PayloadBytes:         record.LandingPayloadBytes,
+			PayloadContentBytes:  record.LandingPayloadContentBytes,
+			PayloadFormatVersion: record.LandingPayloadFormatVersion,
+			LandingWaiting:       record.LandingLandingWaiting,
+			LandingChangeID:      record.LandingLandingChangeID,
+			LandingVersionID:     record.LandingLandingVersionID,
+			LandingHeadSHA:       record.LandingLandingHeadSha,
+			ProjectSequence:      record.LandingProjectSequence,
+			PushKnown:            record.LandingPushKnown,
+			PushChangeID:         record.LandingPushChangeID,
+			PushVersionID:        record.LandingPushVersionID,
+			PushHeadSha:          record.LandingPushHeadSha,
+			PushExternalEffect:   record.LandingPushExternalEffect,
+			PushEffectState:      record.LandingPushEffectState,
+			SchedulerOutcome:     record.LandingSchedulerOutcome,
+			ActorEnvelopeKnown:   record.LandingActorEnvelopeKnown,
+			ActorViaKey:          record.LandingActorViaKey,
+			ActorDisplayName:     record.LandingActorDisplayName,
+			ActorAgent:           record.LandingActorAgent,
+		}
+		review := pgquery.ChangeReviewPolicyRevision{
+			OrganizationID:      record.ReviewOrganizationID,
+			ProjectID:           record.ReviewProjectID,
+			ReviewPolicyID:      record.ReviewReviewPolicyID,
+			PolicyID:            record.ReviewPolicyID,
+			Revision:            record.ReviewRevision,
+			UpdatedBy:           record.ReviewUpdatedBy,
+			UpdatedAt:           record.ReviewUpdatedAt,
+			PayloadObjectKey:    record.ReviewPayloadObjectKey,
+			PayloadSHA256:       record.ReviewPayloadSha256,
+			PayloadBytes:        record.ReviewPayloadBytes,
+			PayloadContentBytes: record.ReviewPayloadContentBytes,
+		}
+		fromState, targetState := record.ObservationFromState, record.ObservationTargetState
 
-	versions, err := s.claimPreviewCollaborationVersions(ctx, project, activeRecordIDs, activeRevisions)
-	if err != nil {
-		return nil, mapError(ctx, err)
-	}
-	for _, row := range versions {
-		index, ok := indexesByNativeID[row.RecordID]
-		if ok && row.Revision == candidates[index].Revision {
-			result[index].Version = eventstore.CollaborationVersion(row)
-		}
-	}
-	for index, candidate := range candidates {
-		if result[index].Item.Revision == candidate.Revision && !result[index].Item.Archived && result[index].Version.RecordID == "" {
-			result[index].Err = fmt.Errorf("read work item version: %w", corestore.ErrNotFound)
-		}
-	}
-
-	linkedRows, err := s.queries.RecordGetLinkedIssueSourcesByWorkItems(ctx, pgquery.RecordGetLinkedIssueSourcesByWorkItemsParams{
-		OrganizationID: s.organization,
-		ProjectID:      project,
-		WorkItemIds:    activeWorkItemIDs,
-	})
-	if err != nil {
-		return nil, mapError(ctx, err)
-	}
-	for _, row := range linkedRows {
-		index, ok := indexesByNativeID[string(row.WorkItemID)]
-		if ok {
-			linked := linkedIssueSourceRecord(row)
-			result[index].LinkedSource = &linked
-		}
-	}
-	for index, candidate := range candidates {
-		item := result[index].Item
-		if item.Revision == candidate.Revision && !item.Archived && item.NativeSourceKey != nil && result[index].LinkedSource == nil {
-			result[index].Err = fmt.Errorf("read linked source: %w", corestore.ErrNotFound)
-		}
-	}
-
-	changes, err := s.queries.RecordLatestChangesByWorkItems(ctx, pgquery.RecordLatestChangesByWorkItemsParams{
-		OrganizationID: s.organization,
-		ProjectID:      project,
-		WorkItemIds:    activeWorkItemIDs,
-	})
-	if err != nil {
-		return nil, mapError(ctx, err)
-	}
-	changeIDs := make([]string, 0, len(changes))
-	versionIDs := make([]string, 0, len(changes))
-	indexesByChange := make(map[string][]int, len(changes))
-	for _, row := range changes {
-		index, ok := indexesByNativeID[row.LinkedWorkItemID]
-		if !ok {
+		candidate := candidates[count]
+		row := &result[count]
+		count++
+		row.Item = corestore.WorkItem(item)
+		switch {
+		case !record.ItemPresent || item.NativeID != candidate.WorkItemID:
+			row.Err = fmt.Errorf("read work item: %w", corestore.ErrNotFound)
+		case item.Revision != candidate.Revision || item.Archived:
 			continue
+		case !record.VersionPresent:
+			row.Err = fmt.Errorf("read work item version: %w", corestore.ErrNotFound)
+		case item.NativeSourceKey != nil && !record.LinkedPresent:
+			row.Err = fmt.Errorf("read linked source: %w", corestore.ErrNotFound)
+		case change.CurrentVersionID != nil && !record.ChangeVersionPresent:
+			row.Err = fmt.Errorf("read change version: %w", corestore.ErrNotFound)
+		case record.ChangeVersionPresent && !record.PolicyPresent:
+			row.Err = fmt.Errorf("read change policy revision: %w", corestore.ErrNotFound)
 		}
-		change := eventstore.Change{
-			OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, WorkItemID: row.WorkItemID,
-			ID: row.ID, Revision: row.Revision, Title: row.Title, CurrentVersionID: row.CurrentVersionID,
-			EvidenceSequence: row.EvidenceSequence, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-			PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256,
-			PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes,
+		row.Version = eventstore.CollaborationVersion(version)
+		if record.LinkedPresent {
+			value := linkedIssueSourceRecord(linked)
+			row.LinkedSource = &value
 		}
-		result[index].Change = &change
-		if row.CurrentVersionID != nil {
-			changeIDs = append(changeIDs, row.ID)
-			versionIDs = append(versionIDs, *row.CurrentVersionID)
-			key := row.ID + "\x00" + *row.CurrentVersionID
-			indexesByChange[key] = append(indexesByChange[key], index)
+		if record.ChangePresent {
+			value := eventstore.Change{OrganizationID: change.OrganizationID, ProjectID: change.ProjectID, WorkItemID: change.WorkItemID, ID: change.ID, Revision: change.Revision, Title: change.Title, CurrentVersionID: change.CurrentVersionID, EvidenceSequence: change.EvidenceSequence, CreatedAt: change.CreatedAt, UpdatedAt: change.UpdatedAt, PayloadObjectKey: change.PayloadObjectKey, PayloadSHA256: change.PayloadSHA256, PayloadBytes: change.PayloadBytes, PayloadContentBytes: change.PayloadContentBytes}
+			row.Change = &value
 		}
-	}
-	var changeVersions []pgquery.ChangeVersion
-	if len(changeIDs) > 0 {
-		changeVersions, err = s.claimPreviewChangeVersions(ctx, changeIDs, versionIDs)
-		if err != nil {
-			return nil, mapError(ctx, err)
-		}
-	}
-	policyIDs := make([]string, 0, len(changeVersions))
-	for _, row := range changeVersions {
-		indexes := indexesByChange[row.ChangeID+"\x00"+row.ID]
-		if len(indexes) == 0 {
-			continue
-		}
-		version := versionRecord(row)
-		for _, index := range indexes {
-			result[index].ChangeVersion = &version
-		}
-		policyIDs = append(policyIDs, version.PolicyRevisionID)
-	}
-	for index := range result {
-		if result[index].Change != nil && result[index].Change.CurrentVersionID != nil && result[index].ChangeVersion == nil {
-			result[index].Err = fmt.Errorf("read change version: %w", corestore.ErrNotFound)
-		}
-	}
-	if len(policyIDs) > 0 {
-		policyRows, err := s.queries.PolicyGetProjectRevisions(ctx, pgquery.PolicyGetProjectRevisionsParams{
-			OrganizationID: s.organization,
-			ProjectID:      project,
-			PolicyIds:      policyIDs,
-		})
-		if err != nil {
-			return nil, mapError(ctx, err)
-		}
-		policiesByID := make(map[string]policystore.Revision, len(policyRows))
-		for _, row := range policyRows {
-			policiesByID[row.PolicyID] = projectPolicyFields(row.OrganizationID, row.ProjectID, row.PolicyID, row.ApprovedBy, row.ApprovedAt, row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes, row.GateGithubPullRequest)
-		}
-		for index := range result {
-			if result[index].ChangeVersion == nil {
-				continue
+		if record.ChangeVersionPresent {
+			value := versionRecord(changeVersion)
+			row.ChangeVersion = &value
+			row.Observations = &tenantstore.ChangeVersionRows{OrganizationID: s.organization, ProjectID: project, Request: tenantstore.ChangeVersionRequest{WorkItemID: item.NativeID, Reference: tracker.NativeChangeReference{ChangeID: change.ID, VersionID: changeVersion.ID, HeadSHA: changeVersion.HeadSHA}}}
+			if record.PublicationPresent {
+				row.Observations.Publication = &eventstore.NativePRPublication{OrganizationID: publication.OrganizationID, VersionID: publication.VersionID, ChangeID: publication.ChangeID, Repository: publication.Repository, BaseRef: publication.BaseRef, Branch: publication.Branch, HeadSHA: publication.HeadSHA, PolicyID: publication.PolicyID, SourceAttemptID: stringValue(publication.SourceAttemptID), RecorderAttemptID: publication.RecorderAttemptID, External: tracker.ChangeExternalReference{Provider: publication.Provider, ID: publication.ExternalID, URL: publication.ExternalURL}}
 			}
-			policy, ok := policiesByID[result[index].ChangeVersion.PolicyRevisionID]
-			if !ok {
-				result[index].Err = fmt.Errorf("read change policy revision: %w", corestore.ErrNotFound)
-				continue
-			}
-			result[index].ChangePolicyRevision = &policy
-		}
-	}
-	for index := range result {
-		if result[index].ChangeVersion != nil && result[index].ChangePolicyRevision == nil {
-			result[index].Err = fmt.Errorf("read change policy revision: %w", corestore.ErrNotFound)
-		}
-	}
-
-	attemptRows, err := s.queries.GetLatestIssueAttemptsByIssues(ctx, pgquery.GetLatestIssueAttemptsByIssuesParams{OrganizationID: s.organization, IssueIds: activeItemIDs})
-	if err != nil {
-		return nil, mapError(ctx, err)
-	}
-	attemptIDs := make([]string, 0, len(attemptRows))
-	indexesByAttempt := make(map[string]int, len(attemptRows))
-	for _, row := range attemptRows {
-		index, ok := indexesByItemID[row.IssueID]
-		if !ok {
-			continue
-		}
-		attempt := attemptFromPG(row)
-		result[index].LatestAttempt = &attempt
-		attemptIDs = append(attemptIDs, attempt.ID)
-		indexesByAttempt[attempt.ID] = index
-	}
-	if len(attemptIDs) > 0 {
-		eventRows, err := s.queries.RecordLatestRunEventsByAttempts(ctx, pgquery.RecordLatestRunEventsByAttemptsParams{
-			OrganizationID: s.organization,
-			ProjectID:      project,
-			AttemptIds:     attemptIDs,
-		})
-		if err != nil {
-			return nil, mapError(ctx, err)
-		}
-		for _, row := range eventRows {
-			index, ok := indexesByAttempt[row.AttemptID]
-			if ok {
-				event := eventRecord(row)
-				result[index].LatestRunEvent = &event
+			if record.LandingPresent {
+				row.Observations.Landing = &eventstore.LandingObservation{Event: eventRecord(landing), FromState: fromState, TargetState: targetState}
 			}
 		}
-	}
-	return result, nil
-}
-
-func (s *session) claimPreviewCollaborationVersions(ctx context.Context, project tracker.ProjectID, recordIDs []string, revisions []int64) ([]pgquery.CollaborationVersion, error) {
-	rows, err := s.db.Query(ctx, `SELECT cv.organization_id,cv.project_id,cv.work_item_id,cv.record_id,cv.revision,cv.payload_object_key,cv.payload_sha256,cv.payload_bytes,cv.payload_content_bytes
-FROM collaboration_versions cv
-JOIN unnest($3::text[],$4::bigint[]) AS requested(record_id,revision)
-  ON cv.record_id=requested.record_id AND cv.revision=requested.revision
-WHERE cv.organization_id=$1 AND cv.project_id=$2`, s.organization, project, recordIDs, revisions)
-	if err != nil {
-		return nil, mapError(ctx, err)
-	}
-	defer rows.Close()
-	var result []pgquery.CollaborationVersion
-	for rows.Next() {
-		var row pgquery.CollaborationVersion
-		if err := rows.Scan(&row.OrganizationID, &row.ProjectID, &row.WorkItemID, &row.RecordID, &row.Revision, &row.PayloadObjectKey, &row.PayloadSHA256, &row.PayloadBytes, &row.PayloadContentBytes); err != nil {
-			return nil, mapError(ctx, err)
+		if record.PolicyPresent {
+			value := projectPolicyRecord(policy)
+			row.ChangePolicyRevision = &value
 		}
-		result = append(result, row)
+		if record.AttemptPresent {
+			value := attemptFromPG(attempt)
+			row.LatestAttempt = &value
+		}
+		if record.EventPresent {
+			value := eventRecord(event)
+			row.LatestRunEvent = &value
+		}
+		if record.ReviewPresent {
+			value := reviewPolicyRecord(review)
+			row.ReviewPolicy = &value
+		}
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, mapError(ctx, err)
+	if count != len(result) {
+		return nil, corestore.ErrRevisionConflict
 	}
 	return result, nil
 }

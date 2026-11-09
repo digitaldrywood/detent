@@ -156,7 +156,7 @@ func (s *session) RemoveArchiveOwner(ctx context.Context, owner artifactstore.Ar
 		return mapError(ctx, err)
 	}
 	removed := result.RowsAffected()
-	if err != nil || removed == 0 || customerOwned {
+	if removed == 0 || customerOwned {
 		return mapError(ctx, err)
 	}
 	var stillOwned bool

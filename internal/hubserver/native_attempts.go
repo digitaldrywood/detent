@@ -195,7 +195,7 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	}
 	if data.Identity == nil && eventType == "run.finished" && data.Sequence == 1 && data.TerminalFailure != nil &&
 		(data.Runtime == nil && data.Outcome == "cancelled" && data.TerminalFailure.ErrorClass == "lease_released" ||
-			data.Runtime != nil && data.Runtime.LocalAttemptID > 0 && data.Runtime.Generation > 0 &&
+			data.Runtime != nil && data.Runtime.LocalAttemptID >= 0 && data.Runtime.Generation > 0 &&
 				data.Runtime.Activity == nil && data.Runtime.Validation == nil && data.Runtime.Landing == nil && data.Runtime.Completion == nil) &&
 		(len(data.Usage) == 0 || data.TerminalFailure.Decision != nil && data.TerminalFailure.Decision.Valid()) && data.Handoff == nil && data.Finalization == nil && data.Disposition == nil && data.CompletionBody == "" {
 		data.TerminalFailure.Stage = "pre_provider"
@@ -590,6 +590,15 @@ func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObs
 	left.REST, right.REST = nil, nil
 	left.GitHub, right.GitHub = nil, nil
 	left.HeartbeatAt, right.HeartbeatAt = time.Time{}, time.Time{}
+	if len(left.Pipeline) == 0 && len(right.Pipeline) == 0 {
+		left.Pipeline, right.Pipeline = nil, nil
+	}
+	if len(left.Phases) == 0 && len(right.Phases) == 0 {
+		left.Phases, right.Phases = nil, nil
+	}
+	if len(left.RepairDependencies) == 0 && len(right.RepairDependencies) == 0 {
+		left.RepairDependencies, right.RepairDependencies = nil, nil
+	}
 	if left.Landing != nil {
 		landing := *left.Landing
 		landing.ObservedAt = time.Time{}
@@ -891,7 +900,7 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope nativeScop
 	return tracker.NativeAttempt{
 		NativeRunData: tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, LeaseID: data.LeaseID,
 			FencingToken: data.FencingToken, PolicyID: data.PolicyID, Identity: data.Identity, MachineID: data.MachineID,
-			SessionID: data.SessionID, RunnerID: data.RunnerID, Sequence: data.Sequence, Outcome: data.Outcome,
+			SessionID: data.SessionID, RunnerID: data.RunnerID, Sequence: snapshot.attempt.Sequence, Outcome: data.Outcome,
 			Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: data.Runtime.LocalAttemptID, Generation: data.Runtime.Generation, WorkerLaunch: data.Runtime.WorkerLaunch}},
 		Status: snapshot.attempt.Status, StartedAt: snapshot.attempt.StartedAt, ClaimReleasedAt: snapshot.lease.ReleasedAt,
 	}, nil

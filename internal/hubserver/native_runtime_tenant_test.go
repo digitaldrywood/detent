@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -22,7 +25,7 @@ import (
 )
 
 func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, adminDB := projectRecordPostgresWithAdmin(t, 3)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
@@ -69,8 +72,8 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	decodeHubResponse(t, otherResponse, &other)
 
 	startedAt := clock.Now().UTC()
-	const runnerID = "runner_runtime_example"
-	const machineID = "machine_runtime_example"
+	binding := runnerauth.NewBinding()
+	runnerID, machineID := binding.RunnerID, string(binding.MachineID)
 	const credentialID = "credential_runtime_example"
 	const enrollmentID = "enrollment_runtime_example"
 	const token = "example_runtime_runner_token"
@@ -83,24 +86,24 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credentialID, ProjectID: project.ID}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: enrollmentID, RunnerID: runnerID, MachineID: machineID, TokenHash: apikey.HashToken("example_runtime_enrollment"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CreatedAt: startedAt, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: enrollmentID, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenHash: apikey.HashToken("example_runtime_enrollment"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CreatedAt: startedAt, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
 			return err
 		}
-		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runnerID, machineID, startedAt); err != nil {
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runnerID, tracker.MachineID(machineID), startedAt); err != nil {
 			return err
 		}
 		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: machineID, Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runnerID, MachineID: machineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: startedAt, ExpiresAt: expires, LastHeartbeatAt: startedAt}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: startedAt, ExpiresAt: expires, LastHeartbeatAt: startedAt}); err != nil {
 			return err
 		}
 		return w.UpdateRunnerCapacityConfig(t.Context(), runnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: startedAt})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
-	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "runtime-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: tracker.MachineID(machineID)}, OrganizationID: organization.ID}}}
+	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: tracker.MachineID(machineID), SessionID: "runtime-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	lease, err := service.claimNativeIssueTenant(t.Context(), scope, request, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("claim issue: %v", err)
@@ -112,6 +115,51 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	started.IdempotencyKey = "runtime-start"
 	response := performHubAPIRequest(t, service, http.MethodPost, eventPath, token, started)
 	requireNativeStatus(t, response, http.StatusOK)
+	observation := started
+	observation.IdempotencyKey, observation.Type, observation.Data.Sequence = "runtime-observed", "run.observed", 2
+	observation.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Phase: "implementation", HeartbeatAt: clock.Now()}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventPath, token, observation), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventPath, token, observation), http.StatusOK)
+	if _, err := adminDB.ExecContext(t.Context(), `UPDATE native_attempts SET local_attempt_id=NULL,local_attempt_id_recorded=false WHERE organization_id=$1 AND id=$2`, organization.ID, started.Data.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	readCorrelation := func() leasestore.Attempt {
+		t.Helper()
+		var attempt leasestore.Attempt
+		if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			attempt, err = r.Attempt(t.Context(), started.Data.AttemptID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return attempt
+	}
+	beforeCorrelation := readCorrelation()
+	if beforeCorrelation.LocalAttemptID != 0 || beforeCorrelation.LocalAttemptIDRecorded {
+		t.Fatal("upgrade fixture already has correlation coverage")
+	}
+	continuation := observation
+	continuation.IdempotencyKey = "runtime-unknown-conflict"
+	continuation.Data.Sequence = 3
+	runtime := *observation.Data.Runtime
+	runtime.LocalAttemptID = 43
+	continuation.Data.Runtime = &runtime
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventPath, token, continuation), http.StatusConflict)
+	if after := readCorrelation(); !reflect.DeepEqual(after, beforeCorrelation) {
+		t.Fatalf("rejected historical identity changed payload, sequence or coverage: before=%+v after=%+v", beforeCorrelation, after)
+	}
+	continuation.IdempotencyKey = "runtime-unknown-same"
+	runtime.LocalAttemptID = 42
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventPath, token, continuation), http.StatusOK)
+	afterCorrelation := readCorrelation()
+	if afterCorrelation.Sequence != 3 || afterCorrelation.PayloadObjectKey == beforeCorrelation.PayloadObjectKey || afterCorrelation.LocalAttemptID != 0 || afterCorrelation.LocalAttemptIDRecorded {
+		t.Fatalf("same-ID continuation fabricated historical coverage: %+v", afterCorrelation)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, itemPath+"/"+string(issue.WorkItemID)+"/runtime?attempt_id=42", token, nil), http.StatusUnprocessableEntity)
+	if _, err := adminDB.ExecContext(t.Context(), `UPDATE native_attempts SET local_attempt_id=42,local_attempt_id_recorded=true WHERE organization_id=$1 AND id=$2`, organization.ID, started.Data.AttemptID); err != nil {
+		t.Fatal(err)
+	}
 	var claimedLease leasestore.Lease
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -145,6 +193,26 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	}
 	if evidence.CurrentLease == nil || evidence.CurrentLease.ID != tracker.LeaseID(lease.LeaseID) || evidence.CurrentLease.FencingToken != tracker.FencingToken(lease.FencingToken) || evidence.CurrentLease.PolicyID != descriptor.ID {
 		t.Fatalf("runtime current lease differs from the claim: %#v", evidence.CurrentLease)
+	}
+	for _, test := range []struct {
+		name, item, selector string
+		status               int
+	}{
+		{"numeric", string(issue.WorkItemID), "attempt_id=42", http.StatusOK},
+		{"other item", string(other.WorkItemID), "attempt_id=42", http.StatusNotFound},
+		{"absent", string(issue.WorkItemID), "attempt_id=43", http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selected := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/"+test.item+"/runtime?"+test.selector, token, nil)
+			requireNativeStatus(t, selected, test.status)
+			if test.status == http.StatusOK {
+				var got tracker.NativeRuntimeEvidence
+				decodeHubResponse(t, selected, &got)
+				if got.Attempt == nil || got.Attempt.AttemptID != started.Data.AttemptID || got.Attempt.LocalAttemptID != 42 || got.Attempt.RuntimeFreshness != "available" {
+					t.Fatalf("numeric selector lost receipt: %+v", got.Attempt)
+				}
+			}
+		})
 	}
 	admin, _, err := service.authenticateTenantAPIHash(t.Context(), organization.ID, apikey.HashToken(testHubAdminToken), "", "")
 	if err != nil {
@@ -204,9 +272,16 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	}
 	finished := started
 	finished.IdempotencyKey, finished.Type = "runtime-finished", "run.finished"
-	finished.Data.Sequence, finished.Data.Outcome = 2, "failed"
+	finished.Data.Sequence, finished.Data.Outcome = 4, "failed"
 	finished.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "example provider failure", Stage: "implement", ObservedAt: clock.Now()}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventPath, token, finished), http.StatusOK)
+	selected := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/"+string(issue.WorkItemID)+"/runtime?attempt_id=42", token, nil)
+	requireNativeStatus(t, selected, http.StatusOK)
+	var terminal tracker.NativeRuntimeEvidence
+	decodeHubResponse(t, selected, &terminal)
+	if terminal.Attempt == nil || terminal.Attempt.LocalAttemptID != 42 || terminal.Attempt.Runtime != nil {
+		t.Fatalf("terminal receipt fabricated runtime or lost identity: %+v", terminal.Attempt)
+	}
 	_, failures, partial, err := service.readOperatorExplanation(t.Context(), scope, issue)
 	if err != nil {
 		t.Fatal(err)
@@ -230,6 +305,50 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	if err != nil || len(snapshots) != 1 {
 		t.Fatalf("load attempt hook: %v snapshots=%d", err, len(snapshots))
 	}
+	if _, err := adminDB.ExecContext(t.Context(), `UPDATE native_attempts SET local_attempt_id=NULL,local_attempt_id_recorded=false WHERE organization_id=$1 AND id=$2`, organization.ID, started.Data.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("unprojected historical identity", func(t *testing.T) {
+		unknown := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/"+string(issue.WorkItemID)+"/runtime?attempt_id=42", token, nil)
+		requireNativeStatus(t, unknown, http.StatusUnprocessableEntity)
+		if !strings.Contains(unknown.Body.String(), "native_attempt_id") {
+			t.Fatal("unknown history lost native selector guidance")
+		}
+	})
+	t.Run("ambiguous numeric identity", func(t *testing.T) {
+		var next leasestore.Lease
+		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			row, err := w.WorkItem(t.Context(), project.ID, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if _, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "finished"); err != nil {
+				return err
+			}
+			next, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: machineID, SessionID: "runtime-next-session", LeaseID: "lease_runtime_next", TTL: 15 * time.Minute})
+			if err != nil {
+				return err
+			}
+			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, RunnerID: runnerID, LeaseID: next.LeaseID, AssignedAt: clock.Now()}); err != nil {
+				return err
+			}
+			return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: organization.ID, ProjectID: project.ID, LeaseID: tracker.LeaseID(next.LeaseID), PolicyID: descriptor.ID, BoundAt: next.AcquiredAt})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		second := nativeStartedEvent(tracker.NativeLease{ID: tracker.LeaseID(next.LeaseID), FencingToken: tracker.FencingToken(next.FencingToken), PolicyID: descriptor.ID})
+		second.IdempotencyKey = "runtime-second-start"
+		second.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Phase: "implementation", HeartbeatAt: clock.Now()}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventPath, token, second), http.StatusOK)
+		ambiguous := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/"+string(issue.WorkItemID)+"/runtime?attempt_id=42", token, nil)
+		requireNativeStatus(t, ambiguous, http.StatusUnprocessableEntity)
+		if !strings.Contains(ambiguous.Body.String(), "native_attempt_id") {
+			t.Fatal("ambiguity lost native selector guidance")
+		}
+		for _, id := range []string{started.Data.AttemptID, second.Data.AttemptID} {
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, itemPath+"/"+string(issue.WorkItemID)+"/runtime?native_attempt_id="+id, token, nil), http.StatusOK)
+		}
+	})
 	changed := false
 	service.config.RunDetails = &changeReadInterceptionStore{DetailStore: service.config.RunDetails, key: snapshots[0].attempt.PayloadObjectKey, afterRead: func(ctx context.Context) error {
 		changed = true
@@ -296,5 +415,22 @@ func TestPostgresOperatorReadsRejectRoleChanges(t *testing.T) {
 				t.Fatalf("explanation accepted downgraded role: hook=%v error=%v", changed, err)
 			}
 		})
+	}
+}
+
+func TestPostgresRuntimeReportsMissingAttempt(t *testing.T) {
+	_, f, owner, _ := newExportPostgresFixture(t)
+	for _, key := range []string{"first", "second"} {
+		response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "missing-attempt-" + key}, Title: "Example " + key, Body: workItemRecordBody, State: "Todo"})
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		response = f.request(t, owner, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/runtime", nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var evidence tracker.NativeRuntimeEvidence
+		decodeHubResponse(t, response, &evidence)
+		if evidence.Attempt != nil || !slices.Contains(evidence.Unavailable, "native_attempt") {
+			t.Fatalf("missing attempt availability = %+v", evidence)
+		}
 	}
 }

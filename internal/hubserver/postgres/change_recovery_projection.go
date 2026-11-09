@@ -145,10 +145,3 @@ WHERE r.organization_id=v.organization_id AND r.id=v.id AND NOT r.push_known AND
 	}
 	return count, nil
 }
-
-func stringPointer(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
-}

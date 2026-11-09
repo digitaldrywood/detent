@@ -21,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -41,6 +42,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -258,6 +260,113 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 		t.Fatalf("new day did not account only incremental spend: %+v %v", next, err)
 	}
 
+	for index, lease := range f.leases {
+		t.Run(fmt.Sprintf("late_blocker_usage_%d", index), func(t *testing.T) {
+			native, ctx := f.client(t, index)
+			bindRepository := func(repository string) {
+				t.Helper()
+				if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(ctx, "prj_runner")
+					if err != nil {
+						return err
+					}
+					project.Settings.Repository = repository
+					project.Settings.CheckoutRepository = ""
+					_, err = w.UpdateProjectRecord(ctx, project)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if index == 0 {
+				bindRepository("example-org/example-project")
+			} else {
+				bindRepository("")
+			}
+			path := native.Scope() + "/work-items/" + string(lease.WorkItemID) + "/attempts/" + f.data[index].AttemptID
+			var current tracker.NativeAttempt
+			if err := native.Transport().Request(ctx, http.MethodGet, path, nil, &current); err != nil {
+				t.Fatal(err)
+			}
+			data := current.NativeRunData
+			data.Sequence++
+			data.Outcome, data.Handoff = "succeeded", nil
+			const reference = "example-org/example-project#999"
+			data.CompletionBody = "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '" + reference + "'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: null\n```"
+			data.Disposition = &tracker.NativeDisposition{Status: workpad.StatusBlocked, Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: reference, Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: reference, States: []string{"open"}}}}}
+			intervalEnd := time.Now().UTC()
+			data.Usage = []tracker.NativeUsage{{Provider: "example", Model: "example-correction-model", UsageKind: "incremental", SourceID: "blocker-receipt", Revision: 1, Input: 1, BillingMode: "metered", Currency: "USD", From: current.StartedAt, To: intervalEnd, ReportedAt: intervalEnd}}
+			finish := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "blocker_finish_" + data.AttemptID}, Type: "run.finished", SchemaVersion: 1, OccurredAt: intervalEnd, Data: data}
+			if err := native.AppendEvent(ctx, lease.WorkItemID, finish); err != nil {
+				t.Fatal(err)
+			}
+			wantReference := "prj_runner#999"
+			if index == 1 {
+				wantReference = reference
+				bindRepository("example-org/example-project")
+			}
+			visibleHistory := func() int {
+				t.Helper()
+				count := 0
+				if err := f.service.config.TenantRepository.ReadTenant(ctx, "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+					rows, err := r.Events(ctx, "prj_runner", lease.WorkItemID, 0, 20)
+					if err != nil {
+						return err
+					}
+					if len(rows) == 20 {
+						t.Error("late usage fixture exceeded its complete history bound")
+					}
+					for _, row := range rows {
+						if !row.HistoryHidden {
+							count++
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return count
+			}
+			historyCount := visibleHistory()
+			correction := finish
+			correction.IdempotencyKey = "blocker_cost_" + data.AttemptID
+			correction.Data.Sequence++
+			correction.Data.Usage = append([]tracker.NativeUsage(nil), finish.Data.Usage...)
+			if len(correction.Data.Usage) != 1 {
+				t.Fatal("late blocker fixture lost its existing usage source")
+			}
+			paid := int64(1000 + index)
+			correction.Data.Usage[0].Revision = 2
+			correction.Data.Usage[0].ReportedCostMicros = &paid
+			correction.Data.Usage[0].CostSource = "runner_report"
+			if err := native.AppendEvent(ctx, lease.WorkItemID, correction); err != nil {
+				t.Fatalf("late blocker usage correction: %v", err)
+			}
+			if err := native.Transport().Request(ctx, http.MethodGet, path, nil, &current); err != nil {
+				t.Fatal(err)
+			}
+			if current.CompletionBody != data.CompletionBody || current.Disposition == nil || len(current.Disposition.BlockerEvidence) != 1 || current.Disposition.BlockerEvidence[0].Ref != wantReference || current.Disposition.BlockerEvidence[0].Predicate == nil || current.Disposition.BlockerEvidence[0].Predicate.Identifier != wantReference || finish.Data.Disposition.BlockerEvidence[0].Ref != reference {
+				t.Fatal("late usage rewrote original report/input or changed established blocker representation")
+			}
+			if after := visibleHistory(); after != historyCount {
+				t.Fatalf("late usage added visible terminal history: before=%d after=%d", historyCount, after)
+			}
+			if err := f.service.config.TenantRepository.ReadTenant(ctx, "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+				item, err := r.WorkItem(ctx, "prj_runner", lease.WorkItemID)
+				if err != nil {
+					return err
+				}
+				page, err := r.Relationships(ctx, "prj_runner", lease.WorkItemID, corestore.RelationshipCursor{}, 10)
+				if err == nil && (item.Revision != 1 || len(page.Items) != 0) {
+					t.Errorf("late usage changed issue/dependency history: revision=%d edges=%d", item.Revision, len(page.Items))
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
 }
 
 func TestPostgresRunnerRestartDoesNotReleaseLiveProvider(t *testing.T) {
@@ -410,8 +519,16 @@ func TestPostgresRunnerProcessRegistrationRequiresSessionAuthority(t *testing.T)
 
 func newRunnerPGFixture(t *testing.T, customize ...func(*policy.Descriptor)) runnerPGFixture {
 	t.Helper()
+	return newRunnerPGFixtureWithDetails(t, nil, customize...)
+}
+
+func newRunnerPGFixtureWithDetails(t *testing.T, decorate func(attachment.DetailStore) attachment.DetailStore, customize ...func(*policy.Descriptor)) runnerPGFixture {
+	t.Helper()
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	if decorate != nil {
+		cfg.RunDetails = decorate(cfg.RunDetails)
+	}
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

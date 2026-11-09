@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,11 +244,12 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 			t.Fatal(err)
 		}
 		for index, test := range []struct {
-			name                                               string
-			active, missingRow, missingCore, corrupt, backfill bool
-			want                                               error
+			name                                                           string
+			active, missingRow, missingCore, corrupt, backfill, concurrent bool
+			want                                                           error
 		}{
 			{name: "active_legacy_runtime_summary", active: true, backfill: true},
+			{name: "active_concurrent_run_event", active: true, concurrent: true},
 			{name: "historical_missing_row", missingRow: true},
 			{name: "historical_missing_object"},
 			{name: "active_missing_row", active: true, missingRow: true, want: corestore.ErrNotFound},
@@ -302,6 +304,7 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 				}); err != nil {
 					t.Fatal(err)
 				}
+				var advance func(context.Context) error
 				if !test.missingRow {
 					value := tracker.CollaborationEvent{ID: "event_" + test.name, OrganizationID: organization, ProjectID: project, AggregateType: "issue", AggregateID: itemID, Type: "run.observed", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: now, Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: attemptID, RunID: "run_" + test.name, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, MachineID: tracker.MachineID(lease.MachineID)}}}
 					if test.backfill {
@@ -321,11 +324,35 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 					if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 						t.Fatal(err)
 					}
+					if test.concurrent {
+						next := value
+						next.ID += "_next"
+						run := *value.Data.Run
+						run.Sequence = 2
+						next.Data.Run = &run
+						raw, err := json.Marshal(next)
+						if err != nil {
+							t.Fatal(err)
+						}
+						nextEvent, err := content.PrepareEvent(t.Context(), organization, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						advance = func(ctx context.Context) error {
+							return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+								if _, err := w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: attemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run_" + test.name, Sequence: 2, Status: "running", StartedAt: now, PayloadObjectKey: "example/payload"}); err != nil {
+									return err
+								}
+								_, err := w.AppendEvent(ctx, nextEvent)
+								return err
+							})
+						}
+					}
 					details.historical[event.PayloadObjectKey] = true
 					details.mu.Lock()
 					if test.corrupt {
 						details.data[event.PayloadObjectKey] = []byte(`{}`)
-					} else if !test.backfill {
+					} else if !test.backfill && !test.concurrent {
 						delete(details.data, event.PayloadObjectKey)
 					}
 					details.mu.Unlock()
@@ -334,6 +361,28 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 					details.mu.Lock()
 					delete(details.data, version.PayloadObjectKey)
 					details.mu.Unlock()
+				}
+				if test.concurrent {
+					service.config.TenantRepository = &boardAdvancingAttemptRepository{Repository: repository, advance: advance}
+					t.Cleanup(func() { service.config.TenantRepository = repository })
+					snapshot, err := service.boardProjectionSnapshot(t.Context(), organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: itemID}, lease.RenewedAt.Add(time.Second))
+					service.config.TenantRepository = repository
+					if err != nil || snapshot.attempt == nil {
+						t.Fatalf("read board attempt snapshot: %+v, %v", snapshot.attempt, err)
+					}
+					attempt, present, err := service.boardAttemptDetails(t.Context(), *snapshot.attempt, lease.RenewedAt.Add(time.Second))
+					if err != nil || !present || attempt == nil || attempt.Sequence != 1 {
+						t.Fatalf("board mixed committed attempt generations: %+v, %v", attempt, err)
+					}
+					fresh, err := service.boardProjectionSnapshot(t.Context(), organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: itemID}, lease.RenewedAt.Add(time.Second))
+					if err != nil || fresh.attempt == nil {
+						t.Fatalf("read advanced board attempt: %+v, %v", fresh.attempt, err)
+					}
+					attempt, present, err = service.boardAttemptDetails(t.Context(), *fresh.attempt, lease.RenewedAt.Add(time.Second))
+					if err != nil || !present || attempt == nil || attempt.Sequence != 2 {
+						t.Fatalf("board lost committed attempt observation: %+v, %v", attempt, err)
+					}
+					return
 				}
 				details.historicalReads = 0
 				err = service.refreshBoardRecord(t.Context(), organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: itemID}, lease.RenewedAt.Add(time.Second))
@@ -383,4 +432,41 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 			})
 		}
 	}
+}
+
+type boardAdvancingAttemptRepository struct {
+	tenantstore.Repository
+	advance    func(context.Context) error
+	once       sync.Once
+	advanceErr error
+}
+
+func (r *boardAdvancingAttemptRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(&boardAdvancingAttemptReader{Reader: reader, repository: r})
+	})
+}
+
+func (r *boardAdvancingAttemptRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	owner, ok := r.Repository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return errors.New("board snapshot fixture requires a snapshot repository")
+	}
+	return owner.ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(&boardAdvancingAttemptReader{Reader: reader, repository: r})
+	})
+}
+
+type boardAdvancingAttemptReader struct {
+	tenantstore.Reader
+	repository *boardAdvancingAttemptRepository
+}
+
+func (r *boardAdvancingAttemptReader) LatestAttempt(ctx context.Context, itemID int64) (leasestore.Attempt, error) {
+	attempt, err := r.Reader.LatestAttempt(ctx, itemID)
+	if err != nil {
+		return attempt, err
+	}
+	r.repository.once.Do(func() { r.repository.advanceErr = r.repository.advance(ctx) })
+	return attempt, r.repository.advanceErr
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
 var _ receiptstore.Writer = (*session)(nil)
@@ -147,6 +148,10 @@ func (s *session) ClaimReceipt(ctx context.Context, record receiptstore.Record) 
 }
 
 func (s *session) CompleteReceipt(ctx context.Context, record receiptstore.Record) (receiptstore.Record, error) {
+	return s.completeReceipt(ctx, record, "")
+}
+
+func (s *session) completeReceipt(ctx context.Context, record receiptstore.Record, correlation string) (receiptstore.Record, error) {
 	if err := s.checkReceipt(record); err != nil {
 		return receiptstore.Record{}, err
 	}
@@ -159,6 +164,13 @@ func (s *session) CompleteReceipt(ctx context.Context, record receiptstore.Recor
 	}
 	if previous.RequestHash != record.RequestHash {
 		return receiptstore.Record{}, corestore.ErrRevisionConflict
+	}
+	custody, err := s.operatorReceiptCustody(ctx, previous)
+	if err != nil {
+		return receiptstore.Record{}, err
+	}
+	if custody.CorrelationID != correlation {
+		return receiptstore.Record{}, mutation.ErrUncertain
 	}
 	if !previous.ResponseClaimed {
 		return previous, nil
@@ -188,6 +200,13 @@ func (s *session) AbandonReceipt(ctx context.Context, actor, operation, key, has
 	}
 	if !previous.ResponseClaimed {
 		return nil
+	}
+	custody, err := s.operatorReceiptCustody(ctx, previous)
+	if err != nil {
+		return err
+	}
+	if custody.CorrelationID != "" {
+		return mutation.ErrUncertain
 	}
 	if _, err := s.db.Exec(ctx, `DELETE FROM native_command_states WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4`, s.organization, actor, operation, key); err != nil {
 		return mapError(ctx, err)

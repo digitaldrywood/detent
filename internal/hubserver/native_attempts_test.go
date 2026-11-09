@@ -995,6 +995,17 @@ func TestNativePreProviderCancellationValidation(t *testing.T) {
 		{name: "after runtime observation", change: func(data *tracker.NativeRunData) {
 			data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 1, Generation: 1}
 		}, valid: true},
+		{name: "native runtime without local store", change: func(data *tracker.NativeRunData) {
+			data.Runtime = &tracker.NativeRuntimeObservation{Generation: 1}
+		}, valid: true},
+		{name: "native setup failure without local store", change: func(data *tracker.NativeRunData) {
+			data.Runtime = &tracker.NativeRuntimeObservation{Generation: 1}
+			data.Outcome = "failed"
+			data.TerminalFailure.ErrorClass = "workspace_hook"
+		}, valid: true},
+		{name: "negative local runtime identity", change: func(data *tracker.NativeRunData) {
+			data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: -1, Generation: 1}
+		}},
 		{name: "partial runtime identity", change: func(data *tracker.NativeRunData) {
 			data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 1}
 		}},

@@ -63,10 +63,10 @@ func (q *Queries) ActivityIssueLinks(ctx context.Context, arg ActivityIssueLinks
 }
 
 const activityLatestRunEvents = `-- name: ActivityLatestRunEvents :many
-SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id, latest.sequence, latest.type, latest.schema_version, latest.actor_kind, latest.actor_principal_id, latest.event_revision, latest.change_id, latest.version_id, latest.head_sha, latest.run_id, latest.attempt_id, latest.from_state, latest.to_state, latest.recorded_at, latest.payload_object_key, latest.payload_sha256, latest.payload_bytes, latest.payload_content_bytes, latest.payload_format_version, latest.landing_waiting, latest.landing_change_id, latest.landing_version_id, latest.landing_head_sha, latest.project_sequence, latest.push_known, latest.push_change_id, latest.push_version_id, latest.push_head_sha, latest.push_external_effect, latest.push_effect_state
+SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id, latest.sequence, latest.type, latest.schema_version, latest.actor_kind, latest.actor_principal_id, latest.event_revision, latest.change_id, latest.version_id, latest.head_sha, latest.run_id, latest.attempt_id, latest.from_state, latest.to_state, latest.recorded_at, latest.payload_object_key, latest.payload_sha256, latest.payload_bytes, latest.payload_content_bytes, latest.payload_format_version, latest.landing_waiting, latest.landing_change_id, latest.landing_version_id, latest.landing_head_sha, latest.project_sequence, latest.push_known, latest.push_change_id, latest.push_version_id, latest.push_head_sha, latest.push_external_effect, latest.push_effect_state, latest.history_hidden, latest.scheduler_outcome, latest.actor_envelope_known, latest.actor_via_key, latest.actor_display_name, latest.actor_agent
 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
 CROSS JOIN LATERAL (
- SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state FROM collaboration_events e
+ SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, history_hidden, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events e
  WHERE e.organization_id=a.organization_id AND e.project_id=i.project_id AND e.attempt_id=a.id AND e.attempt_id<>''
  ORDER BY e.sequence DESC LIMIT 1
 ) latest
@@ -122,6 +122,12 @@ func (q *Queries) ActivityLatestRunEvents(ctx context.Context, arg ActivityLates
 			&i.PushHeadSha,
 			&i.PushExternalEffect,
 			&i.PushEffectState,
+			&i.HistoryHidden,
+			&i.SchedulerOutcome,
+			&i.ActorEnvelopeKnown,
+			&i.ActorViaKey,
+			&i.ActorDisplayName,
+			&i.ActorAgent,
 		); err != nil {
 			return nil, err
 		}

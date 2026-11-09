@@ -476,6 +476,11 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *coreNeutralImport, objec
 	if err != nil {
 		return postgres.CoreWorkItemImport{}, err
 	}
+	for _, version := range record.Versions {
+		if version.RecordID == string(item.NativeID) && version.Revision == item.Revision {
+			record.DoctorIdentities = &postgres.DoctorProposalIdentityBinding{OrganizationID: item.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.NativeID, Revision: item.Revision, VersionSHA256: version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(current.Body)}
+		}
+	}
 	return record, nil
 }
 

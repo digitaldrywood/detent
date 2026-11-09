@@ -26,6 +26,7 @@ const conversationImportPageSize = 100
 type ConversationHistoryImportSource struct {
 	BundlePath string
 	neutral    *VerifiedNeutralImport
+	messages   *conversationMessageIndex
 	CopyPath   string
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
@@ -98,16 +99,24 @@ func (r *Repository) ImportConversationHistory(ctx context.Context, source Conve
 	completed := false
 	snapshotID := ""
 
-	err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+	err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) (resultErr error) {
 		source.neutral = bundle
 		snapshotID = bundle.Identity().SourceSHA256
 		if err := validateNeutralConversationHistory(ctx, source); err != nil {
 			return err
 		}
+		index, err := buildConversationMessageIndex(ctx, bundle)
+		if err != nil {
+			return fmt.Errorf("index conversation messages: %w", err)
+		}
+		defer func() { resultErr = errors.Join(resultErr, index.close()) }()
+		source.messages = index
+		if err := validateNeutralContinuationOwnership(ctx, source); err != nil {
+			return fmt.Errorf("verify conversation continuation: %w", err)
+		}
 		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
 		}
-		var err error
 		completed, result.Rows, err = r.beginConversationHistoryImport(ctx, organization, source.Source.Schema, snapshotID, catalogDigest)
 		if err != nil || completed {
 			return err
@@ -263,24 +272,53 @@ func prepareConversationImportRow(ctx context.Context, source ConversationHistor
 	if table.source == "message_references" {
 		targetValues["position"] = row.position
 	}
+	legacyReceiptHash := ""
+	if table.source == "conversations" {
+		columns, values := sortedConversationImportValues(targetValues)
+		legacyReceiptHash, err = conversationImportRequestHash(copyHash, table.target, row.rowID, columns, values)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if table.source == "conversations" {
+		id, idOK := targetValues["id"].(string)
+		origin, originOK := targetValues["origin"].(string)
+		head, headOK := targetValues["event_seq"].(int64)
+		if !idOK || !originOK || !headOK {
+			return nil, nil, errors.New("conversation import identity has invalid type")
+		}
+		continuation, err := importConversationContinuation(ctx, source, id, origin, head)
+		if err != nil {
+			return nil, nil, err
+		}
+		targetValues["execution_continuation"] = continuation
+	}
 	columns, values := sortedConversationImportValues(targetValues)
+	requestHash, err := conversationImportRequestHash(copyHash, table.target, row.rowID, columns, values)
+	if err != nil {
+		return nil, nil, err
+	}
+	createdAt := time.Unix(0, 0).UTC()
+	if value, ok := targetValues["created_at"].(time.Time); ok {
+		createdAt = value
+	}
+	receipt := ConversationImportReceipt{SnapshotID: copyHash, Table: table.target, SourceRow: row.rowID, RequestHash: requestHash, CreatedAt: createdAt}
+	return []ConversationImportRow{{Table: table.target, Columns: columns, Values: values, Receipt: receipt, legacyReceiptHash: legacyReceiptHash}}, conversationObjectsForCell(row.cells, archiveIDs), nil
+}
+
+func conversationImportRequestHash(copyHash, table string, row int64, columns []string, values []any) (string, error) {
 	request, err := json.Marshal(struct {
 		Copy    string
 		Table   string
 		Row     int64
 		Columns []string
 		Values  []any
-	}{copyHash, table.target, row.rowID, columns, values})
+	}{copyHash, table, row, columns, values})
 	if err != nil {
-		return nil, nil, err
+		return "", err
 	}
 	digest := sha256.Sum256(request)
-	createdAt := time.Unix(0, 0).UTC()
-	if value, ok := targetValues["created_at"].(time.Time); ok {
-		createdAt = value
-	}
-	receipt := ConversationImportReceipt{SnapshotID: copyHash, Table: table.target, SourceRow: row.rowID, RequestHash: hex.EncodeToString(digest[:]), CreatedAt: createdAt}
-	return []ConversationImportRow{{Table: table.target, Columns: columns, Values: values, Receipt: receipt}}, conversationObjectsForCell(row.cells, archiveIDs), nil
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func conversationImportValue(codec string, value storagecatalog.Value) any {

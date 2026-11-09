@@ -79,7 +79,7 @@ func (p *Pools) BeginBatch(ctx context.Context, scope Scope, options Options, wo
 	tx := &Transaction{conn: conn, scope: scope}
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN ISOLATION LEVEL " + string(isolation) + mode)
-	batch.Queue(`SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true)`, string(scope.Organization))
+	batch.Queue(`SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true), set_config('jit', 'off', true)`, string(scope.Organization))
 	if work != nil {
 		batch.QueuedQueries = append(batch.QueuedQueries, guardedBatch(work).QueuedQueries...)
 	}

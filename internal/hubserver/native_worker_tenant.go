@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -23,7 +24,7 @@ import (
 type preparedNativeLeaseCancellation struct {
 	attempt          leasestore.Attempt
 	workItem         corestore.WorkItem
-	payloadObjectKey string
+	payloadReference attachment.ArchiveReference
 	event            tracker.NativeRunEvent
 	history          eventstore.Event
 }
@@ -244,7 +245,7 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 				return corestore.ErrNotFound
 			}
 			attemptEvent := leasestore.AttemptEvent{ID: attempt.ID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: attempt.RunID,
-				Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: attempt.DispatchGeneration, PayloadObjectKey: prepared.payloadObjectKey}
+				Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: attempt.DispatchGeneration, PayloadObjectKey: prepared.payloadReference.Key, PayloadReference: prepared.payloadReference}
 			runAuthority := NativeRunEventAuthority{Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, Event: prepared.event}
 			if err := s.config.NativeRunEvents.ValidateNativeRunEvent(ctx, w, &runAuthority); err != nil {
 				return err
@@ -392,7 +393,7 @@ func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope nati
 	if err != nil {
 		return nil, err
 	}
-	*cancellation = preparedNativeLeaseCancellation{attempt: attempt, workItem: workItem, payloadObjectKey: ref.Key, event: prepared, history: history}
+	*cancellation = preparedNativeLeaseCancellation{attempt: attempt, workItem: workItem, payloadReference: ref, event: prepared, history: history}
 	return cancellation, nil
 }
 

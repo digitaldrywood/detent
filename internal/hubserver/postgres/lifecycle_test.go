@@ -44,33 +44,7 @@ func TestMigrateAppliesOlderPendingVersions(t *testing.T) {
 	if len(recovery) != 112 {
 		t.Fatalf("Recovery66 migrations = %d, want 112", len(recovery))
 	}
-	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-		roles, err := os.ReadFile("roles.sql")
-		if err != nil {
-			return err
-		}
-		if _, err := db.ExecContext(ctx, string(roles)); err != nil {
-			return err
-		}
-		db.SetMaxOpenConns(1)
-		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
-			return err
-		}
-		provider, err := migrationProvider(db, recovery)
-		if err != nil {
-			return err
-		}
-		_, err = provider.Up(ctx)
-		return err
-	})
-	t.Cleanup(func() {
-		deadline, _ := t.Deadline()
-		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
-		defer cancel()
-		if err := fixture.Close(ctx); err != nil {
-			t.Error(err)
-		}
-	})
+	fixture := migratedTemplate(t, recovery, nil)
 	for _, interrupted := range []bool{false, true} {
 		name := "upgrade"
 		if interrupted {
@@ -198,6 +172,46 @@ func TestMigrateAppliesOlderPendingVersions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func migratedTemplate(t *testing.T, migrations fs.FS, seed func(context.Context, *sql.DB) error) *pgtest.Template {
+	t.Helper()
+	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+		roles, err := os.ReadFile("roles.sql")
+		if err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, string(roles)); err != nil {
+			return err
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
+			return err
+		}
+		provider, err := migrationProvider(db, migrations)
+		if err != nil {
+			return err
+		}
+		if _, err := provider.Up(ctx); err != nil {
+			return err
+		}
+		if seed == nil {
+			return nil
+		}
+		if _, err := db.ExecContext(ctx, "RESET ROLE"); err != nil {
+			return err
+		}
+		return seed(ctx, db)
+	})
+	t.Cleanup(func() {
+		deadline, _ := t.Deadline()
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		if err := fixture.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	return fixture
 }
 
 func migrationTestLogin(t *testing.T, db *sql.DB, group string) pgtransport.Connection {

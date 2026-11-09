@@ -2,9 +2,11 @@ package postgres_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -493,16 +495,43 @@ FROM native_board_items CROSS JOIN generate_series($2::integer,$3::integer) n WH
 				t.Fatal(err)
 			}
 			if err := f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
-				for n := previous + 1; n <= scale*24; n++ {
-					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", n)), Revision: 1, Number: n + 10}, Title: "Unrelated title", Body: "Unrelated body", State: "Todo", CreatedAt: historyAt(), UpdatedAt: historyAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}}
-					if err := publishSearchBody(ctx, f, w, issue); err != nil {
-						return err
-					}
+				n := previous + 1
+				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", n)), Revision: 1, Number: n + 10}, Title: "Unrelated title", Body: "Unrelated body", State: "Todo", CreatedAt: historyAt(), UpdatedAt: historyAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}}
+				return publishSearchBody(ctx, f, w, issue)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var generation int64
+			var sourceAt time.Time
+			if err := f.admin.QueryRowContext(ctx, `SELECT generation,source_at FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id='prj_first' AND work_item_id=$2 AND record_id=work_item_id AND kind='item'`, org, fmt.Sprintf("wi_plan_%d", previous+2)).Scan(&generation, &sourceAt); err != nil {
+				t.Fatal(err)
+			}
+			if err := bulkUnrelatedWorkItemPages(ctx, f.admin, string(org), previous+2, scale*24); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				reader := r.(viewstore.WorkItemPageReader)
+				owner, err := reader.WorkItemDetailPage(ctx, "prj_first", tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", previous+1)))
+				if err != nil {
+					return err
+				}
+				bulk, err := reader.WorkItemDetailPage(ctx, "prj_first", tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", previous+2)))
+				if err != nil {
+					return err
+				}
+				if bulk.Generation != generation || !bulk.SourceAt.Equal(sourceAt) {
+					return errors.New("bulk page lost dirty source ownership")
+				}
+				bulk.Value.WorkItemID, bulk.Value.Number = owner.Value.WorkItemID, owner.Value.Number
+				bulk.Generation, bulk.SourceAt = owner.Generation, owner.SourceAt
+				if !reflect.DeepEqual(bulk, owner) {
+					return fmt.Errorf("bulk detail page differs from owner: bulk=%+v owner=%+v", bulk, owner)
 				}
 				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}
+
 		}
 		for _, table := range []string{"native_work_item_pages", "issues", "native_board_items"} {
 			if _, err := f.admin.ExecContext(ctx, "VACUUM (ANALYZE) "+table); err != nil {
@@ -652,4 +681,55 @@ func TestBoardTextCandidateAuthorityStaysTenantScoped(t *testing.T) {
 	if !errors.Is(roleErr, postgres.ErrRuntimeRole) {
 		t.Fatalf("unsafe helper accepted: %v", roleErr)
 	}
+}
+
+func bulkUnrelatedWorkItemPages(ctx context.Context, admin *sql.DB, organization string, first, last int) error {
+	return withPlanSeedTransaction(ctx, admin, func(tx pgx.Tx) error {
+		var before int64
+		if err := tx.QueryRow(ctx, `SELECT publication_revision FROM native_work_item_page_progress WHERE organization_id=$1`, organization).Scan(&before); err != nil {
+			return err
+		}
+		columns, values, err := planSeedColumns(ctx, tx, "native_work_item_pages", map[string]string{"work_item_id": "'wi_plan_'||n", "number": "n+10", "source_generation": "dirty.generation", "source_at": "dirty.source_at"})
+		if err != nil {
+			return err
+		}
+		result, err := tx.Exec(ctx, "INSERT INTO native_work_item_pages("+columns+") SELECT "+values+" FROM native_work_item_pages seed CROSS JOIN generate_series($2::int,$3::int)n JOIN native_work_item_page_dirty dirty ON dirty.organization_id=seed.organization_id AND dirty.project_id=seed.project_id AND dirty.work_item_id='wi_plan_'||n AND dirty.record_id=dirty.work_item_id AND dirty.kind='item' WHERE seed.organization_id=$1 AND seed.project_id='prj_first' AND seed.work_item_id='wi_plan_'||($2::int-1)", organization, first, last)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() != int64(last-first+1) {
+			return errors.New("bulk detail page cardinality changed")
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind,propagate)
+ SELECT organization_id,project_id,work_item_id,work_item_id,'relationships',true FROM native_work_item_pages WHERE organization_id=$1 AND project_id='prj_first' AND work_item_id IN(SELECT 'wi_plan_'||n FROM generate_series($2::int,$3::int)n)
+ ON CONFLICT(organization_id,project_id,work_item_id,record_id,kind) DO UPDATE SET generation=DEFAULT,source_at=clock_timestamp(),after_type='',after_direction='',after_project='',after_item='',cleaning=false,propagate=native_work_item_page_dirty.propagate OR EXCLUDED.propagate`, organization, first, last); err != nil {
+			return err
+		}
+		result, err = tx.Exec(ctx, `DELETE FROM native_work_item_page_dirty d USING native_work_item_pages p WHERE d.organization_id=$1 AND d.project_id='prj_first' AND d.kind='item' AND d.organization_id=p.organization_id AND d.project_id=p.project_id AND d.work_item_id=p.work_item_id AND d.record_id=p.work_item_id AND d.generation=p.source_generation AND d.work_item_id IN(SELECT 'wi_plan_'||n FROM generate_series($2::int,$3::int)n)`, organization, first, last)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() != int64(last-first+1) {
+			return errors.New("bulk detail page dirty ownership changed")
+		}
+		result, err = tx.Exec(ctx, `UPDATE native_work_item_page_progress SET publication_revision=publication_revision+($3::int-$2::int+1) WHERE organization_id=$1`, organization, first, last)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() != 1 {
+			return errors.New("detail page publication progress missing")
+		}
+		var after int64
+		var relationships, dirty int
+		if err := tx.QueryRow(ctx, `SELECT publication_revision,
+ (SELECT count(*) FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id='prj_first' AND work_item_id IN(SELECT 'wi_plan_'||n FROM generate_series($2::int,$3::int)n) AND record_id=work_item_id AND kind='relationships' AND propagate AND NOT cleaning AND after_type='' AND after_direction='' AND after_project='' AND after_item=''),
+ (SELECT count(*) FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id='prj_first' AND work_item_id IN(SELECT 'wi_plan_'||n FROM generate_series($2::int,$3::int)n) AND kind='item')
+ FROM native_work_item_page_progress WHERE organization_id=$1`, organization, first, last).Scan(&after, &relationships, &dirty); err != nil {
+			return err
+		}
+		if after-before != int64(last-first+1) || relationships != last-first+1 || dirty != 0 {
+			return errors.New("bulk detail page publication effects changed")
+		}
+		return nil
+	})
 }

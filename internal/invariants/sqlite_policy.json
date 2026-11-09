@@ -149,76 +149,6 @@
     "internal/cloudentry/storage_backend_test.go": {
       "database_path": 1
     },
-    "internal/hubclient/evidence/validation_test.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/scenariotest/admission.go": {
-      "database_path": 1,
-      "sqlite_open": 5
-    },
-    "internal/hubclient/internal/scenariotest/change_evidence.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/scenariotest/change_source.go": {
-      "database_path": 1,
-      "sqlite_open": 3
-    },
-    "internal/hubclient/internal/scenariotest/feature_fixture.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/scenariotest/hubclient_postgres_fixture.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/scenariotest/native_change.go": {
-      "database_path": 1,
-      "sqlite_open": 1
-    },
-    "internal/hubclient/internal/scenariotest/native_source_loop.go": {
-      "sqlite_open": 1
-    },
-    "internal/hubclient/internal/scenariotest/no_change.go": {
-      "sqlite_open": 1
-    },
-    "internal/hubclient/internal/scenariotest/planner.go": {
-      "database_path": 1,
-      "sqlite_open": 1
-    },
-    "internal/hubclient/internal/scenariotest/provider_progress.go": {
-      "database_path": 3
-    },
-    "internal/hubclient/internal/scenariotest/read_tools.go": {
-      "sqlite_open": 1
-    },
-    "internal/hubclient/internal/scenariotest/reconnect.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/scenariotest/review_recovery.go": {
-      "sqlite_open": 1
-    },
-    "internal/hubclient/internal/scenariotest/runtime_evidence.go": {
-      "database_path": 2
-    },
-    "internal/hubclient/internal/scenariotest/settlement.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/testsupport/dispatch_postgres.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/testsupport/http.go": {
-      "database_path": 2
-    },
-    "internal/hubclient/internal/testsupport/nativechange_postgres.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/nativechange/native_change_test.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/nativechange/native_integration_test.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/nativechange/native_run_details_test.go": {
-      "database_path": 1
-    },
     "internal/hubgithub/postgres_fixture_test.go": {
       "database_path": 1
     },
@@ -295,7 +225,6 @@
       "sql_insert_or": 1
     },
     "internal/hubserver/collaboration_payloads_test.go": {
-      "sql_pragma_table": 1,
       "sql_schema": 1
     },
     "internal/hubserver/config.go": {
@@ -440,9 +369,6 @@
       "sql_julianday": 4
     },
     "internal/hubserver/key_actor_test.go": {
-      "sqlite_open": 1
-    },
-    "internal/hubserver/local_board_import_test.go": {
       "sqlite_open": 1
     },
     "internal/hubserver/migrate.go": {

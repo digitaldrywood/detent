@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -360,13 +361,23 @@ func validNeutralImportKey(columns []NeutralImportKey, values []string) bool {
 func compareNeutralImportKeys(columns []NeutralImportKey, left, right []string) int {
 	for index, column := range columns {
 		if column.Kind == "integer" {
-			a, _ := strconv.ParseInt(left[index], 10, 64)
-			b, _ := strconv.ParseInt(right[index], 10, 64)
-			if a < b {
-				return -1
-			}
-			if a > b {
+			a, b := left[index], right[index]
+			leftNegative, rightNegative := strings.HasPrefix(a, "-"), strings.HasPrefix(b, "-")
+			if leftNegative != rightNegative {
+				if leftNegative {
+					return -1
+				}
 				return 1
+			}
+			direction := 1
+			if leftNegative {
+				direction = -1
+			}
+			if order := cmp.Compare(len(a), len(b)); order != 0 {
+				return direction * order
+			}
+			if order := strings.Compare(a, b); order != 0 {
+				return direction * order
 			}
 		} else {
 			if left[index] < right[index] {

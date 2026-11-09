@@ -7,22 +7,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
+
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -82,10 +85,81 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 			}
 			copyPath := coreExecutionSourceCopy(t, organization)
 			source := CoreExecutionImportSource{BundlePath: copyPath, OrganizationID: organization, SourceObjects: objects, Objects: objects}
-			for range 2 {
+			historical := historicalCoreAttemptReceipts(t, source, "")
+			for _, receipt := range historical {
+				if err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error { _, err := w.PutReceipt(t.Context(), receipt); return err }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for pass := range 3 {
 				count, err := ImportCoreExecution(t.Context(), repository, source)
 				if err != nil || count != 14 {
 					t.Fatalf("execution import count=%d error=%v", count, err)
+				}
+				if pass == 0 {
+					if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET local_attempt_id=NULL,local_attempt_id_recorded=false WHERE organization_id=$1`, organization); err != nil {
+						t.Fatal(err)
+					}
+					wrongSource := historicalCoreAttemptReceipts(t, source, strings.Repeat("f", 64))
+					for i, receipt := range historical {
+						var original leasestore.Attempt
+						if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+							var err error
+							original, err = r.Attempt(t.Context(), receipt.CommandKey)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						if original.LocalAttemptID != 0 || original.LocalAttemptIDRecorded {
+							t.Fatal("upgrade fixture already has recorded correlation coverage")
+						}
+						for _, test := range []struct {
+							name string
+							edit func(*postgres.CoreAttemptImport)
+						}{
+							{"source fingerprint", func(record *postgres.CoreAttemptImport) { record.Receipt = wrongSource[i] }},
+							{"source fence", func(record *postgres.CoreAttemptImport) { record.Attempt.FencingToken++ }},
+							{"source payload", func(record *postgres.CoreAttemptImport) {
+								record.Attempt.PayloadObjectKey = "unverified/source/payload"
+							}},
+						} {
+							t.Run(receipt.CommandKey+"/reject "+test.name, func(t *testing.T) {
+								requested := postgres.CoreAttemptImport{Attempt: original, Receipt: receipt}
+								requested.Attempt.LocalAttemptID, requested.Attempt.LocalAttemptIDRecorded = 42, true
+								test.edit(&requested)
+								if err := repository.ImportCoreAttempt(t.Context(), requested); !errors.Is(err, mutation.ErrConflict) {
+									t.Fatalf("mismatched provenance accepted: %v", err)
+								}
+								if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+									current, err := r.Attempt(t.Context(), original.ID)
+									if err == nil && (current.LocalAttemptID != 0 || current.LocalAttemptIDRecorded || current.FencingToken != original.FencingToken || current.PayloadObjectKey != original.PayloadObjectKey) {
+										t.Fatal("rejected import changed correlation or source identity")
+									}
+									return err
+								}); err != nil {
+									t.Fatal(err)
+								}
+							})
+						}
+					}
+					if err := repository.Close(); err != nil {
+						t.Fatal(err)
+					}
+					pool, err := pgxpool.NewWithConfig(t.Context(), native.Copy())
+					if err != nil {
+						t.Fatal(err)
+					}
+					repository, err = postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+					if err != nil {
+						pool.Close()
+						t.Fatal(err)
+					}
+					upgraded := repository
+					closeAfterTenants(func() {
+						if err := upgraded.Close(); err != nil {
+							t.Error(err)
+						}
+					})
 				}
 			}
 			if err := repository.Close(); err != nil {
@@ -119,8 +193,17 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 				if err != nil {
 					return err
 				}
-				if attempt.FencingToken != lease.FencingToken || attempt.WorkItemRevision != 0 || attempt.Status != "failed" || attempt.PayloadObjectKey == "" {
+				if attempt.LocalAttemptID != 42 || attempt.FencingToken != lease.FencingToken || attempt.WorkItemRevision != 0 || attempt.Status != "failed" || attempt.PayloadObjectKey == "" {
 					return errors.New("historical attempt identity or zero revision was not preserved")
+				}
+				for _, suffix := range []string{"", "_second"} {
+					matches, err := r.LocalAttemptMatches(t.Context(), project, tracker.NativeWorkItemID("wi_execution_import"+suffix), 42)
+					if err != nil {
+						return err
+					}
+					if len(matches) != 1 || matches[0] != "attempt_execution_import"+suffix {
+						return fmt.Errorf("verified historical correlation missing: %v", matches)
+					}
 				}
 				enrollment, err := r.RunnerEnrollment(t.Context(), "enrollment_execution_import")
 				if err != nil {
@@ -226,7 +309,7 @@ func coreExecutionNeutralFixture(t *testing.T, organization tracker.Organization
 		fixture.add("leases", map[string]any{"fencing_token": 40 + index, "lease_id": id("lease_execution_import"), "issue_id": 41 + index, "machine_id": id("machine_execution_import"), "session_id": id("session_execution_import"), "work_item_revision": 0, "landing_capacity": 0, "acquired_at": acquired, "renewed_at": acquired, "expires_at": expired, "released_at": updated})
 		fixture.add("lease_runners", map[string]any{"lease_id": id("lease_execution_import"), "runner_id": id("runner_execution_import")})
 		fixture.add("lease_policies", map[string]any{"lease_id": id("lease_execution_import"), "scope": string(organization) + "/prj_execution_import", "policy_id": "policy_example"})
-		run := tracker.NativeRunData{AttemptID: id("attempt_execution_import"), LeaseID: tracker.LeaseID(id("lease_execution_import")), FencingToken: tracker.FencingToken(40 + index), RunID: id("run_execution_import"), Sequence: 1, PolicyID: "policy_example"}
+		run := tracker.NativeRunData{AttemptID: id("attempt_execution_import"), LeaseID: tracker.LeaseID(id("lease_execution_import")), FencingToken: tracker.FencingToken(40 + index), RunID: id("run_execution_import"), Sequence: 1, PolicyID: "policy_example", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42}}
 		runData, err := json.Marshal(run)
 		if err != nil {
 			t.Fatal(err)
@@ -320,4 +403,79 @@ func TestCoreExecutionImportRejectsUnsupportedSchemaBeforePin(t *testing.T) {
 			}
 		})
 	}
+}
+
+func historicalCoreAttemptReceipts(t *testing.T, source CoreExecutionImportSource, copyHash string) []eventstore.Receipt {
+	t.Helper()
+	var receipts []eventstore.Receipt
+	err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if copyHash == "" {
+			copyHash = bundle.Identity().SourceSHA256
+		}
+		rows, err := readCoreAttemptImportPage(t.Context(), newCoreNeutralImport(bundle), source.OrganizationID, 0)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			a := row.Attempt
+			legacy := struct {
+				Attempt struct {
+					ClaimDisposition       *string
+					RuntimeHeartbeatAt     *time.Time
+					RuntimeSummarySequence int64
+					CleanupAcknowledgedAt  *time.Time
+					OrganizationID         tracker.OrganizationID
+					ID                     string
+					IssueID                int64
+					LeaseID                string
+					FencingToken           int64
+					RunID                  string
+					Sequence               int64
+					Status                 string
+					WorkItemRevision       int64
+					DispatchGeneration     int64
+					PayloadObjectKey       string
+					CheckpointObjectKey    *string
+					ArtifactsObjectKey     *string
+					StartedAt              time.Time
+					UpdatedAt              time.Time
+				}
+				Payload          string
+				Checkpoint       sql.NullString
+				ArtifactIDs      string
+				PayloadObject    sql.NullString
+				CheckpointObject sql.NullString
+			}{Payload: row.Payload, Checkpoint: row.Checkpoint, ArtifactIDs: row.ArtifactIDs, PayloadObject: row.PayloadObject, CheckpointObject: row.CheckpointObject}
+			legacy.Attempt.ClaimDisposition = a.ClaimDisposition
+			legacy.Attempt.RuntimeHeartbeatAt = a.RuntimeHeartbeatAt
+			legacy.Attempt.RuntimeSummarySequence = a.RuntimeSummarySequence
+			legacy.Attempt.CleanupAcknowledgedAt = a.CleanupAcknowledgedAt
+			legacy.Attempt.OrganizationID = a.OrganizationID
+			legacy.Attempt.ID = a.ID
+			legacy.Attempt.IssueID = a.IssueID
+			legacy.Attempt.LeaseID = a.LeaseID
+			legacy.Attempt.FencingToken = a.FencingToken
+			legacy.Attempt.RunID = a.RunID
+			legacy.Attempt.Sequence = a.Sequence
+			legacy.Attempt.Status = a.Status
+			legacy.Attempt.WorkItemRevision = a.WorkItemRevision
+			legacy.Attempt.DispatchGeneration = a.DispatchGeneration
+			legacy.Attempt.PayloadObjectKey = a.PayloadObjectKey
+			legacy.Attempt.CheckpointObjectKey = a.CheckpointObjectKey
+			legacy.Attempt.ArtifactsObjectKey = a.ArtifactsObjectKey
+			legacy.Attempt.StartedAt = a.StartedAt
+			legacy.Attempt.UpdatedAt = a.UpdatedAt
+			receipt, err := prepareCoreExecutionReceipt(t.Context(), eventstore.NewContent(source.Objects), source.OrganizationID, copyHash, "core-attempt", a.ID, legacy)
+			if err != nil {
+				return err
+			}
+			t.Logf("pre-correlation receipt attempt=%s request_hash=%s", a.ID, receipt.RequestHash)
+			receipts = append(receipts, receipt)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receipts
 }

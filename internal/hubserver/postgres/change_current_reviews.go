@@ -185,7 +185,7 @@ func (s *session) ChangeReviewEvidence(ctx context.Context, change, version stri
 		if row.ReviewKind == "security_audit" {
 			return nil, false, eventstore.ErrInvalidRecord
 		}
-		result = append(result, evidenceRecord(pgquery.ChangeEvidence(row)))
+		result = append(result, evidenceRecord(row))
 	}
 	checkRows, err := s.queries.RecordCurrentChangeReviewChecks(ctx, pgquery.RecordCurrentChangeReviewChecksParams{OrganizationID: s.organization, ChangeID: change, VersionID: new(version), CheckIds: checks})
 	if err != nil {

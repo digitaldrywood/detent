@@ -51,7 +51,7 @@ func (s *session) ConversationByCreationKey(ctx context.Context, principal, key 
 const conversationSelect = `SELECT c.organization_id,c.project_id,c.id,c.creation_key,c.creation_hash,c.owner_principal_id,c.owner_subject,c.origin,c.title,c.visibility,c.status,
 c.subject_work_item_id,c.work_item_id,c.linked_at,c.revision,c.provider_thread_id,c.provider_thread_runner_id,c.provider_thread_origin,
 c.execution_json,c.event_seq,c.preferences_json,c.read_audience,c.created_at,c.updated_at,c.last_message_at,c.settled_at,c.archived,
-c.content_attachment_id,c.message_count
+c.content_attachment_id,c.message_count,c.execution_continuation
 FROM conversations c`
 
 func scanPGConversation(ctx context.Context, row interface{ Scan(...any) error }) (conversationstore.Conversation, error) {
@@ -63,7 +63,7 @@ func scanPGConversation(ctx context.Context, row interface{ Scan(...any) error }
 		&record.Title, &record.Visibility, &record.Status, &subject, &workItem, &linked, &record.Revision,
 		&record.ProviderThreadID, &record.ProviderThreadRunnerID, &record.ProviderThreadOrigin, &execution, &record.EventSequence,
 		&preferences, &record.ReadAudience, &record.CreatedAt, &record.UpdatedAt, &lastMessage, &settled, &record.Archived,
-		&record.ContentReference, &record.MessageCount)
+		&record.ContentReference, &record.MessageCount, &record.ExecutionContinuation)
 	if err != nil {
 		return record, mapError(ctx, err)
 	}
@@ -738,7 +738,7 @@ func (s *session) CreateConversation(ctx context.Context, c conversationstore.Co
 	if err != nil {
 		return c, err
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO conversations (organization_id,id,creation_key,creation_hash,project_id,owner_principal_id,owner_subject,origin,title,visibility,status,subject_work_item_id,work_item_id,linked_at,revision,provider_thread_id,provider_thread_runner_id,provider_thread_origin,execution_json,execution_status,execution_lease_id,execution_settled,event_seq,preferences_json,read_audience,created_at,updated_at,last_message_at,settled_at,archived,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),$14,$15,$16,$17,$18,$19,$20,NULLIF($21,''),$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`, c.OrganizationID, c.ID, c.CreationKey, c.CreationHash, c.ProjectID, c.OwnerPrincipalID, c.OwnerSubject, c.Origin, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.Revision, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, c.EventSequence, string(preferences), c.ReadAudience, c.CreatedAt, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference)
+	_, err = s.db.Exec(ctx, `INSERT INTO conversations (organization_id,id,creation_key,creation_hash,project_id,owner_principal_id,owner_subject,origin,title,visibility,status,subject_work_item_id,work_item_id,linked_at,revision,provider_thread_id,provider_thread_runner_id,provider_thread_origin,execution_json,execution_status,execution_lease_id,execution_settled,event_seq,preferences_json,read_audience,created_at,updated_at,last_message_at,settled_at,archived,content_attachment_id,execution_continuation) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),$14,$15,$16,$17,$18,$19,$20,NULLIF($21,''),$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)`, c.OrganizationID, c.ID, c.CreationKey, c.CreationHash, c.ProjectID, c.OwnerPrincipalID, c.OwnerSubject, c.Origin, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.Revision, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, c.EventSequence, string(preferences), c.ReadAudience, c.CreatedAt, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference, c.ExecutionContinuation)
 	if err != nil {
 		return c, mapError(ctx, err)
 	}
@@ -760,7 +760,7 @@ func (s *session) UpdateConversation(ctx context.Context, c conversationstore.Co
 	if err != nil {
 		return c, err
 	}
-	err = s.db.QueryRow(ctx, `UPDATE conversations SET owner_principal_id=$1,owner_subject=$2,title=$3,visibility=$4,status=$5,subject_work_item_id=NULLIF($6,''),work_item_id=NULLIF($7,''),linked_at=$8,revision=revision+1,provider_thread_id=$9,provider_thread_runner_id=$10,provider_thread_origin=$11,execution_json=$12,execution_status=$13,execution_lease_id=NULLIF($14,''),execution_settled=$15,event_seq=$16,preferences_json=$17,read_audience=$18,updated_at=$19,last_message_at=$20,settled_at=$21,archived=$22,content_attachment_id=$23 WHERE organization_id=$24 AND project_id=$25 AND id=$26 AND revision=$27 RETURNING revision`, c.OwnerPrincipalID, c.OwnerSubject, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, c.EventSequence, string(preferences), c.ReadAudience, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference, c.OrganizationID, c.ProjectID, c.ID, expected).Scan(&c.Revision)
+	err = s.db.QueryRow(ctx, `UPDATE conversations SET owner_principal_id=$1,owner_subject=$2,title=$3,visibility=$4,status=$5,subject_work_item_id=NULLIF($6,''),work_item_id=NULLIF($7,''),linked_at=$8,revision=revision+1,provider_thread_id=$9,provider_thread_runner_id=$10,provider_thread_origin=$11,execution_json=$12,execution_status=$13,execution_lease_id=NULLIF($14,''),execution_settled=$15,preferences_json=$16,read_audience=$17,updated_at=$18,last_message_at=$19,settled_at=$20,archived=$21,content_attachment_id=$22,execution_continuation=$23 WHERE organization_id=$24 AND project_id=$25 AND id=$26 AND revision=$27 RETURNING revision,event_seq`, c.OwnerPrincipalID, c.OwnerSubject, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, string(preferences), c.ReadAudience, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference, c.ExecutionContinuation, c.OrganizationID, c.ProjectID, c.ID, expected).Scan(&c.Revision, &c.EventSequence)
 	if err != nil {
 		return c, updated(ctx, err)
 	}

@@ -40,7 +40,7 @@ var githubTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) er
 	if _, err = db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../hubserver/postgres/migrations")), goose.WithDisableGlobalRegistry(true))
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../hubserver/postgres/migrations")), goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("../hubserver/postgres/migrations"))...), goose.WithDisableGlobalRegistry(true))
 	if err != nil {
 		return err
 	}

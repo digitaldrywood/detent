@@ -356,7 +356,7 @@ func (s *session) UpdateProjectIcon(ctx context.Context, project tracker.Project
 		return mapError(ctx, err)
 	}
 	n := result.RowsAffected()
-	if err == nil && n == 0 {
+	if n == 0 {
 		return corestore.ErrRevisionConflict
 	}
 	return err

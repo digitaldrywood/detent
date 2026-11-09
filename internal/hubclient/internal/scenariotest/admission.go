@@ -2,7 +2,6 @@ package scenariotest
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,24 +9,28 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) {
-	runtimeDatabasePath := testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
-		return store.Open(ctx, store.Config{Path: path})
-	})
 	for _, test := range []struct {
 		name, refusal   string
 		reasonCode      string
@@ -69,6 +72,8 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 		{name: "configuration change permits dependency recovery", refusal: "policy"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			var clockOffset atomic.Int64
+			clock := func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())) }
 			h := newNativeChangeHubConfigured(t, "Human Review", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked", "Human Review"}},
@@ -76,15 +81,16 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 				{Name: "Human Review"},
 				{Name: "Backlog", Transitions: []string{"Done"}},
 				{Name: "Done", Terminal: true, Transitions: []string{"Backlog"}},
-			}, true, true, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+			}, true, true, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Clock: clock}, factories)
 			if test.repositoryAlias {
-				h.reopen(func(path string) error {
-					db, err := sql.Open("sqlite", path)
+				h.seed(func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), h.project)
 					if err != nil {
 						return err
 					}
-					_, err = db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE organization_id = ? AND id = ?", "example-org/example-project", h.organization, h.project)
-					return errors.Join(err, db.Close())
+					project.Settings.CheckoutRepository = "example-org/example-project"
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
 				})
 			}
 			prerequisite, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Actual prerequisite", State: "Backlog"})
@@ -176,9 +182,13 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 				t.Fatal(err)
 			}
-			blocked, err := h.native.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			recovery, err := h.native.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
 			if err != nil {
 				t.Fatal(err)
+			}
+			blocked := recovery.Issue
+			if slices.Contains(blocked.OmittedFields, "dependencies") {
+				t.Fatal("dependency assertion requires the authoritative relationship read")
 			}
 			wantDependencies := 1
 			if test.refusal == "human" || test.external || test.instance {
@@ -242,68 +252,78 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			}
 			latestFence := attempt.FencingToken
 			if test.laterLease != "" {
-				var retiredPath string
-				if test.retainedWriter {
-					h.reopen(func(path string) error {
-						retiredPath = path
-						return nil
-					})
-				}
-				h.reopen(func(path string) error {
-					if retiredPath != "" {
-						retired, err := sql.Open("sqlite", retiredPath)
-						if err != nil {
-							return err
-						}
-						defer retired.Close()
-						tx, err := retired.BeginTx(t.Context(), nil)
-						if err != nil {
-							return err
-						}
-						defer tx.Rollback()
-						if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET renewed_at = renewed_at WHERE lease_id = ?", attempt.LeaseID); err != nil {
-							return err
-						}
-					}
-					db, err := sql.Open("sqlite", path)
+				var later leasestore.Lease
+				seedLater := func(w tenantstore.Writer) error {
+					item, err := w.WorkItem(t.Context(), h.project, blocked.WorkItemID)
 					if err != nil {
 						return err
 					}
-					now := time.Now().UTC()
-					expires := now.Add(time.Hour)
-					var released any
-					switch test.laterLease {
-					case "released", "attempt":
-						released = now.Format(time.RFC3339Nano)
-					case "expired":
-						expires = now.Add(-time.Minute)
+					ttl := time.Hour
+					if test.laterLease == "expired" {
+						ttl = time.Minute
 					}
-					result, err := db.ExecContext(t.Context(), `INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at, work_item_revision)
-SELECT 'later-lease', issue_id, machine_id, 'later-session', ?, acquired_at, renewed_at, ?, created_at, updated_at, work_item_revision FROM leases WHERE lease_id = ?`, expires.Format(time.RFC3339Nano), released, attempt.LeaseID)
+					later, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(attempt.MachineID), SessionID: "later-session", LeaseID: "later-lease-" + issue.ID, TTL: ttl})
 					if err != nil {
-						return errors.Join(err, db.Close())
+						return err
 					}
-					fence, err := result.LastInsertId()
-					if err != nil {
-						return errors.Join(err, db.Close())
+					latestFence = tracker.FencingToken(later.FencingToken)
+					if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: h.organization, ProjectID: h.project, LeaseID: tracker.LeaseID(later.LeaseID), PolicyID: h.descriptor.ID, BoundAt: h.clock()}); err != nil {
+						return err
 					}
-					latestFence = tracker.FencingToken(fence)
+					if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: h.organization, LeaseID: later.LeaseID, RunnerID: attempt.RunnerID, AssignedAt: h.clock()}); err != nil {
+						return err
+					}
 					if test.laterLease == "attempt" {
 						data := attempt.NativeRunData
-						data.AttemptID, data.LeaseID, data.FencingToken = "later-attempt", "later-lease", latestFence
-						data.RunID, data.SessionID = "later-run", "later-session"
-						encoded, err := json.Marshal(data)
+						data.AttemptID = api.ExecutionID("attempt", "later-"+issue.ID)
+						data.RunID = api.ExecutionID("run", "later-"+issue.ID)
+						data.LeaseID, data.FencingToken, data.SessionID, data.Sequence = tracker.LeaseID(later.LeaseID), latestFence, later.SessionID, 1
+						raw, err := json.Marshal(data)
 						if err != nil {
-							return errors.Join(err, db.Close())
+							return err
 						}
-						_, err = db.ExecContext(t.Context(), `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at, work_item_revision, dispatch_generation)
-SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, ?, started_at, updated_at, work_item_revision, dispatch_generation FROM native_attempts WHERE id = ?`, data.AttemptID, data.LeaseID, data.FencingToken, data.RunID, string(encoded), attempt.AttemptID)
+						ref, err := h.config.RunDetails.StoreDetail(t.Context(), string(h.organization), raw)
 						if err != nil {
-							return errors.Join(err, db.Close())
+							return err
+						}
+						if _, _, err := w.RecordAttemptEvent(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, RunID: data.RunID, Fence: leasestore.Fence{LeaseID: later.LeaseID, FencingToken: later.FencingToken}, Sequence: 1, Status: "succeeded", DispatchGeneration: attempt.DispatchGeneration, PayloadObjectKey: ref.Key, PayloadReference: ref}); err != nil {
+							return err
+						}
+						history, err := json.Marshal(tracker.CollaborationEvent{ID: api.ExecutionID("evt", data.AttemptID), OrganizationID: h.organization, ProjectID: h.project, AggregateID: blocked.WorkItemID, Type: "run.finished", SchemaVersion: 1, RecordedAt: h.clock(), Actor: tracker.Actor{Kind: "runner", PrincipalID: attempt.RunnerID}, Data: tracker.CollaborationData{Run: &data}})
+						if err != nil {
+							return err
+						}
+						event, err := eventstore.NewContent(h.config.RunDetails).PrepareEvent(t.Context(), h.organization, history)
+						if err != nil {
+							return err
+						}
+						if _, err := w.AppendEvent(t.Context(), event); err != nil {
+							return err
 						}
 					}
-					return db.Close()
-				})
+					if test.laterLease == "released" || test.laterLease == "attempt" {
+						_, err = w.Release(t.Context(), leasestore.Fence{LeaseID: later.LeaseID, FencingToken: later.FencingToken}, "fixture_complete")
+					}
+					return err
+				}
+				if test.retainedWriter {
+					h.seed(func(retired tenantstore.Writer) error {
+						if _, err := retired.(leasestore.FencedLeaseLocker).LockLease(t.Context(), string(attempt.LeaseID)); err != nil {
+							return err
+						}
+						h.seed(seedLater)
+						return nil
+					})
+				} else {
+					h.seed(seedLater)
+				}
+				if test.laterLease == "expired" {
+					clockOffset.Add(int64(2 * time.Minute))
+					h.seed(func(w tenantstore.Writer) error {
+						_, err := w.Expire(t.Context(), leasestore.Fence{LeaseID: later.LeaseID, FencingToken: later.FencingToken})
+						return err
+					})
+				}
 			}
 			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "too-early", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, PolicyID: h.descriptor.ID, BlockerAttemptID: attempt.AttemptID, ExpectedRevision: blocked.Revision, State: prior, Reason: "dependency_ready", ReasonDetail: "recorded_blocker_recovery"}
 			if test.instance {
@@ -380,13 +400,8 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 			if test.advancePolicy {
 				h.repolicy(t)
 			}
-			runtimeStore, err := store.Open(t.Context(), store.Config{Path: runtimeDatabasePath(t)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = runtimeStore.Close() })
 			started := make(chan runner.RunRequest, 1)
-			orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "Human Review"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: nativeDependencyRecoveryRunner{started: started}, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "Human Review"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: nativeDependencyRecoveryRunner{started: started}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}

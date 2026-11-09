@@ -57,9 +57,13 @@ func openPostgresDatabase(ctx context.Context, cfg postgres.Config) (*database, 
 }
 
 func MigratePostgres(ctx context.Context, connection pgtransport.Connection) error {
+	return MigratePostgresWithConversationSources(ctx, connection)
+}
+
+func MigratePostgresWithConversationSources(ctx context.Context, connection pgtransport.Connection, sources ...postgres.ConversationHistoryImportSource) error {
 	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
 	if err != nil {
 		return err
 	}
-	return postgres.Migrate(ctx, connection, migrations)
+	return postgres.Migrate(ctx, connection, migrations, sources...)
 }

@@ -63,6 +63,7 @@ type NativeChangeReference struct {
 
 type NativeAttempt struct {
 	NativeRunData
+	LocalAttemptID              int64             `json:"local_attempt_id,omitempty"`
 	Unavailable                 []string          `json:"unavailable,omitempty"`
 	TerminalFailureAvailability string            `json:"terminal_failure_availability"`
 	FinalizationAvailability    string            `json:"finalization_availability"`
@@ -431,18 +432,19 @@ type NativeRecoveryBodyRead struct {
 }
 
 type NativeRecovery struct {
-	InstanceSuccesses []FailureStepSuccess   `json:"instance_successes,omitempty"`
-	Read              *NativeRecoveryRead    `json:"read,omitempty"`
-	Continuation      *NativeRecoveryPage    `json:"continuation,omitempty"`
-	SourceAttemptID   string                 `json:"source_attempt_id,omitempty"`
-	SourceVersionID   string                 `json:"source_version_id,omitempty"`
-	Lease             NativeLease            `json:"lease"`
-	Issue             NativeIssue            `json:"issue"`
-	Discussion        []NativeComment        `json:"discussion"`
-	History           []CollaborationEvent   `json:"history"`
-	Attempts          []NativeAttempt        `json:"attempts"`
-	Change            *NativeChangeReference `json:"change,omitempty"`
-	ChangeDetail      *ChangeDetail          `json:"change_detail,omitempty"`
+	ContinuationEligible *bool                  `json:"continuation_eligible,omitempty"`
+	InstanceSuccesses    []FailureStepSuccess   `json:"instance_successes,omitempty"`
+	Read                 *NativeRecoveryRead    `json:"read,omitempty"`
+	Continuation         *NativeRecoveryPage    `json:"continuation,omitempty"`
+	SourceAttemptID      string                 `json:"source_attempt_id,omitempty"`
+	SourceVersionID      string                 `json:"source_version_id,omitempty"`
+	Lease                NativeLease            `json:"lease"`
+	Issue                NativeIssue            `json:"issue"`
+	Discussion           []NativeComment        `json:"discussion"`
+	History              []CollaborationEvent   `json:"history"`
+	Attempts             []NativeAttempt        `json:"attempts"`
+	Change               *NativeChangeReference `json:"change,omitempty"`
+	ChangeDetail         *ChangeDetail          `json:"change_detail,omitempty"`
 }
 
 func (c *NativeCheckpoint) PreservesSource() bool {

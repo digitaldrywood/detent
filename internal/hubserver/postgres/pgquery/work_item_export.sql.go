@@ -53,7 +53,7 @@ func (q *Queries) CountExportWorkItems(ctx context.Context, arg CountExportWorkI
 }
 
 const exportWorkItems = `-- name: ExportWorkItems :many
-SELECT i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id
+SELECT i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id, i.doctor_identity_revision
 FROM issues i
 LEFT JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
 WHERE i.organization_id=$1 AND i.project_id=$2
@@ -130,6 +130,7 @@ func (q *Queries) ExportWorkItems(ctx context.Context, arg ExportWorkItemsParams
 			&i.DispatchRequestedAt,
 			&i.RecoveryRunnerID,
 			&i.RecoveryVersionID,
+			&i.DoctorIdentityRevision,
 		); err != nil {
 			return nil, err
 		}

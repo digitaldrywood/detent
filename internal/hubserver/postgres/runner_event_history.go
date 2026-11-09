@@ -19,6 +19,9 @@ func (f *runnerEventSession) AppendEvent(ctx context.Context, record eventstore.
 	if record.OrganizationID != f.session.organization || record.ProjectID != f.command.Project || record.WorkItemID != f.command.WorkItem {
 		return eventstore.Event{}, corestore.ErrTenantMismatch
 	}
+	if record.Type == "scheduler.decision" && record.SchedulerOutcome == "" {
+		return eventstore.Event{}, eventstore.ErrInvalidRecord
+	}
 	if record.ID == "" || record.Type == "" || record.SchemaVersion != 1 || record.Sequence != 0 || record.ActorKind == "" || record.ActorPrincipalID == "" {
 		return eventstore.Event{}, eventstore.ErrInvalidRecord
 	}
@@ -39,6 +42,7 @@ func (f *runnerEventSession) AppendEvent(ctx context.Context, record eventstore.
 		if requested.RecordedAt.IsZero() || recordTime(requested.RecordedAt).Equal(previous.RecordedAt) {
 			requested.RecordedAt = previous.RecordedAt
 		}
+		requested = replayEventActor(requested, previous)
 		if !reflect.DeepEqual(previous, requested) {
 			return eventstore.Event{}, corestore.ErrRevisionConflict
 		}
@@ -47,7 +51,7 @@ func (f *runnerEventSession) AppendEvent(ctx context.Context, record eventstore.
 	f.item.value.EventSequence++
 	record.Sequence = f.item.value.EventSequence
 	record.RecordedAt = recordTime(record.RecordedAt)
-	_, err := pgquery.New(runEventQueue{f.pending}).CommandAppendRunEvent(ctx, pgquery.CommandAppendRunEventParams{PushKnown: record.PushKnown, PushChangeID: record.PushChangeID, PushVersionID: record.PushVersionID, PushHeadSha: record.PushHeadSHA, PushExternalEffect: record.PushExternalEffect, PushEffectState: record.PushEffectState, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
+	_, err := pgquery.New(runEventQueue{f.pending}).CommandAppendRunEvent(ctx, pgquery.CommandAppendRunEventParams{HistoryHidden: record.HistoryHidden, SchedulerOutcome: record.SchedulerOutcome, PushKnown: record.PushKnown, PushChangeID: record.PushChangeID, PushVersionID: record.PushVersionID, PushHeadSha: record.PushHeadSHA, PushExternalEffect: record.PushExternalEffect, PushEffectState: record.PushEffectState, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ActorEnvelopeKnown: record.ActorEnvelopeKnown, ActorViaKey: record.ActorViaKey, ActorDisplayName: record.ActorDisplayName, ActorAgent: record.ActorAgent, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
 	if err != nil {
 		return eventstore.Event{}, err
 	}
