@@ -618,6 +618,63 @@ type spritePipeBody struct {
 
 func (b *spritePipeBody) Read(data []byte) (int, error) { return b.reader.Read(data) }
 
+func TestSpritePoolCompletionTriggers(t *testing.T) {
+	for _, test := range []struct {
+		name, endpoint string
+		authorized     bool
+	}{
+		{"finished run", "event", true},
+		{"released lease", "release", true},
+		{"unauthenticated run event", "event", false},
+		{"unauthenticated lease release", "release", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "")
+			updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.MaxRunners = 0 })
+			hosted, keys := f.service.config.Hosted, f.service.config.SecretKeys
+			f.service.config.Hosted, f.service.config.SecretKeys = nil, nil
+			local := placementFixtureRunner(t, f, "local-worker", "local", false, 1, "gpt-6.1-sol", "test-model")
+			f.service.spriteWakeWork.Wait()
+			issue := f.create(t, "completion source")
+			f.service.spriteWakeWork.Wait()
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", local.redemption.Credential, providerClaim(local, issue, "completion"))
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			started := nativeStartedEvent(lease)
+			if test.endpoint == "event" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", local.redemption.Credential, started), http.StatusOK)
+				f.service.spriteWakeWork.Wait()
+			}
+			f.service.config.Hosted, f.service.config.SecretKeys = hosted, keys
+			updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.MaxRunners = 2 })
+			setSpriteAllocationFixture(t, f, 2, 0)
+			token := "invalid-credential"
+			status, want := http.StatusUnauthorized, 0
+			if test.authorized {
+				token, want = local.redemption.Credential, 2
+				status = http.StatusNoContent
+				if test.endpoint == "event" {
+					status = http.StatusOK
+				}
+			}
+			path := f.base + "/leases/" + string(lease.ID) + "/release"
+			var request any = tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}
+			if test.endpoint == "event" {
+				finished := started
+				finished.Type, finished.IdempotencyKey, finished.Data.Sequence, finished.Data.Outcome = "run.finished", "complete-trigger", 2, "succeeded"
+				path, request = f.base+"/work-items/"+string(issue.WorkItemID)+"/events", finished
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, token, request), status)
+			f.service.spriteWakeWork.Wait()
+			allocation, err := f.service.projectSpriteAllocation(t.Context(), scope)
+			if err != nil || allocation.AllocatedCount != want || len(provider.created) != want || len(provider.runners) != want {
+				t.Fatalf("completion allocation=%+v creates=%d enrollments=%d error=%v, want %d", allocation, len(provider.created), len(provider.runners), err, want)
+			}
+		})
+	}
+}
+
 func TestSpritePoolLifecycle(t *testing.T) {
 	for _, test := range []struct {
 		name, failure                            string

@@ -134,6 +134,12 @@ func (s *Service) spritePoolAfterMutation(next echo.HandlerFunc) echo.HandlerFun
 			}
 			return nil
 		}
+		if method == http.MethodPost && (path == nativeBase+"/work-items/:item/events" || path == nativeBase+"/leases/:lease/release") {
+			if credential.Runner.RunnerID != "" && credential.Runner.OrganizationID != "" {
+				s.startSpriteLifecycle(nativeScope{organization: credential.Runner.OrganizationID}, "organization")
+			}
+			return nil
+		}
 		queueChanged := method == http.MethodPatch && path == nativeBase+"/work-items/:item"
 		if method == http.MethodPost {
 			switch path {
