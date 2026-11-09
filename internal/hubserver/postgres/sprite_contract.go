@@ -32,6 +32,12 @@ type SpriteAllocationCursor struct {
 	ProjectID   tracker.ProjectID
 }
 
+type SpriteSlotGroup struct {
+	MachineID tracker.MachineID
+	ProjectID tracker.ProjectID
+	SessionID string
+}
+
 type SpriteReader interface {
 	SpritePromotionSource(context.Context) (accessstore.Secret, error)
 	SpritePool(context.Context) (SpritePool, error)
@@ -45,6 +51,7 @@ type SpriteReader interface {
 	SpriteRetainedMemberCount(context.Context, tracker.ProjectID) (int64, error)
 	SpritePoolMemberCount(context.Context) (int64, error)
 	SpriteRetainedPoolCount(context.Context) (int64, error)
+	SpriteJobSlotCount(context.Context, time.Time, int64, SpriteSlotGroup) (int64, error)
 	SpritePoolMemberPage(context.Context, SpriteMemberCursor, int) ([]SpritePoolMember, error)
 	SpriteAllocationQueue(context.Context, SpriteAllocationCursor, int) ([]SpriteAllocation, error)
 	SpriteProvisionQueue(context.Context, SpriteAllocationCursor, int) ([]SpriteAllocation, error)
@@ -72,6 +79,7 @@ type SpriteWriter interface {
 	UpdateRunnerSpriteMembership(context.Context, runnerstore.SpriteMembership) error
 	CreateSpriteOperation(context.Context, SpriteOperation) (SpriteOperation, error)
 	UpdateSpriteOperation(context.Context, SpriteOperation, int64) error
+	RescheduleBusySpriteOperation(context.Context, SpriteOperation, time.Time) error
 	SetSpriteExecSession(context.Context, SpriteOperation, string) error
 	RecordSpriteProvisionFailure(context.Context, tracker.ProjectID, int64) error
 }
@@ -232,6 +240,32 @@ func (s *session) PendingSpriteOperations(ctx context.Context, now time.Time, li
 	}
 	rows, err := s.queries.PendingSpriteOperations(ctx, pgquery.PendingSpriteOperationsParams{OrganizationID: s.organization, NextAttemptAt: now, Limit: int32(limit)})
 	return rows, mapError(ctx, err)
+}
+
+func (s *session) RescheduleBusySpriteOperation(ctx context.Context, row SpriteOperation, checkedAt time.Time) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	if row.IdempotencyKey == "" || row.Operation != "delete" || row.Attempts < 0 || checkedAt.IsZero() {
+		return corestore.ErrInvalidPage
+	}
+	count, err := s.queries.RescheduleBusySpriteOperation(ctx, pgquery.RescheduleBusySpriteOperationParams{OrganizationID: s.organization, IdempotencyKey: row.IdempotencyKey, ExpectedAttempts: row.Attempts, CheckedAt: checkedAt})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if count != 1 {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
+}
+
+func (s *session) SpriteJobSlotCount(ctx context.Context, at time.Time, limit int64, joining SpriteSlotGroup) (int64, error) {
+	group := joining.MachineID != "" || joining.ProjectID != "" || joining.SessionID != ""
+	if at.IsZero() || limit < 1 || group && (joining.MachineID == "" || joining.ProjectID == "" || joining.SessionID == "") {
+		return 0, corestore.ErrInvalidPage
+	}
+	count, err := s.queries.SpriteJobSlotCount(ctx, pgquery.SpriteJobSlotCountParams{OrganizationID: s.organization, At: at, SlotLimit: limit, JoiningMachine: string(joining.MachineID), JoiningProject: string(joining.ProjectID), JoiningSession: joining.SessionID})
+	return count, mapError(ctx, err)
 }
 
 func (s *session) RecordSpriteProvisionFailure(ctx context.Context, project tracker.ProjectID, revision int64) error {

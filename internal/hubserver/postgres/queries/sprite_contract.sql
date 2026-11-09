@@ -49,6 +49,28 @@ WHERE organization_id=sqlc.arg(organization_id) AND idempotency_key=sqlc.arg(ide
 -- name: PendingSpriteOperations :many
 SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND outcome IN ('pending','uncertain') AND next_attempt_at<=$2 ORDER BY next_attempt_at,idempotency_key LIMIT $3;
 
+-- name: RescheduleBusySpriteOperation :execrows
+UPDATE sprite_lifecycle_operations SET next_attempt_at=sqlc.arg(checked_at)::timestamptz,updated_at=sqlc.arg(checked_at)::timestamptz
+WHERE organization_id=sqlc.arg(organization_id) AND idempotency_key=sqlc.arg(idempotency_key)
+AND operation='delete' AND outcome IN ('pending','uncertain') AND attempts=sqlc.arg(expected_attempts)::bigint
+AND next_attempt_at<=sqlc.arg(checked_at)::timestamptz AND updated_at<=sqlc.arg(checked_at)::timestamptz;
+
+-- name: SpriteJobSlotCount :one
+SELECT count(*) FROM (
+ SELECT CASE WHEN l.landing_capacity>0 THEN '' ELSE l.lease_id END AS lease_key,
+ CASE WHEN l.landing_capacity>0 THEN l.machine_id ELSE '' END AS machine_key,
+ CASE WHEN l.landing_capacity>0 THEN i.project_id ELSE '' END AS project_key,
+ CASE WHEN l.landing_capacity>0 THEN l.session_id ELSE '' END AS session_key
+ FROM leases l JOIN machines m ON m.organization_id=l.organization_id AND m.id=l.machine_id
+ JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+ WHERE l.organization_id=sqlc.arg(organization_id) AND l.released_at IS NULL AND l.expires_at>sqlc.arg(at)::timestamptz
+ AND m.sprite_name<>'' AND m.sprite_name=m.hostname
+ AND NOT(l.landing_capacity>0 AND l.machine_id=sqlc.arg(joining_machine)::text
+  AND i.project_id=sqlc.arg(joining_project)::text AND l.session_id=sqlc.arg(joining_session)::text AND sqlc.arg(joining_session)::text<>'')
+ GROUP BY lease_key,machine_key,project_key,session_key
+ LIMIT sqlc.arg(slot_limit)::bigint
+) active;
+
 -- name: RecordSpriteProvisionFailure :execrows
 UPDATE project_sprite_allocations SET provision_failures=provision_failures+1 WHERE organization_id=$1 AND project_id=$2 AND revision=$3;
 

@@ -297,6 +297,33 @@ func (q *Queries) RecordSpriteProvisionFailure(ctx context.Context, arg RecordSp
 	return result.RowsAffected(), nil
 }
 
+const rescheduleBusySpriteOperation = `-- name: RescheduleBusySpriteOperation :execrows
+UPDATE sprite_lifecycle_operations SET next_attempt_at=$1::timestamptz,updated_at=$1::timestamptz
+WHERE organization_id=$2 AND idempotency_key=$3
+AND operation='delete' AND outcome IN ('pending','uncertain') AND attempts=$4::bigint
+AND next_attempt_at<=$1::timestamptz AND updated_at<=$1::timestamptz
+`
+
+type RescheduleBusySpriteOperationParams struct {
+	CheckedAt        time.Time
+	OrganizationID   tracker.OrganizationID
+	IdempotencyKey   string
+	ExpectedAttempts int64
+}
+
+func (q *Queries) RescheduleBusySpriteOperation(ctx context.Context, arg RescheduleBusySpriteOperationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rescheduleBusySpriteOperation,
+		arg.CheckedAt,
+		arg.OrganizationID,
+		arg.IdempotencyKey,
+		arg.ExpectedAttempts,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setSpriteExecSession = `-- name: SetSpriteExecSession :execrows
 UPDATE sprite_lifecycle_operations SET exec_session_id=$1::text
 WHERE organization_id=$2 AND idempotency_key=$3
@@ -548,6 +575,46 @@ func (q *Queries) SpriteEnrollmentWake(ctx context.Context, arg SpriteEnrollment
 		&i.SourceRevision,
 	)
 	return i, err
+}
+
+const spriteJobSlotCount = `-- name: SpriteJobSlotCount :one
+SELECT count(*) FROM (
+ SELECT CASE WHEN l.landing_capacity>0 THEN '' ELSE l.lease_id END AS lease_key,
+ CASE WHEN l.landing_capacity>0 THEN l.machine_id ELSE '' END AS machine_key,
+ CASE WHEN l.landing_capacity>0 THEN i.project_id ELSE '' END AS project_key,
+ CASE WHEN l.landing_capacity>0 THEN l.session_id ELSE '' END AS session_key
+ FROM leases l JOIN machines m ON m.organization_id=l.organization_id AND m.id=l.machine_id
+ JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+ WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.expires_at>$2::timestamptz
+ AND m.sprite_name<>'' AND m.sprite_name=m.hostname
+ AND NOT(l.landing_capacity>0 AND l.machine_id=$3::text
+  AND i.project_id=$4::text AND l.session_id=$5::text AND $5::text<>'')
+ GROUP BY lease_key,machine_key,project_key,session_key
+ LIMIT $6::bigint
+) active
+`
+
+type SpriteJobSlotCountParams struct {
+	OrganizationID tracker.OrganizationID
+	At             time.Time
+	JoiningMachine string
+	JoiningProject string
+	JoiningSession string
+	SlotLimit      int64
+}
+
+func (q *Queries) SpriteJobSlotCount(ctx context.Context, arg SpriteJobSlotCountParams) (int64, error) {
+	row := q.db.QueryRow(ctx, spriteJobSlotCount,
+		arg.OrganizationID,
+		arg.At,
+		arg.JoiningMachine,
+		arg.JoiningProject,
+		arg.JoiningSession,
+		arg.SlotLimit,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const spriteMember = `-- name: SpriteMember :one

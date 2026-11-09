@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -496,9 +497,142 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 		}); err != nil {
 			t.Fatal(err)
 		}
-
 	}
-
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		var busy postgres.SpriteOperation
+		if err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
+			for _, name := range []string{"first", "second"} {
+				row, err := w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: org, IdempotencyKey: "delete:" + name, Name: name, Operation: "delete", RequestObjectKey: new("objects/request"), ProviderResourceID: "resource-" + name, CreatedAt: now, NextAttemptAt: now})
+				if err != nil {
+					return err
+				}
+				if name == "first" {
+					busy = row
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		checked := now.Add(500 * time.Millisecond)
+		if err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
+			return w.RescheduleBusySpriteOperation(t.Context(), busy, checked)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
+			pending, err := r.PendingSpriteOperations(t.Context(), checked, 1)
+			if err != nil {
+				return err
+			}
+			if len(pending) != 1 || pending[0].IdempotencyKey != "delete:second" || pending[0].OrganizationID != org {
+				t.Fatalf("busy operation kept the bounded queue head: %+v", pending)
+			}
+			current, err := r.SpriteOperation(t.Context(), busy.IdempotencyKey)
+			if err != nil {
+				return err
+			}
+			if current.Attempts != 0 || current.Outcome != "pending" || !current.NextAttemptAt.Equal(checked) || current.TargetEnrollmentID != "enrollment_first" || current.ProviderResourceID != "resource-first" || current.RequestObjectKey == nil || *current.RequestObjectKey != "objects/request" {
+				t.Fatalf("queue reschedule changed execution authority: %+v", current)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		stale := busy
+		stale.Attempts++
+		if err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
+			return w.RescheduleBusySpriteOperation(t.Context(), stale, checked.Add(time.Second))
+		}); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("stale operation changed queue position: %v", err)
+		}
+		if err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
+			return w.RescheduleBusySpriteOperation(t.Context(), busy, now.Add(-time.Second))
+		}); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("backdated operation changed queue position: %v", err)
+		}
+		claims := map[string]leasestore.Lease{}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, name := range []string{"first", "second", "local"} {
+				machine := "machine_" + name
+				if name == "local" {
+					if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: machine, Hostname: "local", Capacity: 1, Version: "example"}); err != nil {
+						return err
+					}
+				} else {
+					profile, err := w.Machine(t.Context(), machine)
+					if err != nil {
+						return err
+					}
+					profile.Hostname, profile.SpriteName = name, name
+					if err := w.RegisterMachine(t.Context(), profile); err != nil {
+						return err
+					}
+				}
+				project, item := tracker.ProjectID("prj_"+name), tracker.NativeWorkItemID("wi_"+name+"_1")
+				if name == "local" {
+					project, item = "prj_first", "wi_first_2"
+				}
+				row, err := w.WorkItem(t.Context(), project, item)
+				if err != nil {
+					return err
+				}
+				claim := leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: machine, SessionID: "slot-session-" + name, LeaseID: "slot-lease-" + name, TTL: 2 * time.Hour}
+				if name == "first" {
+					claim.LandingCapacity, claim.TTL = 1, time.Hour
+				}
+				claims[name], err = w.Claim(t.Context(), claim)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
+			for _, test := range []struct {
+				name    string
+				at      time.Time
+				limit   int64
+				joining postgres.SpriteSlotGroup
+				want    int64
+			}{
+				{name: "active Sprite jobs span projects and exclude local jobs", at: claims["second"].AcquiredAt, limit: 3, want: 2},
+				{name: "bounded capacity result", at: claims["second"].AcquiredAt, limit: 1, want: 1},
+				{name: "joining landing group reuses its slot", at: claims["second"].AcquiredAt, limit: 3, joining: postgres.SpriteSlotGroup{MachineID: "machine_first", ProjectID: "prj_first", SessionID: "slot-session-first"}, want: 1},
+				{name: "another project cannot reuse a landing slot", at: claims["second"].AcquiredAt, limit: 3, joining: postgres.SpriteSlotGroup{MachineID: "machine_first", ProjectID: "prj_second", SessionID: "slot-session-first"}, want: 2},
+				{name: "another machine cannot reuse a landing slot", at: claims["second"].AcquiredAt, limit: 3, joining: postgres.SpriteSlotGroup{MachineID: "machine_second", ProjectID: "prj_first", SessionID: "slot-session-first"}, want: 2},
+				{name: "ordinary jobs retain separate slots", at: claims["second"].AcquiredAt, limit: 3, joining: postgres.SpriteSlotGroup{MachineID: "machine_second", ProjectID: "prj_second", SessionID: "slot-session-second"}, want: 2},
+				{name: "microsecond before expiry remains active", at: claims["first"].ExpiresAt.Add(-time.Microsecond), limit: 3, want: 2},
+				{name: "exact expiry releases its slot", at: claims["first"].ExpiresAt, limit: 3, want: 1},
+				{name: "last expiry empties capacity", at: claims["second"].ExpiresAt, limit: 3, want: 0},
+			} {
+				count, err := r.SpriteJobSlotCount(t.Context(), test.at, test.limit, test.joining)
+				if err != nil || count != test.want {
+					t.Fatalf("%s: count=%d want=%d error=%v", test.name, count, test.want, err)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: claims["first"].LeaseID, FencingToken: claims["first"].FencingToken}, "completed")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
+			count, err := r.SpriteJobSlotCount(t.Context(), claims["second"].AcquiredAt, 3, postgres.SpriteSlotGroup{})
+			if err != nil || count != 1 {
+				t.Fatalf("released lease retained a Sprite slot: count=%d error=%v", count, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestSpriteRunnerSelectionHonorsAllocationAndSharing(t *testing.T) {
