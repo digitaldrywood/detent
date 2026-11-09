@@ -1,13 +1,18 @@
 package postgres_test
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -85,20 +90,8 @@ func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
 	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	previous := 0
 	for _, history := range []int{2, 50} {
-		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attachments
-				(organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at,work_item_id,evidence_attempt_id,deleted_at)
-				SELECT $1,CASE WHEN scope='other_project' THEN 'prj_other' ELSE 'prj_shared' END,
-				scope||'_'||attempt||'_'||lpad(n::text,6,'0'),'first','example.txt','text/plain',1,repeat('a',64),
-				$2::timestamptz+((n-1)/2)*interval '1 second',
-				CASE WHEN scope='other_item' THEN 'wi_other' ELSE 'wi_shared' END,
-				CASE WHEN scope='other_attempt' THEN 'unrequested' ELSE 'attempt_'||attempt END,
-				CASE WHEN n%2=0 THEN $2::timestamptz ELSE NULL END
-				FROM (VALUES ('target'),('other_project'),('other_item'),('other_attempt')) scopes(scope)
-				CROSS JOIN LATERAL generate_series(1,CASE WHEN scope='target' THEN 50 ELSE 1 END) attempt
-				CROSS JOIN generate_series($3::int+1,$4::int) n`, org, historyAt(), previous*201, history*201); err != nil {
-				t.Fatal(err)
-			}
+		if err := copyAttemptEvidenceHistory(t.Context(), admin, previous*201+1, history*201); err != nil {
+			t.Fatal(err)
 		}
 		previous = history
 		if _, err := admin.ExecContext(t.Context(), `ANALYZE attachments`); err != nil {
@@ -203,4 +196,77 @@ func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
 			}
 		}
 	}
+}
+
+func copyAttemptEvidenceHistory(ctx context.Context, admin *sql.DB, first, last int) (resultErr error) {
+	connection, err := admin.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, connection.Close()) }()
+	return connection.Raw(func(driverConnection any) (resultErr error) {
+		native, ok := driverConnection.(*stdlib.Conn)
+		if !ok {
+			return errors.New("native PostgreSQL fixture connection is required")
+		}
+		tx, err := native.Conn().Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+				resultErr = errors.Join(resultErr, err)
+			}
+		}()
+		type group struct{ prefix, project, item, attempt string }
+		groups := make([]group, 0, 53)
+		for attempt := 1; attempt <= 50; attempt++ {
+			groups = append(groups, group{fmt.Sprintf("target_%d_", attempt), "prj_shared", "wi_shared", fmt.Sprintf("attempt_%d", attempt)})
+		}
+		groups = append(groups, group{"other_project_1_", "prj_other", "wi_shared", "attempt_1"}, group{"other_item_1_", "prj_shared", "wi_other", "attempt_1"}, group{"other_attempt_1_", "prj_shared", "wi_shared", "unrequested"})
+		organizations := []string{"org_first", "org_second"}
+		count := last - first + 1
+		ids := make([]string, count)
+		timestamps := make([]time.Time, count)
+		for i := range count {
+			n := first + i
+			ids[i] = strconv.Itoa(n)
+			if len(ids[i]) < 6 {
+				ids[i] = strings.Repeat("0", 6-len(ids[i])) + ids[i]
+			} else {
+				ids[i] = ids[i][:6]
+			}
+			timestamps[i] = historyAt().Add(time.Duration((n-1)/2) * time.Second)
+		}
+		perTenant := count * len(groups)
+		want := len(organizations) * perTenant
+		row := 0
+		values := []any{nil, nil, nil, "first", "example.txt", "text/plain", int64(1), strings.Repeat("a", 64), nil, nil, nil, nil}
+		copied, err := tx.CopyFrom(ctx, pgx.Identifier{"attachments"}, []string{"organization_id", "project_id", "id", "uploader", "name", "content_type", "size", "sha256", "created_at", "work_item_id", "evidence_attempt_id", "deleted_at"}, pgx.CopyFromFunc(func() ([]any, error) {
+			if row == want {
+				return nil, nil
+			}
+			tenant := row / perTenant
+			offset := row % perTenant
+			nIndex := offset / len(groups)
+			g := groups[offset%len(groups)]
+			values[0], values[1], values[2] = organizations[tenant], g.project, g.prefix+ids[nIndex]
+			values[8], values[9], values[10] = timestamps[nIndex], g.item, g.attempt
+			values[11] = nil
+			if (first+nIndex)%2 == 0 {
+				values[11] = historyAt()
+			}
+			row++
+			return values, nil
+		}))
+		if err != nil {
+			return fmt.Errorf("copy attempt history: %w", err)
+		}
+		if copied != int64(want) {
+			return fmt.Errorf("history rows=%d, want%d", copied, want)
+		}
+		return tx.Commit(ctx)
+	})
 }
