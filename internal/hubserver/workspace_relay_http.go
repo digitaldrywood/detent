@@ -201,7 +201,12 @@ func relayActorName(email string) string {
 // writer, the authority re-check and the read loop.
 func (w *workspaceService) servePerson(c echo.Context, scope nativeScope, record workspaceRecord, connection *relayConnection, principal relayPrincipal) error {
 	connection.scope = scope
-	ctx := c.Request().Context()
+	ctx, finished, err := w.relay.startConnection(c.Request().Context(), connection)
+	if err != nil {
+		w.closeRelaySocket(connection.socket, "server_shutdown")
+		return nil
+	}
+	defer finished()
 	if err := w.openRelayAudit(ctx, record, connection, principal); err != nil {
 		// The upgrade already happened, so there is no HTTP response left to
 		// write an error into: the connection has been handed to the
@@ -908,6 +913,12 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 		principalID: scope.credential.ID, sessionID: string(record.LeaseID),
 		out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
 	}
+	ctx, finished, err := service.relay.startConnection(ctx, connection)
+	if err != nil {
+		service.closeRelaySocket(socket, "server_shutdown")
+		return nil
+	}
+	defer finished()
 	previous, err := service.relay.attachRunner(connection)
 	if err != nil {
 		service.closeRelaySocket(socket, "server_shutdown")

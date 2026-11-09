@@ -121,8 +121,8 @@ func (w *workspaceService) StopContext(ctx context.Context) {
 		if w.cancelSweep != nil {
 			w.cancelSweep()
 		}
-		<-w.stopped
 		w.relay.stop(ctx)
+		<-w.stopped
 	})
 }
 

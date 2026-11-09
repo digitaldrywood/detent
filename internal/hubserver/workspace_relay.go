@@ -58,8 +58,10 @@ type workspaceRelay struct {
 	rooms map[string]*relayRoom
 	// memory is the total buffered bytes across every stream, the budget
 	// workspaces.relay.memory caps.
-	memory  int64
-	stopped bool
+	memory         int64
+	stopped        bool
+	connections    map[*relayConnection]context.CancelFunc
+	connectionWork sync.WaitGroup
 	// attachments counts every connection that has joined a room, runner and
 	// person alike. It only ever rises, so a reader comparing two values knows
 	// a connection joined in between even if it has already left again.
@@ -269,7 +271,27 @@ type relayConnection struct {
 }
 
 func newWorkspaceRelay(service *workspaceService) *workspaceRelay {
-	return &workspaceRelay{service: service, rooms: map[string]*relayRoom{}}
+	return &workspaceRelay{service: service, rooms: map[string]*relayRoom{}, connections: map[*relayConnection]context.CancelFunc{}}
+}
+
+func (r *workspaceRelay) startConnection(ctx context.Context, connection *relayConnection) (context.Context, func(), error) {
+	ctx, cancel := context.WithCancel(ctx)
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		cancel()
+		return nil, nil, errors.New("the relay is shutting down")
+	}
+	r.connections[connection] = cancel
+	r.connectionWork.Add(1)
+	r.mu.Unlock()
+	return ctx, func() {
+		cancel()
+		r.mu.Lock()
+		delete(r.connections, connection)
+		r.mu.Unlock()
+		r.connectionWork.Done()
+	}, nil
 }
 
 // stop closes every connection. It is called when the hub shuts down, so a
@@ -277,13 +299,20 @@ func newWorkspaceRelay(service *workspaceService) *workspaceRelay {
 func (r *workspaceRelay) stop(ctx context.Context) {
 	r.mu.Lock()
 	r.stopped = true
-	connections := []*relayConnection{}
+	connections := make(map[*relayConnection]context.CancelFunc, len(r.connections))
+	for connection, cancel := range r.connections {
+		connections[connection] = cancel
+	}
 	for _, room := range r.rooms {
 		if room.runner != nil {
-			connections = append(connections, room.runner)
+			if _, registered := connections[room.runner]; !registered {
+				connections[room.runner] = nil
+			}
 		}
 		for _, person := range room.people {
-			connections = append(connections, person)
+			if _, registered := connections[person]; !registered {
+				connections[person] = nil
+			}
 		}
 	}
 	orphaned := []*execRunState{}
@@ -295,6 +324,12 @@ func (r *workspaceRelay) stop(ctx context.Context) {
 	r.rooms = map[string]*relayRoom{}
 	r.memory = 0
 	r.mu.Unlock()
+	for connection, cancel := range connections {
+		connection.close("server_shutdown")
+		if cancel != nil {
+			cancel()
+		}
+	}
 	// A run in flight at shutdown has no process left to report an exit, so it
 	// is failed here rather than found running by the next hub process.
 	r.service.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
@@ -302,9 +337,7 @@ func (r *workspaceRelay) stop(ctx context.Context) {
 	// another event to its recording, so what was collected is written now
 	// rather than lost with the process.
 	r.service.finishTerminalRecordings(ctx, recorded)
-	for _, connection := range connections {
-		connection.close("server_shutdown")
-	}
+	r.connectionWork.Wait()
 }
 
 // ensureRoom returns the workspace's room, creating it when there is none. It
