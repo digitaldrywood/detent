@@ -65,6 +65,31 @@ var nativeFormsTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.D
 func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
 	t.Parallel()
 	config := nativeFormsPostgresConfig(t)
+	func() {
+		poolConfig, err := config.Postgres.Connection.PoolConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		poolConfig.MaxConns = int32(config.Postgres.Pool.MaxConnections)
+		pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+		var acquired []*pgxpool.Conn
+		defer func() {
+			for _, connection := range acquired {
+				connection.Release()
+			}
+		}()
+		for range config.Postgres.Pool.MaxConnections {
+			connection, err := pool.Acquire(t.Context())
+			if err != nil {
+				t.Fatalf("fixture cannot serve its configured connection budget: %v", err)
+			}
+			acquired = append(acquired, connection)
+		}
+	}()
 	for _, organization := range []tracker.OrganizationID{"org_example", "org_other"} {
 		for _, project := range []tracker.ProjectID{"prj_forms", "prj_second"} {
 			t.Run(string(organization)+"/"+string(project), func(t *testing.T) {
@@ -272,6 +297,9 @@ func nativeFormsPostgresConfig(t *testing.T) hubserver.Config {
 		}
 	})
 	connection := template.Connection(t, admin, role, password)
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 4"); err != nil {
+		t.Fatal(err)
+	}
 	keys, err := hubsecrets.FromEnvironment(func(name string) string {
 		if name == "DETENT_HUB_SECRET_KEYS" {
 			return `{"1":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x5a}, 32)) + `"}`
