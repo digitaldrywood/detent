@@ -941,6 +941,11 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		if err := s.authorizeAccessScope(ctx, writer, scope, true); err != nil {
 			return err
 		}
+		if current.WorkItemID != "" && (command.Kind == conversation.CommandContinue || command.Kind == conversation.CommandRetry) {
+			if _, err := writer.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(current.WorkItemID)); err != nil {
+				return err
+			}
+		}
 		if err := registerPreparedConversationObjects(ctx, writer, scope.organization, plan.prepared, plan.now); err != nil {
 			return err
 		}
@@ -948,7 +953,7 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		if storedConversation.Revision != current.Revision {
+		if storedConversation.Revision != current.Revision || storedConversation.WorkItemID != current.WorkItemID {
 			return conversationStale("The conversation changed; retry the command")
 		}
 		if storedConversation.ReadAudience != "" {
