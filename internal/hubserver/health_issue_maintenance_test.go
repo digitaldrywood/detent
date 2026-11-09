@@ -2,9 +2,11 @@ package hubserver
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -87,6 +89,23 @@ func TestHealthIssueMaintenanceStartsAndBoundsPublication(t *testing.T) {
 		case <-t.Context().Done():
 			t.Fatal(t.Context().Err())
 		}
+		hosted := hostedSecurityFixture{service: reopened, provider: cfg.Hosted.Provider.(*hostedSecurityProvider)}
+		identity := auth.Identity{Subject: "health_owner", Email: "owner@example.test", EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: "health_owner", OrganizationID: cfg.Hosted.WorkOSOrganizationID, SessionID: "health_session", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}}
+		hosted.provider.mu.Lock()
+		hosted.provider.sessions[identity.Hosted.SessionID] = *identity.Hosted
+		hosted.provider.mu.Unlock()
+		membership, err := hosted.provider.CreateMembership(t.Context(), identity.Subject, identity.Hosted.OrganizationID, "owner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reopened.addHostedMember(t.Context(), identity, membership); err != nil {
+			t.Fatal(err)
+		}
+		token, _, err := reopened.hostedSessions.CreateIdentitySession(t.Context(), identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner := hostedSecurityUser{identity: identity, token: token}
 		linked := 0
 		completed := false
 		for range 3 * 16 {
@@ -107,10 +126,10 @@ func TestHealthIssueMaintenanceStartsAndBoundsPublication(t *testing.T) {
 			current := 0
 			completed = true
 			for _, f := range fixtures[org] {
-				page, err := reopened.readHealthFindings(t.Context(), nativeScope{organization: org, project: f.project.ID}, "all", "", "", 100)
-				if err != nil {
-					t.Fatal(err)
-				}
+				response := hosted.request(t, owner, http.MethodGet, f.base+"/health/findings?state=all", nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page healthFindingsPage
+				decodeHubResponse(t, response, &page)
 				if len(page.Items) > 1 || len(page.Items) == 1 && len(page.Items[0].Issues) > 1 {
 					t.Fatalf("organization=%s project=%s findings=%+v", org, f.project.ID, page)
 				}
@@ -130,7 +149,35 @@ func TestHealthIssueMaintenanceStartsAndBoundsPublication(t *testing.T) {
 		if linked != 2 || !completed {
 			t.Fatalf("organization=%s background publications=%d completed=%t", org, linked, completed)
 		}
+		for _, f := range fixtures[org] {
+			path := f.base + "/health/findings"
+			requireNativeStatus(t, performHubAPIRequest(t, reopened, http.MethodGet, path, "", nil), http.StatusUnauthorized)
+			other := tracker.OrganizationID("org_first")
+			if org == other {
+				other = "org_first_second"
+			}
+			requireNativeStatus(t, hosted.request(t, owner, http.MethodGet, fixtures[other][0].base+"/health/findings", nil), http.StatusNotFound)
+		}
 		if err := reopened.Close(); err != nil {
+			t.Fatal(err)
+		}
+		cfg.runMaintenance = waitForMaintenanceFixtureShutdown
+		retained, err := Open(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = retained.Close() })
+		hosted.service = retained
+		for _, f := range fixtures[org] {
+			response := hosted.request(t, owner, http.MethodGet, f.base+"/health/findings?state=all", nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page healthFindingsPage
+			decodeHubResponse(t, response, &page)
+			if len(page.Items) != 1 || len(page.Items[0].Issues) != 1 || page.LastTickAt == nil {
+				t.Fatalf("organization=%s lost background findings after reopen: %+v", org, page)
+			}
+		}
+		if err := retained.Close(); err != nil {
 			t.Fatal(err)
 		}
 	}
