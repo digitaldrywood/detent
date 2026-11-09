@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -29,6 +31,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &conversationContentFixture{}
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: time.Now}}
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now), chat.WithSessionStore(operatorChatStore{service.database}, service.resolveOperatorChatAuthority))
 	service.conversations = &conversationService{server: service, store: &conversationStore{contents: objects}}
 	service.conversations.config.ControlQueueSize = 100
 	service.conversations.broker = newNotificationBroker()
@@ -607,14 +610,14 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			failed := postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "failure.txt", "text/plain", []byte("unpublished"), "failure")
 			requireNativeStatus(t, failed, http.StatusInternalServerError)
 			objects.setFail(false)
-			usage(f, int64(len(payload)))
+			usage(f, int64(len(payload)+len("unpublished")))
 			duplicate := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "duplicate.txt", "text/plain", payload)
-			usage(f, 2*int64(len(payload)))
+			usage(f, int64(2*len(payload)+len("unpublished")))
 			objects.onIO = func() error { return fmt.Errorf("blob unavailable") }
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, duplicate.Attachment.URL, testHubAdminToken, nil), http.StatusInternalServerError)
 			objects.onIO = nil
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, duplicate.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
-			usage(f, int64(len(payload)))
+			usage(f, int64(len(payload)+len("unpublished")))
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusOK)
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 				n, err := r.ArchiveBytes(t.Context())
@@ -626,10 +629,14 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
-			usage(f, int64(len(payload)))
+			usage(f, int64(len(payload)+len("unpublished")))
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 				n, err := r.ArchiveBytes(t.Context())
-				if err == nil && n != archive {
+				failedRef, _, prepareErr := attachment.PrepareArchive(string(f.org), 1, bytes.NewReader([]byte("unpublished")))
+				if prepareErr != nil {
+					return prepareErr
+				}
+				if err == nil && n != archive+failedRef.CompressedSize {
 					return fmt.Errorf("deleted archive bytes=%d", n)
 				}
 				return err
@@ -639,7 +646,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
 			requireNativeStatus(t, postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "example.txt", "text/plain", payload, "upload"), http.StatusConflict)
-			baseUsage[f.org] += int64(len(payload))
+			baseUsage[f.org] += int64(len(payload) + len("unpublished"))
 		})
 	}
 	for _, f := range fixtures {
@@ -688,7 +695,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			response = postConversationAttachment(t, service, f.base, "example-current-token", f.id, "example.txt", "text/plain", []byte("must not commit"), "in-flight")
 			objects.onIO = nil
 			requireNativeStatus(t, response, http.StatusForbidden)
-			usage(f, int64(len(payload)))
+			usage(f, int64(len(payload)+len("must not commit")))
 		})
 	}
 
@@ -720,6 +727,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &conversationContentFixture{}
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: time.Now}}
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now), chat.WithSessionStore(operatorChatStore{service.database}, service.resolveOperatorChatAuthority))
 	service.conversations = &conversationService{server: service, store: &conversationStore{contents: objects}}
 	service.conversations.config.ControlQueueSize = 100
 	service.conversations.broker = newNotificationBroker()
