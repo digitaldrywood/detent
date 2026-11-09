@@ -38,14 +38,16 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 	second := openWorkspaceTenantHub(t, config, workspaceTestDB(t, first), "org_first_second")
 	hubs := []*Service{first, second}
 	type savedWorkspace struct {
-		fixture   *relayFixture
-		index     int
-		action    workspacesession.Action
-		run       string
-		automatic workspacesession.Run
-		pending   string
-		recording string
-		marker    string
+		fixture           *relayFixture
+		index             int
+		action            workspacesession.Action
+		run               string
+		automatic         workspacesession.Run
+		pending           string
+		recording         string
+		shutdownStream    string
+		shutdownRecording string
+		marker            string
 	}
 	var saved []*savedWorkspace
 	readSession := func(record *savedWorkspace) workspacesession.Session {
@@ -189,6 +191,18 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 			if session.ID != f.workspace {
 				t.Fatalf("dispatch lookup returned workspace %q", session.ID)
 			}
+			shutdownRunner := f.dialRunner(t)
+			shutdownPerson := f.dialPerson(t)
+			t.Cleanup(func() {
+				_ = shutdownPerson.socket.CloseNow()
+				_ = shutdownRunner.socket.CloseNow()
+			})
+			shutdownPerson.send(terminalOpenFrame())
+			record.shutdownStream = shutdownRunner.receive().Stream
+			shutdownRunner.send(terminalOutputFrame(t, record.shutdownStream, record.marker+"-shutdown"))
+			if frame := shutdownPerson.receive(); frame.Type != workspacesession.TypeTerminalOutput || frame.Stream != record.shutdownStream {
+				t.Fatalf("shutdown terminal output frame=%+v", frame)
+			}
 			saved = append(saved, record)
 		}
 	}
@@ -209,6 +223,26 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 				}
 				f.bind(t)
 				assertAutomaticReplay(record)
+				response := performHubAPIRequest(t, reopened, http.MethodGet, f.base+"/workspaces/"+f.workspace+"/terminal-recordings", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var listing struct {
+					Recordings []TerminalRecording `json:"recordings"`
+				}
+				decodeHubResponse(t, response, &listing)
+				if len(listing.Recordings) != 2 {
+					t.Fatalf("recordings after live Hub shutdown=%+v", listing.Recordings)
+				}
+				for _, recording := range listing.Recordings {
+					if recording.StreamID == record.shutdownStream {
+						if recording.FinishedAt == nil || recording.Artifact == "" || recording.Isolation != workspacesession.IsolationSandbox {
+							t.Fatalf("unfinished shutdown recording=%+v", recording)
+						}
+						record.shutdownRecording = recording.ID
+					}
+				}
+				if record.shutdownRecording == "" {
+					t.Fatal("Hub shutdown did not publish its open terminal recording")
+				}
 			} else if session := readSession(record); session.State != workspacesession.StateReady {
 				t.Fatalf("another tenant's restart changed workspace state=%q", session.State)
 			}
@@ -326,6 +360,11 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		requireNativeStatus(t, cast, http.StatusOK)
 		if !strings.Contains(cast.Body.String(), record.marker) || !strings.Contains(cast.Header().Get("Content-Type"), "asciicast") {
 			t.Fatalf("terminal recording after reopen=%q", cast.Body.String())
+		}
+		shutdownCast := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/workspaces/"+f.workspace+"/terminal-recordings/"+record.shutdownRecording, f.token, nil)
+		requireNativeStatus(t, shutdownCast, http.StatusOK)
+		if !strings.Contains(shutdownCast.Body.String(), record.marker+"-shutdown") {
+			t.Fatalf("shutdown recording after final reopen=%q", shutdownCast.Body.String())
 		}
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			rows, err := r.(workspaceReader).WorkspaceOccupancy(t.Context(), f.project.ID, f.workspace, 10)
