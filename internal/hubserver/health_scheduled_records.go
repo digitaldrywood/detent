@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,7 +18,7 @@ import (
 
 func (s *Service) recordHealthScheduledValidation(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	report := request.ScheduledValidation
-	if report == nil || !report.Valid() || request.Type != "" || request.ReportContext != nil || request.Title != "" || request.Body != "" || request.State != "" || request.Priority != nil || len(request.Labels) != 0 || len(request.Assignees) != 0 || request.Provenance != nil || request.GitHubIssueURL != "" {
+	if report == nil || !report.Valid() || request.ScheduledFailure != nil || request.ChallengeToken != "" || len(request.NotDuplicateOf) != 0 || request.Type != "" || request.ReportContext != nil || request.Title != "" || request.Body != "" || request.State != "" || request.Priority != nil || len(request.Labels) != 0 || len(request.Assignees) != 0 || request.Provenance != nil || request.GitHubIssueURL != "" {
 		return nil, nativePublicInvalid("Invalid scheduled validation report")
 	}
 	if scope.credential.Scope == apiScopeWorker || scope.credential.HostedRole == "reporter" {
@@ -56,6 +57,9 @@ func (s *Service) recordHealthScheduledValidation(ctx context.Context, scope nat
 		retained, err = owner.RecordHealthScheduledReport(ctx, healthstore.ScheduledReport{ScheduledValidationReport: *report, OrganizationID: scope.organization, ProjectID: scope.project, RecordedAt: s.config.now().UTC()})
 		return err
 	})
+	if errors.Is(err, corestore.ErrRevisionConflict) {
+		return nil, nativeConflict(0)
+	}
 	if err != nil {
 		return nil, projectRecordError(err)
 	}
