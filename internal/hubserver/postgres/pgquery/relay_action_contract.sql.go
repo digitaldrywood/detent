@@ -614,7 +614,7 @@ func (q *Queries) DeletedProjectActions(ctx context.Context, arg DeletedProjectA
 }
 
 const finishActionRun = `-- name: FinishActionRun :one
-UPDATE project_action_runs SET status=$1,exit_code=$2,reason=$3,finished_at=$4,output_object_key=$5,output_sha256=$6,output_bytes=$7,output_content_bytes=$8,output_sequence=output_sequence+1,truncated=$9,revision=revision+1,updated_at=$4
+UPDATE project_action_runs SET status=$1,exit_code=$2,reason=$3,started_at=coalesce(started_at,$4),finished_at=$4,output_object_key=$5,output_sha256=$6,output_bytes=$7,output_content_bytes=$8,output_sequence=output_sequence+1,truncated=$9,revision=revision+1,updated_at=$4
 WHERE organization_id=$10 AND project_id=$11 AND id=$12 AND revision=$13 AND status IN ('queued','running') RETURNING organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id
 `
 

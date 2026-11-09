@@ -60,7 +60,7 @@ SELECT a.* FROM workspace_sessions w JOIN LATERAL (SELECT a.* FROM project_actio
 SELECT * FROM project_action_runs WHERE organization_id=$1 AND id>$2 AND status IN ('queued','running') ORDER BY id LIMIT $3;
 
 -- name: FinishActionRun :one
-UPDATE project_action_runs SET status=sqlc.arg(status),exit_code=sqlc.narg(exit_code),reason=sqlc.arg(reason),finished_at=sqlc.arg(finished_at),output_object_key=sqlc.narg(output_object_key),output_sha256=sqlc.arg(output_sha256),output_bytes=sqlc.arg(output_bytes),output_content_bytes=sqlc.arg(output_content_bytes),output_sequence=output_sequence+1,truncated=sqlc.arg(truncated),revision=revision+1,updated_at=sqlc.arg(finished_at)
+UPDATE project_action_runs SET status=sqlc.arg(status),exit_code=sqlc.narg(exit_code),reason=sqlc.arg(reason),started_at=coalesce(started_at,sqlc.arg(finished_at)),finished_at=sqlc.arg(finished_at),output_object_key=sqlc.narg(output_object_key),output_sha256=sqlc.arg(output_sha256),output_bytes=sqlc.arg(output_bytes),output_content_bytes=sqlc.arg(output_content_bytes),output_sequence=output_sequence+1,truncated=sqlc.arg(truncated),revision=revision+1,updated_at=sqlc.arg(finished_at)
 WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND id=sqlc.arg(id) AND revision=sqlc.arg(expected_revision) AND status IN ('queued','running') RETURNING *;
 
 -- name: PruneRelayTickets :execrows
