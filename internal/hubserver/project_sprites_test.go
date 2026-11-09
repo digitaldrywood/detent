@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"runtime/pprof"
 	"strings"
 	"sync"
@@ -452,16 +453,29 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 			f, scope, runners := newSpriteWakeFixture(t, client, true, time.Minute, "customer-host")
 			now := f.service.config.now()
 			f.service.config.now = func() time.Time { return now }
+			ctx, cancel := context.WithCancel(t.Context())
+			var workers sync.WaitGroup
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(func() {
+				cancel()
+				unblock()
+				workers.Wait()
+				f.service.spriteWakeWork.Wait()
+			})
 			f.create(t, "initial")
 			waitSpriteWake(t, started)
 			done := spriteWakeDone(t, f.service, scope)
 			const mutations = 64
-			var workers sync.WaitGroup
 			latencies := make(chan time.Duration, mutations)
 			for i := range mutations {
 				workers.Go(func() {
 					start := time.Now()
-					f.create(t, fmt.Sprintf("burst-%d", i))
+					name := fmt.Sprintf("burst-%d", i)
+					request := newHubAPIRequest(t, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + name}, Title: name, Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: "Todo"}).WithContext(ctx)
+					response := httptest.NewRecorder()
+					f.service.Handler().ServeHTTP(response, request)
+					requireNativeStatus(t, response, http.StatusOK)
 					latencies <- time.Since(start)
 				})
 			}
@@ -485,7 +499,7 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 				t.Fatalf("burst: active passes=%d, retained wake goroutines=%d, provider calls=%d", active, retained, calls.Load())
 			}
 			t.Logf("fixture mutations=%d provider_calls=%d retained_wake_goroutines=%d active_passes=%d max_mutation_latency=%s", mutations+1, calls.Load(), retained, active, maximum)
-			close(release)
+			unblock()
 			waitSpriteWake(t, done)
 			f.service.spriteWakeWork.Wait()
 			if test.status != http.StatusOK || test.transportError {

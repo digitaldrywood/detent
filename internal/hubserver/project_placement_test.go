@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -112,7 +113,8 @@ func TestPlacementClaims(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newDefaultNativeFixture(t, Config{})
+			f := newSpriteNativeFixture(t, Config{RunDetails: &verifiedAttemptDetails{}})
+			scope := setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 4)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			sprite := placementFixtureRunner(t, f, "sprite-runner", "sprite", true, 4, "gpt-6.1-sol", "test-model")
 			var live []tracker.NativeLease
@@ -152,7 +154,7 @@ func TestPlacementClaims(t *testing.T) {
 					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(local.binding.MachineID)+"/heartbeat", local.redemption.Credential,
 						map[string]any{"backend_isolation": local.redemption.BackendIsolation, "display_name": "Runner", "capacity": 1, "version": "test", "problems": problems}), http.StatusOK)
-					view, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, local.binding.RunnerID, f.service.config.now())
+					view, err := f.service.readRunnerRouting(t.Context(), scope, local.binding.RunnerID)
 					if err != nil || len(view.Problems) != len(problems) || view.Health != "needs_attention" {
 						t.Fatalf("reported problems lost: %+v, %v", view, err)
 					}
@@ -160,36 +162,56 @@ func TestPlacementClaims(t *testing.T) {
 					busy := f.create(t, "already running")
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", local.redemption.Credential, providerClaim(local, busy, "busy")), http.StatusOK)
 				case "offline":
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?`, formatHubTime(f.service.config.now().Add(-3*time.Minute)), local.binding.RunnerID); err != nil {
-						t.Fatal(err)
-					}
+					writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+						identity, err := w.RunnerIdentity(t.Context(), local.binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						identity.LastHeartbeatAt = f.service.config.now().Add(-3 * time.Minute)
+						return w.UpdateRunnerIdentity(t.Context(), identity)
+					})
 				case "draining":
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET state='draining' WHERE id=?`, local.binding.RunnerID); err != nil {
-						t.Fatal(err)
-					}
+					writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+						identity, err := w.RunnerIdentity(t.Context(), local.binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						identity.State = "draining"
+						return w.UpdateRunnerIdentity(t.Context(), identity)
+					})
 				}
 			}
 			placement := policy.Placement{Mode: test.mode}
 			if test.mode == "local_first" {
 				placement.TodoThreshold, placement.OverflowSlots = 3, 2
 			}
-			scope := setPlacementFixture(t, f, placement, 4)
+			scope = setPlacementFixture(t, f, placement, 4)
 			if test.desired >= 0 {
 				scope = setPlacementFixture(t, f, placement, 0)
 				setSpriteAllocationFixture(t, f, test.desired, 0)
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_allocations SET provision_failures=3,revision=2 WHERE project_id=?`, f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					owner := w.(postgres.SpriteWriter)
+					allocation, err := owner.SpriteAllocation(t.Context(), f.project.ID)
+					if err != nil {
+						return err
+					}
+					for range 3 {
+						if err := owner.RecordSpriteProvisionFailure(t.Context(), f.project.ID, allocation.Revision); err != nil {
+							return err
+						}
+					}
+					return nil
+				})
 				if test.claimant == "sprite" {
 					for i := range 2 {
 						historical := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
-						now := formatHubTime(f.service.config.now())
-						if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,bootstrap_log,idle_since,created_at) VALUES(?,?,?,'test',?,'deleted','bootstrap failed',?,?)`, f.project.OrganizationID, f.project.ID, fmt.Sprintf("historical-%d", i), historical.enrollment.ID, now, now); err != nil {
-							t.Fatal(err)
-						}
+						now := f.service.config.now()
+						writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+							return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: f.project.OrganizationID, AllocationProjectID: f.project.ID, Name: fmt.Sprintf("historical-%d", i), ProviderOrganization: "detent-test", EnrollmentID: historical.enrollment.ID, State: "deleted", IdleSince: now, CreatedAt: now})
+						})
 					}
 				}
-				allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
+				allocation, err := f.service.projectSpriteAllocation(t.Context(), scope)
 				if err != nil || allocation.AllocatedCount != 0 || allocation.ProvisionFailures != 3 || allocation.Shortfall != test.desired {
 					t.Fatalf("allocation=%+v err=%v", allocation, err)
 				}
@@ -203,9 +225,9 @@ func TestPlacementClaims(t *testing.T) {
 			}
 			r := sprite
 			if test.name == "non-Todo work uses Todo overflow eligibility" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?`, f.project.ID, issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", testHubAdminToken, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "active-work"}, ExpectedRevision: issue.Revision, State: "In Progress", Reason: "user_requested"})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &issue)
 			}
 			if test.claimant == "local" {
 				r = local
@@ -213,38 +235,68 @@ func TestPlacementClaims(t *testing.T) {
 			claim := providerClaim(r, issue, "placement")
 			switch test.local {
 			case "disabled":
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET state='disabled' WHERE id=?`, r.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					identity.State = "disabled"
+					return w.UpdateRunnerIdentity(t.Context(), identity)
+				})
 			case "execution":
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET backend_isolation_json='{}' WHERE id=?`, r.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					return w.ReplaceRunnerBackendIsolation(t.Context(), r.binding.RunnerID, nil)
+				})
 			case "runner_full":
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET capacity_limit=1 WHERE id=?`, r.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					identity.CapacityLimit = 1
+					return w.UpdateRunnerIdentity(t.Context(), identity)
+				})
 			case "host_full":
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET capacity=1 WHERE id=?`, r.binding.MachineID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					machine, err := w.Machine(t.Context(), string(r.binding.MachineID))
+					if err != nil {
+						return err
+					}
+					machine.Capacity = 1
+					return w.HeartbeatMachine(t.Context(), machine, f.service.config.now())
+				})
 			case "provider_full":
 				report := capacityReport(f.service.config.now())
 				report.Availability = "exhausted"
 				publishCapacity(t, f, r, report)
 			case "policy":
-				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM project_policies WHERE scope=?`, string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
+				connection := spritePostgresFixtureConnection(t, f)
+				if _, err := connection.Exec(t.Context(), "DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2", scope.organization, scope.project); err != nil {
 					t.Fatal(err)
 				}
 			case "grant":
-				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM token_grants WHERE token_id=(SELECT token_id FROM runner_identities WHERE id=?)`, r.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					return w.DeleteAccessTokenGrant(t.Context(), identity.TokenID, scope.project)
+				})
 			case "dependency":
 				blocker := f.create(t, "unfinished dependency")
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO issue_dependencies(dependent_issue_id,blocker_issue_id,provenance,created_at,updated_at) SELECT d.id,b.id,'native',d.created_at,d.updated_at FROM issues d,issues b WHERE d.native_id=? AND b.native_id=?`, issue.WorkItemID, blocker.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), scope.project)
+					if err != nil {
+						return err
+					}
+					project.Core.RequireDependencies = true
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				})
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/dependencies", testHubAdminToken, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "claim-blocker"}, ExpectedRevision: issue.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &issue)
+				claim = providerClaim(r, issue, "placement")
 			case "source":
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "source"))
 				requireNativeStatus(t, response, http.StatusOK)
@@ -263,21 +315,27 @@ func TestPlacementClaims(t *testing.T) {
 			requireNativeStatus(t, response, test.want)
 			if test.desired >= 0 {
 				if test.claimant == "sprite" {
-					var adopted int
-					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM organization_sprite_members WHERE organization_id=? AND enrollment_id=?`, f.project.OrganizationID, sprite.enrollment.ID).Scan(&adopted); err != nil || adopted != 0 {
-						t.Fatalf("manual runner adopted=%d err=%v", adopted, err)
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+						if _, err := reader.RunnerSpriteMembershipByEnrollment(t.Context(), sprite.enrollment.ID); err == nil {
+							return errors.New("manual runner adopted")
+						} else if !errors.Is(err, corestore.ErrNotFound) {
+							return err
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
 					}
-					allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
+					allocation, err := f.service.projectSpriteAllocation(t.Context(), scope)
 					if err != nil || allocation.DesiredCount != test.desired || allocation.AllocatedCount != 0 || allocation.ProvisionFailures != 3 {
 						t.Fatalf("allocation changed: %+v err=%v", allocation, err)
 					}
 				}
-				runners, err := readPlacementRunners(t.Context(), f.service.database.reader, scope, f.service.config.now())
+				snapshot, err := f.service.spriteProjectPlacementRecord(t.Context(), scope)
 				if err != nil {
 					t.Fatal(err)
 				}
 				locals := 0
-				for _, runner := range runners {
+				for _, runner := range snapshot.Runners {
 					if !runner.Sprite {
 						locals++
 					}
@@ -292,11 +350,19 @@ func TestPlacementClaims(t *testing.T) {
 				if locals != wantLocals {
 					t.Fatalf("placement lost local runners: got %d, want %d", locals, wantLocals)
 				}
-				for _, lease := range live {
-					var active bool
-					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT released_at IS NULL AND fencing_token=? FROM leases WHERE lease_id=?`, lease.FencingToken, lease.ID).Scan(&active); err != nil || !active {
-						t.Fatalf("existing lease changed: %s active=%t err=%v", lease.ID, active, err)
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					for _, lease := range live {
+						current, err := reader.Lease(t.Context(), string(lease.ID))
+						if err != nil {
+							return err
+						}
+						if current.ReleasedAt != nil || current.FencingToken != int64(lease.FencingToken) {
+							return errors.New("existing lease changed")
+						}
 					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
 				}
 			}
 		})
@@ -473,25 +539,25 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 		{"desired members do not cap job slots", "blended", 4, 0, 0, 6, false, "owned"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
+			f := newSpriteNativeFixture(t, Config{})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			placement := policy.Placement{Mode: test.mode, OverflowSlots: test.overflow, MaxSpriteSlots: test.limit}
 			if test.mode == "local_first" {
 				placement.TodoThreshold = 1
 			}
-			setPlacementFixture(t, f, placement, test.ceiling)
+			scope := setPlacementFixture(t, f, placement, test.ceiling)
 			sprite := placementFixtureRunner(t, f, "sprite-runner", "sprite", true, 8, "gpt-6.1-sol", "test-model")
 			if test.allocation != "" {
 				desired := 1
 				if test.allocation == "zero" {
 					desired = 0
 				}
-				setSpriteAllocationFixture(t, f, desired, 0)
+				allocation := setSpriteAllocationFixture(t, f, desired, 0)
 				if test.allocation == "owned" {
-					now := formatHubTime(f.service.config.now())
-					if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, sprite.redemption.Hostname, sprite.enrollment.ID, now, now); err != nil {
-						t.Fatal(err)
-					}
+					now := f.service.config.now()
+					writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+						return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: f.project.OrganizationID, AllocationProjectID: f.project.ID, AllocationRevision: int64(allocation.Revision), Name: sprite.redemption.Hostname, ProviderOrganization: "detent-test", EnrollmentID: sprite.enrollment.ID, State: "enrolled", IdleSince: now, CreatedAt: now})
+					})
 					setSpriteMemberChecks(t, f, spriteMemberReady)
 				}
 			}
@@ -502,17 +568,30 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 			if test.organization && test.allocation == "" {
 				later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
 				approveHubTestPolicy(t, f.service, later.base+"/policy", hubTestPolicy())
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE id=?", sprite.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), sprite.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					identity.Scope = "organization"
+					if err := w.UpdateRunnerIdentity(t.Context(), identity); err != nil {
+						return err
+					}
+					return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.organization, TokenID: identity.TokenID, ProjectID: later.project.ID})
+				})
 				for i := range 3 {
 					items[i] = later.create(t, fmt.Sprintf("later %d", i))
 				}
 			}
 			if test.allocation == "zero" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET scope='organization' WHERE id=?`, sprite.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), sprite.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					identity.Scope = "organization"
+					return w.UpdateRunnerIdentity(t.Context(), identity)
+				})
 			}
 			start := make(chan struct{})
 			statuses := make(chan int, len(items))
@@ -539,17 +618,38 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 				t.Fatalf("claimed=%d want=%d", claimed, test.want)
 			}
 			var running, promoted int
-			if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM leases WHERE released_at IS NULL`).Scan(&running); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id WHERE i.project_id=? AND w.detent_state<>'Todo'`, f.project.ID).Scan(&promoted); err != nil {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				for _, issue := range items {
+					item, err := r.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
+					if err != nil {
+						return err
+					}
+					lease, err := r.ActiveLeaseForIssue(t.Context(), item.ID)
+					if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+						return err
+					}
+					if err == nil && lease.ReleasedAt == nil {
+						running++
+					}
+				}
+				rows, err := r.WorkItems(t.Context(), scope.project, 0, 200)
+				if err != nil {
+					return err
+				}
+				for _, item := range rows {
+					if item.WorkflowStateName != nil && *item.WorkflowStateName != "Todo" {
+						promoted++
+					}
+				}
+				return nil
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if running != claimed || promoted != 0 {
 				t.Fatalf("running=%d claimed=%d promoted=%d", running, claimed, promoted)
 			}
 			if placement.SpriteLimit() > 0 {
-				decision, err := readPlacementSnapshot(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.service.config.now(), nil)
+				decision, err := f.service.spritePlacementRecord(t.Context(), scope)
 				if err != nil || decision.Reason != "Configured maximum Sprite concurrency is full" || decision.SpriteTarget != 0 {
 					t.Fatalf("concurrency diagnostic=%+v err=%v", decision.placementDecision, err)
 				}
