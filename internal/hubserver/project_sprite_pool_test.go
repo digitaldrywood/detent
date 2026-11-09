@@ -2637,7 +2637,7 @@ func TestHostedProjectSpriteAllocationAuthority(t *testing.T) {
 			response := f.request(t, org, path, `{"idempotency_key":"allocate","expected_revision":"0","desired_count":2}`, func(c *cloudassert.Claims) { sharedRouteBrowserClaims(c); c.Method = http.MethodPut }, map[string]string{"X-CSRF-Token": strings.Repeat("b", 64)})
 			requireNativeStatus(t, response, http.StatusOK)
 			scope := nativeScope{organization: organization, project: project}
-			allowed, err := service.projectSpriteAllocationAuthority(t.Context(), nil, scope)
+			allowed, err := service.projectSpriteAllocationAuthority(t.Context(), scope)
 			if err != nil || !allowed {
 				t.Fatalf("configuring owner allowed=%t err=%v", allowed, err)
 			}
@@ -2646,7 +2646,7 @@ func TestHostedProjectSpriteAllocationAuthority(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			allowed, err = service.projectSpriteAllocationAuthority(t.Context(), nil, scope)
+			allowed, err = service.projectSpriteAllocationAuthority(t.Context(), scope)
 			if err != nil || allowed {
 				t.Fatalf("revoked project grant allowed=%t err=%v", allowed, err)
 			}

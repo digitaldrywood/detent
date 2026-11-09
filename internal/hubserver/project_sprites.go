@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -257,11 +256,6 @@ func (s *Service) spriteWakeDispatchable(ctx context.Context, scope nativeScope,
 
 func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, state string) (int, error) {
 	return s.wakeSpriteRunnersRecord(ctx, scope, state)
-}
-
-func (s *Service) spriteWakeSecret(ctx context.Context, db nativeQueryer, scope nativeScope, name string) (nativeScope, hubsecrets.Envelope, error) {
-	resolved, _, envelope, err := s.spriteWakeSecretRecord(ctx, scope, name)
-	return resolved, envelope, err
 }
 
 func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativeScope) (int, error) {

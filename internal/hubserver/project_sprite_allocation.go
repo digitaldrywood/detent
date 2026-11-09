@@ -266,7 +266,7 @@ func decodeSpriteMemberChecks(raw sql.NullString) (runnerauth.LocalChecks, bool,
 	return checks, err == nil, err
 }
 
-func (s *Service) projectSpriteAllocationAuthority(ctx context.Context, q nativeQueryer, scope nativeScope) (bool, error) {
+func (s *Service) projectSpriteAllocationAuthority(ctx context.Context, scope nativeScope) (bool, error) {
 	var allowed bool
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
