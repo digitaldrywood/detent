@@ -1621,7 +1621,7 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 	if placement.poolConfigured && placement.Provisionable == 0 {
 		return 0, nil
 	}
-	total := 0
+	total, attempted := 0, 0
 	slices.SortFunc(placement.Runners, func(a, b placementRunner) int {
 		if order := strings.Compare(a.Hostname, b.Hostname); order != 0 {
 			return order
@@ -1630,7 +1630,7 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 	})
 	seen := map[string]bool{}
 	for _, candidate := range placement.Runners {
-		if total >= 20 {
+		if attempted >= 20 {
 			break
 		}
 		if !candidate.Sprite || !candidate.Paused || candidate.State != "active" || !validSpritesSlug(candidate.Hostname) || seen[candidate.Hostname] {
@@ -1701,6 +1701,7 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 		if op.Outcome == "committed" || op.NextAttemptAt.After(s.config.now()) {
 			continue
 		}
+		attempted++
 		if err := s.runSpriteOperation(ctx, op); err != nil {
 			return total, err
 		}
