@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -29,79 +30,183 @@ import (
 )
 
 func TestSpriteWakeLostResponseReconcilesAfterServiceReopen(t *testing.T) {
-	var mu sync.Mutex
-	starts, observations := 0, 0
-	client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if request.Method == http.MethodPost {
-			starts++
-			return nil, errors.New("service start committed before response was lost")
-		}
-		observations++
-		return spritesTestResponse(`{"name":"detent-runner","state":{"status":"running"}}`, http.StatusOK), nil
-	})}
-	f, scope, runners := newSpriteWakeFixture(t, client, true, time.Minute, "first-host", "second-host")
-	now := f.service.config.now()
-	f.service.config.now = func() time.Time { return now }
-	woken, err := f.service.wakeSpriteRunners(t.Context(), scope, "Todo")
-	if err != nil || woken != 0 {
-		t.Fatalf("uncertain wake count=%d error=%v", woken, err)
-	}
-	if starts != 2 {
-		t.Fatalf("initial service starts=%d", starts)
-	}
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		owner, ok := r.(postgres.SpriteReader)
-		if !ok {
-			return accessstore.ErrTransactionRequired
-		}
-		for _, runner := range runners {
-			operation, err := owner.SpriteEnrollmentWake(t.Context(), runner.enrollment.ID)
-			if err != nil {
-				return err
+	for _, test := range []struct {
+		name              string
+		managed, replaced bool
+	}{
+		{name: "manual Sprites retain manual ownership"},
+		{name: "managed Sprites retain resource identity", managed: true},
+		{name: "managed replacements cannot reconcile the original wake", managed: true, replaced: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var mu sync.Mutex
+			starts, observations, metadata := 0, 0, 0
+			replacementVisible := false
+			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if request.Method == http.MethodPost {
+					starts++
+					return nil, errors.New("service start committed before response was lost")
+				}
+				if strings.HasSuffix(request.URL.Path, "/services/detent-runner") {
+					observations++
+					return spritesTestResponse(`{"name":"detent-runner","state":{"status":"running"}}`, http.StatusOK), nil
+				}
+				metadata++
+				name := strings.TrimPrefix(request.URL.Path, "/v1/sprites/")
+				id := "resource-" + name
+				if replacementVisible {
+					id = "replacement-" + name
+				}
+				return spritesTestResponse(fmt.Sprintf(`{"name":%q,"id":%q}`, name, id), http.StatusOK), nil
+			})}
+			names := []string{"first-host", "second-host"}
+			if test.managed {
+				names = nil
 			}
-			if operation.Outcome != "uncertain" || operation.RequestObjectKey == nil || operation.Attempts != 1 {
-				t.Fatalf("wake uncertainty was not durable: %+v", operation)
+			f, scope, runners := newSpriteWakeFixture(t, client, true, time.Minute, names...)
+			var instant atomic.Value
+			instant.Store(f.service.config.now())
+			now := func() time.Time { return instant.Load().(time.Time) }
+			f.service.config.now = now
+			if test.managed {
+				keys := f.service.config.SecretKeys
+				f.service.config.SecretKeys = nil
+				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+				for _, name := range []string{"first-host", "second-host"} {
+					runner := placementFixtureRunner(t, f, name, "sprite", true, 1, "gpt-6.1-sol")
+					writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+						identity, err := w.RunnerIdentity(t.Context(), runner.binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						identity.LastHeartbeatAt = now().Add(-time.Minute)
+						return w.UpdateRunnerIdentity(t.Context(), identity)
+					})
+					runners = append(runners, runner)
+				}
+				setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
+				allocation := setSpriteAllocationFixture(t, f, 2, 0)
+				for _, runner := range runners {
+					storeManagedSpriteWakeMember(t, f, scope, runner, allocation.Revision, keys)
+				}
+				setSpriteMemberChecks(t, f, spriteMemberReady)
+				f.create(t, "managed work")
+				f.service.config.SecretKeys = keys
 			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	cfg := Config{DatabaseBackend: DatabasePostgres, Postgres: f.service.config.Postgres, Hosted: &HostedConfig{OrganizationID: string(scope.organization), WorkOSOrganizationID: "provider_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}, SecretKeys: f.service.config.SecretKeys, RunDetails: f.service.config.RunDetails, SpritesHTTPClient: client, now: func() time.Time { return now }}
-	if err := f.service.Close(); err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(time.Minute)
-	resumed := openTestService(t, cfg)
-	resumed.maintainSpritePools(t.Context())
-	resumed.spriteWakeWork.Wait()
-	if err := resumed.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		owner, ok := r.(postgres.SpriteReader)
-		if !ok {
-			return accessstore.ErrTransactionRequired
-		}
-		for _, runner := range runners {
-			operation, err := owner.SpriteEnrollmentWake(t.Context(), runner.enrollment.ID)
-			if err != nil {
-				return err
+			woken, err := f.service.wakeSpriteRunners(t.Context(), scope, "Todo")
+			if err != nil || woken != 0 {
+				t.Fatalf("uncertain wake count=%d error=%v", woken, err)
 			}
-			if operation.Outcome != "committed" || operation.ReceiptObjectKey == nil || operation.TargetEnrollmentID != runner.enrollment.ID {
-				t.Fatalf("wake did not reconcile after restart: %+v", operation)
+			mu.Lock()
+			initialStarts := starts
+			mu.Unlock()
+			if initialStarts != 2 {
+				t.Fatalf("initial service starts=%d", initialStarts)
 			}
-			if _, err := r.RunnerSpriteMembershipByEnrollment(t.Context(), runner.enrollment.ID); !errors.Is(err, corestore.ErrNotFound) {
-				t.Fatalf("manual Sprite acquired managed pool deletion authority: %v", err)
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				owner, ok := r.(postgres.SpriteReader)
+				if !ok {
+					return accessstore.ErrTransactionRequired
+				}
+				for _, runner := range runners {
+					operation, err := owner.SpriteEnrollmentWake(t.Context(), runner.enrollment.ID)
+					if err != nil {
+						return err
+					}
+					if operation.Outcome != "uncertain" || operation.RequestObjectKey == nil || operation.Attempts != 1 {
+						t.Fatalf("wake uncertainty was not durable: %+v", operation)
+					}
+					if test.managed && operation.ProviderResourceID != "resource-"+runner.redemption.Hostname {
+						t.Fatal("uncertain managed wake lost its provisioned resource identity")
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if starts != 2 || observations != 2 {
-		t.Fatalf("recovery starts=%d observations=%d; want two starts and two observations", starts, observations)
+			cfg := Config{DatabaseBackend: DatabasePostgres, Postgres: f.service.config.Postgres, Hosted: &HostedConfig{OrganizationID: string(scope.organization), WorkOSOrganizationID: "provider_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}, SecretKeys: f.service.config.SecretKeys, RunDetails: f.service.config.RunDetails, SpritesHTTPClient: client, now: now}
+			if err := f.service.Close(); err != nil {
+				t.Fatal(err)
+			}
+			instant.Store(now().Add(time.Minute))
+			mu.Lock()
+			replacementVisible = test.replaced
+			mu.Unlock()
+			resumed := openTestService(t, cfg)
+			resumed.maintainSpritePools(t.Context())
+			resumed.spriteWakeWork.Wait()
+			verify := func(replaced bool) time.Time {
+				t.Helper()
+				var next time.Time
+				if err := resumed.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					owner, ok := r.(postgres.SpriteReader)
+					if !ok {
+						return accessstore.ErrTransactionRequired
+					}
+					for _, runner := range runners {
+						operation, err := owner.SpriteEnrollmentWake(t.Context(), runner.enrollment.ID)
+						if err != nil {
+							return err
+						}
+						if replaced {
+							if operation.Outcome != "uncertain" || operation.ReceiptObjectKey != nil || !operation.NextAttemptAt.After(now()) {
+								t.Fatalf("replacement resolved or released the original uncertainty: %+v", operation)
+							}
+						} else if operation.Outcome != "committed" || operation.ReceiptObjectKey == nil || operation.TargetEnrollmentID != runner.enrollment.ID {
+							t.Fatalf("wake did not reconcile after restart: %+v", operation)
+						}
+						if operation.NextAttemptAt.After(next) {
+							next = operation.NextAttemptAt
+						}
+						member, err := r.RunnerSpriteMembershipByEnrollment(t.Context(), runner.enrollment.ID)
+						if test.managed {
+							if err != nil || member.State != "enrolled" || member.Name != runner.redemption.Hostname || member.AllocationProjectID != scope.project {
+								t.Fatalf("managed membership changed during wake recovery: %+v, %v", member, err)
+							}
+							if operation.ProviderResourceID != "resource-"+member.Name {
+								t.Fatal("managed wake reconciled another provider identity")
+							}
+						} else if !errors.Is(err, corestore.ErrNotFound) {
+							t.Fatalf("manual Sprite acquired managed pool deletion authority: %v", err)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return next
+			}
+			next := verify(test.replaced)
+			mu.Lock()
+			wantObservations, wantMetadata := 2, 0
+			if test.managed {
+				wantMetadata = 4
+			}
+			if test.replaced {
+				wantObservations = 0
+			}
+			gotStarts, gotObservations, gotMetadata := starts, observations, metadata
+			mu.Unlock()
+			if gotStarts != 2 || gotObservations != wantObservations || gotMetadata != wantMetadata {
+				t.Fatalf("recovery starts=%d observations=%d metadata=%d; want 2/%d/%d", gotStarts, gotObservations, gotMetadata, wantObservations, wantMetadata)
+			}
+			if test.replaced {
+				instant.Store(next)
+				mu.Lock()
+				replacementVisible = false
+				mu.Unlock()
+				resumed.maintainSpritePools(t.Context())
+				resumed.spriteWakeWork.Wait()
+				verify(false)
+				mu.Lock()
+				defer mu.Unlock()
+				if starts != 2 || observations != 2 || metadata != 6 {
+					t.Fatalf("original identity recovery replayed a start: starts=%d observations=%d metadata=%d", starts, observations, metadata)
+				}
+			}
+		})
 	}
 }
 
@@ -844,6 +949,40 @@ func storeOrganizationSpritesSecret(t *testing.T, f nativeFixture, token string)
 	}
 }
 
+func storeManagedSpriteWakeMember(t *testing.T, f nativeFixture, scope nativeScope, sprite runnerFixture, revision tracker.Revision, keys *hubsecrets.Keyring) {
+	t.Helper()
+	now := f.service.config.now()
+	settings, pool, err := f.service.spritePoolSettingsRecord(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := keys.Seal([]byte(sprite.enrollment.Token), secretAAD(string(scope.organization), sprite.enrollment.ID, "sprite-enrollment"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestKey, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleRequest{Actor: pool.ConfiguredBy, TokenProject: scope.project, Provider: "detent-test", Settings: settings, EnrollmentToken: sealed, Version: "v0.1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceID := "resource-" + sprite.redemption.Hostname
+	receiptKey, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleReceipt{ResourceID: resourceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+		if err := w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: scope.organization, AllocationProjectID: scope.project, AllocationRevision: int64(revision), TokenProjectID: scope.project, Name: sprite.redemption.Hostname, ProviderOrganization: "detent-test", EnrollmentID: sprite.enrollment.ID, State: "enrolled", IdleSince: now, CreatedAt: now}); err != nil {
+			return err
+		}
+		owner := w.(postgres.SpriteWriter)
+		operation, err := owner.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: scope.organization, IdempotencyKey: "provision:" + sprite.enrollment.ID, Name: sprite.redemption.Hostname, Operation: "provision", TargetEnrollmentID: sprite.enrollment.ID, ProjectID: scope.project, RequestObjectKey: &requestKey, SourceRevision: "fixture:" + sprite.enrollment.ID, CreatedAt: now, NextAttemptAt: now})
+		if err != nil {
+			return err
+		}
+		operation.Outcome, operation.ProviderResourceID, operation.ReceiptObjectKey, operation.UpdatedAt = "committed", resourceID, &receiptKey, now
+		return owner.UpdateSpriteOperation(t.Context(), operation, operation.Attempts)
+	})
+}
+
 func TestWakeManagedSpriteMembers(t *testing.T) {
 	for _, test := range []struct {
 		name                   string
@@ -878,35 +1017,7 @@ func TestWakeManagedSpriteMembers(t *testing.T) {
 			setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
 			allocation := setSpriteAllocationFixture(t, f, 1, 0)
 			now := f.service.config.now()
-			settings, pool, err := f.service.spritePoolSettingsRecord(t.Context(), scope)
-			if err != nil {
-				t.Fatal(err)
-			}
-			sealed, err := keys.Seal([]byte(sprite.enrollment.Token), secretAAD(string(scope.organization), sprite.enrollment.ID, "sprite-enrollment"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			requestKey, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleRequest{Actor: pool.ConfiguredBy, TokenProject: scope.project, Provider: "detent-test", Settings: settings, EnrollmentToken: sealed, Version: "v0.1.0"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			resourceID := "resource-" + sprite.redemption.Hostname
-			receiptKey, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleReceipt{ResourceID: resourceID})
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
-				if err := w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: scope.organization, AllocationProjectID: scope.project, AllocationRevision: int64(allocation.Revision), TokenProjectID: scope.project, Name: sprite.redemption.Hostname, ProviderOrganization: "detent-test", EnrollmentID: sprite.enrollment.ID, State: "enrolled", IdleSince: now, CreatedAt: now}); err != nil {
-					return err
-				}
-				owner := w.(postgres.SpriteWriter)
-				operation, err := owner.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: scope.organization, IdempotencyKey: "provision:" + sprite.enrollment.ID, Name: sprite.redemption.Hostname, Operation: "provision", TargetEnrollmentID: sprite.enrollment.ID, ProjectID: scope.project, RequestObjectKey: &requestKey, SourceRevision: "fixture:" + sprite.enrollment.ID, CreatedAt: now, NextAttemptAt: now})
-				if err != nil {
-					return err
-				}
-				operation.Outcome, operation.ProviderResourceID, operation.ReceiptObjectKey, operation.UpdatedAt = "committed", resourceID, &receiptKey, now
-				return owner.UpdateSpriteOperation(t.Context(), operation, operation.Attempts)
-			})
+			storeManagedSpriteWakeMember(t, f, scope, sprite, allocation.Revision, keys)
 			if test.ready {
 				setSpriteMemberChecks(t, f, spriteMemberReady)
 			}
