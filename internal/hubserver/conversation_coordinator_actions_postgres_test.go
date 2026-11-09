@@ -1,7 +1,10 @@
 package hubserver
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"testing"
 	"time"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -80,6 +84,10 @@ func coordinatorActionChange(t *testing.T, service *Service, org tracker.Organiz
 	if err != nil {
 		t.Fatal(err)
 	}
+	document, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
+	if err != nil {
+		t.Fatal(err)
+	}
 	version.Revision = row.Revision + 1
 	version, err = eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), version, coordinatorActionJSON(t, issue))
 	if err != nil {
@@ -88,6 +96,14 @@ func coordinatorActionChange(t *testing.T, service *Service, org tracker.Organiz
 	writeCoordinatorActionTenant(t, service, org, func(w tenantstore.Writer) error {
 		if err := writeWorkItemRecord(t.Context(), w, plan, fields); err != nil {
 			return err
+		}
+		if err := w.PutSearch(t.Context(), document, current.Revision); err != nil {
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err := w.PutSearch(t.Context(), document, 0); err != nil {
+				return err
+			}
 		}
 		_, err := w.CreateCollaborationVersion(t.Context(), version)
 		return err
@@ -346,4 +362,65 @@ func seedCoordinatorActionIssues(t *testing.T, service *Service, scope nativeSco
 		issues = append(issues, plan.issue)
 	}
 	return issues
+}
+
+func TestCoordinatorChatMoveKeepsAnswerAndProvenance(t *testing.T) {
+	for _, target := range []string{"Done", "Todo"} {
+		t.Run(target, func(t *testing.T) {
+			f := newConversationContentTenantFixture(t, &conversationContentFixture{})
+			organization, project := f.project.OrganizationID, f.project.ID
+			writeCoordinatorActionTenant(t, f.service, organization, func(w tenantstore.Writer) error {
+				record, err := w.ProjectRecord(t.Context(), project)
+				if err != nil {
+					return err
+				}
+				for i := range record.States {
+					if record.States[i].Name == "Todo" {
+						record.States[i].Transitions = append(record.States[i].Transitions, "Todo")
+					}
+				}
+				_, err = w.UpdateProjectRecord(t.Context(), record)
+				return err
+			})
+			issue := f.nativeFixture.createIndependent(t, "Example answer")
+			created := f.create(t, f.token, map[string]any{"key": "answer-chat"})
+			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(f.token), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: organization, project: project, credential: credential}
+			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "answer-move"}, ExpectedRevision: issue.Revision, State: target, Reason: "user_requested", ReasonDetail: "The owner selected the existing behavior."}
+			first, err := f.service.transitionNativeIssueCommandWithChat(t.Context(), scope, string(issue.WorkItemID), request, created.Conversation.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replay, err := f.service.transitionNativeIssueCommandWithChat(t.Context(), scope, string(issue.WorkItemID), request, created.Conversation.ID)
+			if err != nil || !bytes.Equal(first, replay) {
+				t.Fatalf("move replay=%s error=%v", replay, err)
+			}
+			var rows []corestore.Comment
+			var version eventstore.CollaborationVersion
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				rows, err = r.Comments(t.Context(), project, issue.WorkItemID, 0, 200)
+				if err != nil {
+					return err
+				}
+				if len(rows) != 1 {
+					t.Fatalf("chat move retained %d answer comments, want one", len(rows))
+				}
+				version, err = r.CollaborationVersion(t.Context(), rows[0].ID, rows[0].Revision)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			comment, err := f.service.hydrateCommentRecord(t.Context(), rows[0], version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if comment.Body != request.ReasonDetail || comment.Actor.PrincipalID != scope.actor().PrincipalID || comment.Provenance == nil || comment.Provenance.Provider != "chat" || comment.Provenance.AuthorID != scope.actor().PrincipalID || comment.Provenance.ExternalID != created.Conversation.ID+":"+request.IdempotencyKey {
+				t.Fatalf("chat answer lost body or provenance: %+v", comment)
+			}
+		})
+	}
 }

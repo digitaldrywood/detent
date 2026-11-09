@@ -1009,10 +1009,7 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 }
 
 func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scope nativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
-	if conversationID != "" {
-		return nil, workItemStorageUnavailable()
-	}
-	return s.transitionNativeIssueTenant(ctx, scope, item, request)
+	return s.transitionNativeIssueTenantCommand(ctx, scope, item, request, nil, conversationID)
 }
 
 func validateNativeWorkflowTransition(states []tracker.NativeState, current, target string, scope apiScope) error {

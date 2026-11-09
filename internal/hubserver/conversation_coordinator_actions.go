@@ -531,6 +531,9 @@ func coordinatorActionError(err error) error {
 	}
 	var native *nativeError
 	if errors.As(err, &native) {
+		if native.publicMessage && native.status >= http.StatusBadRequest && native.status < http.StatusInternalServerError {
+			return native
+		}
 		return errors.New(native.Message)
 	}
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.Is(err, mutation.ErrConflict) || errors.Is(err, errCoordinatorToolArguments) || errors.Is(err, errCoordinatorProjectUnreadable) {

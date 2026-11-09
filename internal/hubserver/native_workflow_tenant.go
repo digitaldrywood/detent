@@ -37,7 +37,14 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 }
 
 func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope nativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments) (json.RawMessage, error) {
+	return s.transitionNativeIssueTenantCommand(ctx, scope, item, request, stop, "")
+}
+
+func (s *Service) transitionNativeIssueTenantCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments, conversationID string) (json.RawMessage, error) {
 	human := (scope.credential.Scope == apiScopeOperator || scope.credential.Scope == apiScopeAdmin) && scope.credential.Runner.RunnerID == "" && scope.actor().Kind == "human"
+	if conversationID != "" && !human {
+		return nil, operatortool.ErrAccessDenied
+	}
 	if !human && (scope.credential.Scope != apiScopeWorker || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil) {
 		return nil, runnerUnauthorized()
 	}
@@ -69,7 +76,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		tracker.Transition
 		ConversationID string                       `json:"conversation_id,omitempty"`
 		Stop           *coordinatorStopRunArguments `json:"stop,omitempty"`
-	}{Transition: request, Stop: stop}
+	}{Transition: request, Stop: stop, ConversationID: conversationID}
 	hash, err := nativeCommandHash(payload)
 	if err != nil {
 		return nil, err
@@ -105,6 +112,10 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		if issue.Profile != "native" || issue.Archived || int64(request.ExpectedRevision) != row.Revision {
 			return nil, nativeConflict(tracker.Revision(row.Revision))
+		}
+		answer, err := s.prepareCoordinatorTransitionAnswer(ctx, scope, row, issue, request, conversationID)
+		if err != nil {
+			return nil, err
 		}
 		var linkedSource *eventstore.LinkedSource
 		if human && issue.LinkedSource != nil {
@@ -331,6 +342,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 					return corestore.ErrSerializationFailure
 				}
 			}
+			if err := answer.validate(ctx, w, row.ID); err != nil {
+				return err
+			}
 			activeLease := false
 			if human {
 				currentSource, sourceErr := w.LinkedSource(ctx, scope.project, issue.WorkItemID)
@@ -407,6 +421,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				}
 			}
 			if unchanged {
+				if err := answer.write(ctx, w); err != nil {
+					return err
+				}
 				if strings.EqualFold(request.State, "Blocked") {
 					if _, err := w.AppendEvent(ctx, event); err != nil {
 						return err
@@ -454,6 +471,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				}
 			}
 			if _, err := w.CreateCollaborationVersion(ctx, newVersion); err != nil {
+				return err
+			}
+			if err := answer.write(ctx, w); err != nil {
 				return err
 			}
 			if _, err := w.AppendEvent(ctx, event); err != nil {

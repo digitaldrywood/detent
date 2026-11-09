@@ -780,6 +780,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				} else if response.Code < 400 {
 					t.Fatalf("refused call=%d %s", response.Code, response.Body.String())
 				}
+				if outcome == "human park recorded on submit" {
+					requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				}
 				if outcome == "human park recorded on submit" && !strings.Contains(response.Body.String(), "human's answer") {
 					t.Fatalf("submission did not ask for the answer: %s", response.Body.String())
 				}
@@ -815,7 +818,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						if len(savedComments) > 0 {
 							comment = savedComments[0]
 						}
-						if err != nil || comment.Body != answer || comment.Actor.Kind != "human" || comment.Actor.PrincipalID != operatortool.ConnectionIdentity(ctx).PrincipalID || comment.Provenance == nil || comment.Provenance.Provider != "chat" || !strings.HasPrefix(comment.Provenance.ExternalID, record.ID+":") {
+						if err != nil || comment.Body != answer || comment.Actor.Kind != "human" || comment.Actor.PrincipalID != operatortool.ConnectionIdentity(ctx).PrincipalID || comment.Provenance == nil || comment.Provenance.Provider != "chat" || comment.Provenance.AuthorID != operatortool.ConnectionIdentity(ctx).PrincipalID || !strings.HasPrefix(comment.Provenance.ExternalID, record.ID+":") {
 							t.Fatalf("answer comment=%+v error=%v", comment, err)
 						}
 					} else if reason != "" {
