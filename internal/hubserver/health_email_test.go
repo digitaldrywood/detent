@@ -40,18 +40,29 @@ func TestHealthEmailTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, test := range []struct{ kind, path, state string }{
-		{"work_item", "/local-organization/native/issues/1", "opened"},
-		{"runner", "/fleet", "opened"},
-		{"project", "/fleet", "opened"},
-		{"org", "/fleet", "opened"},
-		{"runner", "/fleet", "resolved"},
+	for _, test := range []struct {
+		kind, path, state string
+		missing           bool
+	}{
+		{"work_item", "/local-organization/native/issues/1", "opened", false},
+		{"runner", "/fleet", "opened", false},
+		{"project", "/fleet", "opened", false},
+		{"org", "/fleet", "opened", false},
+		{"runner", "/fleet", "resolved", false},
+		{"work_item", "/local-organization/diagnostics", "opened", true},
 	} {
-		t.Run(test.kind+" "+test.state, func(t *testing.T) {
+		name := test.kind + " " + test.state
+		if test.missing {
+			name += " missing subject"
+		}
+		t.Run(name, func(t *testing.T) {
 			opened := time.Date(2026, 10, 6, 20, 0, 0, 0, time.FixedZone("fixture", 2*60*60))
 			f := newHealthFinding("signal <script> & health", "instance", test.kind, string(issue.WorkItemID), "Summary <script> & details.\nprivate raw log sentinel", "The owner checks <runner> & acts.", nil, healthEvidence{EventIDs: []string{"private-event", "private-event-two"}, AttemptIDs: []string{"private-attempt"}, Counts: map[string]int{"leases <active> & ready": 3}})
 			f.OpenedAt = opened
-			subject := test.kind + " " + string(issue.WorkItemID)
+			if test.missing {
+				f.Subject.ID = "wi_" + strings.Repeat("b", 32)
+			}
+			subject := test.kind + " " + f.Subject.ID
 			if test.kind == "runner" {
 				f.Subject.ID += " <script> & subject"
 				subject += " <script> & subject"

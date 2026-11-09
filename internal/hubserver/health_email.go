@@ -3,8 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
-	"errors"
 	"regexp"
 	"slices"
 	"strconv"
@@ -61,7 +59,7 @@ func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.
 	if f.Subject.Kind == "work_item" {
 		var err error
 		link, err = s.issueBrowserURL(ctx, f.Subject.ID)
-		if errors.Is(err, sql.ErrNoRows) {
+		if isNativeNotFound(err) {
 			link = s.config.Hosted.PublicURL + s.hostedPath("/diagnostics")
 		} else if err != nil {
 			return auth.EmailMessage{}, err
