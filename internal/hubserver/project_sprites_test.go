@@ -211,7 +211,7 @@ func TestSpriteWakeLostResponseReconcilesAfterServiceReopen(t *testing.T) {
 }
 
 func TestSpriteWakeFailuresRespectAttemptBudget(t *testing.T) {
-	for _, mode := range []string{"project", "organization states", "organization projects"} {
+	for _, mode := range []string{"project", "organization states", "organization projects", "organization runners"} {
 		t.Run(mode, func(t *testing.T) {
 			var calls atomic.Int32
 			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
@@ -240,6 +240,24 @@ func TestSpriteWakeFailuresRespectAttemptBudget(t *testing.T) {
 				}
 				scope.project = ""
 			}
+			if mode == "organization runners" {
+				later := newNativeFixture(t, f.service, scope.organization, "Later example project")
+				storeSpriteWakeSecret(t, later, spritesSecretSentinel)
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					for _, runner := range runners {
+						identity, err := w.RunnerIdentity(t.Context(), runner.binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						identity.Scope = "organization"
+						if err := w.UpdateRunnerRouting(t.Context(), identity.Revision, identity); err != nil {
+							return err
+						}
+					}
+					return nil
+				})
+				scope.project = ""
+			}
 			if mode == "organization states" {
 				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
 					project, err := w.ProjectRecord(t.Context(), f.project.ID)
@@ -263,6 +281,7 @@ func TestSpriteWakeFailuresRespectAttemptBudget(t *testing.T) {
 			if err != nil || woken != 1 || calls.Load() != 20 {
 				t.Fatalf("first pass: woken=%d starts=%d error=%v; want one success and 20 starts", woken, calls.Load(), err)
 			}
+			original := map[string]postgres.SpriteOperation{}
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 				owner := r.(postgres.SpriteReader)
 				for i, runner := range runners {
@@ -283,6 +302,7 @@ func TestSpriteWakeFailuresRespectAttemptBudget(t *testing.T) {
 					if operation.Outcome != outcome || operation.Attempts != attempts {
 						t.Fatalf("target %d outcome=%s attempts=%d", i, operation.Outcome, operation.Attempts)
 					}
+					original[runner.enrollment.ID] = operation
 				}
 				return nil
 			}); err != nil {
@@ -293,7 +313,19 @@ func TestSpriteWakeFailuresRespectAttemptBudget(t *testing.T) {
 				t.Fatalf("next pass: woken=%d starts=%d error=%v; want the deferred target only", woken, calls.Load(), err)
 			}
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				operation, err := r.(postgres.SpriteReader).SpriteEnrollmentWake(t.Context(), runners[20].enrollment.ID)
+				owner := r.(postgres.SpriteReader)
+				if mode == "organization runners" {
+					for enrollment, before := range original {
+						after, err := owner.SpriteEnrollmentWake(t.Context(), enrollment)
+						if err != nil {
+							return err
+						}
+						if after.ProjectID != before.ProjectID || after.TargetEnrollmentID != before.TargetEnrollmentID || after.Outcome != before.Outcome || after.Attempts != before.Attempts || valueOrEmpty(after.RequestObjectKey) != valueOrEmpty(before.RequestObjectKey) || valueOrEmpty(after.ReceiptObjectKey) != valueOrEmpty(before.ReceiptObjectKey) {
+							t.Fatal("another project changed the existing wake target or receipt")
+						}
+					}
+				}
+				operation, err := owner.SpriteEnrollmentWake(t.Context(), runners[20].enrollment.ID)
 				if err == nil && (operation.Outcome != "uncertain" || operation.Attempts != 1) {
 					t.Fatalf("deferred target did not advance once: %+v", operation)
 				}

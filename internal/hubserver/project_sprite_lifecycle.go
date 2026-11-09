@@ -1649,6 +1649,8 @@ func (s *Service) wakeSpriteRunnersBudgetRecord(ctx context.Context, scope nativ
 			continue
 		}
 		allowed := false
+		var op postgres.SpriteOperation
+		operationKey := "wake:" + candidate.RunnerID + ":" + candidate.LastHeartbeatAt.UTC().Format(time.RFC3339Nano)
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			owner, ok := r.(postgres.SpriteReader)
@@ -1673,6 +1675,16 @@ func (s *Service) wakeSpriteRunnersBudgetRecord(ctx context.Context, scope nativ
 				return nil
 			}
 			allowed, err = owner.SpriteRunnerAllowed(ctx, candidate.RunnerID, scope.project, s.config.now())
+			if err != nil || !allowed {
+				return err
+			}
+			op, err = owner.SpriteOperation(ctx, operationKey)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err == nil && (op.Name != candidate.Hostname || op.Operation != "wake" || op.TargetEnrollmentID != candidate.Enrollment || op.SourceRevision != "") {
+				return corestore.ErrUniqueViolation
+			}
 			return err
 		})
 		if err != nil {
@@ -1681,36 +1693,37 @@ func (s *Service) wakeSpriteRunnersBudgetRecord(ctx context.Context, scope nativ
 		if !allowed {
 			continue
 		}
-		secretScope, provider, _, err := s.spriteWakeSecretRecord(ctx, scope, candidate.Hostname)
-		if errors.Is(err, corestore.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return total, err
-		}
-		key, err := s.spriteLifecycleArchive(ctx, scope.organization, spriteLifecycleRequest{Actor: scope.credential.ID, TokenProject: secretScope.project, Provider: provider, State: state})
-		if err != nil {
-			return total, err
-		}
-		var op postgres.SpriteOperation
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+		if op.IdempotencyKey == "" {
+			secretScope, provider, _, err := s.spriteWakeSecretRecord(ctx, scope, candidate.Hostname)
+			if errors.Is(err, corestore.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return total, err
+			}
+			key, err := s.spriteLifecycleArchive(ctx, scope.organization, spriteLifecycleRequest{Actor: scope.credential.ID, TokenProject: secretScope.project, Provider: provider, State: state})
+			if err != nil {
+				return total, err
+			}
+			err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+					return err
+				}
+				owner, ok := w.(postgres.SpriteWriter)
+				if !ok {
+					return accessstore.ErrTransactionRequired
+				}
+				now := s.config.now()
+				var err error
+				op, err = owner.CreateSpriteOperation(ctx, postgres.SpriteOperation{OrganizationID: scope.organization, IdempotencyKey: operationKey, Name: candidate.Hostname, Operation: "wake", TargetEnrollmentID: candidate.Enrollment, ProjectID: scope.project, RequestObjectKey: &key, CreatedAt: now, NextAttemptAt: now})
 				return err
+			})
+			if err != nil {
+				return total, err
 			}
-			owner, ok := w.(postgres.SpriteWriter)
-			if !ok {
-				return accessstore.ErrTransactionRequired
-			}
-			now := s.config.now()
-			var err error
-			op, err = owner.CreateSpriteOperation(ctx, postgres.SpriteOperation{OrganizationID: scope.organization, IdempotencyKey: "wake:" + candidate.RunnerID + ":" + candidate.LastHeartbeatAt.UTC().Format(time.RFC3339Nano), Name: candidate.Hostname, Operation: "wake", TargetEnrollmentID: candidate.Enrollment, ProjectID: scope.project, RequestObjectKey: &key, CreatedAt: now, NextAttemptAt: now})
-			return err
-		})
-		if err != nil {
-			return total, err
 		}
 		seen[candidate.Hostname] = true
-		if op.Outcome == "committed" || op.NextAttemptAt.After(s.config.now()) {
+		if op.Outcome != "pending" && op.Outcome != "uncertain" || op.NextAttemptAt.After(s.config.now()) {
 			continue
 		}
 		*remaining--
