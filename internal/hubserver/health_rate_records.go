@@ -22,7 +22,7 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 		query := reportstore.OverviewQuery{Projects: []tracker.ProjectID{tracker.ProjectID(p.ID)}, From: now.Add(-healthBaselineWindow - healthLongWindow), To: now, Limit: 5000}
 		var history []reportstore.ProjectHistory
 		var attempts []reportstore.AttemptFact
-		var events []eventstore.Event
+		var attemptRuns []tenantAttemptSnapshot
 		var landings []reportstore.LandingFact
 		var usage []healthstore.UsageObservation
 		archived := map[tracker.NativeWorkItemID]bool{}
@@ -67,11 +67,26 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 				return fmt.Errorf("read health attempts: %w", err)
 			}
 			for _, attempt := range attempts {
-				event, err := r.LatestRunEvent(ctx, attempt.ProjectID, attempt.AttemptID)
+				var input tenantAttemptSnapshot
+				input.attempt, err = r.Attempt(ctx, attempt.AttemptID)
+				if err != nil {
+					return err
+				}
+				input.lease, err = r.Lease(ctx, input.attempt.LeaseID)
+				if err != nil {
+					return err
+				}
+				input.event, err = r.LatestRunEvent(ctx, attempt.ProjectID, attempt.AttemptID)
 				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 					return err
 				}
-				events = append(events, event)
+				if input.event.ID == "" {
+					input.event = eventstore.Event{OrganizationID: organization, ProjectID: attempt.ProjectID, WorkItemID: attempt.WorkItemID}
+				}
+				if err := readTenantAttemptRunPayload(ctx, r, &input); err != nil {
+					return err
+				}
+				attemptRuns = append(attemptRuns, input)
 			}
 			landings, err = l.ReadLandingFacts(ctx, query)
 			if err != nil {
@@ -115,16 +130,16 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 			attemptCosts[usage.AttemptID] = usage.Cost
 		}
 		for i, attempt := range attempts {
-			a := healthRateAttempt{ID: attempt.AttemptID, Item: string(attempt.WorkItemID), Status: attempt.Status, Runner: attempt.RunnerID, At: attempt.UpdatedAt, Started: attempt.StartedAt, Cost: attemptCosts[attempt.AttemptID]}
-			if events[i].ID != "" {
-				event, _, err := s.readTenantCollaborationEvent(ctx, events[i])
-				if err != nil {
-					return err
-				}
-				if event.Data.Run != nil {
-					applyHealthAttemptData(&a, *event.Data.Run)
-				}
+			input := attemptRuns[i]
+			a := healthRateAttempt{ID: attempt.AttemptID, Item: string(attempt.WorkItemID), Status: input.attempt.Status, Runner: attempt.RunnerID, At: input.attempt.UpdatedAt, Started: input.attempt.StartedAt, Cost: attemptCosts[attempt.AttemptID]}
+			run, err := s.readNativeAttemptRunTenant(ctx, input)
+			if err != nil {
+				return err
 			}
+			if err := nativeAttemptRunMismatch(input, run); err != nil {
+				return err
+			}
+			applyHealthAttemptData(&a, run)
 			p.Attempts = append(p.Attempts, a)
 		}
 		canonical := map[string]bool{}
