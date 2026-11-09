@@ -424,22 +424,6 @@ func TestRecoveryQueriesSkipLiveForeignGenerations(t *testing.T) {
 	}
 }
 
-func TestSQLiteWriteTransactionsBeginImmediate(t *testing.T) {
-	t.Parallel()
-	path := newGenerationDatabase(t)
-	holder := openGenerationStore(t, path, 0)
-	contender := openGenerationStore(t, path, 50*time.Millisecond)
-	tx, err := holder.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	_, err = contender.db.ExecContext(t.Context(), "INSERT INTO issue_contract_rollout VALUES ('2026-10-09T00:00:00Z')")
-	if !IsBusy(err) {
-		t.Fatalf("write during another store's open transaction error = %v, want busy", err)
-	}
-}
-
 func TestMigrationLockSerializesAcrossOpens(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

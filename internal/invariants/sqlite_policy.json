@@ -1725,13 +1725,6 @@
     "internal/store/api_keys_test.go": {
       "backend_sqlite": 2
     },
-    "internal/store/busy.go": {
-      "driver_import": 2
-    },
-    "internal/store/busy_test.go": {
-      "sql_pragma": 1,
-      "sqlite_open": 2
-    },
     "internal/store/capacity_constraints_test.go": {
       "backend_sqlite": 1
     },
