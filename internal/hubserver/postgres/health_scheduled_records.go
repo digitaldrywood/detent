@@ -33,7 +33,14 @@ func (s *session) RecordHealthScheduledReport(ctx context.Context, report health
 
 func (s *session) HealthScheduledHistory(ctx context.Context, project tracker.ProjectID, now time.Time) (healthstore.ScheduledHistory, error) {
 	var result healthstore.ScheduledHistory
-	err := s.db.QueryRow(ctx, `SELECT coalesce((SELECT recorded_at FROM health_scheduled_reports WHERE organization_id=$1 AND project_id=$2 AND recorded_at<=$3 ORDER BY recorded_at,run_id,run_attempt LIMIT 1),'0001-01-01'::timestamptz),coalesce((SELECT recorded_at FROM health_scheduled_reports WHERE organization_id=$1 AND project_id=$2 AND conclusion='success' AND recorded_at<=$3 ORDER BY recorded_at DESC,run_id DESC,run_attempt DESC LIMIT 1),'0001-01-01'::timestamptz)`, s.organization, project, now).Scan(&result.FirstReport, &result.LastGreen)
+	var first, green *time.Time
+	err := s.db.QueryRow(ctx, `SELECT (SELECT recorded_at FROM health_scheduled_reports WHERE organization_id=$1 AND project_id=$2 AND recorded_at<=$3 ORDER BY recorded_at,run_id,run_attempt LIMIT 1),(SELECT recorded_at FROM health_scheduled_reports WHERE organization_id=$1 AND project_id=$2 AND conclusion='success' AND recorded_at<=$3 ORDER BY recorded_at DESC,run_id DESC,run_attempt DESC LIMIT 1)`, s.organization, project, now).Scan(&first, &green)
+	if first != nil {
+		result.FirstReport = *first
+	}
+	if green != nil {
+		result.LastGreen = *green
+	}
 	if err != nil {
 		return result, mapError(ctx, err)
 	}
