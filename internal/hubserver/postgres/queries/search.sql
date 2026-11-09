@@ -87,7 +87,7 @@ WITH document AS MATERIALIZED (
  WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term NOT IN ('~all','~pending')
   AND d.kind IN ('issue','thread')
   AND (NOT EXISTS(SELECT 1 FROM visibility v WHERE v.key=p.scope)
-   OR NOT EXISTS(SELECT 1 FROM current_terms t WHERE t.term=p.term))
+   OR p.term NOT IN (SELECT t.term FROM current_terms t WHERE t.term IS NOT NULL))
 ), removed AS (
  DELETE FROM search_postings p USING obsolete_keys k
  WHERE p.organization_id=k.organization_id AND p.scope=k.scope AND p.term=k.term AND p.document_id=k.document_id

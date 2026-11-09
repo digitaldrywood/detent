@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -58,6 +60,7 @@ CREATE TRIGGER count_search_publication_writes AFTER INSERT OR UPDATE OR DELETE 
 		if postings < 1000 {
 			t.Fatalf("fixture has only %d postings", postings)
 		}
+		assertSearchPublicationWork(t, f, d, postings)
 		for _, mode := range []string{"identical refresh", "revision and time", "literal source change"} {
 			t.Run(string(org)+"/"+mode, func(t *testing.T) {
 				staleLiterals := []string{}
@@ -128,6 +131,75 @@ CREATE TRIGGER count_search_publication_writes AFTER INSERT OR UPDATE OR DELETE 
 				}
 			})
 		}
+	}
+}
+
+type searchPublicationProbe struct {
+	pgx.Tx
+	statement string
+	args      []any
+}
+
+func (p *searchPublicationProbe) QueryRow(ctx context.Context, statement string, args ...any) pgx.Row {
+	p.statement, p.args = statement, args
+	return p.Tx.QueryRow(ctx, statement, args...)
+}
+
+func assertSearchPublicationWork(t *testing.T, f searchFixture, d searchstore.Document, postings int64) {
+	t.Helper()
+	if err := withPlanSeedTransaction(t.Context(), f.admin, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(d.OrganizationID)); err != nil {
+			return err
+		}
+		input := pgquery.SearchPreparePublicationPostingsParams{OrganizationID: d.OrganizationID, ID: d.ID, Revision: d.Revision, PayloadObjectKey: d.Payload.Key, PayloadSHA256: d.Payload.SHA256}
+		if err := tx.QueryRow(t.Context(), `SELECT generation,source_vector::text,token_count,terms,term_frequencies,
+ARRAY(SELECT DISTINCT p.term FROM search_postings p WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND cardinality(p.literal_positions)>0)
+FROM search_documents d WHERE organization_id=$1 AND id=$2`, d.OrganizationID, d.ID).Scan(&input.Generation, &input.Vector, &input.TokenCount, &input.Terms, &input.TermFrequencies, &input.Literals); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(t.Context(), "SAVEPOINT publication_plan"); err != nil {
+			return err
+		}
+		probe := &searchPublicationProbe{Tx: tx}
+		if _, err := pgquery.New(probe).SearchPreparePublicationPostings(t.Context(), input); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(t.Context(), "ROLLBACK TO SAVEPOINT publication_plan"); err != nil {
+			return err
+		}
+		var raw []byte
+		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(t.Context(), "ROLLBACK TO SAVEPOINT publication_plan"); err != nil {
+			return err
+		}
+		var plans []struct{ Plan searchPlanNode }
+		if err := json.Unmarshal(raw, &plans); err != nil {
+			return err
+		}
+		if len(plans) != 1 {
+			t.Fatalf("publication has %d plans, want one", len(plans))
+		}
+		var visits func(searchPlanNode) float64
+		visits = func(node searchPlanNode) float64 {
+			total := (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+			for _, child := range node.Plans {
+				total += visits(child)
+			}
+			return total
+		}
+		work := visits(plans[0].Plan)
+		t.Logf("publication postings=%d plan_visits=%.0f", postings, work)
+		if work == 0 || work > float64(postings)*64 {
+			t.Errorf("publication visits %.0f rows for %d postings", work, postings)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
