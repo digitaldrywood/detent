@@ -645,6 +645,22 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 				return err
 			}
 		}
+		if foundBatch {
+			return nil
+		}
+		validation := &conversationTurnValidationReader{Reader: reader, conversationID: id, controls: make(map[string]conversationTurnValidationControl)}
+		execution := current.Execution
+		for _, event := range request.Events {
+			if err := validatePGTurnEvent(ctx, validation, current, execution, event); err != nil {
+				return err
+			}
+			switch event.Type {
+			case "turn_started":
+				execution.Owner.TurnID = strings.TrimSpace(event.TurnID)
+			case "turn_completed":
+				execution.Owner.TurnID = ""
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -760,6 +776,31 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 	return e.JSON(http.StatusAccepted, result)
 }
 
+type conversationTurnValidationControl struct {
+	message conversationstore.Message
+	found   bool
+}
+
+type conversationTurnValidationReader struct {
+	tenantstore.Reader
+	conversationID string
+	controls       map[string]conversationTurnValidationControl
+}
+
+func (r *conversationTurnValidationReader) MessageByCommandKey(ctx context.Context, id, key string) (conversationstore.Message, bool, error) {
+	if id != r.conversationID {
+		return r.Reader.MessageByCommandKey(ctx, id, key)
+	}
+	if cached, ok := r.controls[key]; ok {
+		return cached.message, cached.found, nil
+	}
+	message, found, err := r.Reader.MessageByCommandKey(ctx, id, key)
+	if err == nil {
+		r.controls[key] = conversationTurnValidationControl{message: message, found: found}
+	}
+	return message, found, err
+}
+
 func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record conversationRecord, execution conversation.Execution, event conversationTurnEvent) error {
 	switch event.Type {
 	case "execution_status":
@@ -797,7 +838,7 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 		if strings.TrimSpace(event.Key) == "" {
 			return nativePublicInvalid("control_result requires a key")
 		}
-		message, found, err := reader.MessageByCommandKey(ctx, record.ID, event.Key)
+		message, found, err := reader.MessageByCommandKey(ctx, record.ID, strings.TrimSpace(event.Key))
 		if err != nil {
 			return err
 		}
@@ -813,7 +854,11 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 			return nativePublicInvalid("control_result status must be delivered, rejected or unknown")
 		}
 	case "turn_completed":
-		if strings.TrimSpace(event.TurnID) == "" || (execution.Owner.TurnID != "" && execution.Owner.TurnID != event.TurnID) {
+		turnID := strings.TrimSpace(event.TurnID)
+		if turnID == "" {
+			return nativePublicInvalid("turn_completed requires a turn_id")
+		}
+		if execution.Owner.TurnID != "" && execution.Owner.TurnID != turnID {
 			return conversationStale("The completed turn is not the current turn")
 		}
 		switch event.Status {

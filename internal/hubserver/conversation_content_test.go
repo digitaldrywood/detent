@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type conversationContentFixture struct {
@@ -614,6 +617,63 @@ func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
 	}
 }
 
+func newConversationContentWorkerFixture(t *testing.T, objects attachment.ArchiveContentStore) (*conversationWorkerFixture, conversationAPIFixture) {
+	t.Helper()
+	operator := newConversationContentTenantFixture(t, objects)
+	issue := operator.nativeFixture.create(t, "Example conversation work")
+	runner := prepareRunner(t, operator.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Collaborate)
+	runner.enroll(t)
+	fixture := &conversationWorkerFixture{nativeFixture: operator.nativeFixture, chat: operator.service.conversations, worker: runner.redemption.Credential, principal: operator.ownerID, issue: issue, policy: hubTestPolicy().ID, attempt: newNativeID("attempt"), run: newNativeID("run")}
+	fixture.lease = nativeAttemptFixtureLease(t, runner, issue, newNativeID("session"))
+	fixture.startAttempt(t, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"})
+	now := operator.service.config.now()
+	if err := operator.service.config.TenantRepository.WriteTenant(t.Context(), operator.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		stored, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: operator.project.OrganizationID, ProjectID: operator.project.ID, ID: conversation.NewConversationID(), OwnerPrincipalID: operator.ownerID, OwnerSubject: "owner@example.test", Title: "Example linked conversation", Visibility: conversation.VisibilityShared, Status: conversation.StatusActive, WorkItemID: string(issue.WorkItemID), LinkedAt: &now, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now}, Preferences: conversation.DefaultPreferences(), CreatedAt: now, UpdatedAt: now})
+		fixture.record = conversationRecordFromStore(stored)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return fixture, operator
+}
+
+type conversationControlReadRepository struct {
+	tenantstore.Repository
+	reads atomic.Int64
+}
+
+func (r *conversationControlReadRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(conversationControlReadReader{Reader: reader, reads: &r.reads})
+	})
+}
+
+func (r *conversationControlReadRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, organization, workload, func(writer tenantstore.Writer) error {
+		return write(conversationControlReadWriter{Writer: writer, reads: &r.reads})
+	})
+}
+
+type conversationControlReadReader struct {
+	tenantstore.Reader
+	reads *atomic.Int64
+}
+
+func (r conversationControlReadReader) MessageByCommandKey(ctx context.Context, id, key string) (conversationstore.Message, bool, error) {
+	r.reads.Add(1)
+	return r.Reader.MessageByCommandKey(ctx, id, key)
+}
+
+type conversationControlReadWriter struct {
+	tenantstore.Writer
+	reads *atomic.Int64
+}
+
+func (w conversationControlReadWriter) MessageByCommandKey(ctx context.Context, id, key string) (conversationstore.Message, bool, error) {
+	w.reads.Add(1)
+	return w.Writer.MessageByCommandKey(ctx, id, key)
+}
+
 func TestConversationTurnBatchValidationReadsEachControlOnce(t *testing.T) {
 	reads := make(map[string]int)
 	for _, test := range []struct {
@@ -625,11 +685,13 @@ func TestConversationTurnBatchValidationReadsEachControlOnce(t *testing.T) {
 	} {
 		func() {
 			objects := &conversationContentFixture{}
-			f := newConversationWorkerFixture(t, objects)
+			f, operator := newConversationContentWorkerFixture(t, objects)
 			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"}), http.StatusAccepted)
-			f.queue(t, conversation.MessageText, "steer-1", "Keep going", nil)
+			requireNativeStatus(t, operator.command(t, operator.token, f.record.ID, conversation.Command{Key: "steer-1", Kind: conversation.CommandMessage, Text: "Keep going", Expected: conversation.Expected{AttemptID: f.attempt, TurnID: "turn-1"}}), http.StatusOK)
 			requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+			counted := &conversationControlReadRepository{Repository: f.service.config.TenantRepository}
+			f.service.config.TenantRepository = counted
 			var count int
 			objects.mu.Lock()
 			objects.onIO = func() error {
@@ -643,6 +705,9 @@ func TestConversationTurnBatchValidationReadsEachControlOnce(t *testing.T) {
 			}
 			events = append(events, map[string]any{"type": "unknown"})
 			requireNativeStatus(t, f.turnEvents(t, events...), http.StatusUnprocessableEntity)
+			if count := counted.reads.Load(); count != 1 {
+				t.Fatalf("control metadata reads=%d,want1", count)
+			}
 			objects.mu.Lock()
 			reads[test.name] = count
 			objects.mu.Unlock()
@@ -677,7 +742,7 @@ func TestConversationRejectedTurnBatchDoesNotPublish(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			objects := &conversationContentFixture{}
-			f := newConversationWorkerFixture(t, objects)
+			f, _ := newConversationContentWorkerFixture(t, objects)
 			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "turn_id": "active-turn"}), http.StatusAccepted)
 			before := objects.publications
@@ -688,6 +753,44 @@ func TestConversationRejectedTurnBatchDoesNotPublish(t *testing.T) {
 			requireNativeStatus(t, response, test.status)
 			if objects.publications != before {
 				t.Fatalf("rejected batch published %d objects; want 0", objects.publications-before)
+			}
+		})
+	}
+}
+
+func TestConversationTurnBatchKeepsSequentialTurnState(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		events []map[string]any
+		status int
+		turn   string
+	}{
+		{"complete before restarting", []map[string]any{{"type": "turn_started", "turn_id": "first-turn"}, {"type": "turn_completed", "turn_id": "first-turn", "status": "completed"}, {"type": "turn_started", "turn_id": "second-turn"}}, http.StatusAccepted, "second-turn"},
+		{"reject another turn", []map[string]any{{"type": "turn_started", "turn_id": "first-turn"}, {"type": "turn_completed", "turn_id": "other-turn", "status": "completed"}}, http.StatusConflict, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, _ := newConversationContentWorkerFixture(t, &conversationContentFixture{})
+			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+			var before, after conversationstore.Conversation
+			read := func(target *conversationstore.Conversation) {
+				t.Helper()
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					*target, err = r.Conversation(t.Context(), f.project.ID, f.record.ID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			read(&before)
+			requireNativeStatus(t, f.turnEvents(t, test.events...), test.status)
+			read(&after)
+			if test.status == http.StatusAccepted {
+				if after.Execution.Owner.TurnID != test.turn || after.Execution.Status != conversation.ExecutionRunning {
+					t.Fatalf("batch turn state=%+v", after.Execution)
+				}
+			} else if !reflect.DeepEqual(after.Execution, before.Execution) || after.EventSequence != before.EventSequence {
+				t.Fatal("rejected batch committed a partial turn")
 			}
 		})
 	}
