@@ -16,6 +16,7 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -1156,6 +1157,227 @@ func TestTrimConversationEvents(t *testing.T) {
 }
 
 func TestNativeConversationBoundsEventsWhileTheHubStalls(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		bytes   int
+		want    int
+		recover bool
+	}{
+		{name: "control results recover at count capacity", bytes: 1 << 20, want: 500, recover: true},
+		{name: "control results cancel at count capacity", bytes: 1 << 20, want: 500},
+		{name: "control results recover at byte capacity", bytes: 1024, want: 2, recover: true},
+		{name: "control results cancel at byte capacity", bytes: 1024, want: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				total := 2*test.want + 3
+				blocked, release, acceptedAll := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var accepted []runner.ConversationTurnEvent
+				attempts := 0
+				receipts := make(map[string]struct{})
+				client, err := New(Config{URL: "https://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					var batch ConversationTurnEventsRequest
+					if err := json.NewDecoder(request.Body).Decode(&batch); err != nil {
+						return nil, err
+					}
+					attempts++
+					if attempts < 4 {
+						return nil, io.ErrUnexpectedEOF
+					}
+					if attempts == 4 {
+						close(blocked)
+						select {
+						case <-release:
+						case <-request.Context().Done():
+							return nil, request.Context().Err()
+						}
+					}
+					if _, found := receipts[batch.BatchKey]; !found {
+						receipts[batch.BatchKey] = struct{}{}
+						accepted = append(accepted, batch.Events...)
+						if len(accepted) == total+2 {
+							close(acceptedAll)
+						}
+					}
+					return &http.Response{StatusCode: http.StatusAccepted, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session := &conversationSession{
+					lifetime: ctx, client: native, id: "conv_test",
+					identity: ConversationIdentity{LeaseID: "lease-1", FencingToken: 7, AttemptID: "attempt_1"},
+					timings:  SessionTimings{MaxQueuedBytes: test.bytes}, logger: slog.Default(),
+					thread: "thread-1", turn: "turn-1", turnEnded: make(chan struct{}), turnWaiters: &sync.WaitGroup{},
+					commands: make(chan runner.AgentControl, 64), kick: make(chan struct{}, 1), stop: make(chan struct{}), closed: make(chan struct{}),
+				}
+				prefixDone, producerDone, providerDone, consumedAll := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+				prefixResult, producerResult := make(chan error, 1), make(chan bool, 1)
+				received := make(chan string, total)
+				go func() {
+					defer close(prefixDone)
+					prefixResult <- session.post(ctx, []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"}})
+				}()
+				go func() {
+					defer close(providerDone)
+					for {
+						select {
+						case command := <-session.commands:
+							if err := command.Validate(); err != nil {
+								t.Errorf("invalid provider control: %v", err)
+							}
+							received <- command.MessageID
+							command.Reply <- fmt.Errorf("%w: %s", runner.ErrInvalidConversationControl, strings.Repeat("界", 1024))
+							if len(received) == total {
+								close(consumedAll)
+							}
+						case <-ctx.Done():
+							return
+						}
+					}
+				}()
+				go func() {
+					defer close(producerDone)
+					for i := range total {
+						if !session.deliver(ctx, ConversationControl{Cursor: int64(i + 1), Key: "control-" + strconv.Itoa(i), Kind: "message", MessageID: "msg_" + strconv.Itoa(i), Text: "Update the example.", Expected: ConversationExpected{AttemptID: "attempt_1"}}) {
+							producerResult <- false
+							return
+						}
+					}
+					producerResult <- true
+				}()
+				t.Cleanup(func() {
+					cancel()
+					select {
+					case <-release:
+					default:
+						close(release)
+					}
+					<-producerDone
+					session.FinishTurn()
+					<-providerDone
+					<-prefixDone
+					session.loops.Wait()
+				})
+				<-blocked
+				synctest.Wait()
+				session.mu.Lock()
+				cursor := session.cursor
+				session.mu.Unlock()
+				if cursor != int64(test.want) || len(received) != test.want {
+					t.Fatalf("unavailable reports admitted %d controls at cursor %d, want %d", len(received), cursor, test.want)
+				}
+				select {
+				case <-producerDone:
+					t.Fatal("control polling ignored report backpressure")
+				default:
+				}
+				if !test.recover {
+					cancel()
+					<-producerDone
+					if <-producerResult {
+						t.Fatal("cancelled delivery acknowledged controls without report capacity")
+					}
+					return
+				}
+				close(release)
+				if err := <-prefixResult; err != nil {
+					t.Fatal(err)
+				}
+				session.loops.Add(1)
+				go session.reportLoop(ctx, ctx)
+				<-producerDone
+				if !<-producerResult {
+					t.Fatal("recovered report capacity did not resume control delivery")
+				}
+				<-consumedAll
+				if err := session.Report(ctx, []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnCompleted, TurnID: "turn-1", Status: "completed"}}); err != nil {
+					t.Fatal(err)
+				}
+				session.FinishTurn()
+				<-acceptedAll
+				if len(accepted) != total+2 || accepted[0].Type != runner.ConversationEventTurnStarted || accepted[len(accepted)-1].Type != runner.ConversationEventTurnCompleted {
+					t.Fatal("recovery lost events or completed before all control results")
+				}
+				seen := make(map[string]bool)
+				for _, event := range accepted[1 : len(accepted)-1] {
+					if event.Type != runner.ConversationEventControlResult || event.Status != runner.ConversationControlRejected || seen[event.Key] || len(event.Error) > 500 || !utf8.ValidString(event.Error) || !strings.HasPrefix(event.Error, "invalid conversation control") {
+						t.Fatalf("control result lost identity, bounded reason or outcome: %+v", event)
+					}
+					seen[event.Key] = true
+				}
+				for i := range total {
+					if !seen["control-"+strconv.Itoa(i)] {
+						t.Fatalf("recovery lost control result %d", i)
+					}
+				}
+			})
+		})
+	}
+	t.Run("outstanding controls reserve ordinary report capacity", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			session := &conversationSession{
+				lifetime: ctx, timings: SessionTimings{MaxQueuedBytes: 1000}, logger: slog.Default(),
+				thread: "thread-1", turn: "turn-1", turnEnded: make(chan struct{}), turnWaiters: &sync.WaitGroup{},
+				commands: make(chan runner.AgentControl, 2), kick: make(chan struct{}, 1), stop: make(chan struct{}),
+			}
+			finished, result := make(chan struct{}), make(chan error, 1)
+			started := false
+			t.Cleanup(func() {
+				cancel()
+				session.FinishTurn()
+				if started {
+					<-finished
+				}
+			})
+			for i := range 2 {
+				if !session.deliver(ctx, ConversationControl{Cursor: int64(i + 1), Key: strconv.Itoa(i), Kind: "message", MessageID: "msg_" + strconv.Itoa(i), Text: "Update the example."}) {
+					t.Fatal("initial control delivery failed")
+				}
+			}
+			started = true
+			go func() {
+				defer close(finished)
+				result <- session.Report(context.Background(), []runner.ConversationTurnEvent{{Type: runner.ConversationEventItem, ProviderItemID: "tool-1", Kind: runner.ConversationItemTool, Summary: "Queued tool result"}})
+			}()
+			synctest.Wait()
+			select {
+			case err := <-result:
+				t.Fatalf("ordinary producer consumed reserved control capacity: %v", err)
+			default:
+			}
+			session.FinishTurn()
+			if err := <-result; err != nil {
+				t.Fatalf("settled controls did not restore ordinary report capacity: %v", err)
+			}
+			var controls, tools int
+			for _, event := range session.events {
+				switch event.Type {
+				case runner.ConversationEventControlResult:
+					if event.Status != runner.ConversationControlUnknown {
+						t.Fatal("unconsumed control lost its unknown outcome")
+					}
+					controls++
+				case runner.ConversationEventItem:
+					if event.ProviderItemID != "tool-1" {
+						t.Fatal("ordinary producer lost its queued result")
+					}
+					tools++
+				}
+			}
+			if controls != 2 || tools != 1 {
+				t.Fatalf("settled results: controls=%d tools=%d", controls, tools)
+			}
+		})
+	})
 	t.Run("cancelled flush preserves queue under production", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			lifetime, stopProducer := context.WithCancel(t.Context())
@@ -1345,6 +1567,9 @@ func TestNativeConversationBoundsEventsWhileTheHubStalls(t *testing.T) {
 					t.Fatal(err)
 				}
 				session := &conversationSession{lifetime: t.Context(), client: native, id: "conv_test", identity: ConversationIdentity{LeaseID: "lease-1", FencingToken: 7, AttemptID: "attempt_1"}, timings: SessionTimings{MaxQueuedBytes: 128}, turnEnded: make(chan struct{}), turnWaiters: &sync.WaitGroup{}, commands: make(chan runner.AgentControl), kick: make(chan struct{}, 1), logger: slog.Default()}
+				if !session.reserveControlResult(t.Context()) {
+					t.Fatal("initial control result has no report capacity")
+				}
 				session.waiters.Add(1)
 				session.turnWaiters.Add(1)
 				go session.await("control-1", runner.AgentControl{Reply: make(chan error)}, session.turnEnded, session.turnWaiters)

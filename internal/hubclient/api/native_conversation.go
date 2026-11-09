@@ -252,10 +252,11 @@ type conversationSession struct {
 	turnEnded chan struct{}
 	// turnWaiters counts the control waiters of the current turn, so the
 	// turn's end is reported only after every control it consumed.
-	turnWaiters *sync.WaitGroup
-	cursor      int64
-	events      []runner.ConversationTurnEvent
-	reportRoom  chan struct{}
+	turnWaiters    *sync.WaitGroup
+	cursor         int64
+	controlResults int
+	events         []runner.ConversationTurnEvent
+	reportRoom     chan struct{}
 	// held keeps a reported turn_completed, and anything after it, until
 	// FinishTurn has settled the turn's controls. The hub refuses turn events
 	// once a turn has ended, so a control result posted after the turn's end
@@ -462,10 +463,10 @@ func (s *conversationSession) Report(ctx context.Context, events []runner.Conver
 				s.held = append(s.held, event)
 				break
 			}
-			if event.Type == runner.ConversationEventQuestionOpened && (len(s.events) >= conversationMaxBatchEvents || conversationQueuedBytes(s.events) >= s.timings.withDefaults().MaxQueuedBytes) {
+			if event.Type == runner.ConversationEventQuestionOpened && (len(s.events)+s.controlResults >= conversationMaxBatchEvents || conversationQueuedBytes(s.events)+s.controlResults*s.controlResultBytes() >= s.timings.withDefaults().MaxQueuedBytes) {
 				return fmt.Errorf("conversation question publication has no report capacity: %w", ErrUnavailable)
 			}
-			if len(s.events) < conversationMaxBatchEvents && (event.Type == runner.ConversationEventDelta || conversationQueuedBytes(s.events) < s.timings.withDefaults().MaxQueuedBytes) {
+			if len(s.events)+s.controlResults < conversationMaxBatchEvents && (event.Type == runner.ConversationEventDelta || conversationQueuedBytes(s.events)+s.controlResults*s.controlResultBytes() < s.timings.withDefaults().MaxQueuedBytes) {
 				s.events = append(s.events, event)
 				s.boundQueuedLocked()
 				break
@@ -512,13 +513,14 @@ func (s *conversationSession) Report(ctx context.Context, events []runner.Conver
 // the oldest deltas are dropped. Turn, question, item and control events are
 // never dropped. s.mu is held by the caller.
 func (s *conversationSession) boundQueuedLocked() {
-	if conversationQueuedBytes(s.events) <= s.timings.withDefaults().MaxQueuedBytes {
+	limit := max(0, s.timings.withDefaults().MaxQueuedBytes-s.controlResults*s.controlResultBytes())
+	if conversationQueuedBytes(s.events) <= limit {
 		return
 	}
 	var dropped int
-	s.events, dropped = trimConversationEvents(coalesceConversationDeltas(s.events), s.timings.withDefaults().MaxQueuedBytes)
+	s.events, dropped = trimConversationEvents(coalesceConversationDeltas(s.events), limit)
 	if dropped > 0 {
-		s.logger.Warn("conversation deltas dropped while the hub is slow", "dropped", dropped, "limit_bytes", s.timings.withDefaults().MaxQueuedBytes)
+		s.logger.Warn("conversation deltas dropped while the hub is slow", "dropped", dropped, "limit_bytes", limit)
 	}
 }
 
@@ -674,12 +676,20 @@ func conversationPollRefused(err error) bool {
 // deliver converts one control, starts its waiter and queues it. It blocks
 // while the queue is full and reports false once the session is stopping.
 func (s *conversationSession) deliver(ctx context.Context, control ConversationControl) bool {
+	if !s.reserveControlResult(ctx) {
+		return false
+	}
 	command := runner.AgentControl{
 		Kind: runner.AgentControlKind(control.Kind), MessageID: control.MessageID, Text: control.Text,
 		RequestID: control.RequestID, Answers: control.Answers, Reply: make(chan error, 1),
 		Attachments: s.fetchAttachments(ctx, control.Attachments),
 	}
 	s.mu.Lock()
+	if s.closing || ctx.Err() != nil || s.lifetime != nil && s.lifetime.Err() != nil {
+		s.releaseControlResultLocked()
+		s.mu.Unlock()
+		return false
+	}
 	command.ThreadID = s.thread
 	command.TurnID = control.Expected.TurnID
 	if command.TurnID == "" {
@@ -711,6 +721,59 @@ func (s *conversationSession) deliver(ctx context.Context, control ConversationC
 		s.drainCommands()
 	}
 	return true
+}
+
+func (s *conversationSession) controlResultBytes() int {
+	return min(conversationControlErrorBytes, s.timings.withDefaults().MaxQueuedBytes)
+}
+
+func (s *conversationSession) reserveControlResult(ctx context.Context) bool {
+	lifetime := s.lifetime
+	if lifetime == nil {
+		lifetime = ctx
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for {
+		if s.closing || ctx.Err() != nil || lifetime.Err() != nil {
+			return false
+		}
+		if len(s.events)+s.controlResults < conversationMaxBatchEvents && conversationQueuedBytes(s.events)+(s.controlResults+1)*s.controlResultBytes() <= s.timings.withDefaults().MaxQueuedBytes {
+			s.controlResults++
+			return true
+		}
+		if s.reportRoom == nil {
+			s.reportRoom = make(chan struct{})
+		}
+		room := s.reportRoom
+		select {
+		case s.kick <- struct{}{}:
+		default:
+		}
+		s.mu.Unlock()
+		interrupted := false
+		select {
+		case <-room:
+		case <-s.stop:
+			interrupted = true
+		case <-ctx.Done():
+			interrupted = true
+		case <-lifetime.Done():
+			interrupted = true
+		}
+		s.mu.Lock()
+		if interrupted {
+			return false
+		}
+	}
+}
+
+func (s *conversationSession) releaseControlResultLocked() {
+	s.controlResults--
+	if s.reportRoom != nil {
+		close(s.reportRoom)
+		s.reportRoom = nil
+	}
 }
 
 // ownerCheck is the check a control runs immediately before it is written to
@@ -760,8 +823,10 @@ func (s *conversationSession) await(key string, command runner.AgentControl, end
 	default:
 		event.Status, event.Error = runner.ConversationControlUnknown, err.Error()
 	}
+	event.Error = conversationTruncateBytes(event.Error, s.controlResultBytes())
 	s.mu.Lock()
 	s.events = append(s.events, event)
+	s.releaseControlResultLocked()
 	s.mu.Unlock()
 	select {
 	case s.kick <- struct{}{}:
@@ -847,8 +912,7 @@ func (s *conversationSession) post(ctx context.Context, batch []runner.Conversat
 	return errors.Join(errs...)
 }
 
-// conversationDeclineCauseBytes bounds the hub error quoted to the provider.
-const conversationDeclineCauseBytes = 500
+const conversationControlErrorBytes = 500
 
 type conversationQuestionIdentity struct {
 	requestID string
@@ -869,7 +933,7 @@ func (s *conversationSession) declineQuestions(events []runner.ConversationTurnE
 		if _, exists := declined[identity]; exists {
 			continue
 		}
-		reason := "Detent could not show this question to the user (" + conversationTruncateBytes(cause.Error(), conversationDeclineCauseBytes) + "). No answer will come; continue without one."
+		reason := "Detent could not show this question to the user (" + conversationTruncateBytes(cause.Error(), conversationControlErrorBytes) + "). No answer will come; continue without one."
 		var prompts []struct {
 			ID string `json:"id"`
 		}
