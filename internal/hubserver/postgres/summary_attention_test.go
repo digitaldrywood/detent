@@ -65,8 +65,14 @@ func TestSummaryAttentionIgnoresHistoricalPopulation(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='recipient' WHERE organization_id=$1`, org); err != nil {
-			t.Fatal(err)
+		for first := 1; first <= 5002; first += 100 {
+			result, err := admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='recipient' WHERE organization_id=$1 AND project_id='project' AND number BETWEEN $2 AND $3`, org, first, min(first+99, 5002))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated, err := result.RowsAffected(); err != nil || updated != int64(min(100, 5003-first)) {
+				t.Fatalf("actor update rows=%d: %v", updated, err)
+			}
 		}
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_board_items
 (organization_id,project_id,work_item_id,source_revision,source_event_sequence,source_project_revision,state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,identifier,execution_fence,actor_principal_id,issue_type,verification_state,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
