@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -20,9 +21,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+var neutralFixtureCatalog = sync.OnceValues(func() (storagecatalog.Catalog, error) {
+	return storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
+})
+
 func neutralFixtureTable(t *testing.T, name string, keys []postgres.NeutralImportKey) postgres.NeutralImportTable {
 	t.Helper()
-	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
+	catalog, err := neutralFixtureCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
