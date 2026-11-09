@@ -131,24 +131,26 @@ func (s *Service) readHealthRunnerRecords(ctx context.Context, organization trac
 			if err != nil {
 				return err
 			}
+			links := map[string][]tracker.ProjectID{}
+			if len(page) > 0 {
+				ids := make([]string, len(page))
+				for i, runner := range page {
+					ids[i] = runner.ID
+				}
+				links, err = owner.HealthRunnerProjects(ctx, ids, healthProjectLimit+1)
+				if err != nil {
+					return err
+				}
+			}
 			projectRunners := map[tracker.ProjectID][]string{}
 			positions := map[string]int{}
 			for _, row := range page {
 				runner := healthRunnerState{healthRunner: healthRunner{ID: row.ID, Heartbeat: row.Heartbeat, CreatedAt: row.CreatedAt, Leases: row.Leases, FreeSlots: row.FreeSlots}, MachineID: row.MachineID, Routing: runnerauth.Routing{State: row.State}, Admissions: map[string]tracker.NativeAdmissionObservation{}}
-				projects, err := r.RunnerProjects(ctx, row.ID, healthProjectLimit+1)
-				if err != nil {
-					return err
-				}
-				leased, err := owner.HealthRunnerLeasedProjects(ctx, row.ID, healthProjectLimit+1)
-				if err != nil {
-					return err
-				}
-				if len(leased) > healthProjectLimit {
+				projects := links[row.ID]
+				if len(projects) > healthProjectLimit {
 					return errHealthReadLimit
 				}
-				projects = append(projects, leased...)
-				slices.Sort(projects)
-				for _, project := range slices.Compact(projects) {
+				for _, project := range projects {
 					runner.Projects = append(runner.Projects, string(project))
 					projectRunners[project] = append(projectRunners[project], row.ID)
 				}

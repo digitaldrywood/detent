@@ -64,5 +64,5 @@ type ObservationReader interface {
 	HealthOpenItems(context.Context, int) ([]OpenItemObservation, error)
 	HealthQuestions(context.Context, time.Time, int) ([]QuestionObservation, error)
 	HealthSchedulerEvents(context.Context, time.Time, time.Time, int) ([]eventstore.Event, error)
-	HealthRunnerLeasedProjects(context.Context, string, int) ([]tracker.ProjectID, error)
+	HealthRunnerProjects(context.Context, []string, int) (map[string][]tracker.ProjectID, error)
 }

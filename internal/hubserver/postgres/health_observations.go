@@ -138,22 +138,29 @@ func (s *session) HealthRunners(ctx context.Context, after string, now time.Time
 	return result, mapError(ctx, rows.Err())
 }
 
-func (s *session) HealthRunnerLeasedProjects(ctx context.Context, runner string, limit int) ([]tracker.ProjectID, error) {
-	if err := healthObservationLimit(limit); err != nil {
-		return nil, err
+func (s *session) HealthRunnerProjects(ctx context.Context, runners []string, limit int) (map[string][]tracker.ProjectID, error) {
+	if len(runners) < 1 || len(runners) > 200 || limit < 1 || limit > 101 {
+		return nil, corestore.ErrInvalidPage
 	}
-	rows, err := s.db.Query(ctx, `SELECT DISTINCT i.project_id FROM runner_lease_assignments a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE a.organization_id=$1 AND a.runner_id=$2 AND l.released_at IS NULL ORDER BY i.project_id LIMIT $3`, s.organization, runner, limit)
+	rows, err := s.db.Query(ctx, `SELECT r.runner_id,p.project_id FROM runner_identities r CROSS JOIN LATERAL (
+ SELECT project_id FROM (
+  (SELECT p.id AS project_id FROM projects p WHERE p.organization_id=r.organization_id AND p.deleted_at IS NULL AND (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=p.id)) ORDER BY p.id LIMIT $3)
+  UNION
+  (SELECT DISTINCT i.project_id FROM runner_lease_assignments a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE a.organization_id=r.organization_id AND a.runner_id=r.runner_id AND l.released_at IS NULL ORDER BY i.project_id LIMIT $3)
+ ) links ORDER BY project_id LIMIT $3
+) p WHERE r.organization_id=$1 AND r.runner_id=ANY($2::text[]) ORDER BY r.runner_id,p.project_id`, s.organization, runners, limit)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
 	defer rows.Close()
-	var result []tracker.ProjectID
+	result := map[string][]tracker.ProjectID{}
 	for rows.Next() {
+		var runner string
 		var project tracker.ProjectID
-		if err := rows.Scan(&project); err != nil {
+		if err := rows.Scan(&runner, &project); err != nil {
 			return nil, mapError(ctx, err)
 		}
-		result = append(result, project)
+		result[runner] = append(result[runner], project)
 	}
 	return result, mapError(ctx, rows.Err())
 }
