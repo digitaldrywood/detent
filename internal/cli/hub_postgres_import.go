@@ -20,11 +20,11 @@ import (
 )
 
 func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
-	var configPath, copyPath, organization, repositoryRoot string
+	var configPath, bundlePath, organization, repositoryRoot string
 	cmd := &cobra.Command{
 		Use:          "import-core-postgres",
-		Short:        "Import tenant core records from a sealed production copy",
-		Example:      "detent hub import-core-postgres --entry-config /etc/detent/cloud.yaml --database-copy /secure-copy/hub.db --organization org_example --repository-root /opt/detent/source",
+		Short:        "Import tenant core records from a verified neutral bundle",
+		Example:      "detent hub import-core-postgres --entry-config /etc/detent/cloud.yaml --bundle /secure-export/tenant --organization org_example --repository-root /opt/detent/source",
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -48,7 +48,7 @@ func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
 			if !ok {
 				return errors.New("tenant import requires immutable archive storage")
 			}
-			result, err := hubserver.ImportTenantCoreCopy(cmd.Context(), *config, hubserver.TenantCoreImportSource{CopyPath: copyPath, OrganizationID: tracker.OrganizationID(organization), Catalog: catalog, Objects: tenantImportDetails{organization: organization, storage: archive}})
+			result, err := hubserver.ImportTenantCoreCopy(cmd.Context(), *config, hubserver.TenantCoreImportSource{BundlePath: bundlePath, OrganizationID: tracker.OrganizationID(organization), Catalog: catalog, Objects: tenantImportDetails{organization: organization, storage: archive}})
 			if err != nil {
 				return err
 			}
@@ -59,10 +59,10 @@ func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "entry-config", "", "shared entry PostgreSQL and archive configuration")
-	cmd.Flags().StringVar(&copyPath, "database-copy", "", "sealed read-only tenant database copy")
+	cmd.Flags().StringVar(&bundlePath, "bundle", "", "verified neutral tenant export directory")
 	cmd.Flags().StringVar(&organization, "organization", "", "source organization identifier")
 	cmd.Flags().StringVar(&repositoryRoot, "repository-root", "", "checked-out Detent source tree for the mapping catalog")
-	for _, flag := range []string{"entry-config", "database-copy", "organization", "repository-root"} {
+	for _, flag := range []string{"entry-config", "bundle", "organization", "repository-root"} {
 		if err := cmd.MarkFlagRequired(flag); err != nil {
 			panic(err)
 		}
