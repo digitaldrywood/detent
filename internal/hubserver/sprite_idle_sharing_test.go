@@ -8,7 +8,12 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -16,8 +21,17 @@ import (
 )
 
 func TestSpriteIdleSharingCommands(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organizations(id,name,created_at) VALUES('org_other_sharing','Other organization',?)`, testTimestamp); err != nil {
+	f := newSpriteNativeFixture(t, Config{})
+	now := f.service.config.now()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_other_sharing", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_other_sharing", Name: "Other organization", Slug: "other-sharing", CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_other_sharing", ProviderID: "provider_other_sharing", AllocationGeneration: 1}); err != nil {
+			return err
+		}
+		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_other_sharing", ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Name: "Example administrator", Scope: "admin", Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	other := newNativeFixture(t, f.service, "org_other_sharing", "other-organization")
@@ -116,7 +130,7 @@ func TestSpriteIdleSharingCommands(t *testing.T) {
 }
 
 func TestHostedSpriteIdleSharingCommand(t *testing.T) {
-	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
+	f := newPostgresBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
 	for _, test := range []struct {
 		role   string
 		status int
@@ -136,7 +150,11 @@ func TestHostedSpriteIdleSharingCommand(t *testing.T) {
 	}
 	var sharing bool
 	var revision int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT share_idle_capacity,revision FROM organization_sprite_pools WHERE organization_id='org_browser_preview'`).Scan(&sharing, &revision); err != nil {
+	if err := f.service.database.postgres.ReadSprite(t.Context(), "org_browser_preview", corestore.Serving, func(r postgres.SpriteReader) error {
+		pool, err := r.SpritePool(t.Context())
+		sharing, revision = pool.ShareIdleCapacity, int(pool.Revision)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if !sharing || revision != 1 {

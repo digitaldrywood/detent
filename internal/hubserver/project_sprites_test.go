@@ -297,6 +297,29 @@ func TestSpriteWakeSecret(t *testing.T) {
 	}
 }
 
+func spritePostgresFixtureConnection(t *testing.T, f nativeFixture) *pgx.Conn {
+	t.Helper()
+	config, err := f.service.config.Postgres.Connection.PoolConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := pgx.ConnectConfig(t.Context(), config.ConnConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+		defer cancel()
+		if err := connection.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := connection.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, false)", string(f.project.OrganizationID)); err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
 func newSpriteWakeFixture(t *testing.T, client *http.Client, storeToken bool, heartbeatAgo time.Duration, names ...string) (nativeFixture, nativeScope, []runnerFixture) {
 	t.Helper()
 	f := newSpriteNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), SpritesHTTPClient: client, RunDetails: &verifiedAttemptDetails{}})
@@ -582,18 +605,7 @@ func TestWakeSpriteRunnersFreshAuthority(t *testing.T) {
 				}
 			}
 			var audits int
-			config, err := f.service.config.Postgres.Connection.PoolConfig()
-			if err != nil {
-				t.Fatal(err)
-			}
-			connection, err := pgx.ConnectConfig(t.Context(), config.ConnConfig)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer connection.Close(t.Context())
-			if _, err := connection.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, false)", string(scope.organization)); err != nil {
-				t.Fatal(err)
-			}
+			connection := spritePostgresFixtureConnection(t, f)
 			if err := connection.QueryRow(t.Context(), "SELECT count(*) FROM project_secret_audit WHERE organization_id=$1 AND project_id=$2 AND event='use'", scope.organization, scope.project).Scan(&audits); err != nil || audits != test.want {
 				t.Fatalf("secret use audits=%d error=%v, want %d", audits, err, test.want)
 			}

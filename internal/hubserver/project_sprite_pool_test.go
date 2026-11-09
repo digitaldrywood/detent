@@ -2438,6 +2438,22 @@ func TestProjectSpriteLoginReadiness(t *testing.T) {
 	}
 }
 
+type spriteCountingRunDetails struct {
+	attachment.DetailStore
+	attachment.CanonicalDetailStore
+	reads atomic.Int64
+}
+
+func (s *spriteCountingRunDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	s.reads.Add(1)
+	return s.DetailStore.ReadDetail(ctx, organization, ref)
+}
+
+func (s *spriteCountingRunDetails) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
+	s.reads.Add(1)
+	return s.CanonicalDetailStore.ReadCanonicalDetail(ctx, organization, project, key)
+}
+
 func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	f, scope, provider := newSpritePoolFixture(t, "")
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
@@ -2446,12 +2462,17 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	if err := f.service.stopGitHubReconciliation(); err != nil {
 		t.Fatal(err)
 	}
-	f.service.outbox.stop()
+	if f.service.outbox != nil {
+		f.service.outbox.stop()
+	}
 	keys, hosted := f.service.config.SecretKeys, f.service.config.Hosted
 	f.service.config.SecretKeys, f.service.config.Hosted = nil, nil
-	store := &memoryRunDetails{}
+	canonical, ok := f.service.runDetailStore().(attachment.CanonicalDetailStore)
+	if !ok {
+		t.Fatal("fixture requires canonical archive reads")
+	}
+	store := &spriteCountingRunDetails{DetailStore: f.service.runDetailStore(), CanonicalDetailStore: canonical}
 	f.service.config.RunDetails = store
-	f.service.config.Content = nil
 	r := placementFixtureRunner(t, f, "archive-worker", "local", false, 1, "gpt-6.1-sol", "test-model")
 	issue := f.create(t, "Archived execution")
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "archived-run"))
@@ -2460,20 +2481,16 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	decodeHubResponse(t, response, &lease)
 	event := nativeStartedEvent(lease)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET status='succeeded',work_item_revision=1000,dispatch_generation=1000 WHERE id=?`, event.Data.AttemptID); err != nil {
-		t.Fatal(err)
-	}
+	finished := event
+	finished.Type, finished.IdempotencyKey, finished.Data.Sequence, finished.Data.Outcome = "run.finished", "finish-archived", 2, "succeeded"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, finished), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 	setPlacementFixture(t, f, policy.Placement{Mode: "sprites_only"}, 2)
 	f.service.config.SecretKeys, f.service.config.Hosted = keys, hosted
-	store.mu.Lock()
-	store.reads = 0
-	store.mu.Unlock()
+	store.reads.Store(0)
 	f.service.scheduleSpriteLifecycle(t.Context(), scope, "Todo")
 	f.service.spriteWakeWork.Wait()
-	store.mu.Lock()
-	reads := store.reads
-	store.mu.Unlock()
+	reads := store.reads.Load()
 	if reads == 0 || len(provider.created) != 2 {
 		t.Fatalf("archived run reads=%d created Sprites=%d", reads, len(provider.created))
 	}

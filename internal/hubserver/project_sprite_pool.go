@@ -256,6 +256,9 @@ func (s *Service) setSpritePool(c echo.Context) error {
 }
 
 func (s *Service) setSpritePoolCommand(ctx context.Context, scope nativeScope, input spritePoolCommand) (spritePoolView, error) {
+	if input.ShareIdleCapacity != nil && input.IdempotencyKey == "" {
+		return spritePoolView{}, nativePublicInvalid("An idempotency key is required to change idle capacity sharing")
+	}
 	if s.config.TenantRepository != nil {
 		if err := s.updateSpritePoolRecord(ctx, scope, input); err != nil {
 			return spritePoolView{}, err
