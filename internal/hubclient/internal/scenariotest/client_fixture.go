@@ -29,7 +29,7 @@ import (
 
 func createTestClient(t testing.TB, config Config, constructors ...Constructors) (*Client, error) {
 	t.Helper()
-	config.SessionTimings = api.SessionTimings{FlushInterval: 20 * time.Millisecond, ReportBackoff: 10 * time.Millisecond, PollWait: time.Second}
+	config.SessionTimings = api.SessionTimings{FlushInterval: 20 * time.Millisecond, ReportBackoff: 10 * time.Millisecond}
 	if config.HTTPClient == nil {
 		transport := http.DefaultTransport
 		if standard, ok := transport.(*http.Transport); ok {
