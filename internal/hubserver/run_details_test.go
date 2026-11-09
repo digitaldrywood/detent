@@ -40,6 +40,7 @@ import (
 
 type memoryRunDetails struct {
 	mu          sync.Mutex
+	encoder     attachment.ArchiveEncoder
 	data        map[string][]byte
 	fail        bool
 	uploads     int
@@ -50,7 +51,7 @@ type memoryRunDetails struct {
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
-	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
+	ref, _, err := m.encoder.Prepare(organization, 1, bytes.NewReader(data))
 	if err != nil {
 		return ref, err
 	}
