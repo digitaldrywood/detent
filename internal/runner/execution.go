@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -1315,24 +1316,28 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if err != nil {
 		return failedStep("validator", err)
 	}
+	request.complete = func(ctx context.Context, result gate.ValidatorResult, finalization *sessionmodel.Finalization) (gate.ValidatorResult, error) {
+		if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
+			result.Verdict = string(decision.Action)
+			result.Summary = strings.TrimSpace(result.Summary + "\n\nValidator gate: " + string(decision.Reason))
+		} else {
+			result.Verdict = gate.ValidatorVerdictPass
+		}
+		binding.CompletedAt, binding.Validator, binding.SessionFinalization = r.now(), &result, finalization
+		return result, recordStep(ctx, req.Execution, binding)
+	}
 	var result gate.ValidatorResult
 	if previous.Step != "" && previous.Validator != nil && previous.Validator.Verdict == gate.ValidatorVerdictPass {
 		result = *previous.Validator
+		err = r.reconcileSessionFinalization(ctx, req.Execution, result.SessionID, previous.SessionFinalization)
+		if err == nil {
+			result, err = request.complete(ctx, result, previous.SessionFinalization)
+		}
 	} else {
 		result, err = r.Validate(ctx, request)
 	}
 	if err != nil {
 		return fmt.Errorf("%w: acceptance review: %w", ErrValidatorInfrastructure, err)
-	}
-	if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
-		result.Verdict = string(decision.Action)
-		result.Summary = strings.TrimSpace(result.Summary + "\n\nValidator gate: " + string(decision.Reason))
-	} else {
-		result.Verdict = gate.ValidatorVerdictPass
-	}
-	binding.CompletedAt, binding.Validator = r.now(), &result
-	if err := recordStep(ctx, req.Execution, binding); err != nil {
-		return err
 	}
 	if err := execution.RecordValidator(ctx, result); err != nil {
 		return failedStep("validator_publication", fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, err))
@@ -1375,24 +1380,28 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 	if err != nil {
 		return false, failedStep("review", err)
 	}
+	request.complete = func(ctx context.Context, result gate.ValidatorResult, finalization *sessionmodel.Finalization) (gate.ValidatorResult, error) {
+		cfg := gate.Effective(workflow.Config.Gate).Validator
+		cfg.Enabled = true
+		if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
+			result.Verdict = string(decision.Action)
+		} else {
+			result.Verdict = gate.ValidatorVerdictPass
+		}
+		binding.CompletedAt, binding.Validator, binding.SessionFinalization = r.now(), &result, finalization
+		return result, recordStep(ctx, req.Execution, binding)
+	}
 	var result gate.ValidatorResult
 	if previous.Step != "" && previous.Validator != nil && previous.Validator.Verdict == gate.ValidatorVerdictPass {
 		result = *previous.Validator
+		err = r.reconcileSessionFinalization(ctx, req.Execution, result.SessionID, previous.SessionFinalization)
+		if err == nil {
+			result, err = request.complete(ctx, result, previous.SessionFinalization)
+		}
 	} else {
 		result, err = r.Validate(ctx, request)
 	}
 	if err != nil {
-		return false, err
-	}
-	cfg := gate.Effective(workflow.Config.Gate).Validator
-	cfg.Enabled = true
-	if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
-		result.Verdict = string(decision.Action)
-	} else {
-		result.Verdict = gate.ValidatorVerdictPass
-	}
-	binding.CompletedAt, binding.Validator = r.now(), &result
-	if err := recordStep(ctx, req.Execution, binding); err != nil {
 		return false, err
 	}
 	if err := execution.RecordReview(ctx, result); err != nil {

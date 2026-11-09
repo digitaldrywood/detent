@@ -38,13 +38,14 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 
 func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope nativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments) (json.RawMessage, error) {
 	human := (scope.credential.Scope == apiScopeOperator || scope.credential.Scope == apiScopeAdmin) && scope.credential.Runner.RunnerID == "" && scope.actor().Kind == "human"
+	recordedRecovery := !human && request.Reason == "dependency_ready"
 	if !human && (scope.credential.Scope != apiScopeWorker || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil) {
 		return nil, runnerUnauthorized()
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.ExpectedRevision <= 0 || !human && (request.LeaseID == "" || request.FencingToken <= 0) {
 		return nil, nativePublicInvalid("A current revision and idempotency key are required; workers also require a lease and fencing token")
 	}
-	if human && request.Reason != "user_requested" || !human && request.Reason != "worker_progress" && request.Reason != string(gate.ReasonValidatorRework) {
+	if human && request.Reason != "user_requested" || !human && !recordedRecovery && request.Reason != "worker_progress" && request.Reason != string(gate.ReasonValidatorRework) {
 		return nil, workItemStorageUnavailable()
 	}
 	if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {
@@ -143,6 +144,19 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.credential.Scope); err != nil {
 			return nil, err
 		}
+		var recovery *leasestore.RecordedRecovery
+		if recordedRecovery {
+			if !dispatchableProjectState(project, request.State) {
+				return nil, nativeConflict(tracker.Revision(row.Revision))
+			}
+			recovery, err = s.prepareRecordedRecoveryTenant(ctx, scope, row, issue, request)
+			if err != nil {
+				if errors.Is(err, corestore.ErrRevisionConflict) {
+					return nil, nativeConflict(tracker.Revision(row.Revision))
+				}
+				return nil, err
+			}
+		}
 		previousContract, err := json.Marshal(issue.IssueContract)
 		if err != nil {
 			return nil, err
@@ -224,7 +238,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
-		data := tracker.CollaborationData{Revision: issue.Revision, FromState: previousState, ToState: request.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}
+		data := tracker.CollaborationData{Revision: issue.Revision, FromState: previousState, ToState: request.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail), BlockerAttemptID: request.BlockerAttemptID}
 		if previousState != request.State {
 			data.Change, err = s.landingTransitionSource(ctx, scope, row)
 			if err != nil {
@@ -277,13 +291,18 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 		}
 		var committed json.RawMessage
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		write := func(ctx context.Context, w tenantstore.Writer) error {
 			if human {
 				if err := s.authorizeNativeWorkflowScope(ctx, w, scope); err != nil {
 					return err
 				}
 			} else if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 				return err
+			}
+			if recordedRecovery {
+				if err := w.LockRelationshipGraph(ctx); err != nil {
+					return err
+				}
 			}
 			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 				return err
@@ -325,6 +344,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if locked.Archived || locked.Revision != row.Revision || locked.ID != row.ID || locked.NativeID != issue.WorkItemID {
 				return corestore.ErrRevisionConflict
 			}
+			if recordedRecovery && locked.EventSequence != row.EventSequence {
+				return corestore.ErrRevisionConflict
+			}
 			if previousState != request.State && nativeDoneState(request.State) && nativeHumanFiled(issue) {
 				workspace, err := w.IsWorkspaceWorkItem(ctx, scope.project, issue.WorkItemID)
 				if err != nil {
@@ -364,6 +386,10 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 					if err := s.settleHumanWorkflowLease(ctx, w, scope, lease, request, cancellation, stopState); err != nil {
 						return err
 					}
+				}
+			} else if recordedRecovery {
+				if err := s.authorizeRecordedRecoveryTenant(ctx, w, scope, *recovery); err != nil {
+					return err
 				}
 			} else {
 				locker, ok := w.(leasestore.FencedLeaseLocker)
@@ -435,7 +461,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {
 				return err
 			}
-			if !human {
+			if !human && !recordedRecovery {
 				if err := w.AdvanceLeaseWorkItemRevision(ctx, leasestore.Fence{LeaseID: string(request.LeaseID), FencingToken: int64(request.FencingToken)}, locked.ID, locked.Revision, int64(issue.Revision)); err != nil {
 					return err
 				}
@@ -467,11 +493,19 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			committed = responseRaw
 			return nil
-		})
+		}
+		if recordedRecovery {
+			err = s.writeNativeClaimCommand(ctx, scope, write)
+		} else {
+			err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
+		}
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
 			continue
 		}
 		if err != nil {
+			if recordedRecovery && errors.Is(err, corestore.ErrRevisionConflict) {
+				return nil, nativeConflict(tracker.Revision(row.Revision))
+			}
 			return nil, projectRecordError(err)
 		}
 		if human {

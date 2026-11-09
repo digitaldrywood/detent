@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -777,6 +778,7 @@ const (
 
 type ValidatorRequest struct {
 	usageExecution       Execution
+	complete             func(context.Context, gate.ValidatorResult, *sessionmodel.Finalization) (gate.ValidatorResult, error)
 	source               ChangeSourceExecution
 	workspacePrepared    bool
 	SecurityAudit        *NativeSecurityAuditEvidence

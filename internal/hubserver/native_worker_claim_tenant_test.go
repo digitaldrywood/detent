@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -215,8 +217,6 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 }
 
 func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *testing.T) {
-	const validRunnerID = "runner_11111111111111111111111111111111"
-	const validMachineID = "machine_22222222222222222222222222222222"
 	var logs bytes.Buffer
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -332,6 +332,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
+	binding := runnerauth.NewBinding()
 	secret := "example_runner_secret"
 	tokenHash := apikey.HashToken(secret)
 	expires := now.Add(time.Hour)
@@ -343,29 +344,29 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: "credential_runner", ProjectID: project.ID}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_runner", RunnerID: validRunnerID, MachineID: validMachineID, TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_runner", RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
 			return err
 		}
-		if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_runner", validRunnerID, validMachineID, now); err != nil {
+		if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_runner", binding.RunnerID, binding.MachineID, now); err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: validMachineID, Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: string(binding.MachineID), Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: validRunnerID, MachineID: validMachineID, TokenID: "credential_runner", EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: "credential_runner", EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 			return err
 		}
-		if err := w.UpdateRunnerCapacityConfig(t.Context(), validRunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: now}); err != nil {
+		if err := w.UpdateRunnerCapacityConfig(t.Context(), binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: now}); err != nil {
 			return err
 		}
-		return w.ReplaceRunnerProviderReports(t.Context(), validRunnerID, []providercapacity.Report{report})
+		return w.ReplaceRunnerProviderReports(t.Context(), binding.RunnerID, []providercapacity.Report{report})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	base := projectPath + "/" + string(project.ID)
 	requirement := providercapacity.Requirement{Role: "code", Backend: report.Backend, Model: report.Models[0]}
-	request := tracker.NativeClaim{LandingCapacity: 1, PolicyID: descriptor.ID, WorkItemID: items[0].WorkItemID, MachineID: validMachineID, SessionID: "session_first", TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, ProviderCandidates: []tracker.NativeCapacityCandidate{{WorkItemID: items[0].WorkItemID, Revision: items[0].Revision, Requirement: requirement}}}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "credential_runner", Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: validRunnerID, MachineID: validMachineID}, OrganizationID: organization.ID}}}
+	request := tracker.NativeClaim{LandingCapacity: 1, PolicyID: descriptor.ID, WorkItemID: items[0].WorkItemID, MachineID: binding.MachineID, SessionID: "session_first", TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, ProviderCandidates: []tracker.NativeCapacityCandidate{{WorkItemID: items[0].WorkItemID, Revision: items[0].Revision, Requirement: requirement}}}
+	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "credential_runner", Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: binding, OrganizationID: organization.ID}}}
 	plan, err := service.readNativeClaimPlan(t.Context(), scope, request, now)
 	if err != nil || !nativeClaimIssueContractAllowed(plan) {
 		t.Fatalf("read claim plan = %+v, error %v", plan, err)
@@ -460,10 +461,39 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}); err != nil {
 		t.Fatalf("board list read missing historical payload: %v", err)
 	}
+	projected := map[tracker.NativeWorkItemID]viewstore.BoardRecord{}
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+		for _, item := range items {
+			row, err := reader.BoardItem(t.Context(), project.ID, item.WorkItemID)
+			if err != nil {
+				return err
+			}
+			projected[item.WorkItemID] = row
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := withMissingDetail(plan.changeVersion.PayloadObjectKey, func() error {
-		return service.refreshBoardRecord(t.Context(), organization.ID, viewstore.BoardCandidate{ProjectID: project.ID, WorkItemID: items[0].WorkItemID}, now)
-	}); err == nil {
-		t.Fatal("board projection accepted missing current version payload")
+		for _, item := range items {
+			if err := service.refreshBoardRecord(t.Context(), organization.ID, viewstore.BoardCandidate{ProjectID: project.ID, WorkItemID: item.WorkItemID}, now.Add(time.Second)); !errors.Is(err, artifact.ErrMissing) {
+				return fmt.Errorf("board refresh did not refuse missing current version for %s: %v", item.WorkItemID, err)
+			}
+		}
+		return repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+			for _, item := range items {
+				row, err := reader.BoardItem(t.Context(), project.ID, item.WorkItemID)
+				if err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(row, projected[item.WorkItemID]) {
+					return fmt.Errorf("refused refresh changed last good projection for %s", item.WorkItemID)
+				}
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
 	}
 	claimPath := base + "/claims"
 	batchDetails := &boardDetailBatchCounter{DetailStore: service.config.RunDetails}
@@ -587,7 +617,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		changed = changed.WithID()
 		approveHubTestPolicy(t, service, base+"/policy", changed)
 		t.Cleanup(func() { approveHubTestPolicy(t, service, base+"/policy", descriptor) })
-		cursor := claimstore.SelectionCursor{OrganizationID: organization.ID, RunnerID: validRunnerID, ProjectID: project.ID, SourceRevision: "rejected-source", Position: claimstore.CandidateCursor{WorkItemID: items[0].WorkItemID}}
+		cursor := claimstore.SelectionCursor{OrganizationID: organization.ID, RunnerID: binding.RunnerID, ProjectID: project.ID, SourceRevision: "rejected-source", Position: claimstore.CandidateCursor{WorkItemID: items[0].WorkItemID}}
 		if _, err := service.claimNativeIssueTenantWithPlan(t.Context(), scope, request, 5*time.Minute, clock.Now(), captured, &cursor); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("stale policy claim error=%v", err)
 		}
@@ -598,14 +628,14 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			if _, err := r.BillingMonthlyAdmission(t.Context(), tracker.WorkItemID(captured.item.ID)); !errors.Is(err, corestore.ErrNotFound) {
 				return fmt.Errorf("rejected claim billing admission: %v", err)
 			}
-			if _, err := r.SelectionCursor(t.Context(), validRunnerID, project.ID); !errors.Is(err, corestore.ErrNotFound) {
+			if _, err := r.SelectionCursor(t.Context(), binding.RunnerID, project.ID); !errors.Is(err, corestore.ErrNotFound) {
 				return fmt.Errorf("rejected claim cursor: %v", err)
 			}
-			usage, err := r.ClaimCapacityUsage(t.Context(), validMachineID, validRunnerID, project.ID, "", clock.Now())
+			usage, err := r.ClaimCapacityUsage(t.Context(), string(binding.MachineID), binding.RunnerID, project.ID, "", clock.Now())
 			if err != nil || usage != (claimstore.CapacityUsage{}) {
 				return fmt.Errorf("rejected claim capacity=%+v: %v", usage, err)
 			}
-			used, err := r.ProviderReservationUsage(t.Context(), report, validRunnerID, clock.Now())
+			used, err := r.ProviderReservationUsage(t.Context(), report, binding.RunnerID, clock.Now())
 			if err != nil || used != 0 {
 				return fmt.Errorf("rejected claim provider reservations=%d: %v", used, err)
 			}
@@ -650,11 +680,11 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			}
 		}
 		if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-			usage, err := r.ClaimCapacityUsage(t.Context(), validMachineID, validRunnerID, project.ID, "", clock.Now())
+			usage, err := r.ClaimCapacityUsage(t.Context(), string(binding.MachineID), binding.RunnerID, project.ID, "", clock.Now())
 			if err != nil || usage != (claimstore.CapacityUsage{Host: 1, Runner: 1, Project: 1}) {
 				return fmt.Errorf("concurrent claim capacity=%+v: %v", usage, err)
 			}
-			used, err := r.ProviderReservationUsage(t.Context(), report, validRunnerID, clock.Now())
+			used, err := r.ProviderReservationUsage(t.Context(), report, binding.RunnerID, clock.Now())
 			if err != nil || used != 1 {
 				return fmt.Errorf("concurrent provider reservations=%d: %v", used, err)
 			}
@@ -776,7 +806,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	unqualifiedRequest := tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: validMachineID, SessionID: "session_unqualified", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+	unqualifiedRequest := tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: binding.MachineID, SessionID: "session_unqualified", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	_, err = service.claimNativeIssueTenant(t.Context(), scope, unqualifiedRequest, 5*time.Minute)
 	if !errors.Is(err, ErrNoClaimableWork) {
 		t.Fatalf("first bounded claim scan error=%v, want no claimable work after advancing cursor", err)
@@ -784,7 +814,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	var cursor claimstore.SelectionCursor
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		cursor, err = r.SelectionCursor(t.Context(), validRunnerID, project.ID)
+		cursor, err = r.SelectionCursor(t.Context(), binding.RunnerID, project.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -817,7 +847,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		cursor, err = r.SelectionCursor(t.Context(), validRunnerID, project.ID)
+		cursor, err = r.SelectionCursor(t.Context(), binding.RunnerID, project.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -835,7 +865,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		cursor, err = r.SelectionCursor(t.Context(), validRunnerID, project.ID)
+		cursor, err = r.SelectionCursor(t.Context(), binding.RunnerID, project.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -888,7 +918,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		if _, err := w.CreateProjectRecord(t.Context(), secondProject); err != nil {
 			return err
 		}
-		second := claimstore.SelectionCursor{OrganizationID: organization.ID, RunnerID: validRunnerID, ProjectID: secondProject.Core.ID, SourceRevision: strings.Repeat("c", 64)}
+		second := claimstore.SelectionCursor{OrganizationID: organization.ID, RunnerID: binding.RunnerID, ProjectID: secondProject.Core.ID, SourceRevision: strings.Repeat("c", 64)}
 		written, err := w.PutSelectionCursor(t.Context(), second, 0)
 		if err != nil {
 			return err
@@ -901,11 +931,11 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		t.Fatal(err)
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		first, err := r.SelectionCursor(t.Context(), validRunnerID, project.ID)
+		first, err := r.SelectionCursor(t.Context(), binding.RunnerID, project.ID)
 		if err != nil {
 			return err
 		}
-		second, err := r.SelectionCursor(t.Context(), validRunnerID, secondProject.Core.ID)
+		second, err := r.SelectionCursor(t.Context(), binding.RunnerID, secondProject.Core.ID)
 		if err != nil {
 			return err
 		}

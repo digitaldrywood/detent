@@ -9,10 +9,10 @@ import (
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/operations"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
@@ -489,25 +489,7 @@ type SessionResumeState struct {
 	OrphanRecoveryFallbackReason string
 }
 
-type SessionFinish struct {
-	TurnStartRefused      bool
-	CompletedAt           time.Time
-	Turns                 int64
-	InputTokens           int64
-	CachedInputTokens     int64
-	OutputTokens          int64
-	ReasoningOutputTokens int64
-	TotalTokens           int64
-	ModelContextWindow    *int64
-	RuntimeSeconds        int64
-	FinalState            string
-	Model                 string
-	ProviderThreadID      string
-	ProviderSessionID     string
-	ResumedFromSessionID  int64
-	RuntimeIdentity       agentidentity.Identity
-	SkillDraftProposed    bool
-}
+type SessionFinish = sessionmodel.SessionFinish
 
 type AgentResumeLookup struct {
 	NativeAttemptID  string
@@ -588,29 +570,7 @@ type APIUsageLog struct {
 	CreatedAt  time.Time
 }
 
-type UsageEvent struct {
-	Compute                *compute.Usage
-	ProjectID              string
-	RunID                  int64
-	SessionID              int64
-	IssueID                string
-	Identifier             string
-	PRNumber               *int64
-	Model                  string
-	InputTokens            int64
-	CachedInputTokens      int64
-	OutputTokens           int64
-	ReasoningOutputTokens  int64
-	TotalTokens            int64
-	ModelContextWindow     *int64
-	CostUSD                float64
-	ProjectedCostUSD       *float64
-	ProjectionOvershootUSD float64
-	RuntimeSeconds         int64
-	StartedAt              time.Time
-	FinishedAt             time.Time
-	Outcome                string
-}
+type UsageEvent = sessionmodel.UsageEvent
 
 type WorkflowPhaseEvent = workflowmetrics.PhaseEvent
 

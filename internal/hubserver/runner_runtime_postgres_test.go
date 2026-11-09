@@ -47,14 +47,15 @@ import (
 )
 
 type runnerPGFixture struct {
-	admin    *sql.DB
-	bindings []runnerauth.Binding
-	service  *Service
-	server   *httptest.Server
-	policy   policystore.Revision
-	leases   []tracker.NativeLease
-	tokens   []string
-	data     []tracker.NativeRunData
+	organization tracker.OrganizationID
+	admin        *sql.DB
+	bindings     []runnerauth.Binding
+	service      *Service
+	server       *httptest.Server
+	policy       policystore.Revision
+	leases       []tracker.NativeLease
+	tokens       []string
+	data         []tracker.NativeRunData
 }
 
 func TestPostgresRunnerAuditDispositionUsesArchivedSource(t *testing.T) {
@@ -538,8 +539,14 @@ func newRunnerPGFixtureWithDetails(t *testing.T, decorate func(attachment.Detail
 			t.Error(err)
 		}
 	})
-	seedStartupOrganization(t, service.config.TenantRepository, "org_startup")
-	f := runnerPGFixture{admin: admin, service: service, server: httptest.NewServer(service.Handler())}
+	return seedRunnerPGFixture(t, admin, service, "org_startup", customize...)
+}
+
+func seedRunnerPGFixture(t *testing.T, admin *sql.DB, service *Service, organization tracker.OrganizationID, customize ...func(*policy.Descriptor)) runnerPGFixture {
+	t.Helper()
+	var err error
+	seedStartupOrganization(t, service.config.TenantRepository, organization)
+	f := runnerPGFixture{organization: organization, admin: admin, service: service, server: httptest.NewServer(service.Handler())}
 	t.Cleanup(f.server.Close)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	expires := now.Add(time.Hour)
@@ -548,17 +555,17 @@ func newRunnerPGFixtureWithDetails(t *testing.T, decorate func(attachment.Detail
 		edit(&descriptor)
 	}
 	policy := descriptor.WithID()
-	f.policy, err = eventstore.NewContent(service.runDetailStore()).PrepareProjectPolicy(t.Context(), "org_startup", policy)
+	f.policy, err = eventstore.NewContent(service.runDetailStore()).PrepareProjectPolicy(t.Context(), organization, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.policy.ProjectID = "prj_runner"
 	f.policy.ApprovedAt, f.policy.ApprovedBy = now, "test_hub_admin"
-	err = service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: "org_startup", ID: "hub_" + strings.Repeat("a", 32), CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
+	err = service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: "hub_" + strings.Repeat("a", 32), CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
 			return err
 		}
-		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_startup", ID: "prj_runner", Name: "Example", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_runner", Name: "Example", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
 			return err
 		}
 		if err := w.ApproveProjectPolicy(t.Context(), f.policy, ""); err != nil {
@@ -575,35 +582,35 @@ func newRunnerPGFixtureWithDetails(t *testing.T, decorate func(attachment.Detail
 			runnerID, machineID, credentialID := binding.RunnerID, string(binding.MachineID), "credential_"+id
 			f.tokens = append(f.tokens, token)
 			hash := apikey.HashToken(token)
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: credentialID, Name: "Example runner " + id, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: credentialID, Name: "Example runner " + id, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: credentialID, ProjectID: "prj_runner"}); err != nil {
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credentialID, ProjectID: "prj_runner"}); err != nil {
 				return err
 			}
 			operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}
-			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_startup", ID: "enrollment_" + id, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenHash: apikey.HashToken("example_enrollment_" + id), Scope: "projects", ProjectIDs: []tracker.ProjectID{"prj_runner"}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_" + id, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenHash: apikey.HashToken("example_enrollment_" + id), Scope: "projects", ProjectIDs: []tracker.ProjectID{"prj_runner"}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
 				return err
 			}
 			if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_"+id, runnerID, tracker.MachineID(machineID), now); err != nil {
 				return err
 			}
-			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_startup", ID: machineID, Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: machineID, Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
 				return err
 			}
-			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_startup", RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenID: credentialID, EnrollmentID: "enrollment_" + id, Scope: "projects", State: "active", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{"prj_runner"}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenID: credentialID, EnrollmentID: "enrollment_" + id, Scope: "projects", State: "active", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{"prj_runner"}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 				return err
 			}
 			state := "Todo"
-			item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: "org_startup", ProjectID: "prj_runner", NativeID: tracker.NativeWorkItemID("wi_" + id), Number: int64(index), Title: "Example", WorkflowStateName: &state})
+			item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: "prj_runner", NativeID: tracker.NativeWorkItemID("wi_" + id), Number: int64(index), Title: "Example", WorkflowStateName: &state})
 			if err != nil {
 				return err
 			}
-			itemRaw, err := json.Marshal(tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: item.NativeID, Number: int(item.Number), Revision: tracker.Revision(item.Revision)}, Title: "Example", State: "Todo"})
+			itemRaw, err := json.Marshal(tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: "prj_runner", WorkItemID: item.NativeID, Number: int(item.Number), Revision: tracker.Revision(item.Revision)}, Title: "Example", State: "Todo"})
 			if err != nil {
 				return err
 			}
-			itemVersion, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: item.NativeID, RecordID: string(item.NativeID), Revision: item.Revision}, itemRaw)
+			itemVersion, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: "prj_runner", WorkItemID: item.NativeID, RecordID: string(item.NativeID), Revision: item.Revision}, itemRaw)
 			if err != nil {
 				return err
 			}
@@ -614,10 +621,10 @@ func newRunnerPGFixtureWithDetails(t *testing.T, decorate func(attachment.Detail
 			if err != nil {
 				return err
 			}
-			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: "org_startup", LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
+			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
 				return err
 			}
-			if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: "org_startup", ProjectID: "prj_runner", LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: policy.ID, BoundAt: now}); err != nil {
+			if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: organization, ProjectID: "prj_runner", LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: policy.ID, BoundAt: now}); err != nil {
 				return err
 			}
 			f.leases = append(f.leases, tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), WorkItemID: item.NativeID, MachineID: tracker.MachineID(machineID), SessionID: lease.SessionID, FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: policy.ID, ExpiresAt: lease.ExpiresAt})
@@ -631,7 +638,7 @@ func newRunnerPGFixtureWithDetails(t *testing.T, decorate func(attachment.Detail
 		data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: policy.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example-backend", Model: "example-model"}}
 		f.data = append(f.data, data)
 		event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "start_" + data.AttemptID}, Type: "run.started", SchemaVersion: 1, Data: data}
-		path := "/api/v2/organizations/org_startup/projects/prj_runner/work-items/" + string(lease.WorkItemID) + "/events"
+		path := "/api/v2/organizations/" + string(organization) + "/projects/prj_runner/work-items/" + string(lease.WorkItemID) + "/events"
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, f.tokens[index], event), http.StatusOK)
 	}
 	return f
@@ -643,7 +650,7 @@ func (f runnerPGFixture) client(t *testing.T, index int) (*api.NativeClient, con
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := client.Native("org_startup", "prj_runner")
+	native, err := client.Native(f.organization, "prj_runner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,6 +659,25 @@ func (f runnerPGFixture) client(t *testing.T, index int) (*api.NativeClient, con
 
 func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 	f := newRunnerPGFixture(t)
+	otherConfig := startupConfig(startupConnection(t, f.admin, "detent_runtime_v2", ""))
+	otherConfig.Hosted.OrganizationID = "org_other"
+	otherConfig.Hosted.WorkOSOrganizationID = "provider_org_other"
+	otherService, err := Open(t.Context(), otherConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := otherService.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	otherTenant := seedRunnerPGFixture(t, f.admin, otherService, "org_other")
+	for _, pair := range [][2]runnerPGFixture{{f, otherTenant}, {otherTenant, f}} {
+		for index := range pair[0].leases {
+			testRunnerSessionFinalizationRecovery(t, pair[0], pair[1], index)
+		}
+	}
+
 	for index := range f.leases {
 		native, ctx := f.client(t, index)
 		sessions := api.NewRunnerSessions(native)
@@ -928,11 +954,11 @@ func (r runnerSessionFaultReader) LatestAttempt(ctx context.Context, id int64) (
 	return r.Reader.LatestAttempt(ctx, id)
 }
 
-func (r runnerSessionFaultReader) ProjectPolicy(ctx context.Context, id tracker.ProjectID) (policystore.Revision, error) {
+func (r runnerSessionFaultReader) ProjectPolicyRevision(ctx context.Context, id tracker.ProjectID, policyID string) (policystore.Revision, error) {
 	if r.policyError != nil {
 		return policystore.Revision{}, r.policyError
 	}
-	return r.Reader.ProjectPolicy(ctx, id)
+	return r.Reader.ProjectPolicyRevision(ctx, id, policyID)
 }
 
 func TestPostgresRunnerSessionFencePreservesStorageErrors(t *testing.T) {

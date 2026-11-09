@@ -7,28 +7,40 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/policy"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
+const HistoryLimit = 200
+
 type Snapshot struct {
-	ReceiptID int64
-	ID        int64
-	Revision  int64
-	Start     store.SessionStart
-	Finish    *store.SessionFinish
-	Identity  agentidentity.Identity
-	Provider  store.SessionProviderIdentity
-	Resume    store.SessionResumeState
-	Progress  *store.SessionProgress
-	Policy    policy.Descriptor
-	Worker    *store.WorkerProcessRegistration
-	Reaped    *store.WorkerProcessReap
-	Authority string
+	Finalization *Finalization `json:",omitempty"`
+	ReceiptID    int64
+	ID           int64
+	Revision     int64
+	Start        store.SessionStart
+	Finish       *store.SessionFinish
+	Identity     agentidentity.Identity
+	Provider     store.SessionProviderIdentity
+	Resume       store.SessionResumeState
+	Progress     *store.SessionProgress
+	Policy       policy.Descriptor
+	Worker       *store.WorkerProcessRegistration
+	Reaped       *store.WorkerProcessReap
+	Authority    string
+}
+
+type Finalization struct {
+	Input         sessionmodel.Finalization
+	Finished      bool
+	UsageRecorded bool
+	PhaseRecorded bool
 }
 
 type Mutation struct {
+	Finalization     *sessionmodel.Finalization `json:",omitempty"`
 	Key              string
 	LeaseID          tracker.LeaseID
 	FencingToken     tracker.FencingToken

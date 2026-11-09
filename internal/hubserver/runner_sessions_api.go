@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 
 	"github.com/labstack/echo/v4"
@@ -273,7 +275,6 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		record.Revision++
 	}
 
 	if request.Start != nil {
@@ -284,6 +285,40 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 		}
 	} else if record.AttemptID != attempt.ID {
 		return s.nativeAPIError(c, tracker.ErrStaleFencingToken)
+	}
+	duplicate, err := runnersession.ApplyFinalization(&snapshot, request)
+	if err != nil {
+		return s.nativeAPIError(c, nativePublicInvalid(err.Error()))
+	}
+	if duplicate {
+		err := s.writeNativeRunCommand(ctx, scope, command, func(ctx context.Context, w tenantstore.Writer) error {
+			locked, policy, err := s.runnerSessionFence(ctx, w, scope, request, record.IssueID, true)
+			if err != nil {
+				return err
+			}
+			if locked.ID != record.AttemptID || policy.PolicyID != record.PolicyID {
+				return tracker.ErrStaleFencingToken
+			}
+			reader, ok := w.(runnersession.Reader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			current, err := reader.RunnerSession(ctx, scope.project, record.ID)
+			if err != nil {
+				return err
+			}
+			if current.Revision != record.Revision || current.AttemptID != record.AttemptID {
+				return corestore.ErrRevisionConflict
+			}
+			return nil
+		})
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, snapshot)
+	}
+	if request.Start == nil {
+		record.Revision++
 	}
 	if request.Identity != nil {
 		snapshot.Identity = *request.Identity
@@ -489,4 +524,64 @@ func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
 		result.Workers = append(result.Workers, store.WorkerProcess{SessionID: record.ID, IssueID: record.IssueID, WorkerProcessIdentity: value.Worker.WorkerProcessIdentity, CleanupRoot: value.Worker.CleanupRoot, CleanupPath: value.Worker.CleanupPath})
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) verifyRunnerSessionFinalization(ctx context.Context, scope nativeScope, record runnersession.Record, snapshot runnersession.Snapshot) error {
+	if state := snapshot.Finalization; state != nil {
+		if state.Input.Phase == nil || !state.Finished || !state.UsageRecorded || !state.PhaseRecorded {
+			return runnersession.ErrFinalizationIncomplete
+		}
+		return nil
+	}
+	if record.Revision < 4 {
+		return runnersession.ErrFinalizationIncomplete
+	}
+	var history []runnersession.History
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		reader, ok := r.(runnersession.Reader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		current, err := reader.RunnerSession(ctx, scope.project, record.ID)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(current, record) {
+			return corestore.ErrRevisionConflict
+		}
+		history, err = reader.RunnerSessionHistory(ctx, scope.project, record.ID, max(int64(0), record.Revision-runnersession.HistoryLimit), runnersession.HistoryLimit)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if len(history) < 3 {
+		return runnersession.ErrFinalizationIncomplete
+	}
+	entries := make([]runnersession.Mutation, 0, 3)
+	for i := len(history) - 1; i >= 0; i-- {
+		row := history[i]
+		if row.SessionID != record.ID || row.Revision != record.Revision-int64(len(history)-1-i) {
+			return runnersession.ErrFinalizationIncomplete
+		}
+		raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), row.Reference)
+		if err != nil {
+			return fmt.Errorf("read session finalization history: %w", err)
+		}
+		var entry runnersession.Mutation
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return fmt.Errorf("decode session finalization history: %w", err)
+		}
+		if entry.Key != row.Key {
+			return runnersession.ErrFinalizationIncomplete
+		}
+		entries = append(entries, entry)
+		if len(entries) >= 3 && runnersession.VerifyLegacyFinalization(snapshot, entries) == nil {
+			return nil
+		}
+	}
+	return runnersession.VerifyLegacyFinalization(snapshot, entries)
 }

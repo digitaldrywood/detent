@@ -117,7 +117,7 @@ func (s *session) insertRunnerSessionHistory(ctx context.Context, history runner
 }
 
 func (s *session) RunnerSessionHistory(ctx context.Context, project tracker.ProjectID, id, after int64, limit int) ([]runnersession.History, error) {
-	if limit < 1 || limit > 200 {
+	if limit < 1 || limit > runnersession.HistoryLimit {
 		return nil, corestore.ErrInvalidPage
 	}
 	rows, err := s.db.Query(ctx, `SELECT h.id,h.session_id,h.revision,h.mutation_key,h.payload_object_key,h.payload_sha256,h.payload_bytes,h.payload_content_bytes FROM runner_session_history h JOIN runner_sessions s ON s.organization_id=h.organization_id AND s.id=h.session_id WHERE s.organization_id=$1 AND s.project_id=$2 AND s.id=$3 AND h.revision>$4 ORDER BY h.revision LIMIT $5`, s.organization, project, id, after, limit)

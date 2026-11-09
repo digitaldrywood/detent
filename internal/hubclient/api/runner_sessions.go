@@ -112,7 +112,9 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 	if metadata.matches(request, authority) {
 		return runnersession.Snapshot{}, nil
 	}
-	request.Key = uuid.NewString()
+	if request.Key == "" {
+		request.Key = uuid.NewString()
+	}
 	request.LeaseID, request.FencingToken = authority.lease.ID, authority.lease.FencingToken
 	cached := s.lastRevision.matches(request.SessionID, authority)
 	if request.SessionID > 0 {
@@ -140,7 +142,9 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 		current, readErr := s.snapshot(ctx, request.SessionID)
 		err = readErr
 		if err == nil {
-			request.Key = uuid.NewString()
+			if request.Finalization == nil {
+				request.Key = uuid.NewString()
+			}
 			request.ExpectedRevision = current.Revision
 			err = send()
 		}

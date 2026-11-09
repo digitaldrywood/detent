@@ -448,7 +448,7 @@ fi
 			if test.editReceipt != nil {
 				test.editReceipt(&receipt)
 			}
-			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: &fakeSessionStore{sessionID: 73},
 				Workflow: config.Workflow{Config: config.Config{
 					Gate: gate.Config{Run: command, SecurityAudit: gate.SecurityAuditConfig{Enabled: false}, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: test.validator}},
 					Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{

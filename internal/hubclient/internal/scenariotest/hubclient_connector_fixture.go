@@ -2,6 +2,7 @@ package scenariotest
 
 import (
 	"context"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -14,6 +15,10 @@ type hubclientFixtureConnector struct {
 }
 
 func (c *hubclientFixtureConnector) UpdateIssueState(ctx context.Context, id, state string) error {
+	reason := strings.ReplaceAll(connector.LaneTransitionReasonDetail(ctx), " ", "_")
+	if reason == "recorded_blocker_recovery" || reason == "dependency_auto_unblock" {
+		return c.worker.SetIntakeIssueState(ctx, id, state)
+	}
 	mutation := tracker.MutationForContext(ctx, nativeMutationKey().IdempotencyKey)
 	mutation = c.worker.NativeClient().FencedMutation(ctx, tracker.NativeWorkItemID(id), mutation)
 	if mutation.LeaseID != "" {

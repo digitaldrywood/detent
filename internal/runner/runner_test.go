@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -8471,6 +8472,26 @@ func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionSt
 	s.startCalls++
 	s.started = attrs
 	return s.sessionID, nil
+}
+
+func (s *fakeSessionStore) ReconcileSessionFinalization(ctx context.Context, id int64, value *sessionmodel.Finalization) error {
+	if value == nil {
+		if s.finishCalls == 0 || s.usageCalls == 0 || s.phase.PhaseName != "agent_active" {
+			return errors.New("session finalization evidence unavailable")
+		}
+		return nil
+	}
+	if err := s.FinishSession(ctx, id, value.Finish); err != nil {
+		return err
+	}
+	if _, err := s.RecordUsageEvent(ctx, value.Usage); err != nil {
+		return err
+	}
+	if value.Phase != nil {
+		_, err := s.RecordWorkflowPhaseEvent(ctx, *value.Phase)
+		return err
+	}
+	return nil
 }
 
 func (s *fakeSessionStore) FinishSession(_ context.Context, _ int64, attrs store.SessionFinish) error {

@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -1852,6 +1853,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework || repairResume)
 	if err := r.recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery); err != nil {
 		return RunResult{}, err
+	}
+	if reviewRecovery != nil && !repairResume && workspaceIssue.Source != nil {
+		workspaceIssue.ReviewVersionID = workspaceIssue.Source.Version.ID
+		workspaceIssue.PullRequestHeadSHA = workspaceIssue.Source.Version.HeadSHA
 	}
 	restoreRunWorkspaceCheckpoint(req, runWorkspace, &workspaceIssue, nativeLanding)
 	var landingTarget NativeLandingTarget
@@ -4241,9 +4246,14 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			}
 		}
 	}
-	if err := r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
-		return gate.ValidatorResult{}, err
-	}
+	var finalization *sessionmodel.Finalization
+	defer func() {
+		if finalization != nil {
+			returnErr = errors.Join(returnErr, r.reconcileSessionFinalization(ctx, req.usageExecution, sessionID, finalization))
+		} else {
+			returnErr = errors.Join(returnErr, r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0))
+		}
+	}()
 	if commands != nil {
 		if err := commands.apply(&validation); err != nil {
 			return gate.ValidatorResult{}, err
@@ -4272,6 +4282,13 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	if !req.implementationReview {
 		gate.NormalizeCriterionEvidence(&validation, contract.AcceptanceCriteria(req.Issue.Description), tree)
 		gate.ApplyCriterionPolicy(validator, &validation)
+	}
+	if req.complete != nil {
+		if !sessionStarted {
+			return gate.ValidatorResult{}, errors.New("native validation session is unavailable")
+		}
+		finalization = r.sessionFinalization(sessionID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0)
+		return req.complete(ctx, validation, finalization)
 	}
 	return validation, nil
 }
@@ -4829,30 +4846,11 @@ func (r *Runner) finishSession(
 	if result.FinalState == "" {
 		result.FinalState = FinalStateCompleted
 	}
-	requestedModel := strings.TrimSpace(model)
-	resolvedModel := effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model)
-	usageModel := effectiveModel(resolvedModel, requestedModel)
-	actualCostUSD := r.usageCostUSD(usageModel, result.Tokens.InputTokens, result.Tokens.CachedInputTokens, result.Tokens.OutputTokens, backendKind)
-	projectedCostUSD, projectionOvershootUSD := budgetProjectionCosts(result.budgetProjection, actualCostUSD)
+	finalization := r.sessionFinalization(sessionID, issue, startedAt, finishedAt, result, model, backendKind, turns, turnResult, resumedFromSessionID)
+	usageModel, actualCostUSD := finalization.Usage.Model, finalization.Usage.CostUSD
+	projectedCostUSD, projectionOvershootUSD := finalization.Usage.ProjectedCostUSD, finalization.Usage.ProjectionOvershootUSD
 
-	if err := r.store.FinishSession(ctx, sessionID, store.SessionFinish{
-		CompletedAt:           finishedAt,
-		Turns:                 turns,
-		TurnStartRefused:      result.TurnStartRefused,
-		InputTokens:           result.Tokens.InputTokens,
-		CachedInputTokens:     result.Tokens.CachedInputTokens,
-		OutputTokens:          result.Tokens.OutputTokens,
-		ReasoningOutputTokens: result.Tokens.ReasoningOutputTokens,
-		TotalTokens:           result.Tokens.TotalTokens,
-		ModelContextWindow:    result.Tokens.ModelContextWindow,
-		RuntimeSeconds:        int64(math.Round(result.Tokens.RuntimeSeconds)),
-		FinalState:            result.FinalState,
-		Model:                 resolvedModel,
-		ProviderThreadID:      turnResult.ThreadID,
-		ProviderSessionID:     turnResult.SessionID,
-		ResumedFromSessionID:  resumedFromSessionID,
-		RuntimeIdentity:       result.RuntimeIdentity,
-	}); err != nil {
+	if err := r.store.FinishSession(ctx, sessionID, finalization.Finish); err != nil {
 		return fmt.Errorf("finish agent session: %w", err)
 	}
 	attrs := []any{
@@ -4878,28 +4876,7 @@ func (r *Runner) finishSession(
 			"projection_overshoot_usd", projectionOvershootUSD,
 		)
 	}
-	if _, err := r.store.RecordUsageEvent(ctx, store.UsageEvent{
-		ProjectID:              r.projectID,
-		SessionID:              sessionID,
-		IssueID:                issue.ID,
-		Identifier:             issue.Identifier,
-		PRNumber:               pullRequestNumber(issue),
-		Model:                  usageModel,
-		InputTokens:            result.Tokens.InputTokens,
-		CachedInputTokens:      result.Tokens.CachedInputTokens,
-		OutputTokens:           result.Tokens.OutputTokens,
-		ReasoningOutputTokens:  result.Tokens.ReasoningOutputTokens,
-		TotalTokens:            result.Tokens.TotalTokens,
-		ModelContextWindow:     result.Tokens.ModelContextWindow,
-		CostUSD:                actualCostUSD,
-		Compute:                result.Compute,
-		ProjectedCostUSD:       projectedCostUSD,
-		ProjectionOvershootUSD: projectionOvershootUSD,
-		RuntimeSeconds:         int64(math.Round(result.Tokens.RuntimeSeconds)),
-		StartedAt:              startedAt,
-		FinishedAt:             finishedAt,
-		Outcome:                result.FinalState,
-	}); err != nil {
+	if _, err := r.store.RecordUsageEvent(ctx, finalization.Usage); err != nil {
 		return fmt.Errorf("record usage event: %w", err)
 	}
 	if err := r.recordAgentSessionPhase(ctx, sessionID, issue, startedAt, finishedAt, result, backendKind); err != nil {

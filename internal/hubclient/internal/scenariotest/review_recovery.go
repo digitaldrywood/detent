@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnersession"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -90,17 +93,32 @@ func (a *recoveringReviewAgent) RunTurnWithTools(ctx context.Context, request ru
 	return a.RunTurn(ctx, request, update)
 }
 
+type legacyReviewSessions struct {
+	*api.RunnerSessions
+	complete func(context.Context, int64, *sessionmodel.Finalization) error
+}
+
+func (s *legacyReviewSessions) ReconcileSessionFinalization(ctx context.Context, id int64, value *sessionmodel.Finalization) error {
+	return s.complete(ctx, id, value)
+}
+
 func RunReviewRecovery(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	t.Parallel()
 	for _, test := range []struct {
-		name, stage, verdict string
-		refusal              string
-		publicationField     string
-		restore, malformed   bool
-		hostHandoff, stopped bool
+		name, stage, verdict     string
+		refusal                  string
+		publicationField         string
+		finalizationFault        string
+		committedFinalization    bool
+		legacySourceFinalization bool
+		restore, malformed       bool
+		hostHandoff, stopped     bool
 	}{
 		{name: "healthy"},
+		{name: "legacy source finalization", legacySourceFinalization: true},
+		{name: "validator finish rejected", stage: "validator", finalizationFault: "finish"},
+		{name: "source usage acknowledgement", stage: "source", finalizationFault: "usage", committedFinalization: true},
 		{name: "tool-directed host publication handoff", hostHandoff: true},
 		{name: "source", stage: "source", restore: true},
 		{name: "security", stage: "security"},
@@ -162,6 +180,118 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				t.Fatal(err)
 			}
 			provider := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: test.stage, malformed: test.malformed}
+
+			var finalizationFaulted atomic.Bool
+			var finalizationSession atomic.Int64
+			var reconciledPublication atomic.Int32
+			var pendingFinalization atomic.Pointer[tracker.NativeStepReceipt]
+			var pendingAttempt atomic.Pointer[tracker.NativeRunData]
+			var probingFinalization atomic.Bool
+			var rejectedEarlyPublication atomic.Bool
+			var legacyProbes atomic.Int32
+			var legacyComplete atomic.Bool
+			if test.finalizationFault != "" || test.legacySourceFinalization {
+				provider.failStage = "finalization"
+				transport := fixtureClient(h.native.Transport()).requests.Load()
+				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method != http.MethodPost || (!strings.HasSuffix(request.URL.Path, "/runner-sessions") && !strings.HasSuffix(request.URL.Path, "/reviews") && !strings.HasSuffix(request.URL.Path, "/events")) {
+						return transport.RoundTrip(request)
+					}
+					raw, err := io.ReadAll(request.Body)
+					if err != nil {
+						return nil, err
+					}
+					if err := request.Body.Close(); err != nil {
+						return nil, err
+					}
+					request.Body = io.NopCloser(bytes.NewReader(raw))
+					if strings.HasSuffix(request.URL.Path, "/events") {
+						var event tracker.NativeRunEvent
+						if err := json.Unmarshal(raw, &event); err != nil {
+							return nil, err
+						}
+						for _, step := range event.Data.Steps {
+							if step.Step == "review" && (test.stage == "source" || test.legacySourceFinalization) && step.Validator != nil {
+								copy := step
+								pendingFinalization.Store(&copy)
+								copyData := event.Data
+								pendingAttempt.Store(&copyData)
+							}
+						}
+						return transport.RoundTrip(request)
+					}
+					if strings.HasSuffix(request.URL.Path, "/runner-sessions") {
+						var mutation runnersession.Mutation
+						if err := json.Unmarshal(raw, &mutation); err != nil {
+							return nil, err
+						}
+						stage := test.stage == "validator" && provider.validatorCalls.Load() > 0 || test.stage == "source" && provider.sourceCalls.Load() > 0 && provider.validatorCalls.Load() == 0
+						operation := test.finalizationFault == "finish" && mutation.Finish != nil || test.finalizationFault == "usage" && mutation.Usage != nil
+						if mutation.Finalization != nil && stage && operation && finalizationFaulted.CompareAndSwap(false, true) {
+							finalizationSession.Store(mutation.SessionID)
+							if !test.committedFinalization {
+								return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+							}
+							response, err := transport.RoundTrip(request)
+							if err != nil {
+								return response, err
+							}
+							if response.StatusCode != http.StatusOK {
+								return response, nil
+							}
+							if _, err := io.Copy(io.Discard, response.Body); err != nil {
+								return nil, err
+							}
+							if err := response.Body.Close(); err != nil {
+								return nil, err
+							}
+							receipt, attempt := pendingFinalization.Load(), pendingAttempt.Load()
+							if receipt == nil || receipt.Validator == nil || attempt == nil {
+								return nil, errors.New("finalization probe has no verified review receipt")
+							}
+							probingFinalization.Store(true)
+							_, probeErr := h.native.ReviewChange(request.Context(), tracker.NativeWorkItemID(issue.ID), receipt.Change.ChangeID, receipt.Validator.VersionID, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":early-finalization-review", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, ExpectedVersionID: receipt.Validator.VersionID, Decision: "approved", Body: "Verified review result", ImplementationReview: receipt.Validator})
+							probingFinalization.Store(false)
+							if probeErr == nil || !strings.Contains(probeErr.Error(), "session finalization is incomplete") {
+								t.Errorf("Hub did not reject unreconciled publication at its session boundary: %v", probeErr)
+							} else {
+								rejectedEarlyPublication.Store(true)
+							}
+
+							return nil, errors.New("committed session finalization response unavailable")
+						}
+					} else {
+						if probingFinalization.Load() {
+							return transport.RoundTrip(request)
+						}
+						var review tracker.ReviewChange
+						if err := json.Unmarshal(raw, &review); err != nil {
+							return nil, err
+						}
+						for _, result := range []*gate.ValidatorResult{review.ImplementationReview, review.Validator} {
+							if result == nil || result.SessionID != finalizationSession.Load() {
+								continue
+							}
+							var snapshot runnersession.Snapshot
+							if err := h.native.Transport().Request(request.Context(), http.MethodGet, h.native.Scope()+"/runner-sessions/"+strconv.FormatInt(result.SessionID, 10), nil, &snapshot); err != nil {
+								return nil, err
+							}
+							if test.legacySourceFinalization {
+								if snapshot.Finalization != nil {
+									t.Error("legacy session acquired a finalization envelope")
+								}
+								if err := api.NewRunnerSessions(h.native).ReconcileSessionFinalization(request.Context(), result.SessionID, nil); err != nil {
+									return nil, err
+								}
+							} else if snapshot.Finalization == nil || !snapshot.Finalization.Finished || !snapshot.Finalization.UsageRecorded || !snapshot.Finalization.PhaseRecorded {
+								t.Error("review publication preceded reconciled durable session finalization")
+							}
+							reconciledPublication.Add(1)
+						}
+					}
+					return transport.RoundTrip(request)
+				}))
+			}
 			var rejectedVersion tracker.ChangeVersion
 			var publicationRefusals atomic.Int32
 			if test.publicationField != "" {
@@ -276,7 +406,56 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					provider.validator = test.verdict
 				}
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Logger: logger, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
+
+			sessions := api.NewRunnerSessions(h.native)
+			var sessionStore runner.SessionStore = sessions
+			if test.legacySourceFinalization {
+				probe := func(ctx context.Context, step string) error {
+					receipt, attempt := pendingFinalization.Load(), pendingAttempt.Load()
+					if receipt == nil || receipt.Validator == nil || attempt == nil {
+						return errors.New("legacy probe has no verified review receipt")
+					}
+					probingFinalization.Store(true)
+					_, err := h.native.ReviewChange(ctx, tracker.NativeWorkItemID(issue.ID), receipt.Change.ChangeID, receipt.Validator.VersionID, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":legacy-finalization-" + step, LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, ExpectedVersionID: receipt.Validator.VersionID, Decision: "approved", Body: "Verified review result", ImplementationReview: receipt.Validator})
+					probingFinalization.Store(false)
+					if err == nil || !strings.Contains(err.Error(), "session finalization is incomplete") {
+						t.Errorf("Hub accepted legacy publication before %s bookkeeping was complete: %v", step, err)
+					} else {
+						legacyProbes.Add(1)
+					}
+					return nil
+				}
+				sessionStore = &legacyReviewSessions{RunnerSessions: sessions, complete: func(ctx context.Context, id int64, value *sessionmodel.Finalization) error {
+					if provider.sourceCalls.Load() == 0 || provider.validatorCalls.Load() != 0 {
+						return sessions.ReconcileSessionFinalization(ctx, id, value)
+					}
+					finalizationSession.Store(id)
+					if legacyComplete.Load() {
+						return sessions.ReconcileSessionFinalization(ctx, id, nil)
+					}
+					if value == nil || value.Phase == nil {
+						return errors.New("legacy finalization has no immutable inputs")
+					}
+					if err := sessions.FinishSession(ctx, id, value.Finish); err != nil {
+						return err
+					}
+					if err := probe(ctx, "finish"); err != nil {
+						return err
+					}
+					if _, err := sessions.RecordUsageEvent(ctx, value.Usage); err != nil {
+						return err
+					}
+					if err := probe(ctx, "usage"); err != nil {
+						return err
+					}
+					if _, err := sessions.RecordWorkflowPhaseEvent(ctx, *value.Phase); err != nil {
+						return err
+					}
+					legacyComplete.Store(true)
+					return sessions.ReconcileSessionFinalization(ctx, id, nil)
+				}}
+			}
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Logger: logger, Store: sessionStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
 				return context.WithCancel(testenv.WaitContext(t, ctx))
 			}})
 			if err != nil {
@@ -286,7 +465,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			if test.hostHandoff {
 				cfg.ActiveStates = append(cfg.ActiveStates, "Rework")
 			}
-			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, Logger: logger}
 			orch, err := orchestrator.New(cfg, dependencies)
 			if err != nil {
 				t.Fatal(err)
@@ -634,12 +813,21 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					calls := map[string]int32{"source": provider.sourceCalls.Load(), "security": provider.securityCalls.Load(), "validator": provider.validatorCalls.Load()}
 					for stage, count := range calls {
 						want := int32(1)
-						if stage == test.stage && test.publicationField == "" {
+						if stage == test.stage && test.publicationField == "" && test.finalizationFault == "" {
 							want++
 						}
 						if count != want {
 							t.Fatalf("%s calls=%d, want %d", stage, count, want)
 						}
+					}
+					if test.legacySourceFinalization && (!legacyComplete.Load() || legacyProbes.Load() != 2 || reconciledPublication.Load() != 1) {
+						t.Fatalf("legacy publication proof was bypassed: complete=%t refusals=%d publications=%d", legacyComplete.Load(), legacyProbes.Load(), reconciledPublication.Load())
+					}
+					if test.committedFinalization && !rejectedEarlyPublication.Load() {
+						t.Fatal("Hub publication bypassed outstanding finalization")
+					}
+					if test.finalizationFault != "" && (!finalizationFaulted.Load() || finalizationSession.Load() <= 0 || reconciledPublication.Load() != 1) {
+						t.Fatalf("finalization recovery was not reconciled before publication: fault=%t session=%d publications=%d", finalizationFaulted.Load(), finalizationSession.Load(), reconciledPublication.Load())
 					}
 					return
 				}

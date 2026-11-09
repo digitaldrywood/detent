@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -94,6 +95,16 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 		return nil
 	})
 	if err != nil {
+		return nil, "", err
+	}
+	session, err := s.readRunnerSessionPayload(ctx, p.session)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := s.verifyRunnerSessionFinalization(ctx, scope, p.session, session); err != nil {
+		if errors.Is(err, runnersession.ErrFinalizationIncomplete) {
+			return nil, "", nativePublicInvalid("session finalization is incomplete")
+		}
 		return nil, "", err
 	}
 	p.evidence.issue, err = s.hydrateWorkItemRecord(ctx, p.issue, itemVersion)
