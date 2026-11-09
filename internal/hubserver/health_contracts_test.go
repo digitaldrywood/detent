@@ -2,9 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"slices"
 	"strconv"
@@ -13,52 +11,101 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type healthContractQueries struct {
-	nativeQueryer
+	tenantstore.Repository
+	tenantstore.SnapshotRepository
 	issues   int
 	policies int
 }
 
-func (q *healthContractQueries) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	if strings.HasPrefix(query, "SELECT o.slug, p.slug, i.id") {
-		q.issues++
+func (q *healthContractQueries) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return q.Repository.ReadTenant(ctx, organization, workload, func(r tenantstore.Reader) error {
+		return read(healthContractQueryReader{Reader: r, ObservationReader: r.(healthstore.ObservationReader), ScheduledReader: r.(healthstore.ScheduledReader), counts: q})
+	})
+}
+
+type healthContractQueryReader struct {
+	tenantstore.Reader
+	healthstore.ObservationReader
+	healthstore.ScheduledReader
+	counts *healthContractQueries
+}
+
+func (r healthContractQueryReader) WorkItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	r.counts.issues++
+	return r.Reader.WorkItem(ctx, project, item)
+}
+
+func (r healthContractQueryReader) ProjectPolicy(ctx context.Context, project tracker.ProjectID) (policystore.Revision, error) {
+	r.counts.policies++
+	return r.Reader.ProjectPolicy(ctx, project)
+}
+
+func seedHealthContractIssue(t *testing.T, f nativeFixture, issue tracker.NativeIssue) {
+	t.Helper()
+	fields, err := f.service.prepareWorkItemFields(t.Context(), issue.OrganizationID, workItemRecordPlan{issue: issue})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.HasPrefix(query, "SELECT r.policy_id, r.metadata_json") {
-		q.policies++
+	raw, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return q.nativeQueryer.QueryRowContext(ctx, query, args...)
+	version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		row, err := w.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		row.BodyObjectKey, row.IssueContractObjectKey = &fields.Body, fields.Contract
+		row.NativeUpdatedAt = issue.UpdatedAt
+		if _, err = w.UpdateWorkItem(t.Context(), row); err != nil {
+			return err
+		}
+		_, err = w.CreateCollaborationVersion(t.Context(), version)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestHealthContractsReuseRevisions(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "health-contracts")
+	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
+	f := newNativeFixture(t, service, "org_first", "health-contracts")
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-health-contracts")
 	first, second := f.create(t, "first"), other.create(t, "second")
-	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
-	clock := func() time.Time { return now }
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	runner.enroll(t)
-	routing := fmt.Sprintf(`{"project_ranks":{%q:1}}`, f.project.ID)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET routing_settings_json=?,last_heartbeat_at=?,created_at=? WHERE id=?", routing, formatHubTime(now), formatHubTime(now), runner.binding.RunnerID); err != nil {
+	admin := healthFixtureDatabase(t, f)
+	if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=$1,created_at=$1 WHERE organization_id=$2 AND runner_id=$3`, now, f.project.OrganizationID, runner.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
 	appendTestHealthEvent(t, other, second, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "permission_wait"}, now)
-	exec := func(query string, args ...any) {
-		t.Helper()
-		if _, err := f.service.database.db.ExecContext(t.Context(), query, args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	report, err := json.Marshal(gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1", Conclusion: "success"})
-	if err != nil {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), other.project.OrganizationID, corestore.Background, func(w tenantstore.Writer) error {
+		_, err := w.(healthstore.ScheduledWriter).RecordHealthScheduledReport(t.Context(), healthstore.ScheduledReport{OrganizationID: other.project.OrganizationID, ProjectID: other.project.ID, RecordedAt: now.Add(-5*time.Hour - 29*time.Minute), ScheduledValidationReport: gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1", HeadSHA: strings.Repeat("a", 40), Conclusion: "success"}})
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	exec("INSERT INTO scheduled_validation_reports(organization_id,project_id,repository,run_id,run_attempt,record_json,recorded_at) VALUES(?,?,?,'1','1',?,?)", other.project.OrganizationID, other.project.ID, "example-org/example-project", string(report), formatHubTime(now.Add(-5*time.Hour-29*time.Minute)))
-	var cache healthContractCache
+	originalBody := first.Body
+	original := service.config.TenantRepository
+	queries := &healthContractQueries{Repository: original, SnapshotRepository: original.(tenantstore.SnapshotRepository)}
+	t.Cleanup(func() { service.config.TenantRepository = original })
 	for _, test := range []struct {
 		name      string
 		change    func()
@@ -70,7 +117,10 @@ func TestHealthContractsReuseRevisions(t *testing.T) {
 		{name: "first tick", loads: 2},
 		{name: "unchanged next tick"},
 		{name: "issue revision invalidates one project", change: func() {
-			exec("UPDATE issues SET body='Incomplete contract',revision=revision+1,native_updated_at=? WHERE native_id=?", formatHubTime(now), first.WorkItemID)
+			first.Body = "Incomplete contract"
+			first.Revision++
+			first.UpdatedAt = now
+			seedHealthContractIssue(t, f, first)
 		}, loads: 1, contracts: 1},
 		{name: "unsatisfied result is reused", contracts: 1},
 		{name: "policy revision invalidates one project", change: func() {
@@ -81,32 +131,45 @@ func TestHealthContractsReuseRevisions(t *testing.T) {
 		{name: "heartbeat advances without reevaluation", change: func() { now = now.Add(5 * time.Minute) }, contracts: 1, heartbeat: true},
 		{name: "elapsed wait advances without reevaluation", change: func() { now = now.Add(26 * time.Minute) }, contracts: 1, heartbeat: true, elapsed: true},
 		{name: "issue correction clears cached finding", change: func() {
-			exec("UPDATE issues SET body=?,revision=revision+1,native_updated_at=? WHERE native_id=?", first.Body, formatHubTime(now), first.WorkItemID)
+			first.Body = originalBody
+			first.Revision++
+			first.UpdatedAt = now
+			seedHealthContractIssue(t, f, first)
 		}, loads: 1, heartbeat: true, elapsed: true},
-		{name: "policy removal invalidates", change: func() { clearNativeFixturePolicy(t, other) }, loads: 1, heartbeat: true, elapsed: true},
+		{name: "policy removal invalidates", change: func() {
+			if _, err := admin.ExecContext(t.Context(), `DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2`, other.project.OrganizationID, other.project.ID); err != nil {
+				t.Fatal(err)
+			}
+		}, loads: 1, heartbeat: true, elapsed: true},
 		{name: "missing policy is reused", heartbeat: true, elapsed: true},
 		{name: "policy restoration invalidates", change: func() {
 			seedNativeFixturePolicy(t, f.service, string(other.project.OrganizationID)+"/"+string(other.project.ID))
 		}, loads: 1, heartbeat: true, elapsed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			service.config.TenantRepository = original
 			if test.change != nil {
 				test.change()
 			}
-			tx, err := f.service.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+			service.config.TenantRepository = queries
+			queries.issues, queries.policies = 0, 0
+			snapshot, err := service.readHealthSnapshotRecords(t.Context(), f.project.OrganizationID, now)
+			service.config.TenantRepository = original
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback()
-			queries := &healthContractQueries{nativeQueryer: tx}
-			snapshot, err := readHealthSnapshotWithContracts(t.Context(), queries, f.project.OrganizationID, clock(), &cache)
-			if err != nil {
-				t.Fatal(err)
+			if queries.issues != test.loads || queries.policies != 2 {
+				t.Fatalf("issue loads=%d project policy reads=%d, want %d and 2", queries.issues, queries.policies, test.loads)
 			}
-			if queries.issues != test.loads || queries.policies != 2*test.loads {
-				t.Fatalf("issue loads=%d contract policy reads=%d, want %d and %d", queries.issues, queries.policies, test.loads, 2*test.loads)
-			}
-			uncached, err := readHealthSnapshot(t.Context(), tx, f.project.OrganizationID, now)
+			cache := &service.healthContracts
+			cache.mu.Lock()
+			entries, order, oldest := cache.entries, cache.order, cache.oldest
+			cache.entries, cache.order, cache.oldest = nil, nil, 0
+			cache.mu.Unlock()
+			uncached, err := service.readHealthSnapshotRecords(t.Context(), f.project.OrganizationID, now)
+			cache.mu.Lock()
+			cache.entries, cache.order, cache.oldest = entries, order, oldest
+			cache.mu.Unlock()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -171,43 +234,64 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 	for _, name := range []string{"linked intake", "release delegation"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			f := newNativeFixture(t, nil, "", "health-live")
+			service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
+			f := newNativeFixture(t, service, "org_first", "health-live")
 			issue := f.create(t, "candidate")
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-			exec := func(query string, args ...any) {
-				t.Helper()
-				if _, err := f.service.database.db.ExecContext(t.Context(), query, args...); err != nil {
-					t.Fatal(err)
-				}
-			}
-			var change func()
+			originalContract := issue.IssueContract
+			var source eventstore.LinkedSource
 			if name == "linked intake" {
-				exec("UPDATE issues SET body='Incomplete contract' WHERE native_id=?", issue.WorkItemID)
-				exec("INSERT INTO linked_issue_sources(work_item_id,source_url,title_supplied,body_supplied) VALUES(?,?,1,1)", issue.WorkItemID, "https://github.com/example-org/example-project/issues/1")
-				change = func() {
-					exec("UPDATE linked_issue_sources SET snapshot_json='{}' WHERE work_item_id=?", issue.WorkItemID)
+				issue.Body = "Incomplete contract"
+				issue.Revision++
+				seedHealthContractIssue(t, f, issue)
+				source = eventstore.LinkedSource{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, URL: "https://github.com/example-org/example-project/issues/1", TitleSupplied: true, BodySupplied: true}
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					var err error
+					source, err = w.CreateLinkedSource(t.Context(), source)
+					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
 			} else {
-				original, err := json.Marshal(issue.IssueContract)
-				if err != nil {
-					t.Fatal(err)
-				}
-				exec(`UPDATE issues SET issue_contract_json='{"release_delivery":{"policy_id":"previous","body_sha256":"previous"}}' WHERE native_id=?`, issue.WorkItemID)
-				change = func() {
-					exec("UPDATE issues SET issue_contract_json=? WHERE native_id=?", string(original), issue.WorkItemID)
-				}
+				issue.IssueContract = &issuecontract.State{ReleaseDelivery: &issuecontract.ReleaseDeliveryApproval{PolicyID: "previous", BodySHA256: "previous"}}
+				issue.Revision++
+				seedHealthContractIssue(t, f, issue)
 			}
+			original := service.config.TenantRepository
+			queries := &healthContractQueries{Repository: original, SnapshotRepository: original.(tenantstore.SnapshotRepository)}
+			t.Cleanup(func() { service.config.TenantRepository = original })
 			var cache healthContractCache
-			for step := range 2 {
-				if step == 1 {
-					change()
+			for step := range 3 {
+				service.config.TenantRepository = original
+				if step == 2 {
+					if name == "linked intake" {
+						ref, err := eventstore.NewContent(service.runDetailStore()).PrepareLinkedIssueSnapshot(t.Context(), issue.OrganizationID, tracker.GitHubIssueSnapshot{URL: source.URL})
+						if err != nil {
+							t.Fatal(err)
+						}
+						source.SnapshotObjectKey, source.SnapshotSHA256, source.SnapshotBytes, source.SnapshotContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
+						if err := original.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+							_, err := w.UpdateLinkedSource(t.Context(), source)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						issue.IssueContract = originalContract
+						issue.Revision++
+						seedHealthContractIssue(t, f, issue)
+					}
 				}
-				queries := &healthContractQueries{nativeQueryer: f.service.database.reader}
-				wait, err := cache.read(t.Context(), queries, scope, string(issue.WorkItemID), issue.Revision, hubTestPolicy().ID)
+				project, descriptor, err := service.readHealthContractProject(t.Context(), issue.OrganizationID, issue.ProjectID)
 				if err != nil {
 					t.Fatal(err)
 				}
-				wantWait := name == "linked intake" && step == 1 || name == "release delegation" && step == 0
+				service.config.TenantRepository = queries
+				queries.issues = 0
+				wait, err := cache.readRecords(t.Context(), service, project, issue.WorkItemID, issue.Revision, descriptor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantWait := name == "linked intake" && step == 2 || name == "release delegation" && step < 2
 				if queries.issues != 1 || (wait != nil) != wantWait {
 					t.Fatalf("step=%d loads=%d wait=%+v, want load and wait=%t", step, queries.issues, wait, wantWait)
 				}
