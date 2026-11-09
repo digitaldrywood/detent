@@ -22,9 +22,13 @@ func ConversationMigrations(source fs.FS) []*goose.Migration {
 }
 
 func migrateConversationContinuation(ctx context.Context, db *sql.Tx) error {
+	if err := validateContinuationSourcePlans(ctx, db); err != nil {
+		return err
+	}
 	type identity struct{ organization, conversation string }
+	var after identity
 	for {
-		rows, err := db.QueryContext(ctx, `SELECT organization_id,id FROM conversations WHERE execution_continuation IS NULL ORDER BY organization_id,id LIMIT 32`)
+		rows, err := db.QueryContext(ctx, `SELECT organization_id,id FROM conversations WHERE execution_continuation IS NULL AND (organization_id,id)>($1,$2) ORDER BY organization_id,id LIMIT 32`, after.organization, after.conversation)
 		if err != nil {
 			return fmt.Errorf("read conversation continuation upgrade page: %w", err)
 		}
@@ -46,6 +50,7 @@ func migrateConversationContinuation(ctx context.Context, db *sql.Tx) error {
 			if err := backfillConversationContinuation(ctx, db, id.organization, id.conversation); err != nil {
 				return fmt.Errorf("backfill conversation continuation: %w", err)
 			}
+			after = id
 		}
 	}
 }
@@ -64,6 +69,10 @@ func backfillConversationContinuation(ctx context.Context, tx *sql.Tx, organizat
 	}
 	ownership, after := false, int64(0)
 	if origin == "worker" {
+		plan, err := loadContinuationSourcePlan(ctx, tx, organization, id, head)
+		if err != nil {
+			return err
+		}
 		var verifiedCount, previousMessage int64
 		for after < head {
 			rows, err := tx.QueryContext(ctx, `SELECT seq,type,body_json,content_attachment_id,query_metadata_version,object_id,message_kind,execution_status FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2 AND seq>$3 ORDER BY seq LIMIT 128`, organization, id, after)
@@ -89,10 +98,18 @@ func backfillConversationContinuation(ctx context.Context, tx *sql.Tx, organizat
 				return err
 			}
 			if len(events) == 0 {
+				if plan != nil && head == plan.head && after <= plan.head {
+					after = head
+					break
+				}
 				return errors.New("conversation continuation history is incomplete")
 			}
 			for _, e := range events {
-				if e.sequence != after+1 || e.sequence > head {
+				if plan != nil && after < plan.head && e.sequence > plan.head {
+					after = plan.head
+				}
+				verifiedPrefix := plan != nil && e.sequence <= plan.head
+				if (!verifiedPrefix && e.sequence != after+1) || e.sequence <= after || e.sequence > head {
 					return errors.New("conversation continuation history is incomplete")
 				}
 				after = e.sequence

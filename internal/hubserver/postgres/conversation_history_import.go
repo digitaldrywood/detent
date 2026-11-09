@@ -26,6 +26,7 @@ const conversationImportPageSize = 100
 type ConversationHistoryImportSource struct {
 	BundlePath string
 	neutral    *VerifiedNeutralImport
+	messages   *conversationMessageIndex
 	CopyPath   string
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
@@ -98,16 +99,24 @@ func (r *Repository) ImportConversationHistory(ctx context.Context, source Conve
 	completed := false
 	snapshotID := ""
 
-	err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+	err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) (resultErr error) {
 		source.neutral = bundle
 		snapshotID = bundle.Identity().SourceSHA256
 		if err := validateNeutralConversationHistory(ctx, source); err != nil {
 			return err
 		}
+		index, err := buildConversationMessageIndex(ctx, bundle)
+		if err != nil {
+			return fmt.Errorf("index conversation messages: %w", err)
+		}
+		defer func() { resultErr = errors.Join(resultErr, index.close()) }()
+		source.messages = index
+		if err := validateNeutralContinuationOwnership(ctx, source); err != nil {
+			return fmt.Errorf("verify conversation continuation: %w", err)
+		}
 		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
 		}
-		var err error
 		completed, result.Rows, err = r.beginConversationHistoryImport(ctx, organization, source.Source.Schema, snapshotID, catalogDigest)
 		if err != nil || completed {
 			return err
@@ -274,7 +283,7 @@ func prepareConversationImportRow(ctx context.Context, source ConversationHistor
 	if table.source == "conversations" {
 		id, _ := targetValues["id"].(string)
 		origin, _ := targetValues["origin"].(string)
-		continuation, err := importConversationContinuation(ctx, tx, organization, id, origin)
+		continuation, err := importConversationContinuation(ctx, source, id, origin, targetValues["event_seq"].(int64))
 		if err != nil {
 			return nil, nil, err
 		}

@@ -2,99 +2,194 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 )
 
-func importConversationContinuation(ctx context.Context, source *sql.Tx, organization tracker.OrganizationID, id, origin string) (bool, error) {
+type continuationSourceEvidence struct {
+	ownership bool
+	accepted  int64
+	digest    string
+}
+
+func validateNeutralContinuationOwnership(ctx context.Context, source ConversationHistoryImportSource) error {
+	var cursor []string
+	for {
+		page, err := source.neutral.Page(ctx, "conversations", cursor, continuationIndexPageRows)
+		if err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		cursor = page[len(page)-1].Key
+		for _, row := range page {
+			if cellText(row.Values["origin"]) != "worker" {
+				continue
+			}
+			head, err := strconv.ParseInt(cellText(row.Values["event_seq"]), 10, 64)
+			if err != nil {
+				return err
+			}
+			if _, err := readNeutralContinuation(ctx, source, cellText(row.Values["id"]), head); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func importConversationContinuation(ctx context.Context, source ConversationHistoryImportSource, id, origin string, head int64) (bool, error) {
 	if origin != "worker" {
 		return false, nil
 	}
-	var expected int64
-	if err := source.QueryRowContext(ctx, `SELECT count(*) FROM conversation_messages m JOIN conversation_commands cmd ON cmd.conversation_id=m.conversation_id AND cmd.key=m.command_key JOIN conversations c ON c.id=m.conversation_id WHERE c.organization_id=? AND c.id=? AND m.role='user' AND m.kind='continue' AND cmd.kind='continue'`, organization, id).Scan(&expected); err != nil {
-		return false, err
+	evidence, err := readNeutralContinuation(ctx, source, id, head)
+	return evidence.ownership, err
+}
+
+func readNeutralContinuation(ctx context.Context, source ConversationHistoryImportSource, id string, head int64) (continuationSourceEvidence, error) {
+	var result continuationSourceEvidence
+	if source.messages == nil || head < 0 {
+		return result, ErrNeutralImport
 	}
-	var after, previousMessage, accepted int64
-	ownership := false
+	var expected int64
+	var cursor []string
 	for {
-		rows, err := source.QueryContext(ctx, `SELECT e.seq,e.type,e.body_json,e.query_metadata_version,e.object_id,e.message_kind,e.execution_status FROM conversation_events e JOIN conversations c ON c.id=e.conversation_id WHERE c.organization_id=? AND e.conversation_id=? AND e.seq>? ORDER BY e.seq LIMIT 128`, organization, id, after)
+		page, err := source.messages.page(ctx, id, cursor)
 		if err != nil {
-			return false, err
-		}
-		type event struct {
-			sequence, metadataVersion int64
-			kind, body                string
-			id, messageKind, status   sql.NullString
-		}
-		var page []event
-		for rows.Next() {
-			var e event
-			if err := rows.Scan(&e.sequence, &e.kind, &e.body, &e.metadataVersion, &e.id, &e.messageKind, &e.status); err != nil {
-				return false, errors.Join(err, rows.Close())
-			}
-			page = append(page, e)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return false, err
+			return result, err
 		}
 		if len(page) == 0 {
 			break
 		}
-		for _, e := range page {
-			after = e.sequence
-			switch conversation.EventType(e.kind) {
+		cursor = page[len(page)-1].Key
+		for _, message := range page {
+			if cellText(message.Values["role"]) != "user" || cellText(message.Values["kind"]) != "continue" || cellText(message.Values["command_key"]) == "" {
+				continue
+			}
+			command, err := source.neutral.Lookup(ctx, "conversation_commands", []string{id, cellText(message.Values["command_key"])})
+			if errors.Is(err, corestore.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return result, err
+			}
+			if cellText(command.Values["kind"]) == "continue" {
+				expected++
+			}
+		}
+	}
+	digest := sha256.New()
+	cursor = []string{id, "0"}
+	var previousMessage int64
+	for {
+		page, err := source.neutral.Page(ctx, "conversation_events", cursor, continuationIndexPageRows)
+		if err != nil {
+			return result, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, event := range page {
+			if event.Key[0] != id {
+				result.digest = hex.EncodeToString(digest.Sum(nil))
+				return result, validateContinuationSourceCount(result.accepted, expected)
+			}
+			sequence, err := strconv.ParseInt(event.Key[1], 10, 64)
+			if err != nil || sequence <= 0 || sequence > head {
+				return result, ErrNeutralImport
+			}
+			cursor = event.Key
+			version, err := strconv.ParseInt(cellText(event.Values["query_metadata_version"]), 10, 64)
+			if err != nil || version < 0 || version > 1 {
+				return result, ErrNeutralImport
+			}
+			marker := struct {
+				Sequence        int64
+				Type            string
+				MessageID       string
+				MessageSequence int64
+				CommandKey      string
+			}{Sequence: sequence, Type: cellText(event.Values["type"])}
+			switch conversation.EventType(marker.Type) {
 			case conversation.EventMessageAccepted:
-				messageID, kind := e.id.String, conversation.MessageKind(e.messageKind.String)
-				if e.metadataVersion != 1 {
-					var body struct {
-						ID   string                   `json:"id"`
-						Kind conversation.MessageKind `json:"kind"`
-					}
-					if json.Unmarshal([]byte(e.body), &body) != nil {
-						return false, errors.New("imported continuation message evidence is unavailable")
-					}
-					messageID, kind = body.ID, body.Kind
+				var body struct {
+					ID   string                   `json:"id"`
+					Kind conversation.MessageKind `json:"kind"`
 				}
-				if messageID == "" || !kind.Valid() {
-					return false, errors.New("imported continuation message evidence is unavailable")
+				if version == 1 {
+					body.ID = cellText(event.Values["object_id"])
+					body.Kind = conversation.MessageKind(cellText(event.Values["message_kind"]))
+				} else if cellText(event.Values["content_attachment_id"]) != "" || json.Unmarshal(event.Values["body_json"].Data, &body) != nil {
+					return result, errors.New("imported continuation message evidence is unavailable")
 				}
-				if kind != conversation.MessageContinue {
+				if body.ID == "" || !body.Kind.Valid() {
+					return result, ErrNeutralImport
+				}
+				if body.Kind != conversation.MessageContinue {
 					continue
 				}
-				var sequence int64
-				if err := source.QueryRowContext(ctx, `SELECT m.seq FROM conversation_messages m JOIN conversation_commands cmd ON cmd.conversation_id=m.conversation_id AND cmd.key=m.command_key JOIN conversations c ON c.id=m.conversation_id WHERE c.organization_id=? AND c.id=? AND m.id=? AND m.role='user' AND m.kind='continue' AND cmd.kind='continue'`, organization, id, messageID).Scan(&sequence); err != nil {
-					return false, err
+				message, err := source.neutral.Lookup(ctx, "conversation_messages", []string{body.ID})
+				if err != nil {
+					return result, err
 				}
-				if sequence <= previousMessage {
-					return false, errors.New("imported continuation command order is invalid")
+				key := cellText(message.Values["command_key"])
+				if cellText(message.Values["conversation_id"]) != id || cellText(message.Values["role"]) != "user" || cellText(message.Values["kind"]) != "continue" || key == "" {
+					return result, ErrNeutralImport
 				}
-				previousMessage, accepted, ownership = sequence, accepted+1, true
+				command, err := source.neutral.Lookup(ctx, "conversation_commands", []string{id, key})
+				if err != nil {
+					return result, err
+				}
+				if cellText(command.Values["kind"]) != "continue" {
+					return result, ErrNeutralImport
+				}
+				messageSequence, err := strconv.ParseInt(cellText(message.Values["seq"]), 10, 64)
+				if err != nil || messageSequence <= previousMessage {
+					return result, errors.New("imported continuation command order is invalid")
+				}
+				previousMessage = messageSequence
+				marker.MessageID, marker.MessageSequence, marker.CommandKey = body.ID, messageSequence, key
+				result.accepted++
+				result.ownership = true
 			case conversation.EventExecutionUpdated:
-				status := conversation.ExecutionStatus(e.status.String)
-				if e.metadataVersion != 1 {
+				status := conversation.ExecutionStatus(cellText(event.Values["execution_status"]))
+				if version == 0 {
 					var body struct {
 						Status conversation.ExecutionStatus `json:"status"`
 					}
-					if json.Unmarshal([]byte(e.body), &body) != nil {
-						return false, errors.New("imported continuation execution evidence is unavailable")
+					if cellText(event.Values["content_attachment_id"]) != "" || json.Unmarshal(event.Values["body_json"].Data, &body) != nil {
+						return result, errors.New("imported continuation execution evidence is unavailable")
 					}
 					status = body.Status
 				}
 				if !status.Valid() {
-					return false, errors.New("imported continuation execution evidence is unavailable")
+					return result, ErrNeutralImport
 				}
-				if status == conversation.ExecutionCompleted {
-					ownership = false
+				if status != conversation.ExecutionCompleted {
+					continue
 				}
+				result.ownership = false
+			default:
+				continue
+			}
+			if err := json.NewEncoder(digest).Encode(marker); err != nil {
+				return result, err
 			}
 		}
 	}
-	if accepted != expected {
-		return false, errors.New("imported continuation accepted history is incomplete")
+	result.digest = hex.EncodeToString(digest.Sum(nil))
+	return result, validateContinuationSourceCount(result.accepted, expected)
+}
+
+func validateContinuationSourceCount(actual, expected int64) error {
+	if actual != expected {
+		return errors.New("imported continuation accepted history is incomplete")
 	}
-	return ownership, nil
+	return nil
 }
