@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -16,24 +17,30 @@ import (
 )
 
 func loadWorkspaceWorkerRecord(ctx context.Context, w workspaceWriter, scope nativeScope, id string, identity workspaceWorkerIdentity, now time.Time) (workspaceRecord, leasestore.Lease, error) {
+	return readWorkspaceWorkerRecord(ctx, w, scope, id, identity, now, func(ctx context.Context, id string) (leasestore.Lease, error) {
+		locker, ok := w.(leasestore.FencedLeaseLocker)
+		if !ok {
+			return leasestore.Lease{}, workspaceUnavailable()
+		}
+		return locker.LockLease(ctx, id)
+	})
+}
+
+func readWorkspaceWorkerRecord(ctx context.Context, r workspaceReader, scope nativeScope, id string, identity workspaceWorkerIdentity, now time.Time, readLease func(context.Context, string) (leasestore.Lease, error)) (workspaceRecord, leasestore.Lease, error) {
 	if workspacesession.ValidateID(id) != nil {
 		return workspaceRecord{}, leasestore.Lease{}, nativeNotFound()
 	}
 	if identity.LeaseID == "" || identity.FencingToken <= 0 {
 		return workspaceRecord{}, leasestore.Lease{}, nativePublicInvalid("A lease and fencing token are required")
 	}
-	if _, err := authorizeRunnerRepositoryReader(ctx, w, scope, now); err != nil {
+	if _, err := authorizeRunnerRepositoryReader(ctx, r, scope, now); err != nil {
 		return workspaceRecord{}, leasestore.Lease{}, err
 	}
-	row, err := w.WorkspaceSession(ctx, scope.project, id)
+	row, err := r.WorkspaceSession(ctx, scope.project, id)
 	if err != nil {
 		return workspaceRecord{}, leasestore.Lease{}, err
 	}
-	locker, ok := w.(leasestore.FencedLeaseLocker)
-	if !ok {
-		return workspaceRecord{}, leasestore.Lease{}, workspaceUnavailable()
-	}
-	lease, err := locker.LockLease(ctx, string(identity.LeaseID))
+	lease, err := readLease(ctx, string(identity.LeaseID))
 	if errors.Is(err, tracker.ErrLeaseNotFound) {
 		err = corestore.ErrNotFound
 	}
@@ -46,11 +53,11 @@ func loadWorkspaceWorkerRecord(ctx context.Context, w workspaceWriter, scope nat
 	if lease.MachineID != string(scope.credential.Runner.MachineID) {
 		return workspaceRecord{}, lease, nativeNotFound()
 	}
-	item, err := w.WorkspaceDispatchItem(ctx, scope.project, id)
+	item, err := r.WorkspaceDispatchItem(ctx, scope.project, id)
 	if err != nil {
 		return workspaceRecord{}, lease, err
 	}
-	issue, err := w.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+	issue, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
 	if err != nil {
 		return workspaceRecord{}, lease, err
 	}
@@ -84,6 +91,53 @@ func (s *Service) bindWorkspaceRecord(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	scope := nativeRequestScope(c)
+	var commands []actionstore.Record
+	var creationPrepared bool
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		owner, ok := r.(workspaceReader)
+		if !ok {
+			return workspaceUnavailable()
+		}
+		now := s.config.now().UTC()
+		record, _, err := readWorkspaceWorkerRecord(ctx, owner, scope, c.Param("workspace"), request.workspaceWorkerIdentity, now, owner.Lease)
+		if err != nil {
+			return err
+		}
+		candidate, target, err := service.bindCandidate(scope, record, request, now)
+		if err != nil {
+			return err
+		}
+		checkout, err := service.checkoutRecord(ctx, owner, candidate, now)
+		if err != nil {
+			return err
+		}
+		candidate.State = target
+		if !createsWorktree(candidate, checkout) {
+			return nil
+		}
+		records, err := owner.ProjectActions(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		for _, record := range records {
+			if record.Action.RunOnWorktreeCreation {
+				commands = append(commands, record)
+			}
+		}
+		creationPrepared = true
+		return nil
+	})
+	if err != nil {
+		return s.nativeAPIError(c, projectRecordError(err))
+	}
+	var actions []workspacesession.Action
+	for _, record := range commands {
+		action, err := s.hydrateActionRecord(ctx, scope, record)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		actions = append(actions, action)
+	}
 	var bound workspaceRecord
 	var checkout workspaceCheckout
 	err = s.workspaceWorkerWrite(ctx, scope, func(w workspaceWriter, now time.Time) error {
@@ -96,34 +150,39 @@ func (s *Service) bindWorkspaceRecord(c echo.Context) error {
 			return err
 		}
 		checkout, err = service.checkoutRecord(ctx, w, bound, now)
-		return err
+		if err != nil {
+			return err
+		}
+		if createsWorktree(bound, checkout) {
+			if !creationPrepared {
+				return nativeStaleExecution("The workspace checkout changed")
+			}
+			current, err := w.ProjectActions(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			index := 0
+			for _, action := range current {
+				if !action.Action.RunOnWorktreeCreation {
+					continue
+				}
+				if index >= len(commands) || action.Action.ID != commands[index].Action.ID || action.Action.Revision != commands[index].Action.Revision || action.Command != commands[index].Command {
+					return nativeStaleExecution("The workspace creation actions changed")
+				}
+				index++
+			}
+			if index != len(commands) {
+				return nativeStaleExecution("The workspace creation actions changed")
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	response := workspaceBindResponse{Owner: bound.owner(), Checkout: checkout, Session: bound.resource()}
 	if createsWorktree(bound, checkout) {
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			owner := r.(workspaceReader)
-			records, err := owner.ProjectActions(ctx, scope.project)
-			if err != nil {
-				return err
-			}
-			for _, record := range records {
-				if !record.Action.RunOnWorktreeCreation {
-					continue
-				}
-				action, err := s.hydrateActionRecord(ctx, scope, record)
-				if err != nil {
-					return err
-				}
-				response.Actions = append(response.Actions, action)
-			}
-			return nil
-		})
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
+		response.Actions = actions
 	}
 	service.committed(ctx, bound)
 	return c.JSON(http.StatusOK, response)
@@ -279,24 +338,32 @@ func (s *Service) workspaceRecordForWorkItem(c echo.Context) error {
 }
 
 func (w *workspaceService) bindRecord(ctx context.Context, tx workspaceWriter, scope nativeScope, record workspaceRecord, request workspaceBindRequest, now time.Time) (workspaceRecord, error) {
+	candidate, target, err := w.bindCandidate(scope, record, request, now)
+	if err != nil {
+		return record, err
+	}
+	return w.transitionRecord(ctx, tx, candidate, target, "", now)
+}
+
+func (w *workspaceService) bindCandidate(scope nativeScope, record workspaceRecord, request workspaceBindRequest, now time.Time) (workspaceRecord, string, error) {
 	if record.State != workspacesession.StateRequested {
-		return record, nativeStaleExecution("The workspace is not waiting for a runner")
+		return record, "", nativeStaleExecution("The workspace is not waiting for a runner")
 	}
 	runnerID := scope.credential.Runner.RunnerID
 	rebinding := record.RebindDeadline != nil
 	if rebinding {
 		if now.After(*record.RebindDeadline) {
-			return record, nativeStaleExecution("The workspace re-bind grace has passed")
+			return record, "", nativeStaleExecution("The workspace re-bind grace has passed")
 		}
 		if record.RunnerID != "" && record.RunnerID != runnerID {
-			return record, nativeStaleExecution("The workspace belongs to another runner")
+			return record, "", nativeStaleExecution("The workspace belongs to another runner")
 		}
 	}
 	if !request.Capabilities.Satisfies(record.Requires) {
-		return record, nativePublicInvalid("The runner does not serve every required surface")
+		return record, "", nativePublicInvalid("The runner does not serve every required surface")
 	}
 	if !terminalIsolationAllowed(record.Requires, w.config.Terminal.Isolation, request.Isolation) {
-		return record, workspaceIsolationRefused()
+		return record, "", workspaceIsolationRefused()
 	}
 	capabilities := request.Capabilities
 	record.RunnerID = runnerID
@@ -308,9 +375,9 @@ func (w *workspaceService) bindRecord(ctx context.Context, tx workspaceWriter, s
 	heartbeat := now
 	record.LastHeartbeatAt = &heartbeat
 	if rebinding {
-		return w.transitionRecord(ctx, tx, record, workspacesession.StateReady, "", now)
+		return record, workspacesession.StateReady, nil
 	}
-	return w.transitionRecord(ctx, tx, record, workspacesession.StateStarting, "", now)
+	return record, workspacesession.StateStarting, nil
 }
 
 func (w *workspaceService) heartbeatRecord(ctx context.Context, tx workspaceWriter, record workspaceRecord, request workspaceHeartbeatRequest, now time.Time) (workspaceRecord, bool, error) {
