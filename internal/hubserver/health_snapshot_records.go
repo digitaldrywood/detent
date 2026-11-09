@@ -19,6 +19,110 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+var errHealthReadLimit = errors.New("health observation exceeds bounded read")
+
+const (
+	permissionWaitTransitionReason = "permission_wait"
+)
+
+type healthRunnerState struct {
+	healthRunner
+	MachineID  string
+	Routing    runnerauth.Routing
+	Admissions map[string]tracker.NativeAdmissionObservation
+}
+
+func projectStrings(ids []tracker.ProjectID) []string {
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, string(id))
+	}
+	return result
+}
+
+type healthCycle struct {
+	At      time.Time
+	Reasons map[string]string
+	Events  []string
+	Claims  int
+}
+
+type healthTimeEvent struct {
+	id, project, item, kind, raw string
+	at                           time.Time
+}
+
+func applyHealthEvents(ctx context.Context, now time.Time, events []healthTimeEvent, snapshot *healthSnapshot) error {
+	cycles := map[string]healthCycle{}
+	for _, event := range events {
+		id, project, item, kind, raw, observed := event.id, event.project, event.item, event.kind, event.raw, event.at
+		var data tracker.CollaborationData
+		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
+			return err
+		}
+		for i := range snapshot.Projects {
+			p := &snapshot.Projects[i]
+			if p.ID != project {
+				continue
+			}
+			if (kind == "run.finished" || kind == "run.observed") && data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Landing != nil && data.Run.Runtime.Landing.Landed {
+				landing := data.Run.Runtime.Landing.ObservedAt
+				if landing.IsZero() {
+					landing = observed
+				}
+				if !landing.After(now) && landing.After(p.LastLanding) {
+					p.LastLanding = landing
+				}
+			}
+		}
+		if kind != "scheduler.decision" || data.Decision == nil || data.Decision.Source == "native_claim_eligibility" || now.Sub(observed) > healthInstanceWindow {
+			continue
+		}
+		key := project + "\x00" + data.Decision.RunnerID
+		cycle := cycles[key]
+		if !cycle.At.Equal(observed) {
+			cycle = healthCycle{At: observed, Reasons: map[string]string{}}
+		}
+		switch data.Decision.Outcome {
+		case "claimed":
+			cycle.Claims++
+		case "skipped":
+			cycle.Reasons[item] = data.Decision.Reason
+		}
+		cycle.Events = append(cycle.Events, id)
+		cycles[key] = cycle
+	}
+	for i := range snapshot.Projects {
+		p := &snapshot.Projects[i]
+		var latest healthCycle
+		var latestKey string
+		for key, cycle := range cycles {
+			if strings.HasPrefix(key, p.ID+"\x00") && (cycle.At.After(latest.At) || cycle.At.Equal(latest.At) && key > latestKey) {
+				latest, latestKey = cycle, key
+			}
+		}
+		if latest.At.IsZero() {
+			continue
+		}
+		p.Claims = latest.Claims
+		p.RefusalReasons = nil
+		covered := len(latest.Reasons) == p.Candidates
+		for item := range latest.Reasons {
+			if !p.CandidateIDs[item] {
+				covered = false
+			}
+		}
+		if !covered {
+			continue
+		}
+		for _, reason := range latest.Reasons {
+			p.RefusalReasons = append(p.RefusalReasons, reason)
+		}
+		p.RefusalEvents = latest.Events
+	}
+	return nil
+}
+
 func (s *Service) readHealthSnapshotRecords(ctx context.Context, organization tracker.OrganizationID, now time.Time) (healthSnapshot, error) {
 	var snapshot healthSnapshot
 	runners, err := s.readHealthRunnerRecords(ctx, organization, now)
