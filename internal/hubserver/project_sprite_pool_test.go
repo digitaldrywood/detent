@@ -2070,6 +2070,55 @@ func TestProjectSpriteConcurrentReservations(t *testing.T) {
 	}
 }
 
+func TestSpritePoolProvisionsPastOneHundredMembers(t *testing.T) {
+	f, scope, provider := newSpritePoolFixture(t, "")
+	const ceiling = 101
+	now := f.service.config.now()
+	writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+		for i := range ceiling - 1 {
+			name := fmt.Sprintf("retained-%03d", i)
+			enrollment := runnerstore.Enrollment{OrganizationID: scope.organization, ID: "enrollment-" + name, RunnerID: "runner-" + name, MachineID: tracker.MachineID("machine-" + name), TokenHash: apikey.HashToken("token-" + name), Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CreatedBy: scope.credential.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+			if err := w.CreateRunnerEnrollment(t.Context(), enrollment); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: scope.organization, Name: name, EnrollmentID: enrollment.ID, ProviderOrganization: "detent-test", State: "bootstrapping", IdleSince: now, CreatedAt: now}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.MinRunners, pool.MaxRunners = ceiling, ceiling })
+	for range 2 {
+		if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(provider.created) != 1 || len(provider.runners) != 1 || provider.checkpoint != 1 || len(provider.deleted) != 0 {
+		t.Fatalf("last slot creates=%d enrollments=%d checkpoints=%d deletes=%d", len(provider.created), len(provider.runners), provider.checkpoint, len(provider.deleted))
+	}
+	if err := f.service.database.postgres.ReadSprite(t.Context(), scope.organization, corestore.Serving, func(r postgres.SpriteReader) error {
+		count, err := r.SpritePoolMemberCount(t.Context())
+		if err != nil {
+			return err
+		}
+		if count != ceiling {
+			t.Fatalf("durable members=%d, want %d", count, ceiling)
+		}
+		for _, name := range []string{"retained-000", "retained-099"} {
+			member, err := r.SpriteMember(t.Context(), name)
+			if err != nil {
+				return err
+			}
+			if member.State != "bootstrapping" {
+				t.Fatalf("existing reservation %s changed to %s", name, member.State)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProjectSpriteAllocationLimits(t *testing.T) {
 	for _, test := range []struct {
 		name                                              string
