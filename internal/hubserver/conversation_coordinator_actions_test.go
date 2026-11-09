@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,17 +19,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestCoordinatorProjectActions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	for _, tool := range []string{"propose_stop_run", "propose_file_issue", "propose_maintenance_issue", "propose_move_item", "propose_set_priority", "propose_backlog_admission", "update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), string(chat.ActionArchiveItems), "set_sprite_pool", "scale_up_sprite_pool"} {
 		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
 		if tool == operatortool.MoveItem {
@@ -64,7 +67,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				clock.Store(time.Now().UnixNano())
 				configure := func(cfg *Config) {
 					cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}
-					if sharedEntry {
+					if sharedEntry || outcome == "expired attempt" {
 						cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
 					}
 					if coordinatorSpriteMutation(tool) {
@@ -78,18 +81,21 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						})}
 					}
 					if tool == "update_project_integration" && outcome != "transport unavailable" {
-
 						cfg.ReconcileBackend = &scriptedReconcileBackend{}
 					}
 				}
-				var f hostedSecurityFixture
-				var shared hostedSharedFixture
+				var f coordinatorActionFixture
+				var shared operatorSharedFixture
 				if sharedEntry {
-					shared = newHostedSharedFixture(t, configure)
-					f = shared.hostedSecurityFixture
+					shared = newOperatorSharedFixture(t, configure)
+					f = coordinatorActionFixture{shared.operatorSecurityFixture}
 				} else {
-					f = newHostedSecurityFixture(t, configure)
+					f = coordinatorActionFixture{newOperatorSecurityFixture(t, configure)}
 				}
+				if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+					t.Fatal(err)
+				}
+				f.service.tokenUseWork.Wait()
 				role := "owner"
 				if outcome == "wrong role" {
 					role = "member"
@@ -109,9 +115,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				var storedToken string
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project); err != nil {
-					t.Fatal(err)
-				}
+				coordinatorActionProject(t, f, func(p *projectstore.Record) { p.Settings.DuplicateChallenge = false })
 				request := f.request
 				if sharedEntry {
 					request = func(t *testing.T, user hostedSecurityUser, method, path string, body any) *httptest.ResponseRecorder {
@@ -149,16 +153,17 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if coordinatorSpriteMutation(tool) {
 					f.grant(t, u, true, outcome != "no runner grant")
 					if outcome == "grantless project" {
-						operatorSQL(t, f, `INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES ('prj_grantless','org_security','digitaldrywood/detent','github_compatible','now')`)
-						operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE project_id='prj_grantless'")
-						operatorSQL(t, f, "DELETE FROM token_grants WHERE project_id='prj_grantless'")
+						f.writeTenant(t, func(w tenantstore.Writer) error {
+							_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: "prj_grantless", Name: "Example project", Slug: "grantless", Profile: "native"}, States: nativeFixtureStates()})
+							return err
+						})
 					}
 					if _, err := f.service.approveTestTenantPolicy(t.Context(), "org_security/"+string(f.project), "test", policy.Change{Policy: hubTestPolicy()}); err != nil {
 						t.Fatal(err)
 					}
 				}
 				if outcome == "number resolution" {
-					seedArchiveIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, 18, "Todo")
+					seedCoordinatorActionIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, 18, "Todo")
 				}
 				response := createIndependentNativeIssue(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "luna-issue"}, Title: "Original issue", Body: nativeContractTestBody, State: "Todo", Labels: []string{"original"}}, func(draft tracker.CreateIssue) *httptest.ResponseRecorder {
 					return request(t, u, http.MethodPost, f.base+"/work-items", draft)
@@ -170,51 +175,29 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				var issue tracker.NativeIssue
 				decodeHubResponse(t, response, &issue)
 				id := issue.WorkItemID
-				db := f.service.database.db
+				db := f.admin
 				humanPark := tool == operatortool.MoveItem && strings.HasPrefix(outcome, "human ")
 				parkedMove := humanPark || tool == operatortool.MoveItem && outcome == "dependency park"
 				if parkedMove {
-					now := formatHubTime(f.service.config.now())
-					operatorSQL(t, f, `UPDATE projects SET states_json=json_insert(states_json,'$[#]',json('{"name":"Blocked","transitions":["Done"]}')) WHERE id=?`, f.project)
-					operatorSQL(t, f, "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Blocked','Blocked',?,?)", f.project, now, now)
-					operatorSQL(t, f, "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Blocked') WHERE native_id=?", f.project, id)
-					seedCoordinatorArchiveLease(t, f.service, string(id))
-					data, err := json.Marshal(tracker.NativeRunData{Disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: humanPark && outcome != "human park recorded on submit"}})
-					if err != nil {
-						t.Fatal(err)
-					}
-					operatorSQL(t, f, `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at,disposition_status,disposition_human_action) VALUES (?, 'org_security', ?, ?, 'archive-lease', 1, ?, 1, 'succeeded', ?, ?, ?, 'blocked', ?)`, "attempt_"+string(id), f.project, id, "run_"+string(id), string(data), now, now, humanPark && outcome != "human park recorded on submit")
-					operatorSQL(t, f, "UPDATE leases SET released_at=? WHERE lease_id='archive-lease'", now)
+					coordinatorActionState(t, f, "Blocked", []string{"Done"})
+					coordinatorActionItem(t, f, string(id), func(row *corestore.WorkItem) { row.WorkflowStateName = new("Blocked") })
+					coordinatorActionPark(t, f, string(id), humanPark && outcome != "human park recorded on submit")
 				}
 				if tool == "propose_stop_run" {
-					now := formatHubTime(f.service.config.now())
-					if _, err := db.ExecContext(t.Context(), `UPDATE projects SET states_json=json_insert(states_json,'$[0].transitions[#]','Blocked','$[#]',json('{"name":"Blocked","transitions":["Todo"]}')) WHERE id=?`, f.project); err != nil {
-						t.Fatal(err)
-					}
-					if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Blocked','Blocked',?,?)", f.project, now, now); err != nil {
-						t.Fatal(err)
-					}
-					if outcome != "no active attempt" {
+					coordinatorActionState(t, f, "Blocked", []string{"Todo"})
+					if outcome == "expired attempt" {
+						coordinatorActionLease(t, f.service, string(id), time.Minute)
+					} else if outcome != "no active attempt" {
 						seedCoordinatorArchiveLease(t, f.service, string(id))
 					}
 				}
 				if tool == "propose_backlog_admission" {
-					if _, err := db.ExecContext(t.Context(), `UPDATE projects SET states_json=json_insert(states_json,'$[#]',json('{"name":"Backlog","transitions":["Todo"]}')) WHERE id=?`, f.project); err != nil {
-						t.Fatal(err)
-					}
-					now := formatHubTime(f.service.config.now())
-					if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Backlog','Backlog',?,?)", f.project, now, now); err != nil {
-						t.Fatal(err)
-					}
-					if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Backlog') WHERE native_id=?", f.project, id); err != nil {
-						t.Fatal(err)
-					}
+					coordinatorActionState(t, f, "Backlog", []string{"Todo"})
+					coordinatorActionItem(t, f, string(id), func(row *corestore.WorkItem) { row.WorkflowStateName = new("Backlog") })
 				}
 				seedCoordinatorRepository(t, f.service, f.project)
 				if outcome == "execute with manual import" {
-					if _, err := db.ExecContext(t.Context(), "UPDATE projects SET github_intake='manual' WHERE id=?", f.project); err != nil {
-						t.Fatal(err)
-					}
+					coordinatorActionProject(t, f, func(p *projectstore.Record) { p.Settings.Intake = "manual" })
 				}
 				text := "Please change this project"
 				if outcome == "intake preview" {
@@ -241,7 +224,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 								t.Fatal(err)
 							}
 							response = shared.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/api/v2/organizations/org_security/mcp", body: string(raw), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": name}, mutate: func(claims *cloudassert.Claims) {
-								claims.Subject, claims.ProviderOrganization, claims.Role = u.identity.Subject, "org_provider", "owner"
+								claims.Subject, claims.ProviderOrganization, claims.Role = u.identity.Subject, f.service.config.Hosted.WorkOSOrganizationID, "owner"
 								claims.Key = &apikey.KeyAuthority{ID: "key_coordinator", CredentialBinding: strings.Repeat("a", 64), Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{string(f.project)}}}
 								currentEntryClaims = *claims
 							}})
@@ -266,11 +249,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
-				record, err := c.readConversation(t.Context(), db, created.Conversation.ID)
+				record, err := c.readConversation(t.Context(), nil, created.Conversation.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
-				messages, err := f.service.conversations.store.listMessages(t.Context(), db, record.ID, 0, 100)
+				messages, err := c.coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100, Oldest: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -297,16 +280,14 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						t.Fatalf("MCP origin binding: %v", err)
 					}
 					if sharedEntry {
-						var rawIdentity string
-						if err := db.QueryRowContext(t.Context(), "SELECT identity_json FROM operator_chat_sessions WHERE connection_id=?", operatortool.CurrentConnection(ctx).ID).Scan(&rawIdentity); err != nil {
-							t.Fatal(err)
-						}
-						var persisted operatorChatIdentity
-						if err := json.Unmarshal([]byte(rawIdentity), &persisted); err != nil {
-							t.Fatal(err)
-						}
+						var persisted accessstore.OperatorSession
+						f.readTenant(t, func(r tenantstore.Reader) error {
+							var err error
+							persisted, err = r.OperatorSession(t.Context(), operatortool.CurrentConnection(ctx).ID, f.service.config.now().Add(-time.Hour))
+							return err
+						})
 						var origin map[string]any
-						if err := json.Unmarshal([]byte(persisted.Origin), &origin); err != nil {
+						if err := json.Unmarshal(coordinatorActionJSON(t, persisted.Origin), &origin); err != nil {
 							t.Fatal(err)
 						}
 						if origin["credential_binding"] != strings.Repeat("a", 64) || origin["key_id"] != "key_coordinator" || origin["exp"] != nil || origin["iat"] != nil || origin["token"] != nil || origin["token_hash"] != nil {
@@ -315,9 +296,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 					identity := operatortool.ConnectionIdentity(ctx)
 					var principal string
-					if err := db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", u.identity.Subject).Scan(&principal); err != nil {
-						t.Fatal(err)
-					}
+					f.readTenant(t, func(r tenantstore.Reader) error {
+						member, err := r.AccessMember(t.Context(), u.identity.Subject)
+						principal = member.PrincipalID
+						return err
+					})
 					if identity.SessionID != "" || identity.CredentialID == "" || identity.PrincipalID != principal {
 						t.Fatalf("MCP origin identity=%+v", identity)
 					}
@@ -339,7 +322,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						user.Data = json.RawMessage(fmt.Sprintf(`{"operator_connection":%q,"operator_principal":"foreign"}`, operatortool.CurrentConnection(ctx).ID))
 						state.users = []conversationMessageRecord{user}
 					case "shared entry revoked":
-						operatorSQL(t, f, "UPDATE hosted_members SET active=0 WHERE user_id=?", u.identity.Subject)
+						coordinatorActionMember(t, f, u.identity.Subject, "owner", false)
 					case "shared entry changed issuer":
 						f.service.config.Hosted.SharedEntry.Issuer = "other-entry"
 					case "shared entry changed generation":
@@ -366,12 +349,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := db.ExecContext(t.Context(), `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES('org_security',?,'detent-test',?,?,?,?,?)`, flySpritesToken, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, formatHubTime(f.service.config.now())); err != nil {
-						t.Fatal(err)
-					}
-					if _, err := db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by) SELECT 'org_security',1,1,300,'private-provider-secret',principal_id FROM hosted_members WHERE user_id=?`, u.identity.Subject); err != nil {
-						t.Fatal(err)
-					}
+					f.writeTenant(t, func(w tenantstore.Writer) error {
+						return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_security", Kind: flySpritesToken, OrganizationSlug: "example-org", Envelope: envelope, UpdatedAt: f.service.config.now()}, accessstore.SecretAudit{OrganizationID: "org_security", Actor: u.identity.Subject, Kind: flySpritesToken, Event: "create", KeyVersion: envelope.Version, RecordedAt: f.service.config.now()})
+					})
+					setup := f.request(t, u, http.MethodPut, "/api/v2/organizations/org_security/sprite-pool", map[string]any{"idempotency_key": "actions-pool", "min_runners": 1, "max_runners": 1, "idle_seconds": 300, "bootstrap": "private-provider-secret"})
+					requireNativeStatus(t, setup, http.StatusOK)
 					if outcome == "execute" {
 						for _, name := range []string{"get_sprite_pool", "set_sprites_token", "get_sprite_bootstrap_log"} {
 							result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: name, Arguments: json.RawMessage(`{}`)})
@@ -403,20 +385,15 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				archiveIDs := []string{string(id)}
 				if tool == string(chat.ActionArchiveItems) {
-					now := formatHubTime(f.service.config.now())
-					if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Merging','Merging',?,?)", f.project, now, now); err != nil {
-						t.Fatal(err)
-					}
+					coordinatorActionState(t, f, "Merging", []string{"Done"})
 					scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
 					children := 4
 					if outcome == "number resolution" {
-						if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Blocked','Blocked',?,?)", f.project, now, now); err != nil {
-							t.Fatal(err)
-						}
-						seedArchiveIssues(t, f.service, scope, 4, "Todo")
+						coordinatorActionState(t, f, "Blocked", []string{"Todo"})
+						seedCoordinatorActionIssues(t, f.service, scope, 4, "Todo")
 						children = 6
 					}
-					for _, item := range seedArchiveIssues(t, f.service, scope, children, "Todo") {
+					for _, item := range seedCoordinatorActionIssues(t, f.service, scope, children, "Todo", outcome == "already archived") {
 						archiveIDs = append(archiveIDs, string(item.WorkItemID))
 					}
 					if outcome == "number resolution" {
@@ -426,9 +403,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 							if index == 0 {
 								number, state = 19, "Done"
 							}
-							if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state=?) WHERE native_id=?", f.project, state, workItemID); err != nil {
-								t.Fatal(err)
-							}
+							coordinatorActionItem(t, f, workItemID, func(row *corestore.WorkItem) { row.WorkflowStateName = &state })
 							raw := json.RawMessage(fmt.Sprintf(`{"work_item_id":"#%d"}`, number))
 							result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: coordinatorToolExplainIssue, Arguments: raw})
 							if err != nil || !result.Success {
@@ -447,14 +422,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						seedCoordinatorArchiveLease(t, f.service, archiveIDs[4])
 					}
 					if outcome == "merging" {
-						if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", f.project, archiveIDs[4]); err != nil {
-							t.Fatal(err)
-						}
-					}
-					if outcome == "already archived" {
-						if _, err := db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", archiveIDs[4]); err != nil {
-							t.Fatal(err)
-						}
+						coordinatorActionItem(t, f, archiveIDs[4], func(row *corestore.WorkItem) { row.WorkflowStateName = new("Merging") })
 					}
 					if outcome == "outside project" {
 						response := f.request(t, u, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{"idempotency_key": "archive-other-project", "name": "Other project", "grant_access": true})
@@ -464,7 +432,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						}
 						decodeHubResponse(t, response, &created)
 						scope.project = created.ProjectID
-						foreign := seedArchiveIssues(t, f.service, scope, 1, "Todo")[0]
+						foreign := seedCoordinatorActionIssues(t, f.service, scope, 1, "Todo")[0]
 						archiveIDs[4] = string(foreign.WorkItemID)
 					}
 				}
@@ -546,9 +514,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				if outcome == "unauthorized" {
-					if _, err := db.ExecContext(t.Context(), "UPDATE hosted_members SET role='viewer' WHERE user_id=?", u.identity.Subject); err != nil {
-						t.Fatal(err)
-					}
+					coordinatorActionMember(t, f, u.identity.Subject, "viewer", true)
 				}
 				if outcome == "expired session" {
 					f.provider.mu.Lock()
@@ -638,7 +604,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					t.Fatal(err)
 				}
 				connectionID := operatortool.CurrentConnection(ctx).ID
-				messages, err = f.service.conversations.store.listMessages(t.Context(), db, record.ID, 0, 100)
+				messages, err = c.coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100, Oldest: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -717,7 +683,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 							proposals++
 						}
 					}
-					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=? AND archived=1", f.project).Scan(&archived); err != nil {
+					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2 AND archived", "org_security", f.project).Scan(&archived); err != nil {
 						t.Fatal(err)
 					}
 					if proposals != 1 || archived != 0 {
@@ -744,32 +710,26 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					if coordinatorSpriteMutation(tool) {
 						_, err = db.ExecContext(t.Context(), "UPDATE organization_sprite_pools SET revision=revision+1 WHERE organization_id='org_security'")
 					} else if tool == "update_project_integration" {
-						_, err = db.ExecContext(t.Context(), "UPDATE projects SET integration_revision=integration_revision+1 WHERE id=?", f.project)
+						coordinatorActionProject(t, f, func(p *projectstore.Record) { p.Settings.Intake = "manual" })
 					} else if tool != operatortool.AddComment {
 						staleID := string(id)
 						if tool == string(chat.ActionArchiveItems) {
 							staleID = archiveIDs[4]
 						}
-						_, err = db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", staleID)
+						coordinatorActionItem(t, f, staleID, func(*corestore.WorkItem) {})
 					}
 					if err != nil {
 						t.Fatal(err)
 					}
 				}
 				if tool == string(chat.ActionIssueSplit) {
-					trigger := ""
 					switch outcome {
 					case "child failure":
-						trigger = "CREATE TRIGGER split_failure BEFORE INSERT ON issues WHEN NEW.title='Split API' BEGIN SELECT RAISE(ABORT, 'child failed'); END"
+						coordinatorActionFault(t, f, "issues", "INSERT", " AND NEW.title='Split API'", "child failed")
 					case "edge failure":
-						trigger = "CREATE TRIGGER split_failure BEFORE INSERT ON issue_dependencies BEGIN SELECT RAISE(ABORT, 'edge failed'); END"
+						coordinatorActionFault(t, f, "issue_dependencies", "INSERT", "", "edge failed")
 					case "comment failure":
-						trigger = "CREATE TRIGGER split_failure BEFORE INSERT ON native_comments BEGIN SELECT RAISE(ABORT, 'comment failed'); END"
-					}
-					if trigger != "" {
-						if _, err := db.ExecContext(t.Context(), trigger); err != nil {
-							t.Fatal(err)
-						}
+						coordinatorActionFault(t, f, "native_comments", "INSERT", "", "comment failed")
 					}
 				}
 				if tool == string(chat.ActionArchiveItems) {
@@ -777,55 +737,39 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						seedCoordinatorArchiveLease(t, f.service, archiveIDs[4])
 					}
 					if outcome == "became merging" {
-						if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", f.project, archiveIDs[4]); err != nil {
-							t.Fatal(err)
-						}
+						coordinatorActionItem(t, f, archiveIDs[4], func(row *corestore.WorkItem) { row.WorkflowStateName = new("Merging") })
 					}
-					trigger := ""
 					if outcome == "archive failure" {
-						trigger = "CREATE TRIGGER archive_failure BEFORE UPDATE OF archived ON issues WHEN NEW.archived=1 AND NEW.title='Seed 3' BEGIN SELECT RAISE(ABORT, 'archive failed'); END"
+						coordinatorActionFault(t, f, "issues", "UPDATE OF archived", " AND NEW.archived AND NEW.title='Seed 3'", "archive failed")
 					}
 					if outcome == "history failure" {
-						trigger = "CREATE TRIGGER archive_failure BEFORE INSERT ON collaboration_events WHEN NEW.type='issue.edited' AND NEW.work_item_id='" + archiveIDs[4] + "' BEGIN SELECT RAISE(ABORT, 'history failed'); END"
-					}
-					if trigger != "" {
-						if _, err := db.ExecContext(t.Context(), trigger); err != nil {
-							t.Fatal(err)
-						}
+						coordinatorActionFault(t, f, "collaboration_events", "INSERT", " AND NEW.type='issue.edited' AND NEW.work_item_id="+pgtransport.QuoteLiteral(archiveIDs[4]), "history failed")
 					}
 				}
 				if tool == "propose_stop_run" {
 					switch outcome {
 					case "replaced attempt":
-						now := formatHubTime(f.service.config.now())
-						if _, err := db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id='archive-lease'", now); err != nil {
-							t.Fatal(err)
-						}
-						if _, err := db.ExecContext(t.Context(), "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'replacement-lease',issue_id,machine_id,'replacement-session',expires_at,acquired_at,renewed_at,created_at,updated_at FROM leases WHERE lease_id='archive-lease'"); err != nil {
-							t.Fatal(err)
-						}
+						coordinatorActionReplaceLease(t, f)
 					case "expired attempt":
-						if _, err := db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id='archive-lease'", formatHubTime(f.service.config.now().Add(-time.Second))); err != nil {
-							t.Fatal(err)
-						}
+						f.readTenant(t, func(r tenantstore.Reader) error {
+							lease, err := r.Lease(t.Context(), "archive-lease")
+							clock.Store(lease.ExpiresAt.Add(time.Second).UnixNano())
+							return err
+						})
 					case "release failure":
-						if _, err := db.ExecContext(t.Context(), "CREATE TRIGGER fail_slash_release BEFORE UPDATE OF released_at ON leases BEGIN SELECT RAISE(ABORT, 'release failed'); END"); err != nil {
-							t.Fatal(err)
-						}
+						coordinatorActionFault(t, f, "leases", "UPDATE OF released_at", "", "release failed")
 					case "routing failure":
-						if _, err := db.ExecContext(t.Context(), "CREATE TRIGGER fail_slash_route BEFORE UPDATE OF workflow_state_id ON issues BEGIN SELECT RAISE(ABORT, 'route failed'); END"); err != nil {
-							t.Fatal(err)
-						}
+						coordinatorActionFault(t, f, "issues", "UPDATE OF workflow_state_name", "", "route failed")
 					}
 				}
 				if outcome == "human comment failure" {
-					operatorSQL(t, f, "CREATE TRIGGER move_answer_failure BEFORE INSERT ON native_comments BEGIN SELECT RAISE(ABORT, 'comment failed'); END")
+					coordinatorActionFault(t, f, "native_comments", "INSERT", "", "comment failed")
 				}
 				if outcome == "human transition failure" {
-					operatorSQL(t, f, "CREATE TRIGGER move_answer_failure BEFORE UPDATE OF workflow_state_id ON issues BEGIN SELECT RAISE(ABORT, 'transition failed'); END")
+					coordinatorActionFault(t, f, "issues", "UPDATE OF workflow_state_name", "", "transition failed")
 				}
 				if outcome == "human park recorded on submit" {
-					operatorSQL(t, f, "UPDATE native_attempts SET disposition_human_action=1,data_json=json_set(data_json,'$.disposition.human_action',json('true')) WHERE work_item_id=?", id)
+					coordinatorActionHumanPark(t, f, string(id))
 				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
 				changed := outcome == "human answer" || outcome == "dependency park" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
@@ -847,11 +791,15 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 					var comments, transitions int
 					var reason string
-					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", id).Scan(&comments); err != nil {
-						t.Fatal(err)
-					}
-					if err := db.QueryRowContext(t.Context(), "SELECT count(*), COALESCE(max(json_extract(data_json,'$.reason_detail')),'') FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned'", id).Scan(&transitions, &reason); err != nil {
-						t.Fatal(err)
+					savedComments := coordinatorActionComments(t, f, id)
+					comments = len(savedComments)
+					for _, event := range coordinatorActionEvents(t, f, id) {
+						if event.Type == "workflow.transitioned" {
+							transitions++
+							if event.Data.ReasonDetail > reason {
+								reason = event.Data.ReasonDetail
+							}
+						}
 					}
 					wantTransitions, wantComments := 0, 0
 					if changed {
@@ -864,11 +812,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 							t.Fatalf("answer missing: reason=%q result=%s", reason, response.Body.String())
 						}
 						var comment tracker.NativeComment
-						var commentID string
-						if err := db.QueryRowContext(t.Context(), "SELECT id FROM native_comments WHERE work_item_id=?", id).Scan(&commentID); err != nil {
-							t.Fatal(err)
+						if len(savedComments) > 0 {
+							comment = savedComments[0]
 						}
-						comment, err = readNativeComment(t.Context(), db, nativeScope{organization: "org_security", project: f.project}, string(id), commentID)
 						if err != nil || comment.Body != answer || comment.Actor.Kind != "human" || comment.Actor.PrincipalID != operatortool.ConnectionIdentity(ctx).PrincipalID || comment.Provenance == nil || comment.Provenance.Provider != "chat" || !strings.HasPrefix(comment.Provenance.ExternalID, record.ID+":") {
 							t.Fatalf("answer comment=%+v error=%v", comment, err)
 						}
@@ -896,9 +842,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						wantIntake = "manual"
 					}
 					var intake string
-					if err := db.QueryRowContext(t.Context(), "SELECT github_intake FROM projects WHERE id=?", f.project).Scan(&intake); err != nil {
-						t.Fatal(err)
-					}
+					f.readTenant(t, func(r tenantstore.Reader) error {
+						p, err := r.ProjectRecord(t.Context(), f.project)
+						intake = p.Settings.Intake
+						return err
+					})
 					if intake != wantIntake {
 						t.Fatalf("stored intake = %q, want %q", intake, wantIntake)
 					}
@@ -912,7 +860,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if changed && tool == string(chat.ActionIssueSplit) {
 					requireNativeStatus(t, f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
 					var count int
-					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title LIKE 'Split %'").Scan(&count); err != nil {
+					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id='org_security' AND project_id=$1 AND title LIKE 'Split %'", f.project).Scan(&count); err != nil {
 						t.Fatal(err)
 					}
 					if count != 3 {
@@ -941,7 +889,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				if changed {
-					messages, err = f.service.conversations.store.listMessages(t.Context(), db, record.ID, 0, 100)
+					messages, err = c.coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100, Oldest: true})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -960,7 +908,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 	}
 }
 
-func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.NativeWorkItemID, tool string, changed bool) {
+func assertCoordinatorEffect(t *testing.T, f coordinatorActionFixture, id tracker.NativeWorkItemID, tool string, changed bool) {
 	t.Helper()
 	var actual bool
 	var err error
@@ -972,40 +920,53 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 		assertCoordinatorSplitEffect(t, f, id, changed)
 		return
 	case "set_sprite_pool":
-		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT max_runners=0 FROM organization_sprite_pools WHERE organization_id='org_security'").Scan(&actual)
+		err = f.admin.QueryRowContext(t.Context(), "SELECT max_runners=0 FROM organization_sprite_pools WHERE organization_id='org_security'").Scan(&actual)
 	case "scale_up_sprite_pool":
-		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM organization_sprite_members WHERE organization_id='org_security')").Scan(&actual)
+		err = f.admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM organization_sprite_members WHERE organization_id='org_security')").Scan(&actual)
 	case "update_project_integration":
-		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT github_repository_enabled FROM projects WHERE id=?", f.project).Scan(&actual)
+		f.readTenant(t, func(r tenantstore.Reader) error {
+			p, err := r.ProjectRecord(t.Context(), f.project)
+			actual = p.Settings.RepositoryEnabled
+			return err
+		})
 	case operatortool.MoveItem, "propose_move_item":
-		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
-		err, actual = readErr, issue.State == "Done"
+		issue := coordinatorActionIssue(t, f, id)
+		actual = issue.State == "Done"
 	case "propose_stop_run":
-		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
-		err, actual = readErr, issue.State == "Blocked" && issue.Priority != nil && *issue.Priority == 1
+		issue := coordinatorActionIssue(t, f, id)
+		actual = issue.State == "Blocked" && issue.Priority != nil && *issue.Priority == 1
 		var released bool
-		if queryErr := f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM work_events WHERE kind='lease_released')").Scan(&released); queryErr != nil {
-			t.Fatal(queryErr)
-		}
+		f.readTenant(t, func(r tenantstore.Reader) error {
+			lease, err := r.Lease(t.Context(), "archive-lease")
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			released = lease.ReleasedAt != nil && lease.ReleaseReason == "cancelled"
+			return err
+		})
 		if released != changed {
 			t.Fatalf("stop released=%v, want %v", released, changed)
 		}
 	case "propose_file_issue", "propose_maintenance_issue":
-		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM issues WHERE project_id=? AND title='Slash issue')", f.project).Scan(&actual)
+		err = f.admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM issues WHERE organization_id=$1 AND project_id=$2 AND title='Slash issue')", "org_security", f.project).Scan(&actual)
 	case "propose_backlog_admission":
-		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
-		err, actual = readErr, issue.State == "Todo"
+		issue := coordinatorActionIssue(t, f, id)
+		actual = issue.State == "Todo"
 	case "propose_set_priority":
-		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
-		err, actual = readErr, issue.Priority != nil && *issue.Priority == 1
+		issue := coordinatorActionIssue(t, f, id)
+		actual = issue.Priority != nil && *issue.Priority == 1
 	case operatortool.EditItem:
-		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
-		err, actual = readErr, issue.Title == "Edited by Luna" && issue.Body == nativeContractTestBody && issue.Priority != nil && *issue.Priority == 2 && len(issue.Labels) == 1 && issue.Labels[0] == "approved"
+		issue := coordinatorActionIssue(t, f, id)
+		actual = issue.Title == "Edited by Luna" && issue.Body == nativeContractTestBody && issue.Priority != nil && *issue.Priority == 2 && len(issue.Labels) == 1 && issue.Labels[0] == "approved"
 		if !changed && (issue.Title != "Original issue" || issue.Body != nativeContractTestBody || issue.Priority != nil || len(issue.Labels) != 1 || issue.Labels[0] != "original") {
 			t.Fatalf("unapproved edit changed the issue: %+v", issue)
 		}
 	case operatortool.AddComment:
-		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM native_comments WHERE work_item_id=? AND body='Comment approved by the owner')", id).Scan(&actual)
+		for _, comment := range coordinatorActionComments(t, f, id) {
+			if comment.Body == "Comment approved by the owner" {
+				actual = true
+			}
+		}
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -1017,15 +978,17 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 
 func seedCoordinatorRepository(t *testing.T, service *Service, project tracker.ProjectID) {
 	t.Helper()
-	db := service.database.db
-	now := formatHubTime(service.config.now())
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO repositories(github_node_id,github_owner,github_name,created_at,updated_at) VALUES ('luna_repo','example','repo',?,?)", now, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), "DELETE FROM projects WHERE repository_id=(SELECT id FROM repositories WHERE github_node_id='luna_repo')"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), "UPDATE projects SET repository_id=(SELECT id FROM repositories WHERE github_node_id='luna_repo'), github_repository_enabled=0 WHERE id=?", project); err != nil {
+	organization := tracker.OrganizationID(service.appOrganizationID())
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), project)
+		if err != nil {
+			return err
+		}
+		record.Settings.Repository = "example/repo"
+		record.Settings.RepositoryEnabled = false
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1038,11 +1001,9 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", map[string]any{"idempotency_key": "luna-blocked", "title": "Landing blocked by branch rules", "body": "Enable GitHub pull-request mode and retry." + issueContractTestSections, "state": "Blocked"}, http.StatusOK), &issue)
 	f.workItem = string(issue.WorkItemID)
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-	archiveIssues := seedArchiveIssues(t, f.service, scope, 5, "Todo")
-	blockedArchive := seedArchiveIssues(t, f.service, scope, 1, "Merging")[0]
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title='Running cleanup issue' WHERE native_id=?", blockedArchive.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
+	archiveIssues := seedCoordinatorActionIssues(t, f.service, scope, 5, "Todo")
+	blockedArchive := seedCoordinatorActionIssues(t, f.service, scope, 1, "Merging")[0]
+	coordinatorActionChange(t, f.service, "org_browser_preview", tracker.ProjectID(f.project), string(blockedArchive.WorkItemID), func(row *corestore.WorkItem) { row.Title = "Running cleanup issue" })
 	seedCoordinatorArchiveLease(t, f.service, string(blockedArchive.WorkItemID))
 	backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
 	backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
@@ -1128,29 +1089,48 @@ func (f *browserHostedFixture) proposeBrowserIssueSplit(ctx context.Context, han
 	return handle(ctx, runner.AgentToolCall{Name: string(chat.ActionIssueSplit), Arguments: raw})
 }
 
-func assertCoordinatorSplitEffect(t *testing.T, f hostedSecurityFixture, parent tracker.NativeWorkItemID, changed bool) {
+func assertCoordinatorSplitEffect(t *testing.T, f coordinatorActionFixture, parent tracker.NativeWorkItemID, changed bool) {
 	t.Helper()
-	db := f.service.database.db
-	var children, edges, comments int
-	for query, target := range map[string]*int{
-		"SELECT count(*) FROM issues WHERE title LIKE 'Split %'":    &children,
-		"SELECT count(*) FROM issue_dependencies":                   &edges,
-		"SELECT count(*) FROM native_comments WHERE work_item_id=?": &comments,
-	} {
-		var args []any
-		if strings.Contains(query, "?") {
-			args = []any{parent}
+	db := f.admin
+	var rows []corestore.WorkItem
+	f.readTenant(t, func(r tenantstore.Reader) error {
+		var err error
+		rows, err = r.WorkItems(t.Context(), f.project, 0, 200)
+		return err
+	})
+	var children, edges, correctlyFiled int
+	var blocker tracker.NativeWorkItemID
+	var dependent tracker.WorkItemID
+	for _, row := range rows {
+		if strings.HasPrefix(row.Title, "Split ") {
+			children++
+			if valueOrEmpty(row.WorkflowStateName) == "Todo" {
+				f.readTenant(t, func(r tenantstore.Reader) error {
+					entry, err := r.QueueEntry(t.Context(), f.project, row.NativeID, string(f.project))
+					if err == nil && entry.Priority != nil && *entry.Priority == 1 {
+						correctlyFiled++
+					}
+					return err
+				})
+			}
 		}
-		if err := db.QueryRowContext(t.Context(), query, args...).Scan(target); err != nil {
-			t.Fatal(err)
+		if row.Title == "Split storage" {
+			blocker = row.NativeID
 		}
+		if row.Title == "Split API" {
+			dependent = tracker.WorkItemID(row.ID)
+		}
+	}
+	comments := len(coordinatorActionComments(t, f, parent))
+	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_dependencies WHERE organization_id=$1 AND dependent_project_id=$2", "org_security", f.project).Scan(&edges); err != nil {
+		t.Fatal(err)
 	}
 	if !changed {
 		if children != 0 || edges != 0 || comments != 0 {
 			t.Fatalf("partial split survived: children=%d edges=%d comments=%d", children, edges, comments)
 		}
 		var residue int
-		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='issue.created' AND work_item_id<>?", parent).Scan(&residue); err != nil {
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND type='issue.created' AND work_item_id<>$3", "org_security", f.project, parent).Scan(&residue); err != nil {
 			t.Fatal(err)
 		}
 		if residue != 0 {
@@ -1161,40 +1141,15 @@ func assertCoordinatorSplitEffect(t *testing.T, f hostedSecurityFixture, parent 
 	if children != 3 || edges != 1 || comments != 1 {
 		t.Fatalf("split: children=%d edges=%d comments=%d", children, edges, comments)
 	}
-	var correctlyFiled int
-	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id JOIN queue_entries q ON q.issue_id=i.id WHERE i.title LIKE 'Split %' AND w.detent_state='Todo' AND q.priority_override=1").Scan(&correctlyFiled); err != nil {
-		t.Fatal(err)
-	}
 	if correctlyFiled != 3 {
 		t.Fatalf("only %d children have the approved state and priority", correctlyFiled)
 	}
-	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-	var blocker, dependent tracker.WorkItemID
-	var blockerNative string
-	if err := db.QueryRowContext(t.Context(), "SELECT id,native_id FROM issues WHERE title='Split storage'").Scan(&blocker, &blockerNative); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE title='Split API'").Scan(&dependent); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=1 WHERE id=?", f.project); err != nil {
-		t.Fatal(err)
-	}
+	coordinatorActionProject(t, f, func(p *projectstore.Record) { p.Core.RequireDependencies = true })
 	for _, terminal := range []bool{false, true} {
 		if terminal {
-			if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE id=?", f.project, blocker); err != nil {
-				t.Fatal(err)
-			}
+			coordinatorActionItem(t, f, string(blocker), func(row *corestore.WorkItem) { row.WorkflowStateName = new("Done") })
 		}
-		tx, err := db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &scope, Scope: string(f.project)}, nil, nil, nil, nil, nil, nil, nil, nil)
-		_ = tx.Rollback()
-		if err != nil {
-			t.Fatal(err)
-		}
+		ids := coordinatorActionCandidates(t, f)
 		if slices.Contains(ids, dependent) != terminal {
 			t.Fatalf("dependent dispatch=%v while blocker terminal=%v", slices.Contains(ids, dependent), terminal)
 		}
@@ -1203,25 +1158,27 @@ func assertCoordinatorSplitEffect(t *testing.T, f hostedSecurityFixture, parent 
 
 func seedCoordinatorArchiveLease(t *testing.T, service *Service, id string) {
 	t.Helper()
-	db := service.database.db
-	now := formatHubTime(service.config.now())
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO machines (id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id) VALUES ('archive-machine','archive-host',1,'test',?,?,?,?)", now, now, now, service.config.Hosted.OrganizationID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO leases (lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'archive-lease',id,'archive-machine','archive-session',?,?,?,?,? FROM issues WHERE native_id=?", formatHubTime(service.config.now().Add(time.Hour)), now, now, now, now, id); err != nil {
-		t.Fatal(err)
-	}
+	coordinatorActionLease(t, service, id)
 }
 
-func assertCoordinatorArchiveEffect(t *testing.T, f hostedSecurityFixture, changed bool) {
+func assertCoordinatorArchiveEffect(t *testing.T, f coordinatorActionFixture, changed bool) {
 	t.Helper()
-	db := f.service.database.db
+	var rows []corestore.WorkItem
+	f.readTenant(t, func(r tenantstore.Reader) error {
+		var err error
+		rows, err = r.WorkItems(t.Context(), f.project, 0, 200)
+		return err
+	})
 	var archived, history int
-	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=? AND archived=1 AND revision>1 AND (title='Original issue' OR title LIKE 'Seed %')", f.project).Scan(&archived); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE project_id=? AND json_extract(data_json,'$.operation')='archive'", f.project).Scan(&history); err != nil {
-		t.Fatal(err)
+	for _, row := range rows {
+		if row.Archived && row.Revision > 1 && (row.Title == "Original issue" || strings.HasPrefix(row.Title, "Seed ")) {
+			archived++
+		}
+		for _, event := range coordinatorActionEvents(t, f, row.NativeID) {
+			if event.Data.Operation == "archive" {
+				history++
+			}
+		}
 	}
 	want := 0
 	if changed {
@@ -1231,15 +1188,7 @@ func assertCoordinatorArchiveEffect(t *testing.T, f hostedSecurityFixture, chang
 		t.Fatalf("archive effect: archived=%d history=%d want=%d", archived, history, want)
 	}
 	if changed {
-		tx, err := db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &nativeScope{organization: "org_security", project: f.project}, Scope: string(f.project)}, nil, nil, nil, nil, nil, nil, nil, nil)
-		_ = tx.Rollback()
-		if err != nil {
-			t.Fatal(err)
-		}
+		ids := coordinatorActionCandidates(t, f)
 		if len(ids) != 0 {
 			t.Fatalf("archived issues remain dispatchable: %v", ids)
 		}
