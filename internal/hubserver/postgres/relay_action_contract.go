@@ -38,6 +38,7 @@ type RelayActionReader interface {
 type RelayActionWriter interface {
 	actionstore.Writer
 	RelayActionReader
+	LockActionRun(context.Context, ActionRunInput) (ActionRun, error)
 	CreateRelayTicket(context.Context, CreateRelayTicketInput) (RelayTicket, error)
 	RedeemRelayTicket(context.Context, RedeemRelayTicketInput) (RelayTicket, error)
 	CreateRelaySession(context.Context, CreateRelaySessionInput) (RelaySession, error)
@@ -62,6 +63,14 @@ func (s *session) ActionRun(ctx context.Context, arg ActionRunInput) (ActionRun,
 	row, err := s.queries.ActionRun(ctx, arg)
 	return row, mapError(ctx, err)
 }
+func (s *session) LockActionRun(ctx context.Context, arg ActionRunInput) (ActionRun, error) {
+	if err := s.checkOrganization(arg.OrganizationID); err != nil {
+		return ActionRun{}, err
+	}
+	row, err := s.queries.LockActionRun(ctx, pgquery.LockActionRunParams{OrganizationID: arg.OrganizationID, ProjectID: arg.ProjectID, ID: arg.ID})
+	return row, mapError(ctx, err)
+}
+
 func (s *session) ActionRuns(ctx context.Context, arg ActionRunsInput) ([]ActionRun, error) {
 	if err := s.checkOrganization(arg.OrganizationID); err != nil {
 		return nil, err

@@ -27,6 +27,9 @@ SELECT * FROM workspace_terminal_recordings WHERE organization_id=$1 AND project
 -- name: ActionRun :one
 SELECT * FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND id=$3;
 
+-- name: LockActionRun :one
+SELECT * FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE;
+
 -- name: ActionRuns :many
 SELECT * FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND action_id=$3 AND id>$4 ORDER BY id LIMIT $5;
 

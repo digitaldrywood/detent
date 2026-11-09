@@ -684,6 +684,52 @@ func (q *Queries) FinishActionRun(ctx context.Context, arg FinishActionRunParams
 	return i, err
 }
 
+const lockActionRun = `-- name: LockActionRun :one
+SELECT organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE
+`
+
+type LockActionRunParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ID             string
+}
+
+func (q *Queries) LockActionRun(ctx context.Context, arg LockActionRunParams) (ProjectActionRun, error) {
+	row := q.db.QueryRow(ctx, lockActionRun, arg.OrganizationID, arg.ProjectID, arg.ID)
+	var i ProjectActionRun
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ID,
+		&i.ActionID,
+		&i.WorkspaceID,
+		&i.CommandObjectKey,
+		&i.CommandSha256,
+		&i.CommandBytes,
+		&i.CommandContentBytes,
+		&i.Status,
+		&i.ExitCode,
+		&i.Reason,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OutputObjectKey,
+		&i.OutputSha256,
+		&i.OutputBytes,
+		&i.OutputContentBytes,
+		&i.OutputSequence,
+		&i.Truncated,
+		&i.ClaimedBy,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.CreatedBy,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClaimedStreamID,
+	)
+	return i, err
+}
+
 const pendingActionRuns = `-- name: PendingActionRuns :many
 SELECT a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at, a.claimed_stream_id FROM workspace_sessions w JOIN LATERAL (SELECT a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at, a.claimed_stream_id FROM project_action_runs a WHERE a.organization_id=w.organization_id AND a.project_id=w.project_id AND a.workspace_id=w.id AND a.status='queued' AND a.created_at<=$2 AND EXISTS (SELECT 1 FROM project_actions d WHERE d.organization_id=a.organization_id AND d.project_id=a.project_id AND d.id=a.action_id AND d.deleted_at IS NULL) ORDER BY a.created_at,a.id LIMIT $3) a ON true WHERE w.organization_id=$1 AND w.state IN ('ready','idle') ORDER BY a.created_at,a.id LIMIT $3
 `

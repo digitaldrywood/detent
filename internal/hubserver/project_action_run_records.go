@@ -310,25 +310,18 @@ func (w *workspaceService) completeActionRunRecord(ctx context.Context, state *e
 		return nativeStaleExecution("The action run belongs to an earlier workspace owner")
 	}
 	output := state.output
-	truncated := state.truncated
-	var ref attachment.ArchiveReference
-	if output == nil && row.OutputObjectKey != nil {
-		ref = workspaceArchive(*row.OutputObjectKey, row.OutputSha256, row.OutputBytes, row.OutputContentBytes)
-		truncated = truncated || row.Truncated
-	} else if len(output) > 0 {
+	preparedTruncated := state.truncated
+	var preparedRef attachment.ArchiveReference
+	if len(output) > 0 {
 		if len(output) > workspacesession.MaxExecOutputBytes {
 			output = output[:workspacesession.MaxExecOutputBytes]
-			truncated = true
+			preparedTruncated = true
 		}
 		var err error
-		ref, err = w.server.runDetailStore().StoreDetail(ctx, string(row.OrganizationID), output)
+		preparedRef, err = w.server.runDetailStore().StoreDetail(ctx, string(row.OrganizationID), output)
 		if err != nil {
 			return err
 		}
-	}
-	var outputKey *string
-	if ref.Key != "" {
-		outputKey = &ref.Key
 	}
 
 	var code pgtype.Int4
@@ -345,6 +338,27 @@ func (w *workspaceService) completeActionRunRecord(ctx context.Context, state *e
 				return nativeStaleExecution("The workspace owner changed")
 			}
 		}
+		current, err := writer.LockActionRun(ctx, postgres.ActionRunInput{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID})
+		if err != nil {
+			return err
+		}
+		if workspacesession.TerminalRunStatus(current.Status) {
+			return nil
+		}
+		if runner != nil && (current.WorkspaceID != runner.owner.WorkspaceID || current.ClaimedBy != runner.owner.RunnerID || current.LeaseID != runner.owner.LeaseID || current.FencingToken != runner.owner.FencingToken) {
+			return nativeStaleExecution("The action run belongs to an earlier workspace owner")
+		}
+		row = current
+		ref := preparedRef
+		truncated := preparedTruncated
+		if output == nil && row.OutputObjectKey != nil {
+			ref = workspaceArchive(*row.OutputObjectKey, row.OutputSha256, row.OutputBytes, row.OutputContentBytes)
+			truncated = truncated || row.Truncated
+		}
+		var outputKey *string
+		if ref.Key != "" {
+			outputKey = &ref.Key
+		}
 		if err := keepActionOutputArchive(ctx, writer, row, ref, now); err != nil {
 			return err
 		}
@@ -352,7 +366,7 @@ func (w *workspaceService) completeActionRunRecord(ctx context.Context, state *e
 			_, err := writer.ReportActionRun(ctx, postgres.ReportActionRunInput{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, RunnerID: runner.owner.RunnerID, LeaseID: runner.owner.LeaseID, FencingToken: runner.owner.FencingToken, Status: status, ExitCode: code, Reason: reason, FinishedAt: &now, OutputObjectKey: outputKey, OutputSha256: ref.SHA256, OutputBytes: ref.CompressedSize, OutputContentBytes: ref.UncompressedSize, OutputSequence: row.OutputSequence + 1, Truncated: truncated, UpdatedAt: now})
 			return err
 		}
-		_, err := writer.FinishActionRun(ctx, postgres.FinishActionRunInput{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, ExpectedRevision: row.Revision, Status: status, ExitCode: code, Reason: reason, FinishedAt: &now, OutputObjectKey: outputKey, OutputSha256: ref.SHA256, OutputBytes: ref.CompressedSize, OutputContentBytes: ref.UncompressedSize, Truncated: truncated})
+		_, err = writer.FinishActionRun(ctx, postgres.FinishActionRunInput{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, ExpectedRevision: row.Revision, Status: status, ExitCode: code, Reason: reason, FinishedAt: &now, OutputObjectKey: outputKey, OutputSha256: ref.SHA256, OutputBytes: ref.CompressedSize, OutputContentBytes: ref.UncompressedSize, Truncated: truncated})
 		return err
 	})
 }

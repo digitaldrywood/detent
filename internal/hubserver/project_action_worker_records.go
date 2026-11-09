@@ -83,7 +83,7 @@ func (s *Service) reportWorkspaceActionRunRecord(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		row, err := w.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: runID})
+		row, err := w.LockActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: runID})
 		if errors.Is(err, corestore.ErrNotFound) {
 			if request.RunID != "" {
 				return nativeNotFound()
