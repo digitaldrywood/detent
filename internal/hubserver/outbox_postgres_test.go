@@ -104,6 +104,7 @@ func TestPostgresOutboxWorkerDeliversSlackAndGitHub(t *testing.T) {
 		}
 		worker.stop()
 		cfg := f.service.config
+		cfg.runMaintenance = waitForMaintenanceFixtureShutdown
 		if err := f.service.Close(); err != nil {
 			t.Fatal(err)
 		}

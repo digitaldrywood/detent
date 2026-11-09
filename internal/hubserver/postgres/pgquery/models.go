@@ -1223,6 +1223,25 @@ type HealthDetectorTick struct {
 	LastTickAt     time.Time
 }
 
+type HealthEvaluationWork struct {
+	OrganizationID        tracker.OrganizationID
+	ID                    string
+	EvaluatedAt           time.Time
+	InputObjectKey        string
+	InputSha256           string
+	InputBytes            int64
+	InputContentBytes     int64
+	FindingCount          int64
+	BaselineCount         int64
+	Revision              int64
+	Phase                 string
+	Position              int64
+	FindingCursor         string
+	BaselineProjectCursor string
+	BaselineSignalCursor  string
+	BaselineLaneCursor    string
+}
+
 type HealthFinding struct {
 	OrganizationID       tracker.OrganizationID
 	ID                   string

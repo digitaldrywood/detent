@@ -24,6 +24,7 @@ EXISTS (SELECT 1 FROM conversation_content_objects WHERE organization_id=$1 AND 
 EXISTS (SELECT 1 FROM cost_import_rows WHERE organization_id=$1 AND object_key=$2) OR
 EXISTS (SELECT 1 FROM cost_observation_revisions WHERE organization_id=$1 AND object_key=$2) OR
 EXISTS (SELECT 1 FROM github_import_records WHERE organization_id=$1 AND payload_object_key=$2) OR
+EXISTS (SELECT 1 FROM health_evaluation_work WHERE organization_id=$1 AND input_object_key=$2) OR
 EXISTS (SELECT 1 FROM health_findings WHERE organization_id=$1 AND evidence_object_key=$2) OR
 EXISTS (SELECT 1 FROM hosted_audit WHERE organization_id=$1 AND mutation_object_key=$2) OR
 EXISTS (SELECT 1 FROM hosted_billing_audit WHERE organization_id=$1 AND object_key=$2) OR

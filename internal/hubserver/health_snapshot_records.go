@@ -40,6 +40,7 @@ func (s *Service) readHealthSnapshotRecords(ctx context.Context, organization tr
 	if len(projects) > healthProjectLimit {
 		return snapshot, errHealthReadLimit
 	}
+	totalCandidates := 0
 	for _, project := range projects {
 		if project.Profile != "native" {
 			continue
@@ -66,7 +67,8 @@ func (s *Service) readHealthSnapshotRecords(ctx context.Context, organization tr
 			}
 			for _, candidate := range page.Items {
 				p.Candidates++
-				if p.Candidates > healthReadLimit {
+				totalCandidates++
+				if totalCandidates > healthReadLimit {
 					return snapshot, errHealthReadLimit
 				}
 				p.CandidateIDs[string(candidate.WorkItemID)] = true

@@ -42,6 +42,7 @@ func TestPostgresEmailSenderStartupAndIssueDelivery(t *testing.T) {
 		rejection := &auth.EmailDeliveryError{Outcome: "rejected", Err: errors.New("example send rejection")}
 		var sendFailure error = rejection
 		cfg := f.service.config
+		cfg.runMaintenance = waitForMaintenanceFixtureShutdown
 		cfg.newOutboxTimer = func(time.Duration) outboxTimer {
 			return outboxTimer{ticks: make(chan time.Time), reset: func(time.Duration) {}, stop: func() {}}
 		}

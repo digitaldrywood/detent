@@ -16,6 +16,7 @@ import (
 )
 
 func (s *Service) readHealthRateRecords(ctx context.Context, organization tracker.OrganizationID, now time.Time, runners []healthRunnerState, snapshot *healthSnapshot) error {
+	usageBudget := healthReadLimit
 	for index := range snapshot.Projects {
 		project := &snapshot.Projects[index]
 		p := healthRateProject{ID: project.ID, Candidates: project.Candidates, Costs: map[string]healthItemCost{}, BaselineCosts: map[string]healthItemCost{}}
@@ -24,7 +25,7 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 		var attempts []reportstore.AttemptFact
 		var attemptRuns []tenantAttemptSnapshot
 		var landings []reportstore.LandingFact
-		var usage []healthstore.UsageObservation
+		var usage healthstore.UsagePage
 		archived := map[tracker.NativeWorkItemID]bool{}
 		repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 		if !ok {
@@ -92,14 +93,16 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 			if err != nil {
 				return err
 			}
-			usage, err = u.HealthUsage(ctx, tracker.ProjectID(p.ID), now.Add(-healthLongWindow), now, healthReadLimit+1)
+			usage, err = u.HealthUsage(ctx, tracker.ProjectID(p.ID), now.Add(-healthLongWindow), now, healthReadLimit+1, usageBudget)
 			return err
 		})
 		if err != nil {
 			return err
 		}
-		if len(usage) > healthReadLimit {
-			return errHealthReadLimit
+		usageBudget = max(0, usageBudget-usage.ReadRows)
+		if !usage.Complete {
+			snapshot.Incomplete = append(snapshot.Incomplete, healthObservationGap{Project: p.ID, Signal: "cost_anomaly"})
+			usage.Values = nil
 		}
 		for _, history := range history {
 			states := make(map[string]tracker.NativeState, len(history.States))
@@ -118,7 +121,7 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 			}
 		}
 		attemptCosts := map[string]float64{}
-		for _, usage := range usage {
+		for _, usage := range usage.Values {
 			current := p.Costs[usage.Item]
 			current.Known = true
 			current.Cost += usage.Cost

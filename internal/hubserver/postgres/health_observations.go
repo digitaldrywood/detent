@@ -46,36 +46,45 @@ func (s *session) HealthArchivedWorkItems(ctx context.Context, project tracker.P
 	return result, mapError(ctx, rows.Err())
 }
 
-func (s *session) HealthUsage(ctx context.Context, project tracker.ProjectID, baseline, now time.Time, limit int) ([]healthstore.UsageObservation, error) {
+func (s *session) HealthUsage(ctx context.Context, project tracker.ProjectID, baseline, now time.Time, limit, sourceLimit int) (healthstore.UsagePage, error) {
 	if err := healthObservationLimit(limit); err != nil {
-		return nil, err
+		return healthstore.UsagePage{}, err
+	}
+	if sourceLimit < 0 || sourceLimit > 10000 {
+		return healthstore.UsagePage{}, corestore.ErrInvalidPage
 	}
 	rows, err := s.db.Query(ctx, `WITH current_input AS MATERIALIZED (
- SELECT attempt_id,period,cost_estimate FROM report_usage_current WHERE organization_id=$1 AND project_id=$2 AND period<=$4 ORDER BY period,source_key LIMIT 10001
+ SELECT attempt_id,period,cost_estimate FROM report_usage_current WHERE organization_id=$1 AND project_id=$2 AND period<=$4 ORDER BY period,source_key LIMIT $5
  ), legacy_input AS MATERIALIZED (
- SELECT attempt_id,period,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND project_id=$2 AND upper(currency)='USD' AND period<=$4 ORDER BY period,attempt_id LIMIT 10001
+ SELECT attempt_id,period,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND project_id=$2 AND upper(currency)='USD' AND period<=$4 ORDER BY period,attempt_id LIMIT $5
  ), overflow AS (
- SELECT (SELECT count(*) FROM current_input)+(SELECT count(*) FROM legacy_input)>10000 AS exceeded
+ SELECT (SELECT count(*) FROM current_input)+(SELECT count(*) FROM legacy_input) AS source_rows
  ), usage AS (
  SELECT attempt_id,period,cost_estimate FROM current_input
  UNION ALL SELECT u.attempt_id,u.period,u.cost_estimate FROM legacy_input u WHERE NOT EXISTS(SELECT 1 FROM report_usage_current c WHERE c.organization_id=$1 AND c.attempt_id=u.attempt_id)
- ) SELECT i.native_id,u.attempt_id,u.cost_estimate,u.period<=$3,false FROM usage u JOIN native_attempts a ON a.organization_id=$1 AND a.id=u.attempt_id JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id AND i.project_id=$2 CROSS JOIN overflow WHERE NOT overflow.exceeded
- UNION ALL SELECT '','',0,false,true FROM overflow WHERE exceeded`, s.organization, project, baseline, now)
+ ) SELECT i.native_id,u.attempt_id,u.cost_estimate,u.period<=$3,false,0::bigint FROM usage u JOIN native_attempts a ON a.organization_id=$1 AND a.id=u.attempt_id JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id AND i.project_id=$2 CROSS JOIN overflow WHERE overflow.source_rows<=$6
+ UNION ALL SELECT '','',0,false,true,source_rows FROM overflow`, s.organization, project, baseline, now, sourceLimit+1, sourceLimit)
 	if err != nil {
-		return nil, mapError(ctx, err)
+		return healthstore.UsagePage{}, mapError(ctx, err)
 	}
 	defer rows.Close()
 	type key struct{ item, attempt string }
 	values := map[key]healthstore.UsageObservation{}
+	page := healthstore.UsagePage{}
 	for rows.Next() {
 		var id key
 		var cost float64
-		var baselineKnown, overflow bool
-		if err := rows.Scan(&id.item, &id.attempt, &cost, &baselineKnown, &overflow); err != nil {
-			return nil, mapError(ctx, err)
+		var baselineKnown, metadata bool
+		var sourceRows int
+		if err := rows.Scan(&id.item, &id.attempt, &cost, &baselineKnown, &metadata, &sourceRows); err != nil {
+			return healthstore.UsagePage{}, mapError(ctx, err)
 		}
-		if overflow {
-			return nil, corestore.ErrInvalidPage
+		if metadata {
+			page.ReadRows, page.Complete = sourceRows, sourceRows <= sourceLimit
+			continue
+		}
+		if id.item == "" || id.attempt == "" {
+			return healthstore.UsagePage{}, corestore.ErrInvalidRelationship
 		}
 		value := values[id]
 		value.Item, value.AttemptID = id.item, id.attempt
@@ -87,7 +96,7 @@ func (s *session) HealthUsage(ctx context.Context, project tracker.ProjectID, ba
 		values[id] = value
 	}
 	if err := rows.Err(); err != nil {
-		return nil, mapError(ctx, err)
+		return healthstore.UsagePage{}, mapError(ctx, err)
 	}
 	result := make([]healthstore.UsageObservation, 0, len(values))
 	for _, value := range values {
@@ -99,7 +108,9 @@ func (s *session) HealthUsage(ctx context.Context, project tracker.ProjectID, ba
 		}
 		return strings.Compare(a.AttemptID, b.AttemptID)
 	})
-	return result[:min(len(result), limit)], nil
+	page.Values = result[:min(len(result), limit)]
+	page.Complete = page.Complete && len(result) <= limit
+	return page, nil
 }
 
 func (s *session) HealthRunners(ctx context.Context, after string, now time.Time, limit int) ([]healthstore.RunnerObservation, error) {

@@ -100,6 +100,7 @@
     "github_imports": {"class": "hot_state"},
     "go_test_receipt_attestations": {"class": "immutable_payload"},
     "go_test_receipts": {"class": "immutable_payload"},
+    "health_evaluation_work": {"class": "hot_state", "retention": "one pending evaluation per organization; deleted after finding and baseline publication"},
     "health_detector_ticks": {"class": "derived_with_retention", "retention": "latest tick per detector"},
     "health_scheduled_reports": {"class": "immutable_payload", "retention": "project lifetime; stable scheduled run receipts and health cadence history"},
     "health_finding_issues": {"class": "index"},

@@ -96,6 +96,7 @@ func TestSlackPostgresTenantDeliveryAndUncertainReplay(t *testing.T) {
 			}
 		}
 		cfg := f.service.config
+		cfg.runMaintenance = waitForMaintenanceFixtureShutdown
 		if err := f.service.Close(); err != nil {
 			t.Fatal(err)
 		}

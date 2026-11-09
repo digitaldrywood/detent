@@ -3,7 +3,6 @@ package postgres_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -43,11 +42,12 @@ func TestHealthUsageDistinguishesMissingAndZeroBaseline(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
-				rows, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10)
+				page, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10, 10000)
+				rows := page.Values
 				if err != nil {
 					return err
 				}
-				if len(rows) != 1 || rows[0].Item != fmt.Sprintf("wi_%d", id) || rows[0].Cost != float64(100+index) || rows[0].BaselineCost != 0 || rows[0].BaselineKnown != (id == 1) {
+				if !page.Complete || len(rows) != 1 || rows[0].Item != fmt.Sprintf("wi_%d", id) || rows[0].Cost != float64(100+index) || rows[0].BaselineCost != 0 || rows[0].BaselineKnown != (id == 1) {
 					t.Fatalf("organization=%s project=%s usage=%+v", org, project, rows)
 				}
 				return nil
@@ -82,8 +82,9 @@ func TestHealthUsageDistinguishesMissingAndZeroBaseline(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
-				rows, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10)
-				if err != nil || len(rows) != 1 || rows[0].Cost != 2 || rows[0].BaselineCost != 2 || !rows[0].BaselineKnown {
+				page, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10, 10000)
+				rows := page.Values
+				if err != nil || !page.Complete || page.ReadRows != 10000 || len(rows) != 1 || rows[0].Cost != 2 || rows[0].BaselineCost != 2 || !rows[0].BaselineKnown {
 					t.Fatalf("organization=%s project=%s usage at source boundary=%+v err=%v", org, project, rows, err)
 				}
 				return nil
@@ -94,9 +95,9 @@ func TestHealthUsageDistinguishesMissingAndZeroBaseline(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
-				_, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10)
-				if !errors.Is(err, corestore.ErrInvalidPage) {
-					t.Fatalf("organization=%s project=%s usage source overflow err=%v", org, project, err)
+				page, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10, 10000)
+				if err != nil || page.Complete || page.ReadRows < 10001 || len(page.Values) != 0 {
+					t.Fatalf("organization=%s project=%s source overflow page=%+v err=%v", org, project, page, err)
 				}
 				return nil
 			}); err != nil {

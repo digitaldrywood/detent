@@ -42,23 +42,21 @@ func TestHealthIssueMaintenanceStartsAndBoundsPublication(t *testing.T) {
 		if len(findings) != 2 {
 			t.Fatalf("organization=%s findings=%+v", org, findings)
 		}
-		if err := service.publishHealthEvaluation(t.Context(), org, now, findings); err != nil {
-			t.Fatal(err)
-		}
 	}
-	feature := service.HealthIssueMaintenanceFeature()
 	first := hubmaintenance.Tenant{Organization: "org_first", Generation: 1}
 	second := hubmaintenance.Tenant{Organization: "org_first_second", Generation: 1}
-	budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: feature.Bytes}
-	if err := feature.Step(t.Context(), first, budget); err == nil {
-		t.Fatal("maintenance accepted an unallocated context")
-	}
-	if err := feature.Step(budget.Context(t.Context(), first), second, budget); err == nil {
-		t.Fatal("maintenance accepted another tenant allocation")
-	}
-	insufficient := hubmaintenance.Budget{Items: 1, Bytes: feature.Bytes - 1}
-	if err := feature.Step(insufficient.Context(t.Context(), first), first, insufficient); err == nil {
-		t.Fatal("maintenance accepted an insufficient byte allocation")
+	for _, feature := range []hubmaintenance.Feature{service.HealthIssueMaintenanceFeature(), service.HealthEvaluationMaintenanceFeature()} {
+		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: feature.Bytes}
+		if err := feature.Step(t.Context(), first, budget); err == nil {
+			t.Fatalf("%s accepted an unallocated context", feature.Name)
+		}
+		if err := feature.Step(budget.Context(t.Context(), first), second, budget); err == nil {
+			t.Fatalf("%s accepted another tenant allocation", feature.Name)
+		}
+		insufficient := hubmaintenance.Budget{Items: 1, Bytes: feature.Bytes - 1}
+		if err := feature.Step(insufficient.Context(t.Context(), first), first, insufficient); err == nil {
+			t.Fatalf("%s accepted an insufficient byte allocation", feature.Name)
+		}
 	}
 	cfg := service.config
 	if err := service.Close(); err != nil {
@@ -90,7 +88,8 @@ func TestHealthIssueMaintenanceStartsAndBoundsPublication(t *testing.T) {
 			t.Fatal(t.Context().Err())
 		}
 		linked := 0
-		for range 32 {
+		completed := false
+		for range 3 * 16 {
 			result := make(chan error, 1)
 			select {
 			case ticks <- result:
@@ -106,29 +105,38 @@ func TestHealthIssueMaintenanceStartsAndBoundsPublication(t *testing.T) {
 				t.Fatal(t.Context().Err())
 			}
 			current := 0
+			completed = true
 			for _, f := range fixtures[org] {
 				page, err := reopened.readHealthFindings(t.Context(), nativeScope{organization: org, project: f.project.ID}, "all", "", "", 100)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(page.Items) != 1 || len(page.Items[0].Issues) > 1 {
+				if len(page.Items) > 1 || len(page.Items) == 1 && len(page.Items[0].Issues) > 1 {
 					t.Fatalf("organization=%s project=%s findings=%+v", org, f.project.ID, page)
 				}
-				current += len(page.Items[0].Issues)
+				if len(page.Items) == 1 {
+					current += len(page.Items[0].Issues)
+				}
+				completed = completed && page.LastTickAt != nil
 			}
 			if current < linked || current-linked > 1 {
 				t.Fatalf("organization=%s publication step advanced from %d to %d", org, linked, current)
 			}
 			linked = current
-			if linked == len(fixtures[org]) {
+			if linked == len(fixtures[org]) && completed {
 				break
 			}
 		}
-		if linked != 2 {
-			t.Fatalf("organization=%s background publications=%d", org, linked)
+		if linked != 2 || !completed {
+			t.Fatalf("organization=%s background publications=%d completed=%t", org, linked, completed)
 		}
 		if err := reopened.Close(); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+func waitForMaintenanceFixtureShutdown(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	<-ctx.Done()
+	return ctx.Err()
 }

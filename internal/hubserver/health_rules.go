@@ -130,7 +130,13 @@ type healthWait struct {
 	Active  bool
 }
 
+type healthObservationGap struct {
+	Project string `json:"project_id"`
+	Signal  string `json:"signal"`
+}
+
 type healthSnapshot struct {
+	Incomplete          []healthObservationGap
 	Runners             []healthRunner
 	Projects            []healthProject
 	Waits               []healthWait

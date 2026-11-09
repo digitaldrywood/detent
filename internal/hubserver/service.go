@@ -688,6 +688,7 @@ func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
 		s.IntegrationPageMaintenanceFeature(),
 		s.OnboardingPageMaintenanceFeature(),
 		s.HealthPageMaintenanceFeature(),
+		s.HealthEvaluationMaintenanceFeature(),
 		s.HealthIssueMaintenanceFeature(),
 		s.ProjectPageMaintenanceFeature(),
 		{Name: "github-intake", Bytes: 64 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
