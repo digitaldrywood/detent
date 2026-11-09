@@ -55,7 +55,10 @@ type workspaceRelay struct {
 	mu      sync.Mutex
 	// rooms is keyed by workspace id. A workspace with no connection has no
 	// room, so an idle hub holds nothing.
-	rooms map[string]*relayRoom
+	rooms       map[string]*relayRoom
+	sweepHead   *relayRoom
+	sweepTail   *relayRoom
+	sweepCursor *relayRoom
 	// memory is the total buffered bytes across every stream, the budget
 	// workspaces.relay.memory caps.
 	memory         int64
@@ -70,10 +73,12 @@ type workspaceRelay struct {
 
 // relayRoom is one workspace's live connections and streams.
 type relayRoom struct {
-	workspaceID string
-	runner      *relayConnection
-	people      map[string]*relayConnection
-	streams     map[string]*relayStream
+	sweepPrevious *relayRoom
+	sweepNext     *relayRoom
+	workspaceID   string
+	runner        *relayConnection
+	people        map[string]*relayConnection
+	streams       map[string]*relayStream
 	// detached holds streams whose person connection dropped, waiting for a
 	// resume. They still count against the workspace's stream limit, because
 	// the runner is still holding whatever they opened.
@@ -322,6 +327,7 @@ func (r *workspaceRelay) stop(ctx context.Context) {
 		recorded = append(recorded, room.takeTerminalRecordings(nil)...)
 	}
 	r.rooms = map[string]*relayRoom{}
+	r.sweepHead, r.sweepTail, r.sweepCursor = nil, nil, nil
 	r.memory = 0
 	r.mu.Unlock()
 	for connection, cancel := range connections {
@@ -357,7 +363,42 @@ func (r *workspaceRelay) ensureRoom(workspaceID string) *relayRoom {
 		terminals:   map[string]*terminalStreamState{},
 	}
 	r.rooms[workspaceID] = room
+	room.sweepPrevious = r.sweepTail
+	if r.sweepTail == nil {
+		r.sweepHead = room
+	} else {
+		r.sweepTail.sweepNext = room
+	}
+	r.sweepTail = room
+	if r.sweepCursor == nil {
+		r.sweepCursor = room
+	}
 	return room
+}
+
+func (r *workspaceRelay) removeRoom(workspaceID string) {
+	room := r.rooms[workspaceID]
+	if room == nil {
+		return
+	}
+	if room.sweepPrevious == nil {
+		r.sweepHead = room.sweepNext
+	} else {
+		room.sweepPrevious.sweepNext = room.sweepNext
+	}
+	if room.sweepNext == nil {
+		r.sweepTail = room.sweepPrevious
+	} else {
+		room.sweepNext.sweepPrevious = room.sweepPrevious
+	}
+	if r.sweepCursor == room {
+		r.sweepCursor = room.sweepNext
+		if r.sweepCursor == nil {
+			r.sweepCursor = r.sweepHead
+		}
+	}
+	room.sweepPrevious, room.sweepNext = nil, nil
+	delete(r.rooms, workspaceID)
 }
 
 // closeWorkspace ends every connection of a workspace with one reason. The
@@ -377,7 +418,7 @@ func (r *workspaceRelay) closeWorkspace(ctx context.Context, workspaceID, reason
 	// is read outside the lock, below, because it is a database read.
 	orphaned := room.takeExecRuns(nil)
 	recorded := room.takeTerminalRecordings(nil)
-	delete(r.rooms, workspaceID)
+	r.removeRoom(workspaceID)
 	connections := []*relayConnection{}
 	if room.runner != nil {
 		connections = append(connections, room.runner)
@@ -409,45 +450,49 @@ func (r *workspaceRelay) closeWorkspace(ctx context.Context, workspaceID, reason
 // stream that asked for it.
 func (r *workspaceRelay) sweep(ctx context.Context, now time.Time) {
 	type expiry struct {
-		room   *relayRoom
+		runner *relayConnection
 		stream *relayStream
 	}
 	r.mu.Lock()
+	limit := min(len(r.rooms), workspaceMaintenanceBatch)
+	r.mu.Unlock()
 	expired := []expiry{}
 	orphaned := []*execRunState{}
 	recorded := []*terminalStreamState{}
-	for _, room := range r.rooms {
+	for range limit {
+		r.mu.Lock()
+		room := r.sweepCursor
+		if room == nil {
+			r.mu.Unlock()
+			break
+		}
+		r.sweepCursor = room.sweepNext
+		if r.sweepCursor == nil {
+			r.sweepCursor = r.sweepHead
+		}
 		for id, stream := range room.detached {
 			if now.Sub(stream.detachedAt) < workspacesession.ResumeWindow {
 				continue
 			}
 			delete(room.detached, id)
 			r.memory -= stream.bufferBytes
-			// detachPerson already failed the runs of a dropped connection,
-			// so this normally takes nothing. It is here because the rule is
-			// that no path may drop a stream and leave its run running, and a
-			// rule with an exception is a rule nobody can check.
 			orphaned = append(orphaned, room.takeExecRuns(func(streamID string) bool { return streamID == id })...)
-			// The resume window ran out, so the PTY behind this stream is
-			// about to be killed by the close below and its recording is
-			// complete.
 			recorded = append(recorded, room.takeTerminalRecordings(func(streamID string) bool { return streamID == id })...)
-			expired = append(expired, expiry{room: room, stream: stream})
+			expired = append(expired, expiry{runner: room.runner, stream: stream})
 		}
+		if len(room.people) == 0 && room.runner == nil && len(room.detached) == 0 {
+			r.removeRoom(room.workspaceID)
+		}
+		if r.memory < 0 {
+			r.memory = 0
+		}
+		r.mu.Unlock()
 	}
-	if r.memory < 0 {
-		r.memory = 0
-	}
-	runners := map[*relayRoom]*relayConnection{}
-	for _, item := range expired {
-		runners[item.room] = item.room.runner
-	}
-	r.mu.Unlock()
 	r.service.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
 	r.service.finishTerminalRecordings(ctx, recorded)
 	for _, item := range expired {
-		if runner := runners[item.room]; runner != nil {
-			runner.send(workspacesession.Frame{Channel: item.stream.channel, Stream: item.stream.id, Type: workspacesession.TypeClose})
+		if item.runner != nil {
+			item.runner.send(workspacesession.Frame{Channel: item.stream.channel, Stream: item.stream.id, Type: workspacesession.TypeClose})
 		}
 	}
 }
@@ -514,7 +559,7 @@ func (r *workspaceRelay) detachPerson(ctx context.Context, connection *relayConn
 	// truncate a session still in progress or leave two rows for one shell.
 	// The sweep writes it when the window runs out, and a resume continues it.
 	if len(room.people) == 0 && room.runner == nil && len(room.detached) == 0 {
-		delete(r.rooms, connection.workspaceID)
+		r.removeRoom(connection.workspaceID)
 	}
 	r.mu.Unlock()
 	r.service.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
@@ -589,7 +634,7 @@ func (r *workspaceRelay) detachRunner(ctx context.Context, connection *relayConn
 		recorded = room.takeTerminalRecordings(nil)
 	}
 	if len(room.people) == 0 && room.runner == nil && len(room.detached) == 0 {
-		delete(r.rooms, connection.workspaceID)
+		r.removeRoom(connection.workspaceID)
 	}
 	r.mu.Unlock()
 	r.service.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
