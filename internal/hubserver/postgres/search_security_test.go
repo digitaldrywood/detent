@@ -361,6 +361,13 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 	body = strings.TrimSuffix(strings.TrimSpace(body), ";")
 	for _, size := range []int{2000, 10000} {
 		seedSearchPlanHistory(t, f, d, map[int]int{2000: 1, 10000: 2001}[size], size)
+		var pending bool
+		if err := f.admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM search_documents WHERE organization_id='org_first' AND project_id='prj_first' AND kind='issue' AND source_id='wi_first_1' AND indexed_revision<>revision)").Scan(&pending); err != nil {
+			t.Fatal(err)
+		}
+		if !pending {
+			t.Fatal("history source effects lost the pending parent")
+		}
 		for _, statement := range []string{"VACUUM (ANALYZE) search_documents", "VACUUM (ANALYZE) search_postings", "VACUUM (ANALYZE) search_scope_documents"} {
 			if _, err := f.admin.ExecContext(t.Context(), statement); err != nil {
 				t.Fatal(err)
@@ -644,7 +651,7 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
  SELECT 'org_first','history_'||n,'prj_first','wi_first_1',n+10,$1,'human','other-principal' FROM generate_series($2::int,$3::int) n`, d.Payload.Key, start, end); err != nil {
 		t.Fatal(err)
 	}
-	insert := func(first, last int) error {
+	insertBatch := func(first, last int) error {
 		ids, keys, hashes := []string{}, []string{}, []string{}
 		compressed, raw, nanos := []int64{}, []int64{}, []int64{}
 		times := []time.Time{}
@@ -681,6 +688,17 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
 			searchstore.Vector(searchstore.Document{OrganizationID: d.OrganizationID, ProjectID: d.ProjectID, Kind: "thread"}, searchstore.Text{Title: "commonterm"}), ids, keys, hashes, compressed, raw, times, nanos)
 		return err
 	}
+	insert := func(first, last int) error {
+		const historyBatchSize = 100
+		for first <= last {
+			end := min(first+historyBatchSize-1, last)
+			if err := insertBatch(first, end); err != nil {
+				return err
+			}
+			first = end + 1
+		}
+		return nil
+	}
 	var indexed bool
 	if err := f.admin.QueryRowContext(t.Context(), `SELECT to_regclass('search_postings') IS NOT NULL`).Scan(&indexed); err != nil {
 		t.Fatal(err)
@@ -697,13 +715,30 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
 		}
 		start++
 	}
+	var beforeBulk int64
+	if start <= end {
+		if err := f.admin.QueryRowContext(t.Context(), "SELECT duplicate_source_sequence FROM projects WHERE organization_id='org_first' AND id='prj_first'").Scan(&beforeBulk); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := f.admin.ExecContext(t.Context(), `ALTER TABLE search_documents DISABLE TRIGGER search_document_postings`); err != nil {
 		t.Fatal(err)
 	}
 	insertErr := insert(start, end)
-	_, enableErr := f.admin.ExecContext(t.Context(), `ALTER TABLE search_documents ENABLE TRIGGER search_document_postings`)
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+	_, enableErr := f.admin.ExecContext(cleanup, `ALTER TABLE search_documents ENABLE TRIGGER search_document_postings`)
+	cancel()
 	if err := errors.Join(insertErr, enableErr); err != nil {
 		t.Fatal(err)
+	}
+	if start <= end {
+		var afterBulk int64
+		if err := f.admin.QueryRowContext(t.Context(), "SELECT duplicate_source_sequence FROM projects WHERE organization_id='org_first' AND id='prj_first'").Scan(&afterBulk); err != nil {
+			t.Fatal(err)
+		}
+		if afterBulk <= beforeBulk {
+			t.Fatal("bulk history bypassed source invalidation")
+		}
 	}
 	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_scope_documents(organization_id,project_id,work_item_id,id)
  SELECT p.organization_id,p.project_id,p.work_item_id,'history_'||n FROM search_scope_documents p CROSS JOIN generate_series($1::int,$2::int) n
