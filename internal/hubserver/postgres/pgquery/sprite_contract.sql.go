@@ -861,6 +861,55 @@ func (q *Queries) SpritePromotionSource(ctx context.Context, organizationID trac
 	return i, err
 }
 
+const spriteProvisionQueue = `-- name: SpriteProvisionQueue :many
+SELECT a.organization_id, a.project_id, a.desired_count, a.revision, a.provision_failures, a.requested_at, a.configured_by FROM project_sprite_allocations a
+JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id AND p.deleted_at IS NULL
+WHERE a.organization_id=$1 AND a.desired_count>0
+ AND a.desired_count>(SELECT count(*) FROM runner_sprite_memberships m WHERE m.organization_id=a.organization_id AND m.allocation_project_id=a.project_id AND m.state<>'deleted')
+ AND (a.requested_at,a.project_id)>($2::timestamptz,$3::text)
+ORDER BY a.requested_at,a.project_id LIMIT $4
+`
+
+type SpriteProvisionQueueParams struct {
+	OrganizationID   tracker.OrganizationID
+	AfterRequestedAt time.Time
+	AfterProjectID   string
+	PageLimit        int32
+}
+
+func (q *Queries) SpriteProvisionQueue(ctx context.Context, arg SpriteProvisionQueueParams) ([]ProjectSpriteAllocation, error) {
+	rows, err := q.db.Query(ctx, spriteProvisionQueue,
+		arg.OrganizationID,
+		arg.AfterRequestedAt,
+		arg.AfterProjectID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectSpriteAllocation{}
+	for rows.Next() {
+		var i ProjectSpriteAllocation
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.DesiredCount,
+			&i.Revision,
+			&i.ProvisionFailures,
+			&i.RequestedAt,
+			&i.ConfiguredBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const spriteProvisionSourceFailure = `-- name: SpriteProvisionSourceFailure :one
 SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id, source_revision FROM sprite_lifecycle_operations WHERE organization_id=$1 AND project_id=$2 AND source_revision=$3 AND outcome='rejected' AND next_attempt_at>updated_at AND operation IN ('provision','bootstrap','checkpoint') ORDER BY updated_at DESC,idempotency_key DESC LIMIT 1
 `

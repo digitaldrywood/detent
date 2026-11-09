@@ -404,6 +404,57 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 			t.Fatal(err)
 		}
 	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRunnerIdentity(t, repository, org, string(org)+"_filled", "machine_filled", now, true)
+		if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+			owner := w.(postgres.SpriteWriter)
+			for i := range 101 {
+				id := tracker.ProjectID(fmt.Sprintf("completed-%03d", i))
+				if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: id, Slug: string(id), Name: string(id), Profile: "native"}); err != nil {
+					return err
+				}
+				desired := int32(0)
+				if i == 100 {
+					desired = 1
+				}
+				if _, err := owner.PutSpriteAllocation(t.Context(), postgres.SpriteAllocation{OrganizationID: org, ProjectID: id, DesiredCount: desired, ConfiguredBy: "admin", RequestedAt: now.Add(-time.Duration(i+1) * time.Minute)}, 0); err != nil {
+					return err
+				}
+				if desired == 1 {
+					if err := owner.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: org, Name: "filled", ProviderOrganization: "example", EnrollmentID: "enrollment_" + string(org) + "_filled", AllocationProjectID: id, AllocationRevision: 1, State: "bootstrapping", IdleSince: now, CreatedAt: now}); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
+			cursor := postgres.SpriteAllocationCursor{}
+			for _, project := range []tracker.ProjectID{"prj_second", "prj_first"} {
+				page, err := r.SpriteProvisionQueue(t.Context(), cursor, 1)
+				if err != nil {
+					return err
+				}
+				if len(page) != 1 || page[0].OrganizationID != org || page[0].ProjectID != project {
+					t.Fatalf("pending allocation queue for %s: %+v", org, page)
+				}
+				cursor = postgres.SpriteAllocationCursor{RequestedAt: page[0].RequestedAt, ProjectID: page[0].ProjectID}
+			}
+			page, err := r.SpriteProvisionQueue(t.Context(), cursor, 1)
+			if err != nil {
+				return err
+			}
+			if len(page) != 0 {
+				t.Fatalf("fulfilled allocation leaked into provisioning: %+v", page)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 }
 
 func TestSpriteRunnerSelectionHonorsAllocationAndSharing(t *testing.T) {

@@ -65,6 +65,14 @@ JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id AND
 WHERE a.organization_id=sqlc.arg(organization_id) AND (a.requested_at,a.project_id)>(sqlc.arg(after_requested_at)::timestamptz,sqlc.arg(after_project_id)::text)
 ORDER BY a.requested_at,a.project_id LIMIT sqlc.arg(page_limit);
 
+-- name: SpriteProvisionQueue :many
+SELECT a.* FROM project_sprite_allocations a
+JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id AND p.deleted_at IS NULL
+WHERE a.organization_id=sqlc.arg(organization_id) AND a.desired_count>0
+ AND a.desired_count>(SELECT count(*) FROM runner_sprite_memberships m WHERE m.organization_id=a.organization_id AND m.allocation_project_id=a.project_id AND m.state<>'deleted')
+ AND (a.requested_at,a.project_id)>(sqlc.arg(after_requested_at)::timestamptz,sqlc.arg(after_project_id)::text)
+ORDER BY a.requested_at,a.project_id LIMIT sqlc.arg(page_limit);
+
 -- name: SpritePoolMemberPage :many
 WITH recent_deleted AS (
  SELECT d.organization_id,d.name,d.created_at FROM runner_sprite_memberships d

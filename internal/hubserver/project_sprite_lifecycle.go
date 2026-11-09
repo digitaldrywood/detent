@@ -319,7 +319,7 @@ func (s *Service) createPoolSpriteRecord(ctx context.Context, scope nativeScope,
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		allocations, err := owner.SpriteAllocationQueue(ctx, postgres.SpriteAllocationCursor{}, 100)
+		allocations, err := owner.SpriteProvisionQueue(ctx, postgres.SpriteAllocationCursor{}, 100)
 		if err != nil {
 			return err
 		}

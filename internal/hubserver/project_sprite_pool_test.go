@@ -2070,6 +2070,30 @@ func TestProjectSpriteConcurrentReservations(t *testing.T) {
 	}
 }
 
+func TestSpritePoolFulfilledAllocationsDoNotHidePendingRequest(t *testing.T) {
+	f, scope, provider := newSpritePoolFixture(t, "")
+	now := f.service.config.now()
+	f.service.config.now = func() time.Time { return now }
+	for i := range 100 {
+		writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+			id := tracker.ProjectID(fmt.Sprintf("completed-%03d", i))
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: id, Name: fmt.Sprintf("Completed allocation %03d", i), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+				return err
+			}
+			_, err := w.(postgres.SpriteWriter).PutSpriteAllocation(t.Context(), postgres.SpriteAllocation{OrganizationID: scope.organization, ProjectID: id, DesiredCount: 0, ConfiguredBy: scope.credential.ID, RequestedAt: now.Add(-time.Duration(100-i) * time.Minute)}, 0)
+			return err
+		})
+	}
+	setSpriteAllocationFixture(t, f, 2, 0)
+	if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
+		t.Fatal(err)
+	}
+	allocation, err := f.service.projectSpriteAllocation(t.Context(), scope)
+	if err != nil || allocation.AllocatedCount != 2 || len(provider.created) != 2 || len(provider.runners) != 2 {
+		t.Fatalf("pending allocation=%+v creates=%d enrollments=%d error=%v", allocation, len(provider.created), len(provider.runners), err)
+	}
+}
+
 func TestSpritePoolProvisionsPastOneHundredMembers(t *testing.T) {
 	f, scope, provider := newSpritePoolFixture(t, "")
 	const ceiling = 101

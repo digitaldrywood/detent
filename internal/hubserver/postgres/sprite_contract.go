@@ -47,6 +47,7 @@ type SpriteReader interface {
 	SpriteRetainedPoolCount(context.Context) (int64, error)
 	SpritePoolMemberPage(context.Context, SpriteMemberCursor, int) ([]SpritePoolMember, error)
 	SpriteAllocationQueue(context.Context, SpriteAllocationCursor, int) ([]SpriteAllocation, error)
+	SpriteProvisionQueue(context.Context, SpriteAllocationCursor, int) ([]SpriteAllocation, error)
 	SpriteAllocation(context.Context, tracker.ProjectID) (SpriteAllocation, error)
 	SpriteAllocationAuthority(context.Context, tracker.ProjectID, time.Time) (bool, error)
 	SpriteAllocations(context.Context, tracker.ProjectID, int) ([]SpriteAllocation, error)
@@ -284,6 +285,17 @@ func (s *session) SpriteAllocationQueue(ctx context.Context, after SpriteAllocat
 		after.RequestedAt = time.Unix(0, 0).UTC()
 	}
 	rows, err := s.queries.SpriteAllocationQueue(ctx, pgquery.SpriteAllocationQueueParams{OrganizationID: s.organization, AfterRequestedAt: after.RequestedAt, AfterProjectID: string(after.ProjectID), PageLimit: int32(limit)})
+	return rows, mapError(ctx, err)
+}
+
+func (s *session) SpriteProvisionQueue(ctx context.Context, after SpriteAllocationCursor, limit int) ([]SpriteAllocation, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	if after.RequestedAt.IsZero() {
+		after.RequestedAt = time.Unix(0, 0).UTC()
+	}
+	rows, err := s.queries.SpriteProvisionQueue(ctx, pgquery.SpriteProvisionQueueParams{OrganizationID: s.organization, AfterRequestedAt: after.RequestedAt, AfterProjectID: string(after.ProjectID), PageLimit: int32(limit)})
 	return rows, mapError(ctx, err)
 }
 
