@@ -2628,73 +2628,163 @@ func TestDispatchReadyIssuesRechecksStartTransitionStateCapacity(t *testing.T) {
 func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 	t.Parallel()
 
-	global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 1})
-	globalGate := scheduler.NewGlobalDispatchGate(global)
-	now := time.Now()
-	ctx := t.Context()
+	scope := backendcapacity.Scope{BackendID: "example", BackendKind: "codex", Provider: "openai"}
+	for _, tt := range []struct {
+		name          string
+		gateErr       error
+		completionErr error
+	}{
+		{name: "completed"},
+		{name: "gate acquisition error", gateErr: errors.New("shared gate unavailable")},
+		{name: "authentication error", completionErr: errors.New("backend authentication failed")},
+		{
+			name: "startup timeout",
+			completionErr: backendcapacity.NewError(scope, backendcapacity.Details{
+				Type: backendcapacity.ErrorTypeTransientOverload,
+				Kind: backendcapacity.StartupTimeoutKind,
+			}, errors.New("backend startup timed out")),
+		},
+		{
+			name: "startup failure",
+			completionErr: backendcapacity.NewError(scope, backendcapacity.Details{
+				Type: backendcapacity.ErrorTypeTransientOverload,
+				Kind: backendcapacity.StartupFailureKind,
+			}, errors.New("backend startup failed")),
+		},
+		{
+			name: "transient overload",
+			completionErr: backendcapacity.NewError(scope, backendcapacity.Details{
+				Type: backendcapacity.ErrorTypeTransientOverload,
+				Kind: "serverOverloaded",
+			}, errors.New("backend overloaded")),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	alphaRunner := newWorkerHostRunner()
-	alphaCfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 2,
-		ActiveStates:        []string{"Todo"},
-		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "alpha"},
-	})
-	alpha := Orchestrator{
-		cfg:                alphaCfg,
-		supervisor:         newTestSupervisor(t, alphaRunner, alphaCfg),
-		runResults:         make(chan runpkg.Completion),
-		globalDispatchGate: globalGate,
-	}
-	alphaState := newState(alphaCfg)
-	alphaIssue := dispatchTestIssue("issue-alpha", "Todo")
+			globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+			now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+			ctx, cancel := context.WithCancel(t.Context())
+			alphaRunner := newWorkerHostRunner()
+			alphaCfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 2,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				Project:             scheduler.ProjectCandidate{ID: "alpha"},
+			})
+			alpha := Orchestrator{
+				cfg:                alphaCfg,
+				supervisor:         newTestSupervisor(t, alphaRunner, alphaCfg),
+				runResults:         make(chan runpkg.Completion, 1),
+				globalDispatchGate: globalGate,
+			}
+			t.Cleanup(func() {
+				cancel()
+				alpha.supervisor.Wait()
+			})
+			alphaState := newState(alphaCfg)
+			alphaIssue := dispatchTestIssue("issue-alpha", "Todo")
 
-	if !alpha.dispatchIssue(ctx, &alphaState, alphaIssue, 0, now, "") {
-		t.Fatal("alpha dispatchIssue() = false, want true")
-	}
-	alphaRequest := receiveWorkerHostRunRequest(t, alphaRunner.started)
-	if alphaRequest.Issue.ID != alphaIssue.ID {
-		t.Fatalf("alpha RunRequest.Issue.ID = %q, want %q", alphaRequest.Issue.ID, alphaIssue.ID)
-	}
+			if tt.gateErr != nil {
+				gate := &refusingDispatchGate{ProjectDispatchGate: globalGate, err: tt.gateErr}
+				alpha.globalDispatchGate = gate
+				if alpha.dispatchIssue(ctx, &alphaState, alphaIssue, 0, now, "") {
+					t.Fatal("dispatch started despite a shared gate error")
+				}
+				if len(alphaState.Running) != 0 || len(alphaState.Claimed) != 0 {
+					t.Fatalf("gate error installed ownership: running=%d claimed=%d", len(alphaState.Running), len(alphaState.Claimed))
+				}
+				if gate.requests != 1 || gate.releases != 0 {
+					t.Fatalf("gate requests=%d releases=%d, want one request and no release", gate.requests, gate.releases)
+				}
+				select {
+				case request := <-alphaRunner.started:
+					t.Fatalf("worker started despite a shared gate error: %+v", request)
+				default:
+				}
+				return
+			}
 
-	bravoRunner := newWorkerHostRunner()
-	bravoCfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 2,
-		ActiveStates:        []string{"Todo"},
-		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "bravo"},
-	})
-	bravo := Orchestrator{
-		cfg:                bravoCfg,
-		supervisor:         newTestSupervisor(t, bravoRunner, bravoCfg),
-		runResults:         make(chan runpkg.Completion),
-		globalDispatchGate: globalGate,
-	}
-	bravoState := newState(bravoCfg)
-	bravoIssue := dispatchTestIssue("issue-bravo", "Todo")
+			if !alpha.dispatchIssue(ctx, &alphaState, alphaIssue, 0, now, "") {
+				t.Fatal("alpha dispatchIssue() = false, want true")
+			}
+			alphaRequest := receiveWorkerHostRunRequest(t, alphaRunner.started)
+			if alphaRequest.Issue.ID != alphaIssue.ID {
+				t.Fatalf("alpha RunRequest.Issue.ID = %q, want %q", alphaRequest.Issue.ID, alphaIssue.ID)
+			}
 
-	if bravo.dispatchIssue(ctx, &bravoState, bravoIssue, 0, now, "") {
-		t.Fatal("bravo dispatchIssue() = true while global slot is held, want false")
-	}
-	select {
-	case request := <-bravoRunner.started:
-		t.Fatalf("unexpected bravo dispatch while global slot is held = %#v", request)
-	default:
-	}
+			bravoRunner := newWorkerHostRunner()
+			bravoCfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 2,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				Project:             scheduler.ProjectCandidate{ID: "bravo"},
+			})
+			bravo := Orchestrator{
+				cfg:                bravoCfg,
+				supervisor:         newTestSupervisor(t, bravoRunner, bravoCfg),
+				runResults:         make(chan runpkg.Completion, 1),
+				globalDispatchGate: globalGate,
+			}
+			t.Cleanup(func() {
+				cancel()
+				bravo.supervisor.Wait()
+			})
+			bravoState := newState(bravoCfg)
+			bravoIssue := dispatchTestIssue("issue-bravo", "Todo")
 
-	alpha.handleRunResult(ctx, &alphaState, runpkg.Completion{
-		IssueID:     alphaIssue.ID,
-		CompletedAt: now.Add(time.Second),
-		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
-	})
+			if bravo.dispatchIssue(ctx, &bravoState, bravoIssue, 0, now, "") {
+				t.Fatal("bravo dispatchIssue() = true while global slot is held, want false")
+			}
+			select {
+			case request := <-bravoRunner.started:
+				t.Fatalf("unexpected bravo dispatch while global slot is held = %#v", request)
+			default:
+			}
 
-	if !bravo.dispatchIssue(ctx, &bravoState, bravoIssue, 0, now.Add(2*time.Second), "") {
-		t.Fatal("bravo dispatchIssue() after alpha completion = false, want true")
+			completion := runpkg.Completion{
+				IssueID:     alphaIssue.ID,
+				Request:     alphaRequest,
+				CompletedAt: now.Add(time.Second),
+				Err:         tt.completionErr,
+			}
+			if tt.completionErr == nil {
+				completion.Result.FinalState = runpkg.FinalStateCompleted
+			}
+			alpha.handleRunResult(ctx, &alphaState, completion)
+			if _, running := alphaState.Running[alphaIssue.ID]; running {
+				t.Fatal("completed worker retained running ownership")
+			}
+			if snapshot := globalGate.PoolSnapshot(); snapshot.Used != 0 || len(snapshot.Holders) != 0 {
+				t.Fatalf("completion retained shared capacity: %+v", snapshot)
+			}
+
+			if !bravo.dispatchIssue(ctx, &bravoState, bravoIssue, 0, now.Add(2*time.Second), "") {
+				t.Fatal("bravo dispatchIssue() after alpha completion = false, want true")
+			}
+			bravoRequest := receiveWorkerHostRunRequest(t, bravoRunner.started)
+			if bravoRequest.Issue.ID != bravoIssue.ID {
+				t.Fatalf("bravo RunRequest.Issue.ID = %q, want %q", bravoRequest.Issue.ID, bravoIssue.ID)
+			}
+		})
 	}
-	bravoRequest := receiveWorkerHostRunRequest(t, bravoRunner.started)
-	if bravoRequest.Issue.ID != bravoIssue.ID {
-		t.Fatalf("bravo RunRequest.Issue.ID = %q, want %q", bravoRequest.Issue.ID, bravoIssue.ID)
-	}
+}
+
+type refusingDispatchGate struct {
+	scheduler.ProjectDispatchGate
+	err      error
+	requests int
+	releases int
+}
+
+func (g *refusingDispatchGate) TryAcquire(context.Context, scheduler.ProjectCandidate, scheduler.SlotRequest, time.Time) (scheduler.Slot, bool, error) {
+	g.requests++
+	return scheduler.Slot{}, false, g.err
+}
+
+func (g *refusingDispatchGate) Release(slot scheduler.Slot) error {
+	g.releases++
+	return g.ProjectDispatchGate.Release(slot)
 }
 
 func TestDispatchReadyIssuesAllowsOneMergeWorkerPerProject(t *testing.T) {
