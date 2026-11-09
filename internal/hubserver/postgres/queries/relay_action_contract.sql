@@ -80,8 +80,42 @@ ON CONFLICT DO NOTHING RETURNING *;
 -- name: RecentActionRuns :many
 SELECT * FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND action_id=$3 ORDER BY created_at DESC,id DESC LIMIT $4;
 
--- name: RecentTerminalRecordings :many
-SELECT * FROM workspace_terminal_recordings WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3 ORDER BY started_at DESC,id DESC LIMIT $4;
+-- name: RecentReadableTerminalRecordings :many
+WITH candidates AS (
+(SELECT recordings_all.* FROM workspace_terminal_recordings recordings_all
+WHERE recordings_all.organization_id=sqlc.arg(organization_id) AND recordings_all.project_id=sqlc.arg(project_id) AND recordings_all.workspace_id=sqlc.arg(workspace_id)
+AND sqlc.arg(read_all)::boolean AND sqlc.arg(relay_session_id)::text=''
+ORDER BY recordings_all.started_at DESC,recordings_all.id DESC LIMIT sqlc.arg(page_limit))
+UNION
+(SELECT recordings_all_relay.* FROM workspace_terminal_recordings recordings_all_relay
+WHERE recordings_all_relay.organization_id=sqlc.arg(organization_id) AND recordings_all_relay.project_id=sqlc.arg(project_id) AND recordings_all_relay.workspace_id=sqlc.arg(workspace_id)
+AND sqlc.arg(read_all)::boolean AND sqlc.arg(relay_session_id)::text<>'' AND recordings_all_relay.relay_session_id=sqlc.arg(relay_session_id)
+ORDER BY recordings_all_relay.started_at DESC,recordings_all_relay.id DESC LIMIT sqlc.arg(page_limit))
+UNION
+(SELECT recordings_own.* FROM workspace_terminal_recordings recordings_own
+WHERE recordings_own.organization_id=sqlc.arg(organization_id) AND recordings_own.project_id=sqlc.arg(project_id) AND recordings_own.workspace_id=sqlc.arg(workspace_id)
+AND NOT sqlc.arg(read_all)::boolean AND sqlc.arg(subject)::text<>'' AND recordings_own.subject=sqlc.arg(subject) AND sqlc.arg(relay_session_id)::text=''
+ORDER BY recordings_own.started_at DESC,recordings_own.id DESC LIMIT sqlc.arg(page_limit))
+UNION
+(SELECT recordings_own_relay.* FROM workspace_terminal_recordings recordings_own_relay
+WHERE recordings_own_relay.organization_id=sqlc.arg(organization_id) AND recordings_own_relay.project_id=sqlc.arg(project_id) AND recordings_own_relay.workspace_id=sqlc.arg(workspace_id)
+AND NOT sqlc.arg(read_all)::boolean AND sqlc.arg(subject)::text<>'' AND recordings_own_relay.subject=sqlc.arg(subject)
+AND sqlc.arg(relay_session_id)::text<>'' AND recordings_own_relay.relay_session_id=sqlc.arg(relay_session_id)
+ORDER BY recordings_own_relay.started_at DESC,recordings_own_relay.id DESC LIMIT sqlc.arg(page_limit))
+UNION
+(SELECT recordings_shared.* FROM workspace_terminal_recordings recordings_shared
+WHERE recordings_shared.organization_id=sqlc.arg(organization_id) AND recordings_shared.project_id=sqlc.arg(project_id) AND recordings_shared.workspace_id=sqlc.arg(workspace_id)
+AND NOT sqlc.arg(read_all)::boolean AND sqlc.arg(read_non_user)::boolean AND recordings_shared.isolation<>'user' AND sqlc.arg(relay_session_id)::text=''
+ORDER BY recordings_shared.started_at DESC,recordings_shared.id DESC LIMIT sqlc.arg(page_limit))
+UNION
+(SELECT recordings_shared_relay.* FROM workspace_terminal_recordings recordings_shared_relay
+WHERE recordings_shared_relay.organization_id=sqlc.arg(organization_id) AND recordings_shared_relay.project_id=sqlc.arg(project_id) AND recordings_shared_relay.workspace_id=sqlc.arg(workspace_id)
+AND NOT sqlc.arg(read_all)::boolean AND sqlc.arg(read_non_user)::boolean AND recordings_shared_relay.isolation<>'user'
+AND sqlc.arg(relay_session_id)::text<>'' AND recordings_shared_relay.relay_session_id=sqlc.arg(relay_session_id)
+ORDER BY recordings_shared_relay.started_at DESC,recordings_shared_relay.id DESC LIMIT sqlc.arg(page_limit))
+)
+SELECT * FROM candidates
+ORDER BY started_at DESC,id DESC LIMIT sqlc.arg(page_limit);
 
 -- name: RecentRelaySessions :many
 SELECT * FROM workspace_relay_sessions WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3 ORDER BY opened_at DESC,id DESC LIMIT $4;

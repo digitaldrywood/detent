@@ -13,13 +13,14 @@ type CreateReportedActionRunInput = pgquery.CreateReportedActionRunParams
 
 type FinishActionRunInput = pgquery.FinishActionRunParams
 type TerminalRecordingInput = pgquery.TerminalRecordingByIDParams
+type ReadableTerminalRecordingsInput = pgquery.RecentReadableTerminalRecordingsParams
 type ReferenceRelayRecordingInput = pgquery.ReferenceRelayRecordingParams
 type DeletedProjectAction = pgquery.DeletedProjectActionsRow
 
 type RelayActionLifecycleReader interface {
 	RelayActionReader
 	RecentActionRuns(context.Context, ActionRunsInput) ([]ActionRun, error)
-	RecentTerminalRecordings(context.Context, TerminalRecordingsInput) ([]TerminalRecording, error)
+	RecentReadableTerminalRecordings(context.Context, ReadableTerminalRecordingsInput) ([]TerminalRecording, error)
 	RecentRelaySessions(context.Context, RelaySessionsInput) ([]RelaySession, error)
 	ActionRunByID(context.Context, string) (ActionRun, error)
 	ActiveActionRunsAfter(context.Context, string, int) ([]ActionRun, error)
@@ -125,15 +126,22 @@ func (s *session) RecentActionRuns(ctx context.Context, arg ActionRunsInput) ([]
 	return rows, mapError(ctx, err)
 }
 
-func (s *session) RecentTerminalRecordings(ctx context.Context, arg TerminalRecordingsInput) ([]TerminalRecording, error) {
+func (s *session) RecentReadableTerminalRecordings(ctx context.Context, arg ReadableTerminalRecordingsInput) ([]TerminalRecording, error) {
 	if err := s.checkOrganization(arg.OrganizationID); err != nil {
 		return nil, err
 	}
-	if err := checkPage(int(arg.Limit)); err != nil {
+	if err := checkPage(int(arg.PageLimit)); err != nil {
 		return nil, err
 	}
-	rows, err := s.queries.RecentTerminalRecordings(ctx, pgquery.RecentTerminalRecordingsParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, WorkspaceID: arg.WorkspaceID, Limit: arg.Limit})
-	return rows, mapError(ctx, err)
+	rows, err := s.queries.RecentReadableTerminalRecordings(ctx, arg)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	recordings := make([]TerminalRecording, len(rows))
+	for index, row := range rows {
+		recordings[index] = TerminalRecording(row)
+	}
+	return recordings, nil
 }
 
 func (s *session) RecentRelaySessions(ctx context.Context, arg RelaySessionsInput) ([]RelaySession, error) {

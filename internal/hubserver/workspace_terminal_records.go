@@ -44,7 +44,15 @@ func (s *Service) readTerminalRecordingRecords(ctx context.Context, scope native
 		if _, err := workspaceForActor(ctx, r, scope, workspace); err != nil {
 			return err
 		}
-		rows, err := r.RecentTerminalRecordings(ctx, postgres.TerminalRecordingsInput{OrganizationID: scope.organization, ProjectID: scope.project, WorkspaceID: workspace, Limit: int32(workspaceListLimit)})
+		input := postgres.ReadableTerminalRecordingsInput{OrganizationID: scope.organization, ProjectID: scope.project, WorkspaceID: workspace, RelaySessionID: relay, PageLimit: int32(workspaceListLimit)}
+		if scope.credential.Hosted == nil {
+			input.ReadAll = true
+		} else {
+			input.Subject = scope.credential.Hosted.Subject
+			input.ReadAll = scope.credential.HostedRole == "owner"
+			input.ReadNonUser = scope.credential.HostedRole == "admin"
+		}
+		rows, err := r.RecentReadableTerminalRecordings(ctx, input)
 		if err != nil {
 			return err
 		}

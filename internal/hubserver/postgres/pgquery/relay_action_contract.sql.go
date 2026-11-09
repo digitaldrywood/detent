@@ -892,6 +892,130 @@ func (q *Queries) RecentActionRuns(ctx context.Context, arg RecentActionRunsPara
 	return items, nil
 }
 
+const recentReadableTerminalRecordings = `-- name: RecentReadableTerminalRecordings :many
+WITH candidates AS (
+(SELECT recordings_all.organization_id, recordings_all.project_id, recordings_all.workspace_id, recordings_all.id, recordings_all.relay_session_id, recordings_all.stream_id, recordings_all.principal_id, recordings_all.subject, recordings_all.isolation, recordings_all.support_reason, recordings_all.started_at, recordings_all.finished_at, recordings_all.terminal_cols, recordings_all.terminal_rows, recordings_all.cast_object_key, recordings_all.cast_sha256, recordings_all.cast_bytes, recordings_all.cast_content_bytes, recordings_all.truncated, recordings_all.revision, recordings_all.updated_at FROM workspace_terminal_recordings recordings_all
+WHERE recordings_all.organization_id=$2 AND recordings_all.project_id=$3 AND recordings_all.workspace_id=$4
+AND $5::boolean AND $6::text=''
+ORDER BY recordings_all.started_at DESC,recordings_all.id DESC LIMIT $1)
+UNION
+(SELECT recordings_all_relay.organization_id, recordings_all_relay.project_id, recordings_all_relay.workspace_id, recordings_all_relay.id, recordings_all_relay.relay_session_id, recordings_all_relay.stream_id, recordings_all_relay.principal_id, recordings_all_relay.subject, recordings_all_relay.isolation, recordings_all_relay.support_reason, recordings_all_relay.started_at, recordings_all_relay.finished_at, recordings_all_relay.terminal_cols, recordings_all_relay.terminal_rows, recordings_all_relay.cast_object_key, recordings_all_relay.cast_sha256, recordings_all_relay.cast_bytes, recordings_all_relay.cast_content_bytes, recordings_all_relay.truncated, recordings_all_relay.revision, recordings_all_relay.updated_at FROM workspace_terminal_recordings recordings_all_relay
+WHERE recordings_all_relay.organization_id=$2 AND recordings_all_relay.project_id=$3 AND recordings_all_relay.workspace_id=$4
+AND $5::boolean AND $6::text<>'' AND recordings_all_relay.relay_session_id=$6
+ORDER BY recordings_all_relay.started_at DESC,recordings_all_relay.id DESC LIMIT $1)
+UNION
+(SELECT recordings_own.organization_id, recordings_own.project_id, recordings_own.workspace_id, recordings_own.id, recordings_own.relay_session_id, recordings_own.stream_id, recordings_own.principal_id, recordings_own.subject, recordings_own.isolation, recordings_own.support_reason, recordings_own.started_at, recordings_own.finished_at, recordings_own.terminal_cols, recordings_own.terminal_rows, recordings_own.cast_object_key, recordings_own.cast_sha256, recordings_own.cast_bytes, recordings_own.cast_content_bytes, recordings_own.truncated, recordings_own.revision, recordings_own.updated_at FROM workspace_terminal_recordings recordings_own
+WHERE recordings_own.organization_id=$2 AND recordings_own.project_id=$3 AND recordings_own.workspace_id=$4
+AND NOT $5::boolean AND $7::text<>'' AND recordings_own.subject=$7 AND $6::text=''
+ORDER BY recordings_own.started_at DESC,recordings_own.id DESC LIMIT $1)
+UNION
+(SELECT recordings_own_relay.organization_id, recordings_own_relay.project_id, recordings_own_relay.workspace_id, recordings_own_relay.id, recordings_own_relay.relay_session_id, recordings_own_relay.stream_id, recordings_own_relay.principal_id, recordings_own_relay.subject, recordings_own_relay.isolation, recordings_own_relay.support_reason, recordings_own_relay.started_at, recordings_own_relay.finished_at, recordings_own_relay.terminal_cols, recordings_own_relay.terminal_rows, recordings_own_relay.cast_object_key, recordings_own_relay.cast_sha256, recordings_own_relay.cast_bytes, recordings_own_relay.cast_content_bytes, recordings_own_relay.truncated, recordings_own_relay.revision, recordings_own_relay.updated_at FROM workspace_terminal_recordings recordings_own_relay
+WHERE recordings_own_relay.organization_id=$2 AND recordings_own_relay.project_id=$3 AND recordings_own_relay.workspace_id=$4
+AND NOT $5::boolean AND $7::text<>'' AND recordings_own_relay.subject=$7
+AND $6::text<>'' AND recordings_own_relay.relay_session_id=$6
+ORDER BY recordings_own_relay.started_at DESC,recordings_own_relay.id DESC LIMIT $1)
+UNION
+(SELECT recordings_shared.organization_id, recordings_shared.project_id, recordings_shared.workspace_id, recordings_shared.id, recordings_shared.relay_session_id, recordings_shared.stream_id, recordings_shared.principal_id, recordings_shared.subject, recordings_shared.isolation, recordings_shared.support_reason, recordings_shared.started_at, recordings_shared.finished_at, recordings_shared.terminal_cols, recordings_shared.terminal_rows, recordings_shared.cast_object_key, recordings_shared.cast_sha256, recordings_shared.cast_bytes, recordings_shared.cast_content_bytes, recordings_shared.truncated, recordings_shared.revision, recordings_shared.updated_at FROM workspace_terminal_recordings recordings_shared
+WHERE recordings_shared.organization_id=$2 AND recordings_shared.project_id=$3 AND recordings_shared.workspace_id=$4
+AND NOT $5::boolean AND $8::boolean AND recordings_shared.isolation<>'user' AND $6::text=''
+ORDER BY recordings_shared.started_at DESC,recordings_shared.id DESC LIMIT $1)
+UNION
+(SELECT recordings_shared_relay.organization_id, recordings_shared_relay.project_id, recordings_shared_relay.workspace_id, recordings_shared_relay.id, recordings_shared_relay.relay_session_id, recordings_shared_relay.stream_id, recordings_shared_relay.principal_id, recordings_shared_relay.subject, recordings_shared_relay.isolation, recordings_shared_relay.support_reason, recordings_shared_relay.started_at, recordings_shared_relay.finished_at, recordings_shared_relay.terminal_cols, recordings_shared_relay.terminal_rows, recordings_shared_relay.cast_object_key, recordings_shared_relay.cast_sha256, recordings_shared_relay.cast_bytes, recordings_shared_relay.cast_content_bytes, recordings_shared_relay.truncated, recordings_shared_relay.revision, recordings_shared_relay.updated_at FROM workspace_terminal_recordings recordings_shared_relay
+WHERE recordings_shared_relay.organization_id=$2 AND recordings_shared_relay.project_id=$3 AND recordings_shared_relay.workspace_id=$4
+AND NOT $5::boolean AND $8::boolean AND recordings_shared_relay.isolation<>'user'
+AND $6::text<>'' AND recordings_shared_relay.relay_session_id=$6
+ORDER BY recordings_shared_relay.started_at DESC,recordings_shared_relay.id DESC LIMIT $1)
+)
+SELECT organization_id, project_id, workspace_id, id, relay_session_id, stream_id, principal_id, subject, isolation, support_reason, started_at, finished_at, terminal_cols, terminal_rows, cast_object_key, cast_sha256, cast_bytes, cast_content_bytes, truncated, revision, updated_at FROM candidates
+ORDER BY started_at DESC,id DESC LIMIT $1
+`
+
+type RecentReadableTerminalRecordingsParams struct {
+	PageLimit      int32
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkspaceID    string
+	ReadAll        bool
+	RelaySessionID string
+	Subject        string
+	ReadNonUser    bool
+}
+
+type RecentReadableTerminalRecordingsRow struct {
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	WorkspaceID      string
+	ID               string
+	RelaySessionID   string
+	StreamID         string
+	PrincipalID      string
+	Subject          string
+	Isolation        string
+	SupportReason    string
+	StartedAt        time.Time
+	FinishedAt       *time.Time
+	TerminalCols     int32
+	TerminalRows     int32
+	CastObjectKey    string
+	CastSha256       string
+	CastBytes        int64
+	CastContentBytes int64
+	Truncated        bool
+	Revision         int64
+	UpdatedAt        time.Time
+}
+
+func (q *Queries) RecentReadableTerminalRecordings(ctx context.Context, arg RecentReadableTerminalRecordingsParams) ([]RecentReadableTerminalRecordingsRow, error) {
+	rows, err := q.db.Query(ctx, recentReadableTerminalRecordings,
+		arg.PageLimit,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkspaceID,
+		arg.ReadAll,
+		arg.RelaySessionID,
+		arg.Subject,
+		arg.ReadNonUser,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RecentReadableTerminalRecordingsRow{}
+	for rows.Next() {
+		var i RecentReadableTerminalRecordingsRow
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.WorkspaceID,
+			&i.ID,
+			&i.RelaySessionID,
+			&i.StreamID,
+			&i.PrincipalID,
+			&i.Subject,
+			&i.Isolation,
+			&i.SupportReason,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.TerminalCols,
+			&i.TerminalRows,
+			&i.CastObjectKey,
+			&i.CastSha256,
+			&i.CastBytes,
+			&i.CastContentBytes,
+			&i.Truncated,
+			&i.Revision,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recentRelaySessions = `-- name: RecentRelaySessions :many
 SELECT organization_id, project_id, workspace_id, id, principal_id, subject, connection_id, channels, opened_at, closed_at, close_reason, bytes_in, bytes_out, recording_artifact, support_reason FROM workspace_relay_sessions WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3 ORDER BY opened_at DESC,id DESC LIMIT $4
 `
@@ -933,64 +1057,6 @@ func (q *Queries) RecentRelaySessions(ctx context.Context, arg RecentRelaySessio
 			&i.BytesOut,
 			&i.RecordingArtifact,
 			&i.SupportReason,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const recentTerminalRecordings = `-- name: RecentTerminalRecordings :many
-SELECT organization_id, project_id, workspace_id, id, relay_session_id, stream_id, principal_id, subject, isolation, support_reason, started_at, finished_at, terminal_cols, terminal_rows, cast_object_key, cast_sha256, cast_bytes, cast_content_bytes, truncated, revision, updated_at FROM workspace_terminal_recordings WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3 ORDER BY started_at DESC,id DESC LIMIT $4
-`
-
-type RecentTerminalRecordingsParams struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	WorkspaceID    string
-	Limit          int32
-}
-
-func (q *Queries) RecentTerminalRecordings(ctx context.Context, arg RecentTerminalRecordingsParams) ([]WorkspaceTerminalRecording, error) {
-	rows, err := q.db.Query(ctx, recentTerminalRecordings,
-		arg.OrganizationID,
-		arg.ProjectID,
-		arg.WorkspaceID,
-		arg.Limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []WorkspaceTerminalRecording{}
-	for rows.Next() {
-		var i WorkspaceTerminalRecording
-		if err := rows.Scan(
-			&i.OrganizationID,
-			&i.ProjectID,
-			&i.WorkspaceID,
-			&i.ID,
-			&i.RelaySessionID,
-			&i.StreamID,
-			&i.PrincipalID,
-			&i.Subject,
-			&i.Isolation,
-			&i.SupportReason,
-			&i.StartedAt,
-			&i.FinishedAt,
-			&i.TerminalCols,
-			&i.TerminalRows,
-			&i.CastObjectKey,
-			&i.CastSha256,
-			&i.CastBytes,
-			&i.CastContentBytes,
-			&i.Truncated,
-			&i.Revision,
-			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
