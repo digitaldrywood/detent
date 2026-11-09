@@ -189,7 +189,7 @@ func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential a
 			return err
 		}
 		now := s.config.now()
-		if current.ID != credential.ID || current.Scope != string(apiScopeWorker) || current.Kind != "service" || !validRunnerCredentialForRenewal(current, credential.Hash, now, replacement == "") || current.UserID != "" || current.MembershipID != "" {
+		if current.ID != credential.ID || current.Scope != string(apiScopeWorker) || current.Kind != "service" || current.ExpiresAt == nil || !current.ExpiresAt.After(current.CreatedAt) || !validRunnerCredentialForRenewal(current, credential.Hash, now, replacement == "") || current.UserID != "" || current.MembershipID != "" {
 			return runnerUnauthorized()
 		}
 		if replacement != "" && !record.ExpiresAt.After(now) {

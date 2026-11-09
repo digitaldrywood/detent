@@ -2,13 +2,15 @@ package hubserver
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,44 +24,87 @@ func TestRunnerCredentialExpiryBoundaries(t *testing.T) {
 		want      int
 		wantRenew int
 	}{
-		{"before expiry", -time.Nanosecond, "", http.StatusOK, http.StatusOK},
+		{"before expiry", -time.Microsecond, "", http.StatusOK, http.StatusOK},
 		{"at expiry", 0, "", http.StatusUnauthorized, http.StatusOK},
 		{"after expiry", time.Second, "", http.StatusUnauthorized, http.StatusOK},
 		{"weekend", 3 * 24 * time.Hour, "", http.StatusUnauthorized, http.StatusOK},
 		{"vacation", 30 * 24 * time.Hour, "", http.StatusUnauthorized, http.StatusOK},
 		{"before creation", -25 * time.Hour, "", http.StatusUnauthorized, http.StatusUnauthorized},
-		{"invalid creation", 0, "UPDATE api_tokens SET created_at = 'invalid' WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
-		{"invalid expiry", 0, "UPDATE api_tokens SET expires_at = 'invalid' WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
-		{"empty interval", 0, "UPDATE api_tokens SET expires_at = created_at WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
-		{"missing expiry", 0, "UPDATE api_tokens SET expires_at = NULL WHERE id = ?", http.StatusOK, http.StatusUnauthorized},
-		{"revoked and expired", 0, "UPDATE api_tokens SET revoked_at = created_at WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
-		{"rotated and expired", 0, "UPDATE api_tokens SET token_hash = '1111111111111111111111111111111111111111111111111111111111111111' WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"invalid creation", 0, "UPDATE api_tokens SET created_at = 'invalid' WHERE organization_id=$1 AND id=$2", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"invalid expiry", 0, "UPDATE api_tokens SET expires_at = 'invalid' WHERE organization_id=$1 AND id=$2", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"empty interval", 0, "UPDATE api_tokens SET expires_at = created_at WHERE organization_id=$1 AND id=$2", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"missing expiry", 0, "UPDATE api_tokens SET expires_at = NULL WHERE organization_id=$1 AND id=$2", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"revoked and expired", 0, "UPDATE api_tokens SET revoked_at = created_at WHERE organization_id=$1 AND id=$2", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"rotated and expired", 0, "UPDATE api_tokens SET token_hash = md5(id)||md5(organization_id||id) WHERE organization_id=$1 AND id=$2", http.StatusUnauthorized, http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "expiry")
-			r := prepareRunner(t, f, runnerauth.Read)
-			r.enroll(t)
-			now = r.identity.ExpiresAt.Add(test.offset)
-			if test.statement != "" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), test.statement, r.binding.RunnerID); err != nil {
+			service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
+			var renewed []runnerFixture
+			for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+				if err := service.requestMetrics.drain(t.Context(), now); err != nil {
 					t.Fatal(err)
 				}
-			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), test.want)
-			if test.statement == "" && test.offset >= 0 {
-				for _, path := range []string{
-					r.identityPath() + "/rotate",
-					r.base + "/runners/" + runnerauth.NewBinding().RunnerID + "/renew",
-					"/api/v2/organizations/other/runners/" + r.binding.RunnerID + "/renew",
-				} {
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, struct{}{}), http.StatusUnauthorized)
+				service.database.hostedOrganization = organization
+				service.localOrganization = string(organization)
+				service.requestMetrics.organization = organization
+				now = time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+				f := newNativeFixture(t, service, organization, "Expiry project")
+				for range 2 {
+					now = time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+					r := prepareRunner(t, f, runnerauth.Read)
+					r.enroll(t)
+					now = r.identity.ExpiresAt.Add(test.offset)
+					if test.statement != "" {
+						_, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), test.statement, f.project.OrganizationID, r.binding.RunnerID)
+						if test.name == "invalid creation" || test.name == "invalid expiry" {
+							var failure interface{ SQLState() string }
+							if !errors.As(err, &failure) || failure.SQLState() != "22007" {
+								t.Fatalf("invalid timestamp write error = %v", err)
+							}
+							continue
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), test.want)
+					if test.statement == "" && test.offset >= 0 {
+						for _, path := range []string{
+							r.identityPath() + "/rotate",
+							r.base + "/runners/" + runnerauth.NewBinding().RunnerID + "/renew",
+							"/api/v2/organizations/other/runners/" + r.binding.RunnerID + "/renew",
+						} {
+							requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, struct{}{}), http.StatusUnauthorized)
+						}
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/renew", r.redemption.Credential, struct{}{}), test.wantRenew)
+					if test.wantRenew == http.StatusOK {
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), http.StatusOK)
+						renewed = append(renewed, r)
+					}
 				}
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/renew", r.redemption.Credential, struct{}{}), test.wantRenew)
-			if test.wantRenew == http.StatusOK {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), http.StatusOK)
+			if len(renewed) > 0 {
+				if err := service.Close(); err != nil {
+					t.Fatal(err)
+				}
+				service = reopenPostgresNativeService(t, service)
+				for _, runner := range renewed {
+					if err := service.config.TenantRepository.ReadTenant(t.Context(), runner.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+						identity, err := reader.RunnerIdentity(t.Context(), runner.binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						if identity.OrganizationID != runner.project.OrganizationID || identity.TokenID != runner.binding.RunnerID || !identity.ExpiresAt.Equal(now.Add(runnerauth.CredentialTTL)) {
+							return errors.New("renewed runner interval changed after reopen")
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 		})
 	}
@@ -132,8 +177,7 @@ func TestRunnerEnrollmentScopeRevocationAndCollisions(t *testing.T) {
 func TestRunnerCredentialsAndRejectedProviderDataAreRedacted(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
-	path := filepath.Join(t.TempDir(), "hub.db")
-	f := newNativeFixture(t, openTestService(t, Config{DatabasePath: path, Logger: slog.New(slog.NewJSONHandler(&logs, nil))}), "", "redaction")
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}), "", "redaction")
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
 	const provider = "example-provider-key-not-for-hub"
@@ -142,13 +186,36 @@ func TestRunnerCredentialsAndRejectedProviderDataAreRedacted(t *testing.T) {
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	contents, err := os.ReadFile(path)
+	admin := usagePostgresAdmin(t, f.service)
+	rows, err := admin.QueryContext(t.Context(), "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' ORDER BY tablename")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		tables = append(tables, table)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
 	for _, value := range []string{provider, r.enrollment.Token, r.redemption.Credential} {
-		if bytes.Contains(contents, []byte(value)) || bytes.Contains(logs.Bytes(), []byte(value)) || bytes.Contains(response.Body.Bytes(), []byte(value)) {
-			t.Fatal("private value escaped into database, logs or errors")
+		for _, table := range tables {
+			var persisted bool
+			query := `SELECT EXISTS(SELECT 1 FROM public."` + strings.ReplaceAll(table, `"`, `""`) + `" t WHERE strpos(t::text,$1)>0 OR strpos(t::text,encode(convert_to($1,'UTF8'),'hex'))>0)`
+			if err := admin.QueryRowContext(t.Context(), query, value).Scan(&persisted); err != nil {
+				t.Fatal(err)
+			}
+			if persisted {
+				t.Fatalf("private value escaped into table %s", table)
+			}
+		}
+		if bytes.Contains(logs.Bytes(), []byte(value)) || bytes.Contains(response.Body.Bytes(), []byte(value)) {
+			t.Fatal("private value escaped into logs or errors")
 		}
 	}
 }

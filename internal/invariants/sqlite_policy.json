@@ -1545,9 +1545,6 @@
     "internal/hubserver/runner_update_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/runner_validation_test.go": {
-      "database_path": 2
-    },
     "internal/hubserver/runner_write_load_test.go": {
       "database_path": 1,
       "sql_pragma": 2
