@@ -128,17 +128,39 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	requireNativeStatus(t, itemResponse, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, itemResponse, &issue)
+	binding := runnerauth.NewBinding()
+	credentialID, enrollmentID := "credential_"+binding.RunnerID, "enrollment_"+binding.RunnerID
+	expires := now.Add(4 * time.Hour)
+	operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}
 	var lease leasestore.Lease
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		workItem, err := w.WorkItem(t.Context(), project.ID, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: apikey.HashToken("example_" + binding.RunnerID), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
-		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "machine", SessionID: "session", LeaseID: "lease", TTL: time.Hour})
-		return err
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credentialID, ProjectID: project.ID}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: enrollmentID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("enrollment_" + binding.RunnerID), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, binding.RunnerID, binding.MachineID, now); err != nil {
+			return err
+		}
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+			return err
+		}
+		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "session", LeaseID: "lease", TTL: time.Hour})
+		if err != nil {
+			return err
+		}
+		return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, LeaseID: lease.LeaseID, RunnerID: binding.RunnerID, AssignedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -287,8 +309,11 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		if err != nil {
 			return err
 		}
-		secondLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "machine", SessionID: "second-session", LeaseID: "second-lease", TTL: time.Hour})
-		return err
+		secondLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "second-session", LeaseID: "second-lease", TTL: time.Hour})
+		if err != nil {
+			return err
+		}
+		return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, LeaseID: secondLease.LeaseID, RunnerID: binding.RunnerID, AssignedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +467,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		t.Fatal("nested prior-event batch was accepted")
 	}
 	runnerScope := scope
-	runnerScope.credential.Runner = runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner", MachineID: "machine"}, OrganizationID: organization.ID}
+	runnerScope.credential = apiCredential{ID: credentialID, Hash: apikey.HashToken("example_" + binding.RunnerID), Scope: apiScopeWorker, NativeOnly: true, Runner: runnerauth.Identity{Binding: binding, Scope: "projects", OrganizationID: organization.ID, ProjectIDs: []tracker.ProjectID{project.ID}, Operations: operations, ExpiresAt: expires}}
 	renewRequest := tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(secondLease.FencingToken), TTLSeconds: 7200, LandingCapacity: 3}
 	renewBody, err := json.Marshal(renewRequest)
 	if err != nil {
@@ -501,8 +526,11 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		if err != nil {
 			return err
 		}
-		thirdLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "machine", SessionID: "third-session", LeaseID: "third-lease", TTL: time.Hour})
-		return err
+		thirdLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "third-session", LeaseID: "third-lease", TTL: time.Hour})
+		if err != nil {
+			return err
+		}
+		return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, LeaseID: thirdLease.LeaseID, RunnerID: binding.RunnerID, AssignedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +554,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 			LinkedAt: &conversationNow, Revision: 1,
 			Execution: conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{
 				AttemptID: cancelStart.Data.AttemptID, RunID: cancelStart.Data.RunID, LeaseID: string(thirdLease.LeaseID),
-				FencingToken: int64(thirdLease.FencingToken), RunnerID: "runner", MachineID: "machine",
+				FencingToken: int64(thirdLease.FencingToken), RunnerID: binding.RunnerID, MachineID: string(binding.MachineID),
 			}, UpdatedAt: conversationNow},
 			Preferences: conversation.DefaultPreferences(), CreatedAt: conversationNow, UpdatedAt: conversationNow,
 		})

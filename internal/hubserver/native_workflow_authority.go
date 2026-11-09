@@ -109,7 +109,7 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 		if err := (tenantNativeRunEventParticipant{service: s}).validateNativeRunEvent(ctx, w, &authority, true); err != nil {
 			return err
 		}
-		event := leasestore.AttemptEvent{ID: attempt.ID, Fence: fence, RunID: attempt.RunID, Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: authority.DispatchGeneration, PayloadObjectKey: prepared.payloadObjectKey}
+		event := leasestore.AttemptEvent{ID: attempt.ID, Fence: fence, RunID: attempt.RunID, Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: authority.DispatchGeneration, PayloadObjectKey: prepared.payloadReference.Key, PayloadReference: prepared.payloadReference}
 		stored, duplicate, err := w.RecordAttemptEvent(ctx, event)
 		if err != nil {
 			return err
