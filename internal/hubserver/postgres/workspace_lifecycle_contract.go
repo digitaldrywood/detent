@@ -12,7 +12,6 @@ type WorkspaceLifecycleReader interface {
 	WorkspaceReader
 	WorkspaceClaimSession(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (WorkspaceClaimSession, error)
 	WorkspaceSessionsByIDs(context.Context, []string) ([]WorkspaceSession, error)
-	WorkspaceSubjectActors(context.Context, tracker.ProjectID, []string) (map[string]string, error)
 	WorkspaceSessionByID(context.Context, string) (WorkspaceSession, error)
 	WorkspaceSessionByItem(context.Context, tracker.ProjectID, string) (WorkspaceSession, error)
 	WorkspaceDispatchItem(context.Context, tracker.ProjectID, string) (string, error)
@@ -21,9 +20,18 @@ type WorkspaceLifecycleReader interface {
 	ActiveWorkspaceSessions(context.Context, string, int) ([]WorkspaceSession, error)
 	NextWorkspaceMaintenanceOrganization(context.Context, string) (tracker.OrganizationID, error)
 	RecentWorkspaceSessions(context.Context, tracker.ProjectID, string, string, int) ([]WorkspaceSession, error)
+	RecentReporterWorkspaceSessions(context.Context, ReporterWorkspaceSessionsInput) ([]WorkspaceSession, error)
 }
 
 type WorkspaceClaimSession = pgquery.WorkspaceClaimSessionRow
+
+type ReporterWorkspaceSessionsInput struct {
+	ProjectID         tracker.ProjectID
+	PrincipalID       string
+	SubjectWorkItemID string
+	State             string
+	Limit             int
+}
 
 func (s *session) NextWorkspaceMaintenanceOrganization(ctx context.Context, after string) (tracker.OrganizationID, error) {
 	organization, err := s.queries.NextWorkspaceMaintenanceOrganization(ctx, after)
@@ -37,23 +45,6 @@ func (s *session) WorkspaceClaimSession(ctx context.Context, project tracker.Pro
 	}
 	row, err := s.queries.WorkspaceClaimSession(ctx, pgquery.WorkspaceClaimSessionParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: string(item)})
 	return row, mapError(ctx, err)
-}
-
-func (s *session) WorkspaceSubjectActors(ctx context.Context, project tracker.ProjectID, ids []string) (map[string]string, error) {
-	if len(ids) > corestore.MaxPageSize {
-		return nil, corestore.ErrInvalidPage
-	}
-	rows, err := s.queries.WorkspaceSubjectActors(ctx, pgquery.WorkspaceSubjectActorsParams{OrganizationID: s.organization, ProjectID: project, Column3: ids})
-	if err != nil {
-		return nil, mapError(ctx, err)
-	}
-	actors := make(map[string]string, len(rows))
-	for _, row := range rows {
-		if row.ActorPrincipalID != nil {
-			actors[string(row.NativeID)] = *row.ActorPrincipalID
-		}
-	}
-	return actors, nil
 }
 
 func (s *session) WorkspaceSessionByItem(ctx context.Context, project tracker.ProjectID, item string) (WorkspaceSession, error) {
@@ -94,6 +85,28 @@ func (s *session) RecentWorkspaceSessions(ctx context.Context, project tracker.P
 		rows, err = s.queries.WorkspaceStateRecent(ctx, pgquery.WorkspaceStateRecentParams{OrganizationID: s.organization, ProjectID: project, State: state, Limit: int32(limit)})
 	default:
 		rows, err = s.queries.WorkspaceProjectRecent(ctx, pgquery.WorkspaceProjectRecentParams{OrganizationID: s.organization, ProjectID: project, Limit: int32(limit)})
+	}
+	return rows, mapError(ctx, err)
+}
+
+func (s *session) RecentReporterWorkspaceSessions(ctx context.Context, arg ReporterWorkspaceSessionsInput) ([]WorkspaceSession, error) {
+	if err := checkPage(arg.Limit); err != nil {
+		return nil, err
+	}
+	if arg.PrincipalID == "" {
+		return nil, corestore.ErrInvalidPage
+	}
+	var rows []WorkspaceSession
+	var err error
+	switch {
+	case arg.SubjectWorkItemID != "" && arg.State != "":
+		rows, err = s.queries.ReporterWorkspaceSubjectStateRecent(ctx, pgquery.ReporterWorkspaceSubjectStateRecentParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, PrincipalID: arg.PrincipalID, SubjectWorkItemID: arg.SubjectWorkItemID, State: arg.State, PageLimit: int32(arg.Limit)})
+	case arg.SubjectWorkItemID != "":
+		rows, err = s.queries.ReporterWorkspaceSubjectRecent(ctx, pgquery.ReporterWorkspaceSubjectRecentParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, PrincipalID: arg.PrincipalID, SubjectWorkItemID: arg.SubjectWorkItemID, PageLimit: int32(arg.Limit)})
+	case arg.State != "":
+		rows, err = s.queries.ReporterWorkspaceStateRecent(ctx, pgquery.ReporterWorkspaceStateRecentParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, PrincipalID: arg.PrincipalID, State: arg.State, PageLimit: int32(arg.Limit)})
+	default:
+		rows, err = s.queries.ReporterWorkspaceProjectRecent(ctx, pgquery.ReporterWorkspaceProjectRecentParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, PrincipalID: arg.PrincipalID, PageLimit: int32(arg.Limit)})
 	}
 	return rows, mapError(ctx, err)
 }

@@ -80,6 +80,14 @@ ON CONFLICT DO NOTHING RETURNING *;
 -- name: RecentActionRuns :many
 SELECT * FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND action_id=$3 ORDER BY created_at DESC,id DESC LIMIT $4;
 
+-- name: RecentReporterActionRuns :many
+SELECT r.* FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+JOIN project_action_runs r ON r.organization_id=w.organization_id AND r.project_id=w.project_id AND r.workspace_id=w.id
+WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id)
+AND i.actor_principal_id=sqlc.arg(principal_id)::text AND sqlc.arg(principal_id)::text<>'' AND r.action_id=sqlc.arg(action_id)
+ORDER BY r.created_at DESC,r.id DESC LIMIT sqlc.arg(page_limit)::integer;
+
 -- name: RecentReadableTerminalRecordings :many
 WITH candidates AS (
 (SELECT recordings_all.* FROM workspace_terminal_recordings recordings_all

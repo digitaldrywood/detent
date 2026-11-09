@@ -230,6 +230,11 @@ func (s *Service) readActionRunRecords(ctx context.Context, scope nativeScope, a
 		if _, err := r.ProjectAction(ctx, scope.project, action); err != nil {
 			return err
 		}
+		if scope.credential.HostedRole == "reporter" {
+			var err error
+			records, err = r.RecentReporterActionRuns(ctx, postgres.ReporterActionRunsInput{OrganizationID: scope.organization, ProjectID: scope.project, ActionID: action, PrincipalID: scope.actor().PrincipalID, PageLimit: int32(min(max(limit, 1), workspaceListLimit))})
+			return err
+		}
 		rows, err := r.RecentActionRuns(ctx, postgres.ActionRunsInput{OrganizationID: scope.organization, ProjectID: scope.project, ActionID: action, Limit: int32(min(max(limit, 1), workspaceListLimit))})
 		if err != nil {
 			return err
@@ -242,13 +247,9 @@ func (s *Service) readActionRunRecords(ctx context.Context, scope nativeScope, a
 		if err != nil {
 			return err
 		}
-		visible, err := workspaceVisibleSubjects(ctx, r, scope, sessions)
-		if err != nil {
-			return err
-		}
 		allowed := make(map[string]bool, len(sessions))
 		for _, session := range sessions {
-			allowed[session.ID] = session.ProjectID == scope.project && (visible == nil || visible[session.SubjectWorkItemID])
+			allowed[session.ID] = session.ProjectID == scope.project
 		}
 		for _, row := range rows {
 			if allowed[row.WorkspaceID] {

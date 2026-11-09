@@ -379,18 +379,22 @@ func (s *Service) readWorkspaceRecords(ctx context.Context, scope nativeScope, i
 				return err
 			}
 		}
+		if scope.credential.HostedRole == "reporter" {
+			rows, err := r.RecentReporterWorkspaceSessions(ctx, postgres.ReporterWorkspaceSessionsInput{ProjectID: scope.project, PrincipalID: scope.actor().PrincipalID, SubjectWorkItemID: item, State: state, Limit: limit})
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				records = append(records, workspaceFromRecord(row))
+			}
+			return nil
+		}
 		rows, err := r.RecentWorkspaceSessions(ctx, scope.project, item, state, limit)
 		if err != nil {
 			return err
 		}
-		visible, err := workspaceVisibleSubjects(ctx, r, scope, rows)
-		if err != nil {
-			return err
-		}
 		for _, row := range rows {
-			if visible == nil || visible[row.SubjectWorkItemID] {
-				records = append(records, workspaceFromRecord(row))
-			}
+			records = append(records, workspaceFromRecord(row))
 		}
 		return nil
 	})
@@ -424,25 +428,6 @@ func (s *Service) readWorkspaceRecords(ctx context.Context, scope nativeScope, i
 		}{Session: response.Workspaces[0], ChangeSequence: sequence})
 	}
 	return json.Marshal(response)
-}
-
-func workspaceVisibleSubjects(ctx context.Context, r workspaceReader, scope nativeScope, rows []postgres.WorkspaceSession) (map[string]bool, error) {
-	if scope.credential.HostedRole != "reporter" {
-		return nil, nil
-	}
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		ids = append(ids, row.SubjectWorkItemID)
-	}
-	actors, err := r.WorkspaceSubjectActors(ctx, scope.project, ids)
-	if err != nil {
-		return nil, err
-	}
-	visible := make(map[string]bool, len(actors))
-	for id, principal := range actors {
-		visible[id] = scope.reporterOwns(tracker.Actor{PrincipalID: principal})
-	}
-	return visible, nil
 }
 
 func (w *workspaceService) transitionRecord(ctx context.Context, writer workspaceWriter, record workspaceRecord, to, reason string, now time.Time) (workspaceRecord, error) {

@@ -12,6 +12,7 @@ import (
 type CreateReportedActionRunInput = pgquery.CreateReportedActionRunParams
 
 type FinishActionRunInput = pgquery.FinishActionRunParams
+type ReporterActionRunsInput = pgquery.RecentReporterActionRunsParams
 type TerminalRecordingInput = pgquery.TerminalRecordingByIDParams
 type ReadableTerminalRecordingsInput = pgquery.RecentReadableTerminalRecordingsParams
 type ReferenceRelayRecordingInput = pgquery.ReferenceRelayRecordingParams
@@ -20,6 +21,7 @@ type DeletedProjectAction = pgquery.DeletedProjectActionsRow
 type RelayActionLifecycleReader interface {
 	RelayActionReader
 	RecentActionRuns(context.Context, ActionRunsInput) ([]ActionRun, error)
+	RecentReporterActionRuns(context.Context, ReporterActionRunsInput) ([]ActionRun, error)
 	RecentReadableTerminalRecordings(context.Context, ReadableTerminalRecordingsInput) ([]TerminalRecording, error)
 	RecentRelaySessions(context.Context, RelaySessionsInput) ([]RelaySession, error)
 	ActionRunByID(context.Context, string) (ActionRun, error)
@@ -123,6 +125,20 @@ func (s *session) RecentActionRuns(ctx context.Context, arg ActionRunsInput) ([]
 		return nil, err
 	}
 	rows, err := s.queries.RecentActionRuns(ctx, pgquery.RecentActionRunsParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, ActionID: arg.ActionID, Limit: arg.Limit})
+	return rows, mapError(ctx, err)
+}
+
+func (s *session) RecentReporterActionRuns(ctx context.Context, arg ReporterActionRunsInput) ([]ActionRun, error) {
+	if err := s.checkOrganization(arg.OrganizationID); err != nil {
+		return nil, err
+	}
+	if err := checkPage(int(arg.PageLimit)); err != nil {
+		return nil, err
+	}
+	if arg.PrincipalID == "" {
+		return nil, corestore.ErrInvalidPage
+	}
+	rows, err := s.queries.RecentReporterActionRuns(ctx, arg)
 	return rows, mapError(ctx, err)
 }
 

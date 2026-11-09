@@ -1068,6 +1068,78 @@ func (q *Queries) RecentRelaySessions(ctx context.Context, arg RecentRelaySessio
 	return items, nil
 }
 
+const recentReporterActionRuns = `-- name: RecentReporterActionRuns :many
+SELECT r.organization_id, r.project_id, r.id, r.action_id, r.workspace_id, r.command_object_key, r.command_sha256, r.command_bytes, r.command_content_bytes, r.status, r.exit_code, r.reason, r.started_at, r.finished_at, r.output_object_key, r.output_sha256, r.output_bytes, r.output_content_bytes, r.output_sequence, r.truncated, r.claimed_by, r.lease_id, r.fencing_token, r.created_by, r.revision, r.created_at, r.updated_at, r.claimed_stream_id FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+JOIN project_action_runs r ON r.organization_id=w.organization_id AND r.project_id=w.project_id AND r.workspace_id=w.id
+WHERE i.organization_id=$1 AND i.project_id=$2
+AND i.actor_principal_id=$3::text AND $3::text<>'' AND r.action_id=$4
+ORDER BY r.created_at DESC,r.id DESC LIMIT $5::integer
+`
+
+type RecentReporterActionRunsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	PrincipalID    string
+	ActionID       string
+	PageLimit      int32
+}
+
+func (q *Queries) RecentReporterActionRuns(ctx context.Context, arg RecentReporterActionRunsParams) ([]ProjectActionRun, error) {
+	rows, err := q.db.Query(ctx, recentReporterActionRuns,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.PrincipalID,
+		arg.ActionID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectActionRun{}
+	for rows.Next() {
+		var i ProjectActionRun
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.ActionID,
+			&i.WorkspaceID,
+			&i.CommandObjectKey,
+			&i.CommandSha256,
+			&i.CommandBytes,
+			&i.CommandContentBytes,
+			&i.Status,
+			&i.ExitCode,
+			&i.Reason,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.OutputObjectKey,
+			&i.OutputSha256,
+			&i.OutputBytes,
+			&i.OutputContentBytes,
+			&i.OutputSequence,
+			&i.Truncated,
+			&i.ClaimedBy,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClaimedStreamID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const redeemRelayTicket = `-- name: RedeemRelayTicket :one
 UPDATE workspace_relay_tickets SET redeemed_at=$1::timestamptz
 WHERE organization_id=$2 AND project_id=$3 AND digest=$4 AND session_id=$5 AND principal_id=$6 AND subject=$7 AND redeemed_at IS NULL AND expires_at>$1 AND created_at<=$1 RETURNING organization_id, project_id, digest, workspace_id, session_id, principal_id, subject, support_reason, created_at, expires_at, redeemed_at

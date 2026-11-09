@@ -64,11 +64,36 @@ SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND 
 -- name: WorkspaceSubjectStateRecent :many
 SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND subject_work_item_id=$3 AND state=$4 ORDER BY created_at DESC,id DESC LIMIT $5;
 
+-- name: ReporterWorkspaceProjectRecent :many
+SELECT w.* FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id)
+AND i.actor_principal_id=sqlc.arg(principal_id)::text AND sqlc.arg(principal_id)::text<>''
+ORDER BY w.created_at DESC,w.id DESC LIMIT sqlc.arg(page_limit)::integer;
+
+-- name: ReporterWorkspaceStateRecent :many
+SELECT w.* FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id)
+AND i.actor_principal_id=sqlc.arg(principal_id)::text AND sqlc.arg(principal_id)::text<>'' AND w.state=sqlc.arg(state)
+ORDER BY w.created_at DESC,w.id DESC LIMIT sqlc.arg(page_limit)::integer;
+
+-- name: ReporterWorkspaceSubjectRecent :many
+SELECT w.* FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id)
+AND i.actor_principal_id=sqlc.arg(principal_id)::text AND sqlc.arg(principal_id)::text<>'' AND w.subject_work_item_id=sqlc.arg(subject_work_item_id)
+ORDER BY w.created_at DESC,w.id DESC LIMIT sqlc.arg(page_limit)::integer;
+
+-- name: ReporterWorkspaceSubjectStateRecent :many
+SELECT w.* FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id)
+AND i.actor_principal_id=sqlc.arg(principal_id)::text AND sqlc.arg(principal_id)::text<>'' AND w.subject_work_item_id=sqlc.arg(subject_work_item_id) AND w.state=sqlc.arg(state)
+ORDER BY w.created_at DESC,w.id DESC LIMIT sqlc.arg(page_limit)::integer;
+
 -- name: WorkspaceSessionsByIDs :many
 SELECT * FROM workspace_sessions WHERE organization_id=$1 AND id=ANY($2::text[]) ORDER BY id;
-
--- name: WorkspaceSubjectActors :many
-SELECT native_id, actor_principal_id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=ANY($3::text[]);
 
 -- name: WorkspaceClaimSession :one
 SELECT sqlc.embed(s),i.closed_at

@@ -401,6 +401,302 @@ func (q *Queries) OpenWorkspaceCounts(ctx context.Context, arg OpenWorkspaceCoun
 	return i, err
 }
 
+const reporterWorkspaceProjectRecent = `-- name: ReporterWorkspaceProjectRecent :many
+SELECT w.organization_id, w.project_id, w.id, w.subject_work_item_id, w.attempt_id, w.ref, w.head_sha, w.runner_id, w.machine_id, w.lease_id, w.fencing_token, w.state, w.reason, w.requires, w.capabilities, w.isolation, w.worktree, w.machine_hostname, w.worktree_path, w.read_only, w.idle_timeout_seconds, w.expires_at, w.requested_expires_at, w.opened_at, w.last_activity_at, w.last_heartbeat_at, w.rebind_deadline, w.created_by, w.revision, w.created_at, w.updated_at FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+WHERE i.organization_id=$1 AND i.project_id=$2
+AND i.actor_principal_id=$3::text AND $3::text<>''
+ORDER BY w.created_at DESC,w.id DESC LIMIT $4::integer
+`
+
+type ReporterWorkspaceProjectRecentParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	PrincipalID    string
+	PageLimit      int32
+}
+
+func (q *Queries) ReporterWorkspaceProjectRecent(ctx context.Context, arg ReporterWorkspaceProjectRecentParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, reporterWorkspaceProjectRecent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.PrincipalID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reporterWorkspaceStateRecent = `-- name: ReporterWorkspaceStateRecent :many
+SELECT w.organization_id, w.project_id, w.id, w.subject_work_item_id, w.attempt_id, w.ref, w.head_sha, w.runner_id, w.machine_id, w.lease_id, w.fencing_token, w.state, w.reason, w.requires, w.capabilities, w.isolation, w.worktree, w.machine_hostname, w.worktree_path, w.read_only, w.idle_timeout_seconds, w.expires_at, w.requested_expires_at, w.opened_at, w.last_activity_at, w.last_heartbeat_at, w.rebind_deadline, w.created_by, w.revision, w.created_at, w.updated_at FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+WHERE i.organization_id=$1 AND i.project_id=$2
+AND i.actor_principal_id=$3::text AND $3::text<>'' AND w.state=$4
+ORDER BY w.created_at DESC,w.id DESC LIMIT $5::integer
+`
+
+type ReporterWorkspaceStateRecentParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	PrincipalID    string
+	State          string
+	PageLimit      int32
+}
+
+func (q *Queries) ReporterWorkspaceStateRecent(ctx context.Context, arg ReporterWorkspaceStateRecentParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, reporterWorkspaceStateRecent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.PrincipalID,
+		arg.State,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reporterWorkspaceSubjectRecent = `-- name: ReporterWorkspaceSubjectRecent :many
+SELECT w.organization_id, w.project_id, w.id, w.subject_work_item_id, w.attempt_id, w.ref, w.head_sha, w.runner_id, w.machine_id, w.lease_id, w.fencing_token, w.state, w.reason, w.requires, w.capabilities, w.isolation, w.worktree, w.machine_hostname, w.worktree_path, w.read_only, w.idle_timeout_seconds, w.expires_at, w.requested_expires_at, w.opened_at, w.last_activity_at, w.last_heartbeat_at, w.rebind_deadline, w.created_by, w.revision, w.created_at, w.updated_at FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+WHERE i.organization_id=$1 AND i.project_id=$2
+AND i.actor_principal_id=$3::text AND $3::text<>'' AND w.subject_work_item_id=$4
+ORDER BY w.created_at DESC,w.id DESC LIMIT $5::integer
+`
+
+type ReporterWorkspaceSubjectRecentParams struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	PrincipalID       string
+	SubjectWorkItemID string
+	PageLimit         int32
+}
+
+func (q *Queries) ReporterWorkspaceSubjectRecent(ctx context.Context, arg ReporterWorkspaceSubjectRecentParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, reporterWorkspaceSubjectRecent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.PrincipalID,
+		arg.SubjectWorkItemID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reporterWorkspaceSubjectStateRecent = `-- name: ReporterWorkspaceSubjectStateRecent :many
+SELECT w.organization_id, w.project_id, w.id, w.subject_work_item_id, w.attempt_id, w.ref, w.head_sha, w.runner_id, w.machine_id, w.lease_id, w.fencing_token, w.state, w.reason, w.requires, w.capabilities, w.isolation, w.worktree, w.machine_hostname, w.worktree_path, w.read_only, w.idle_timeout_seconds, w.expires_at, w.requested_expires_at, w.opened_at, w.last_activity_at, w.last_heartbeat_at, w.rebind_deadline, w.created_by, w.revision, w.created_at, w.updated_at FROM issues i
+JOIN workspace_sessions w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.subject_work_item_id=i.native_id
+WHERE i.organization_id=$1 AND i.project_id=$2
+AND i.actor_principal_id=$3::text AND $3::text<>'' AND w.subject_work_item_id=$4 AND w.state=$5
+ORDER BY w.created_at DESC,w.id DESC LIMIT $6::integer
+`
+
+type ReporterWorkspaceSubjectStateRecentParams struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	PrincipalID       string
+	SubjectWorkItemID string
+	State             string
+	PageLimit         int32
+}
+
+func (q *Queries) ReporterWorkspaceSubjectStateRecent(ctx context.Context, arg ReporterWorkspaceSubjectStateRecentParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, reporterWorkspaceSubjectStateRecent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.PrincipalID,
+		arg.SubjectWorkItemID,
+		arg.State,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateWorkspaceSession = `-- name: UpdateWorkspaceSession :one
 UPDATE workspace_sessions SET state=$1,reason=$2,runner_id=$3,machine_id=$4,lease_id=$5,fencing_token=$6,head_sha=$7,capabilities=$8::text[],isolation=$9,worktree=$10,machine_hostname=$11,worktree_path=$12,read_only=$13,opened_at=$14,last_activity_at=$15,last_heartbeat_at=$16,rebind_deadline=$17,revision=revision+1,updated_at=$18
 WHERE organization_id=$19 AND project_id=$20 AND id=$21 AND revision=$22 AND runner_id=$23 AND lease_id=$24 AND fencing_token=$25
@@ -978,41 +1274,6 @@ func (q *Queries) WorkspaceStateRecent(ctx context.Context, arg WorkspaceStateRe
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const workspaceSubjectActors = `-- name: WorkspaceSubjectActors :many
-SELECT native_id, actor_principal_id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=ANY($3::text[])
-`
-
-type WorkspaceSubjectActorsParams struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	Column3        []string
-}
-
-type WorkspaceSubjectActorsRow struct {
-	NativeID         tracker.NativeWorkItemID
-	ActorPrincipalID *string
-}
-
-func (q *Queries) WorkspaceSubjectActors(ctx context.Context, arg WorkspaceSubjectActorsParams) ([]WorkspaceSubjectActorsRow, error) {
-	rows, err := q.db.Query(ctx, workspaceSubjectActors, arg.OrganizationID, arg.ProjectID, arg.Column3)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []WorkspaceSubjectActorsRow{}
-	for rows.Next() {
-		var i WorkspaceSubjectActorsRow
-		if err := rows.Scan(&i.NativeID, &i.ActorPrincipalID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
