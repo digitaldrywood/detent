@@ -5,6 +5,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 )
@@ -47,6 +48,10 @@ func (f *runnerEventSession) SetAttemptClaimFacts(ctx context.Context, facts lea
 		f.latest.value.ClaimDisposition = new(facts.Disposition)
 	}
 	return nil
+}
+
+func (f *runnerEventSession) ArchiveObjectByKey(ctx context.Context, key string) (artifactstore.ArchiveObject, error) {
+	return f.session.ArchiveObjectByKey(ctx, key)
 }
 
 func sameClaimCheckpoint(left, right *string) bool {

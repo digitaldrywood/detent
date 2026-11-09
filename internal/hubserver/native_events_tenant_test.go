@@ -947,6 +947,14 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 					if scenario == "dispatch start" && response.Code == http.StatusOK {
 						next := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "after-start", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: issue.Revision + 1, State: "Todo", Reason: "worker_progress"}
 						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/workflow", token, next), http.StatusOK)
+						checkpoint := start
+						checkpoint.IdempotencyKey, checkpoint.Type, checkpoint.Data.Sequence = "checkpoint", "run.checkpointed", 2
+						checkpoint.Data.Handoff = nativeTestCheckpoint()
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, checkpoint), http.StatusOK)
+						observation := start
+						observation.IdempotencyKey, observation.Type, observation.Data.Sequence = "after-checkpoint", "run.observed", 3
+						observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.now().UTC()}
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, observation), http.StatusOK)
 					}
 					response = performHubAPIRequest(t, service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/release", token, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"})
 					requireNativeStatus(t, response, http.StatusNoContent)
