@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -48,23 +50,56 @@ func (s *session) HealthUsage(ctx context.Context, project tracker.ProjectID, ba
 	if err := healthObservationLimit(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `WITH usage AS (
- SELECT project_id,attempt_id,period,cost_estimate FROM report_usage_current WHERE organization_id=$1 AND project_id=$2
- UNION ALL SELECT u.project_id,u.attempt_id,u.period,u.cost_estimate FROM attempt_usage u WHERE u.organization_id=$1 AND u.project_id=$2 AND upper(u.currency)='USD' AND NOT EXISTS(SELECT 1 FROM report_usage_current c WHERE c.organization_id=u.organization_id AND c.attempt_id=u.attempt_id)
- ) SELECT i.native_id,u.attempt_id,sum(u.cost_estimate),coalesce(sum(u.cost_estimate) FILTER(WHERE u.period<=$3),0),count(*) FILTER(WHERE u.period<=$3)>0 FROM usage u JOIN native_attempts a ON a.organization_id=$1 AND a.id=u.attempt_id JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id AND i.project_id=u.project_id WHERE u.period<=$4 GROUP BY i.native_id,u.attempt_id ORDER BY i.native_id,u.attempt_id LIMIT $5`, s.organization, project, baseline, now, limit)
+	rows, err := s.db.Query(ctx, `WITH current_input AS MATERIALIZED (
+ SELECT attempt_id,period,cost_estimate FROM report_usage_current WHERE organization_id=$1 AND project_id=$2 AND period<=$4 ORDER BY period,source_key LIMIT 10001
+ ), legacy_input AS MATERIALIZED (
+ SELECT attempt_id,period,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND project_id=$2 AND upper(currency)='USD' AND period<=$4 ORDER BY period,attempt_id LIMIT 10001
+ ), overflow AS (
+ SELECT (SELECT count(*) FROM current_input)+(SELECT count(*) FROM legacy_input)>10000 AS exceeded
+ ), usage AS (
+ SELECT attempt_id,period,cost_estimate FROM current_input
+ UNION ALL SELECT u.attempt_id,u.period,u.cost_estimate FROM legacy_input u WHERE NOT EXISTS(SELECT 1 FROM report_usage_current c WHERE c.organization_id=$1 AND c.attempt_id=u.attempt_id)
+ ) SELECT i.native_id,u.attempt_id,u.cost_estimate,u.period<=$3,false FROM usage u JOIN native_attempts a ON a.organization_id=$1 AND a.id=u.attempt_id JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id AND i.project_id=$2 CROSS JOIN overflow WHERE NOT overflow.exceeded
+ UNION ALL SELECT '','',0,false,true FROM overflow WHERE exceeded`, s.organization, project, baseline, now)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
 	defer rows.Close()
-	var result []healthstore.UsageObservation
+	type key struct{ item, attempt string }
+	values := map[key]healthstore.UsageObservation{}
 	for rows.Next() {
-		var row healthstore.UsageObservation
-		if err := rows.Scan(&row.Item, &row.AttemptID, &row.Cost, &row.BaselineCost, &row.BaselineKnown); err != nil {
+		var id key
+		var cost float64
+		var baselineKnown, overflow bool
+		if err := rows.Scan(&id.item, &id.attempt, &cost, &baselineKnown, &overflow); err != nil {
 			return nil, mapError(ctx, err)
 		}
-		result = append(result, row)
+		if overflow {
+			return nil, corestore.ErrInvalidPage
+		}
+		value := values[id]
+		value.Item, value.AttemptID = id.item, id.attempt
+		value.Cost += cost
+		if baselineKnown {
+			value.BaselineKnown = true
+			value.BaselineCost += cost
+		}
+		values[id] = value
 	}
-	return result, mapError(ctx, rows.Err())
+	if err := rows.Err(); err != nil {
+		return nil, mapError(ctx, err)
+	}
+	result := make([]healthstore.UsageObservation, 0, len(values))
+	for _, value := range values {
+		result = append(result, value)
+	}
+	slices.SortFunc(result, func(a, b healthstore.UsageObservation) int {
+		if order := strings.Compare(a.Item, b.Item); order != 0 {
+			return order
+		}
+		return strings.Compare(a.AttemptID, b.AttemptID)
+	})
+	return result[:min(len(result), limit)], nil
 }
 
 func (s *session) HealthRunners(ctx context.Context, after string, now time.Time, limit int) ([]healthstore.RunnerObservation, error) {

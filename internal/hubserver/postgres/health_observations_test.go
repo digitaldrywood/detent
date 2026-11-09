@@ -1,13 +1,19 @@
 package postgres_test
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -33,6 +39,9 @@ func TestHealthUsageDistinguishesMissingAndZeroBaseline(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) VALUES($1,$2,$3,$4,'example','example',0,0,0,1000000,'EUR',$4)`, org, project, attempt.ID, now.Add(-2*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
 				rows, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10)
 				if err != nil {
@@ -40,6 +49,54 @@ func TestHealthUsageDistinguishesMissingAndZeroBaseline(t *testing.T) {
 				}
 				if len(rows) != 1 || rows[0].Item != fmt.Sprintf("wi_%d", id) || rows[0].Cost != float64(100+index) || rows[0].BaselineCost != 0 || rows[0].BaselineKnown != (id == 1) {
 					t.Fatalf("organization=%s project=%s usage=%+v", org, project, rows)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			current := billingCostObservation(t, org, project, fmt.Sprintf("health-current-%d", id), attempt.ID, "runner_api", now.Add(-3*time.Hour), now.Add(-2*time.Hour), 2000000)
+			current.Observation.AttemptID = attempt.ID
+			current.Observation.WorkItemID = fmt.Sprintf("wi_%d", id)
+			raw, err := json.Marshal(current.Observation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			archive, _, err := attachment.PrepareArchive(string(org), 1, bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			current.Reference = billingstore.AuditReferenceFromArchive(archive)
+			if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+				if _, err := w.RecordBillingCosts(t.Context(), []billingstore.CostObservation{current}); err != nil {
+					return err
+				}
+				return w.(reportstore.UsageWriter).RefreshReportUsage(t.Context(), []billingstore.CostObservation{current})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			remaining := 9998
+			if id == 1 {
+				remaining--
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,$2,$3,$4::timestamptz-n*interval '1 millisecond','example','example',0,0,0,0,'USD',$4 FROM generate_series(1,$5::integer) n`, org, project, attempt.ID, now.Add(-24*time.Hour), remaining); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
+				rows, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10)
+				if err != nil || len(rows) != 1 || rows[0].Cost != 2 || rows[0].BaselineCost != 2 || !rows[0].BaselineKnown {
+					t.Fatalf("organization=%s project=%s usage at source boundary=%+v err=%v", org, project, rows, err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) VALUES($1,$2,$3,$4,'example','example',0,0,0,0,'USD',$4)`, org, project, attempt.ID, now.Add(-48*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
+				_, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10)
+				if !errors.Is(err, corestore.ErrInvalidPage) {
+					t.Fatalf("organization=%s project=%s usage source overflow err=%v", org, project, err)
 				}
 				return nil
 			}); err != nil {
