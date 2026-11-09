@@ -777,7 +777,7 @@ func (s *Service) spritePlacementScopeRecord(ctx context.Context, scope nativeSc
 	counted := map[string]bool{}
 	slots := map[string]bool{}
 	capacity := newPlacementCapacity()
-	members, err := s.readSpritePoolRecord(ctx, scope)
+	members, err := s.readSpritePoolFactsRecord(ctx, scope)
 	if err != nil {
 		return result, err
 	}

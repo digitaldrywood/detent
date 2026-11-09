@@ -2590,7 +2590,8 @@ func TestProjectSpriteLoginReadiness(t *testing.T) {
 type spriteCountingRunDetails struct {
 	attachment.DetailStore
 	attachment.CanonicalDetailStore
-	reads atomic.Int64
+	reads      atomic.Int64
+	unreadable map[string]bool
 }
 
 func (s *spriteCountingRunDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
@@ -2600,7 +2601,62 @@ func (s *spriteCountingRunDetails) ReadDetail(ctx context.Context, organization 
 
 func (s *spriteCountingRunDetails) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
 	s.reads.Add(1)
+	if s.unreadable[key] {
+		return nil, errors.New("historical log unavailable")
+	}
 	return s.CanonicalDetailStore.ReadCanonicalDetail(ctx, organization, project, key)
+}
+
+func TestSpritePoolRetiresWithoutHistoricalBootstrapLogs(t *testing.T) {
+	f, scope, provider := newSpritePoolFixture(t, "")
+	if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
+		t.Fatal(err)
+	}
+	view, err := f.service.readSpritePool(t.Context(), scope)
+	if err != nil || len(view.Members) != 2 {
+		t.Fatalf("provisioned members=%d error=%v", len(view.Members), err)
+	}
+	store := &spriteCountingRunDetails{DetailStore: f.service.runDetailStore(), CanonicalDetailStore: f.service.runDetailStore().(attachment.CanonicalDetailStore), unreadable: map[string]bool{}}
+	if err := f.service.database.postgres.ReadSprite(t.Context(), scope.organization, corestore.Serving, func(r postgres.SpriteReader) error {
+		for _, member := range view.Members {
+			operations, err := r.SpriteMemberOperations(t.Context(), member.Name)
+			if err != nil {
+				return err
+			}
+			for _, operation := range operations {
+				store.unreadable[*operation.ReceiptObjectKey] = true
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setSpriteAllocationFixture(t, f, 0, 0)
+	updateSpriteMembersFixture(t, f, func(member *runnerstore.SpriteMembership) { member.IdleSince = f.service.config.now().Add(-time.Hour) })
+	f.service.config.RunDetails = store
+	if _, err := f.service.readSpritePool(t.Context(), scope); err == nil {
+		t.Fatal("public bootstrap log read accepted unavailable history")
+	}
+	if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+		t.Fatalf("historical bootstrap logs blocked retirement: %v", err)
+	}
+	if len(provider.deleted) != 2 {
+		t.Fatalf("retired %d members, want 2", len(provider.deleted))
+	}
+	if err := f.service.database.postgres.ReadSprite(t.Context(), scope.organization, corestore.Serving, func(r postgres.SpriteReader) error {
+		for _, member := range view.Members {
+			row, err := r.SpriteMember(t.Context(), member.Name)
+			if err != nil {
+				return err
+			}
+			if row.State != "deleted" {
+				t.Fatalf("retired member state=%s", row.State)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {

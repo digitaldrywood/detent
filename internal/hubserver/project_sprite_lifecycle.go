@@ -1380,7 +1380,7 @@ func (s *Service) scaleSpritePoolRecord(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return err
 	}
-	view, err := s.readSpritePoolRecord(ctx, scope)
+	view, err := s.readSpritePoolFactsRecord(ctx, scope)
 	if err != nil {
 		return err
 	}
@@ -1408,7 +1408,7 @@ func (s *Service) scaleSpritePoolRecord(ctx context.Context, scope nativeScope, 
 		}
 	}
 	if expired > 0 {
-		view, err = s.readSpritePoolRecord(ctx, scope)
+		view, err = s.readSpritePoolFactsRecord(ctx, scope)
 		if err != nil {
 			return errors.Join(operationErrors, err)
 		}
@@ -1438,7 +1438,7 @@ func (s *Service) scaleSpritePoolRecord(ctx context.Context, scope nativeScope, 
 			retired++
 		}
 		if decision.Delete > 0 {
-			view, err = s.readSpritePoolRecord(ctx, scope)
+			view, err = s.readSpritePoolFactsRecord(ctx, scope)
 			if err != nil {
 				return errors.Join(operationErrors, err)
 			}

@@ -961,6 +961,21 @@ func spritePoolInvalid(message string) error {
 }
 
 func (s *Service) readSpritePoolRecord(ctx context.Context, scope nativeScope) (spritePoolView, error) {
+	view, err := s.readSpritePoolFactsRecord(ctx, scope)
+	if err != nil {
+		return view, err
+	}
+	for i := range view.Members {
+		log, err := s.spriteMemberLogRecord(ctx, scope.organization, view.Members[i].Name)
+		if err != nil {
+			return view, err
+		}
+		view.Members[i].BootstrapLog = log
+	}
+	return view, nil
+}
+
+func (s *Service) readSpritePoolFactsRecord(ctx context.Context, scope nativeScope) (spritePoolView, error) {
 	settings, _, err := s.spritePoolSettingsRecord(ctx, scope)
 	view := spritePoolView{spritePoolSettings: settings, Members: []spritePoolMember{}}
 	if err != nil {
@@ -989,11 +1004,6 @@ func (s *Service) readSpritePoolRecord(ctx context.Context, scope nativeScope) (
 		}
 		for _, entry := range page {
 			m := entry.RunnerSpriteMembership
-			log, err := s.spriteMemberLogRecord(ctx, scope.organization, m.Name)
-			if err != nil {
-				return view, err
-			}
-			m.BootstrapLog = log
 			view.Members = append(view.Members, spritePoolMember{Name: m.Name, AllocationProjectID: tracker.ProjectID(m.AllocationProjectID), State: m.State, BootstrapLog: m.BootstrapLog, RunnerID: entry.RunnerID, EnrollmentID: m.EnrollmentID, IdleSince: m.IdleSince})
 			cursor = postgres.SpriteMemberCursor{CreatedAt: m.CreatedAt, Name: m.Name}
 		}
