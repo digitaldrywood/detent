@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *session) EnqueueGitHubOutbound(ctx context.Context, row projectstore.GitHubOutbound) error {
@@ -41,9 +42,15 @@ func (s *session) ClaimGitHubOutbound(ctx context.Context, now, until time.Time,
 	if lease == "" || !until.After(now) {
 		return projectstore.GitHubOutbound{}, eventstore.ErrInvalidRecord
 	}
-	return s.scanGitHubOutbound(s.db.QueryRow(ctx, `WITH candidate AS (SELECT id FROM github_outbound WHERE organization_id=$1 AND status<>'completed' AND next_attempt_at<=$2 ORDER BY next_attempt_at,id LIMIT 1 FOR UPDATE SKIP LOCKED)
-UPDATE github_outbound o SET status='processing',lease_id=$3,next_attempt_at=$4,attempts=attempts+1 FROM candidate c WHERE o.organization_id=$1 AND o.id=c.id
-RETURNING `+gitHubOutboundColumns, s.organization, now, lease, until), ctx)
+	var id int64
+	var project tracker.ProjectID
+	if err := s.db.QueryRow(ctx, `SELECT id,project_id FROM github_outbound WHERE organization_id=$1 AND status<>'completed' AND next_attempt_at<=$2 ORDER BY next_attempt_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`, s.organization, now).Scan(&id, &project); err != nil {
+		return projectstore.GitHubOutbound{}, mapError(ctx, err)
+	}
+	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL FOR SHARE SKIP LOCKED`, s.organization, project).Scan(&project); err != nil {
+		return projectstore.GitHubOutbound{}, mapError(ctx, err)
+	}
+	return s.scanGitHubOutbound(s.db.QueryRow(ctx, `UPDATE github_outbound o SET status='processing',lease_id=$3,next_attempt_at=$4,attempts=attempts+1 WHERE o.organization_id=$1 AND o.id=$2 RETURNING `+gitHubOutboundColumns, s.organization, id, lease, until), ctx)
 }
 
 func (s *session) RenewGitHubOutbound(ctx context.Context, id int64, lease string, now, until time.Time, writing bool) error {

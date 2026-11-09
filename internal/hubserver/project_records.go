@@ -116,6 +116,9 @@ func (s *Service) recheckProjectRecordMutation(ctx context.Context, scope native
 }
 
 func projectRecordError(err error) error {
+	if errors.Is(err, projectstore.ErrIntegrationActiveWork) {
+		return nativePublicInvalid("Finish active leases and processing GitHub writes before changing integration authority")
+	}
 	if errors.Is(err, corestore.ErrInvalidRelationship) {
 		return nativePublicInvalid("Relationship type, operation, or endpoints are invalid")
 	}
@@ -395,7 +398,7 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 			}
 		default:
 			if request, ok := input.(updateProjectIntegrationRequest); ok && projectIntegrationChanges(current, request) {
-				if err := w.RequireProjectIdle(ctx, scope.project, s.config.now()); err != nil {
+				if err := w.RequireProjectIntegrationIdle(ctx, scope.project, s.config.now()); err != nil {
 					return err
 				}
 			}

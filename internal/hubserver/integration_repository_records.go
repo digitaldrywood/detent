@@ -67,8 +67,8 @@ func (s *Service) bindCheckoutRecordCommand(ctx context.Context, scope nativeSco
 		if !changed {
 			return nil
 		}
-		if err := w.RequireProjectIdle(ctx, scope.project, s.config.now()); err != nil {
-			if errors.Is(err, projectstore.ErrActiveWork) {
+		if err := w.RequireProjectIntegrationIdle(ctx, scope.project, s.config.now()); err != nil {
+			if errors.Is(err, projectstore.ErrIntegrationActiveWork) {
 				return repositoryBindingRefusal("repository_binding_busy", "Finish active leases before changing integration authority")
 			}
 			return err
@@ -130,7 +130,7 @@ func (s *Service) bindGitHubRepositoryRecordCommand(ctx context.Context, scope n
 		if latest.Settings.Revision != current.Settings.Revision {
 			return nativeConflict(tracker.Revision(latest.Settings.Revision))
 		}
-		if err := w.RequireProjectIdle(ctx, scope.project, s.config.now()); err != nil {
+		if err := w.RequireProjectIntegrationIdle(ctx, scope.project, s.config.now()); err != nil {
 			return err
 		}
 		_, err = w.UpdateProjectRecord(ctx, planned)

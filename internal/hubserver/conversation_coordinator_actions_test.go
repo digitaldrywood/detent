@@ -710,7 +710,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					if coordinatorSpriteMutation(tool) {
 						_, err = db.ExecContext(t.Context(), "UPDATE organization_sprite_pools SET revision=revision+1 WHERE organization_id='org_security'")
 					} else if tool == "update_project_integration" {
-						coordinatorActionProject(t, f, func(p *projectstore.Record) { p.Settings.Intake = "manual" })
+						coordinatorActionProject(t, f, func(*projectstore.Record) {})
 					} else if tool != operatortool.AddComment {
 						staleID := string(id)
 						if tool == string(chat.ActionArchiveItems) {

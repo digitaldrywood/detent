@@ -16,6 +16,7 @@ import (
 )
 
 var ErrActiveWork = errors.New("project has active work")
+var ErrIntegrationActiveWork = errors.New("project has active integration work")
 var ErrStateInUse = errors.New("workflow states are used by work items")
 var ErrInvalidOnboardingProgress = errors.New("project onboarding progress is invalid")
 
@@ -82,6 +83,7 @@ type Writer interface {
 	UpdateProjectContent(context.Context, tracker.ProjectID, int64, bool) error
 	UpdateProjectModel(context.Context, Settings) error
 	RequireProjectIdle(context.Context, tracker.ProjectID, time.Time) error
+	RequireProjectIntegrationIdle(context.Context, tracker.ProjectID, time.Time) error
 	UpdateProjectSlug(context.Context, tracker.ProjectID, string, string) error
 }
 
