@@ -859,7 +859,9 @@ func (s *Service) completeSpriteOperation(ctx context.Context, op postgres.Sprit
 		}
 		op.Outcome = "committed"
 		op.ReceiptObjectKey = &key
-		op.ProviderResourceID = receipt.ResourceID
+		if receipt.ResourceID != "" {
+			op.ProviderResourceID = receipt.ResourceID
+		}
 		op.UpdatedAt = s.config.now()
 		op.NextAttemptAt = op.UpdatedAt
 		if err := owner.UpdateSpriteOperation(ctx, op, op.Attempts); err != nil {
@@ -869,7 +871,7 @@ func (s *Service) completeSpriteOperation(ctx context.Context, op postgres.Sprit
 			return nil
 		}
 		if next != "" {
-			_, err := owner.CreateSpriteOperation(ctx, postgres.SpriteOperation{OrganizationID: op.OrganizationID, IdempotencyKey: next + ":" + op.TargetEnrollmentID, Name: op.Name, Operation: next, Attempts: op.Attempts + 1, SourceRevision: op.SourceRevision, TargetEnrollmentID: op.TargetEnrollmentID, ProjectID: op.ProjectID, RequestObjectKey: op.RequestObjectKey, CreatedAt: op.UpdatedAt, NextAttemptAt: op.UpdatedAt})
+			_, err := owner.CreateSpriteOperation(ctx, postgres.SpriteOperation{OrganizationID: op.OrganizationID, IdempotencyKey: next + ":" + op.TargetEnrollmentID, Name: op.Name, Operation: next, Attempts: op.Attempts + 1, SourceRevision: op.SourceRevision, ProviderResourceID: op.ProviderResourceID, TargetEnrollmentID: op.TargetEnrollmentID, ProjectID: op.ProjectID, RequestObjectKey: op.RequestObjectKey, CreatedAt: op.UpdatedAt, NextAttemptAt: op.UpdatedAt})
 			return err
 		}
 		member, err := owner.SpriteMember(ctx, op.Name)
@@ -978,6 +980,22 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 		}
 	}
 	path := "/" + url.PathEscape(op.Name)
+	if op.Operation == "bootstrap" || op.Operation == "checkpoint" {
+		status, raw, err := s.spriteOperationHTTP(ctx, op, request, http.MethodGet, path, nil)
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK {
+			return spritesResponseError(status)
+		}
+		var resource struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &resource) != nil || resource.Name != op.Name || op.ProviderResourceID == "" || resource.ID != op.ProviderResourceID {
+			return errSpritesValidation
+		}
+	}
 	if op.Operation == "wake" {
 		if op.Outcome == "uncertain" {
 			status, raw, err := s.spriteOperationHTTP(ctx, op, request, http.MethodGet, path+"/services/detent-runner", nil)
@@ -1453,7 +1471,11 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 		allowed := false
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			allowed, err = r.RunnerProjectAuthorized(ctx, candidate.RunnerID, scope.project, s.config.now())
+			owner, ok := r.(postgres.SpriteReader)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			allowed, err = owner.SpriteRunnerAllowed(ctx, candidate.RunnerID, scope.project, s.config.now())
 			return err
 		})
 		if err != nil {

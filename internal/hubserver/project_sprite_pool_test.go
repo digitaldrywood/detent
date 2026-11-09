@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -423,6 +424,9 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			return
 		}
 		enrollmentToken := matches[1]
+		provider.mu.Lock()
+		provider.token = enrollmentToken
+		provider.mu.Unlock()
 		if strings.Contains(r.URL.RawQuery, enrollmentToken) {
 			t.Error("fresh enrollment must travel only through stdin")
 		}
@@ -462,7 +466,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			return
 		}
 		if provider.fail == "installer" {
-			output := "Customer setup completed\nRunner bootstrap started\nInstalling PostgreSQL client " + provider.token + "\nE: Version '" + spritesSecretSentinel + "' for 'postgresql-client-17' was not found\nAuthorization: Bearer private-provider-secret\nBootstrap stopped. Last completed step: GitHub CLI, ripgrep and fd installed.\n"
+			output := "Customer setup completed\nRunner bootstrap started\nInstalling PostgreSQL client " + enrollmentToken + "\nE: Version '" + spritesSecretSentinel + "' for 'postgresql-client-17' was not found\nAuthorization: Bearer private-provider-secret\nBootstrap stopped. Last completed step: GitHub CLI, ripgrep and fd installed.\n"
 			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte(output[:20])...))
 			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte(output[20:])...))
 			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte(strings.Repeat("E: Failed to fetch https://private-provider-secret\n", 1000))...))
@@ -532,7 +536,9 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 	f.service.config.Version = "v0.117.99"
 	f.service.config.generateToken = func() (string, error) {
 		token, err := apikey.GenerateToken()
+		provider.mu.Lock()
 		provider.token = token
+		provider.mu.Unlock()
 		return token, err
 	}
 	provider.f = f
@@ -1021,6 +1027,50 @@ func TestSpritePoolFreshAuthority(t *testing.T) {
 			}
 			if len(provider.created) != 0 || len(provider.deleted) != 0 {
 				t.Fatal("provider called without current project authority")
+			}
+		})
+	}
+}
+
+func TestSpritePoolResourceIdentity(t *testing.T) {
+	for _, phase := range []string{"bootstrap", "checkpoint"} {
+		t.Run(phase, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "")
+			setSpriteAllocationFixture(t, f, 1, 0)
+			var replaced atomic.Bool
+			var executions, checkpoints atomic.Int32
+			transport := f.service.config.SpritesHTTPClient.Transport
+			provider.stage = func(stage string) {
+				if phase == "checkpoint" && stage == "registered" {
+					replaced.Store(true)
+				}
+			}
+			f.service.config.SpritesHTTPClient = &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
+				if request.Header.Get("Upgrade") == "websocket" {
+					executions.Add(1)
+				}
+				if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/checkpoint") {
+					checkpoints.Add(1)
+				}
+				if request.Method == http.MethodGet && replaced.Load() && !strings.HasSuffix(request.URL.Path, "/checkpoints") {
+					name := strings.TrimPrefix(request.URL.Path, "/v1/sprites/")
+					return spritesTestResponse(fmt.Sprintf(`{"name":%q,"id":"replacement-resource"}`, name), http.StatusOK), nil
+				}
+				response, err := transport.RoundTrip(request)
+				if phase == "bootstrap" && err == nil && request.Method == http.MethodPost && request.URL.Path == "/v1/sprites" && response.StatusCode == http.StatusCreated {
+					replaced.Store(true)
+				}
+				return response, err
+			})}
+			if err := f.service.scaleSpritePool(t.Context(), scope, false); !errors.Is(err, errSpritesValidation) {
+				t.Fatalf("replacement resource error=%v", err)
+			}
+			wantExecutions := int32(0)
+			if phase == "checkpoint" {
+				wantExecutions = 1
+			}
+			if executions.Load() != wantExecutions || checkpoints.Load() != 0 || len(provider.deleted) != 0 {
+				t.Fatalf("foreign resource touched: executions=%d checkpoints=%d deletes=%v", executions.Load(), checkpoints.Load(), provider.deleted)
 			}
 		})
 	}

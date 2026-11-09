@@ -717,24 +717,27 @@ func TestWakeManagedSpriteMembers(t *testing.T) {
 			f.create(t, "managed work")
 			setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
 			setSpriteAllocationFixture(t, f, 1, 0)
-			now := formatHubTime(f.service.config.now())
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,token_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,?,'detent-test',?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, f.project.ID, sprite.redemption.Hostname, sprite.enrollment.ID, now, now); err != nil {
-				t.Fatal(err)
-			}
+			now := f.service.config.now()
+			writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+				return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: scope.organization, AllocationProjectID: scope.project, TokenProjectID: scope.project, Name: sprite.redemption.Hostname, ProviderOrganization: "detent-test", EnrollmentID: sprite.enrollment.ID, State: "enrolled", IdleSince: now, CreatedAt: now})
+			})
 			if test.ready {
 				setSpriteMemberChecks(t, f, spriteMemberReady)
 			}
 			if test.drain {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET state='deleting' WHERE name=?`, sprite.redemption.Hostname); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET state='draining' WHERE id=?`, sprite.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
+				updateSpriteMembersFixture(t, f, func(member *runnerstore.SpriteMembership) { member.State = "deleting" })
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?`, formatHubTime(f.service.config.now().Add(-time.Minute)), sprite.binding.RunnerID); err != nil {
-				t.Fatal(err)
-			}
+			writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+				identity, err := w.RunnerIdentity(t.Context(), sprite.binding.RunnerID)
+				if err != nil {
+					return err
+				}
+				if test.drain {
+					identity.State = "draining"
+				}
+				identity.LastHeartbeatAt = now.Add(-time.Minute)
+				return w.UpdateRunnerIdentity(t.Context(), identity)
+			})
 			f.service.config.SecretKeys = keys
 			woken, err := f.service.wakeOrganizationSpriteRunners(t.Context(), nativeScope{organization: scope.organization})
 			if err != nil || woken != test.want || int(calls.Load()) != test.want {
