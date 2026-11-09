@@ -51,6 +51,7 @@ type CheckpointAttemptReader interface {
 }
 
 type Writer interface {
+	ClaimFactsWriter
 	IndexAttemptDiffBodies(context.Context, tracker.ProjectID, string, []string) error
 	Reader
 	LockMachine(context.Context, string) (Machine, error)
@@ -123,6 +124,7 @@ type Lease struct {
 }
 
 type Attempt struct {
+	ClaimDisposition       *string
 	RuntimeHeartbeatAt     *time.Time
 	RuntimeSummarySequence int64
 	CleanupAcknowledgedAt  *time.Time

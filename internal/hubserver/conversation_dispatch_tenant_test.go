@@ -140,6 +140,9 @@ func TestPostgresConversationDispatchReachesFencedRunner(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		if attempt.ClaimDisposition == nil || *attempt.ClaimDisposition != "" {
+			t.Fatalf("current attempt did not record known claim disposition: %+v", attempt)
+		}
 		if attempt.DispatchGeneration != 1 || attempt.WorkItemRevision != lease.WorkItemRevision {
 			t.Fatalf("runner capture = %+v", attempt)
 		}

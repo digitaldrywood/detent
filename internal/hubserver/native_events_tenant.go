@@ -67,12 +67,13 @@ type NativeLeaseResponseDetails struct {
 }
 
 type preparedNativeRunEvent struct {
-	completion      *attachmentEvidencePublication
-	authority       NativeRunEventAuthority
-	attempt         leasestore.AttemptEvent
-	history         eventstore.Event
-	previousAttempt leasestore.Attempt
-	previousEvent   eventstore.Event
+	claimDisposition string
+	completion       *attachmentEvidencePublication
+	authority        NativeRunEventAuthority
+	attempt          leasestore.AttemptEvent
+	history          eventstore.Event
+	previousAttempt  leasestore.Attempt
+	previousEvent    eventstore.Event
 }
 
 func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeScope, item string, request tracker.NativeRunEvent) (result json.RawMessage, resultErr error) {
@@ -135,6 +136,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	var previousRunEvent eventstore.Event
 	var previousRunEventFound bool
 	var cleanupPredecessor *tenantRunCleanupPredecessor
+	var checkpointSnapshot *tenantAttemptSnapshot
 	var usageFacts runnerUsageFacts
 	var usageFactsFound bool
 	var replay eventstore.Receipt
@@ -196,6 +198,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		cleanupPredecessor, err = readTenantRunCleanupPredecessor(ctx, r, scope, request)
 		if err != nil {
 			return err
+		}
+		if cleanupPredecessor != nil && cleanupPredecessor.attempt.CheckpointObjectKey != nil {
+			snapshot := tenantAttemptSnapshot{attempt: cleanupPredecessor.attempt, lease: cleanupPredecessor.lease, event: cleanupPredecessor.event}
+			if err := readTenantAttemptCheckpointPayload(ctx, r, &snapshot); err != nil {
+				return err
+			}
+			checkpointSnapshot = &snapshot
 		}
 		if request.Type == "run.finished" && request.Data.Sequence > 1 {
 			attempt, attemptErr := r.Attempt(ctx, request.Data.AttemptID)
@@ -280,6 +289,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		request.Data.Sequence, request.Data.Outcome = next, "cancelled"
 		events = []tracker.NativeRunEvent{request}
 		previousRunEventFound = false
+	}
+	var effectiveCheckpoint *tracker.NativeCheckpoint
+	if checkpointSnapshot != nil {
+		effectiveCheckpoint, err = s.readNativeAttemptCheckpointTenant(ctx, *checkpointSnapshot)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var previousRunData *tracker.NativeRunData
 	if previousRunEventFound {
@@ -485,7 +501,10 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 			authority.Publication = &publication
 		}
-		preparedEvent := preparedNativeRunEvent{authority: authority, attempt: attemptEvent, history: history}
+		if event.Data.Handoff != nil && !termination && (cleanupPredecessor == nil || event.Data.Sequence > cleanupPredecessor.attempt.Sequence) {
+			effectiveCheckpoint = event.Data.Handoff
+		}
+		preparedEvent := preparedNativeRunEvent{authority: authority, attempt: attemptEvent, history: history, claimDisposition: nativeAttemptClaimDisposition(event.Data, effectiveCheckpoint, scope.project)}
 		if i == len(events)-1 && usageCorrection {
 			preparedEvent.previousAttempt, preparedEvent.previousEvent = previousAttempt, previousRunEvent
 		}
@@ -607,6 +626,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 			if duplicate {
 				continue
+			}
+			if err := w.SetAttemptClaimFacts(ctx, attemptClaimFacts(attempt, event.claimDisposition, false)); err != nil {
+				return err
 			}
 			if event.completion != nil {
 				apply := func(writer tenantstore.Writer) error {

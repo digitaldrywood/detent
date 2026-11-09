@@ -420,6 +420,10 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			current := plan
 			current.item = item
 			current.latestAttempt, current.latestAttemptFound = latest, err == nil
+			if nativeClaimAnswerRequired(current) && current.latestAttempt.ClaimDisposition == nil {
+				return nativeRunEventStorageUnavailable()
+			}
+
 			if nativeClaimDispatchSatisfied(current) {
 				return ErrNoClaimableWork
 			}
@@ -891,6 +895,9 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time, plan nativeClaimPlan, descriptor *policy.Descriptor) (nativeClaimPlan, error) {
+	if nativeClaimAnswerRequired(plan) && plan.latestAttempt.ClaimDisposition == nil {
+		return nativeClaimPlan{}, nativeRunEventStorageUnavailable()
+	}
 	var err error
 	if descriptor == nil {
 		loaded, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).ProjectPolicy(ctx, plan.policy)
@@ -913,6 +920,7 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 	if err := json.Unmarshal(raw, &plan.issue); err != nil || plan.issue.OrganizationID != plan.item.OrganizationID || plan.issue.ProjectID != plan.item.ProjectID || plan.issue.WorkItemID != plan.item.NativeID || int64(plan.issue.Revision) != plan.item.Revision || int64(plan.issue.Number) != plan.item.Number || plan.issue.Title != plan.item.Title || plan.issue.Archived != plan.item.Archived || plan.issue.Actor.Kind != valueOrEmpty(plan.item.ActorKind) || plan.issue.Actor.PrincipalID != valueOrEmpty(plan.item.ActorPrincipalID) {
 		return nativeClaimPlan{}, corestore.ErrRevisionConflict
 	}
+
 	if nativeClaimDispatchSatisfied(plan) {
 		return nativeClaimPlan{}, ErrNoClaimableWork
 	}

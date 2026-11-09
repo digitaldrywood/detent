@@ -255,6 +255,33 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeS
 	return result, nil
 }
 
+func (s *Service) readNativeAttemptCheckpointTenant(ctx context.Context, snapshot tenantAttemptSnapshot) (*tracker.NativeCheckpoint, error) {
+	attempt := snapshot.attempt
+	var checkpoint *tracker.NativeCheckpoint
+	if attempt.CheckpointObjectKey != nil {
+		var raw []byte
+		var err error
+		if snapshot.checkpointPayload != nil {
+			raw, err = s.runDetailStore().ReadDetail(ctx, string(attempt.OrganizationID), *snapshot.checkpointPayload)
+		} else {
+			owner, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
+			if !ok {
+				return nil, nativeRunEventStorageUnavailable()
+			}
+			raw, err = owner.ReadCanonicalDetail(ctx, string(attempt.OrganizationID), string(snapshot.event.ProjectID), *attempt.CheckpointObjectKey)
+		}
+		if err != nil {
+			return nil, errors.Join(artifact.ErrIntegrity, err)
+		}
+		var retained checkpointPayload
+		if json.Unmarshal(raw, &retained) != nil || retained.Checkpoint == nil {
+			return nil, artifact.ErrIntegrity
+		}
+		checkpoint = retained.Checkpoint
+	}
+	return checkpoint, nil
+}
+
 func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenantAttemptSnapshot, now time.Time) (tracker.NativeAttempt, error) {
 	if s.runDetailStore() == nil {
 		return tracker.NativeAttempt{}, nativeRunEventStorageUnavailable()
@@ -265,27 +292,9 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	}
 	attempt := snapshot.attempt
 	lease := snapshot.lease
-	var checkpoint *tracker.NativeCheckpoint
-	if attempt.CheckpointObjectKey != nil {
-		var raw []byte
-		var err error
-		if snapshot.checkpointPayload != nil {
-			raw, err = s.runDetailStore().ReadDetail(ctx, string(attempt.OrganizationID), *snapshot.checkpointPayload)
-		} else {
-			owner, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
-			if !ok {
-				return tracker.NativeAttempt{}, nativeRunEventStorageUnavailable()
-			}
-			raw, err = owner.ReadCanonicalDetail(ctx, string(attempt.OrganizationID), string(snapshot.event.ProjectID), *attempt.CheckpointObjectKey)
-		}
-		if err != nil {
-			return tracker.NativeAttempt{}, errors.Join(artifact.ErrIntegrity, err)
-		}
-		var retained checkpointPayload
-		if json.Unmarshal(raw, &retained) != nil || retained.Checkpoint == nil {
-			return tracker.NativeAttempt{}, artifact.ErrIntegrity
-		}
-		checkpoint = retained.Checkpoint
+	checkpoint, err := s.readNativeAttemptCheckpointTenant(ctx, snapshot)
+	if err != nil {
+		return tracker.NativeAttempt{}, err
 	}
 	if err := nativeAttemptRunMismatch(snapshot, run); err != nil {
 		return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt identity: %w", err)
@@ -428,6 +437,10 @@ func readTenantAttemptPayload(ctx context.Context, r tenantstore.Reader, snapsho
 	if err := readTenantAttemptRunPayload(ctx, r, snapshot); err != nil {
 		return err
 	}
+	return readTenantAttemptCheckpointPayload(ctx, r, snapshot)
+}
+
+func readTenantAttemptCheckpointPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
 	if snapshot.attempt.CheckpointObjectKey == nil {
 		return nil
 	}

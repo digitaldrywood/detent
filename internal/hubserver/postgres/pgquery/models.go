@@ -1965,6 +1965,7 @@ type NativeAttempt struct {
 	CleanupAcknowledgedAt  *time.Time
 	RuntimeHeartbeatAt     *time.Time
 	RuntimeSummarySequence pgtype.Int8
+	ClaimDisposition       *string
 }
 
 type NativeAttemptEvent struct {

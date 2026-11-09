@@ -26,7 +26,7 @@ WHERE organization_id=$10 AND id=$11 AND lease_id=$12
 AND fencing_token=$13::bigint AND run_id=$14
 AND dispatch_generation=$15 AND sequence=$1-1
 AND (status='running' OR status='interrupted' AND $6='running' OR $5::boolean AND status=$6 OR $3::boolean AND status IN ('interrupted','cancelled') AND $6='cancelled')
-RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence
+RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition
 `
 
 type AdvanceLeaseAttemptParams struct {
@@ -87,6 +87,7 @@ func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttem
 		&i.CleanupAcknowledgedAt,
 		&i.RuntimeHeartbeatAt,
 		&i.RuntimeSummarySequence,
+		&i.ClaimDisposition,
 	)
 	return i, err
 }
@@ -217,7 +218,7 @@ func (q *Queries) GetAttemptReceipt(ctx context.Context, arg GetAttemptReceiptPa
 }
 
 const getLatestIssueAttempt = `-- name: GetLatestIssueAttempt :one
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1
 `
 
 type GetLatestIssueAttemptParams struct {
@@ -249,15 +250,16 @@ func (q *Queries) GetLatestIssueAttempt(ctx context.Context, arg GetLatestIssueA
 		&i.CleanupAcknowledgedAt,
 		&i.RuntimeHeartbeatAt,
 		&i.RuntimeSummarySequence,
+		&i.ClaimDisposition,
 	)
 	return i, err
 }
 
 const getLatestIssueAttemptsByIssues = `-- name: GetLatestIssueAttemptsByIssues :many
-SELECT latest.organization_id, latest.id, latest.issue_id, latest.lease_id, latest.fencing_token, latest.run_id, latest.sequence, latest.status, latest.work_item_revision, latest.dispatch_generation, latest.payload_object_key, latest.checkpoint_object_key, latest.artifacts_object_key, latest.started_at, latest.updated_at, latest.started_at_submicro_ns, latest.runner_tokens_recorded, latest.cleanup_acknowledged_at, latest.runtime_heartbeat_at, latest.runtime_summary_sequence
+SELECT latest.organization_id, latest.id, latest.issue_id, latest.lease_id, latest.fencing_token, latest.run_id, latest.sequence, latest.status, latest.work_item_revision, latest.dispatch_generation, latest.payload_object_key, latest.checkpoint_object_key, latest.artifacts_object_key, latest.started_at, latest.updated_at, latest.started_at_submicro_ns, latest.runner_tokens_recorded, latest.cleanup_acknowledged_at, latest.runtime_heartbeat_at, latest.runtime_summary_sequence, latest.claim_disposition
 FROM unnest($1::bigint[]) AS requested(issue_id)
 CROSS JOIN LATERAL (
-  SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence FROM native_attempts
+  SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition FROM native_attempts
   WHERE organization_id=$2 AND issue_id=requested.issue_id
   ORDER BY fencing_token DESC
   LIMIT 1
@@ -299,6 +301,7 @@ func (q *Queries) GetLatestIssueAttemptsByIssues(ctx context.Context, arg GetLat
 			&i.CleanupAcknowledgedAt,
 			&i.RuntimeHeartbeatAt,
 			&i.RuntimeSummarySequence,
+			&i.ClaimDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -341,7 +344,7 @@ func (q *Queries) GetLease(ctx context.Context, arg GetLeaseParams) (Lease, erro
 }
 
 const getLeaseAttempt = `-- name: GetLeaseAttempt :one
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence FROM native_attempts WHERE organization_id=$1 AND id=$2
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition FROM native_attempts WHERE organization_id=$1 AND id=$2
 `
 
 type GetLeaseAttemptParams struct {
@@ -373,6 +376,7 @@ func (q *Queries) GetLeaseAttempt(ctx context.Context, arg GetLeaseAttemptParams
 		&i.CleanupAcknowledgedAt,
 		&i.RuntimeHeartbeatAt,
 		&i.RuntimeSummarySequence,
+		&i.ClaimDisposition,
 	)
 	return i, err
 }
@@ -463,7 +467,7 @@ func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (Lease
 
 const insertLeaseAttempt = `-- name: InsertLeaseAttempt :one
 INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence)
-VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,1) RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence
+VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,1) RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition
 `
 
 type InsertLeaseAttemptParams struct {
@@ -526,6 +530,7 @@ func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttempt
 		&i.CleanupAcknowledgedAt,
 		&i.RuntimeHeartbeatAt,
 		&i.RuntimeSummarySequence,
+		&i.ClaimDisposition,
 	)
 	return i, err
 }
@@ -1031,7 +1036,7 @@ func (q *Queries) MutateLeaseCommand(ctx context.Context, arg MutateLeaseCommand
 }
 
 const pageIssueAttempts = `-- name: PageIssueAttempts :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND ($3::bigint=0 OR fencing_token<$3::bigint)
 ORDER BY fencing_token DESC LIMIT $4
@@ -1079,6 +1084,7 @@ func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsPa
 			&i.CleanupAcknowledgedAt,
 			&i.RuntimeHeartbeatAt,
 			&i.RuntimeSummarySequence,
+			&i.ClaimDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -1091,7 +1097,7 @@ func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsPa
 }
 
 const pageIssueAttemptsOldest = `-- name: PageIssueAttemptsOldest :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND ($3::bigint=0 OR fencing_token>$3::bigint)
 ORDER BY fencing_token LIMIT $4
@@ -1139,6 +1145,7 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 			&i.CleanupAcknowledgedAt,
 			&i.RuntimeHeartbeatAt,
 			&i.RuntimeSummarySequence,
+			&i.ClaimDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -1151,7 +1158,7 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 }
 
 const pageIssueCheckpointAttempts = `-- name: PageIssueCheckpointAttempts :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND checkpoint_object_key IS NOT NULL
 AND ($3::bigint=0 OR fencing_token<$3::bigint)
@@ -1200,6 +1207,7 @@ func (q *Queries) PageIssueCheckpointAttempts(ctx context.Context, arg PageIssue
 			&i.CleanupAcknowledgedAt,
 			&i.RuntimeHeartbeatAt,
 			&i.RuntimeSummarySequence,
+			&i.ClaimDisposition,
 		); err != nil {
 			return nil, err
 		}

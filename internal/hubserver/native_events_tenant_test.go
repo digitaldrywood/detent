@@ -338,7 +338,25 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	laterObservation.IdempotencyKey = "later-observation"
 	laterObservation.Data.Sequence = 3
 	laterObservation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: service.config.now().UTC().Add(time.Second)}
+	laterObservation.Type = "run.checkpointed"
+	pendingCheckpoint := *nativeTestCheckpoint()
+	pendingCheckpoint.ExternalEffect, pendingCheckpoint.EffectState, pendingCheckpoint.EffectID = "git_push", "pending", newNativeID("effect")
+	pendingCheckpoint.WorktreeState, pendingCheckpoint.HeadSHA = "unpushed", strings.Repeat("a", 40)
+	laterObservation.Data.Handoff = &pendingCheckpoint
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), laterObservation); err != nil {
+		t.Fatal(err)
+	}
+	var retainedCheckpointKey string
+	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		attempt, err := r.Attempt(t.Context(), secondStart.Data.AttemptID)
+		if err == nil && attempt.CheckpointObjectKey == nil {
+			t.Fatal("pending publication checkpoint was not retained")
+		}
+		if err == nil {
+			retainedCheckpointKey = *attempt.CheckpointObjectKey
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	batchFinish := secondStart
@@ -346,9 +364,34 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	batchFinish.Type = "run.finished"
 	batchFinish.Data.Sequence = 4
 	batchFinish.Data.Outcome = "succeeded"
+	batchFinish.Data.Disposition = &tracker.NativeDisposition{Status: "blocked", HumanAction: true}
 	batchFinish.PriorEvents = []tracker.NativeRunEvent{observation}
+	rejectedCheckpointPrefix := batchFinish
+	rejectedCheckpointPrefix.IdempotencyKey = "checkpoint-prefix-refused"
+	rejectedCheckpointPrefix.PriorEvents = []tracker.NativeRunEvent{laterObservation}
+	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), rejectedCheckpointPrefix); err == nil {
+		t.Fatal("checkpoint replay prefix was accepted")
+	}
+	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		attempt, err := r.Attempt(t.Context(), secondStart.Data.AttemptID)
+		if err == nil && (attempt.Sequence != 3 || attempt.ClaimDisposition == nil || *attempt.ClaimDisposition != "progress" || attempt.CheckpointObjectKey == nil || *attempt.CheckpointObjectKey != retainedCheckpointKey) {
+			t.Fatalf("rejected prefix changed current publication claim facts: %+v", attempt)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), batchFinish); err != nil {
 		t.Fatalf("historical observation prefix and finish batch: %v", err)
+	}
+	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		attempt, err := r.Attempt(t.Context(), secondStart.Data.AttemptID)
+		if err == nil && (attempt.ClaimDisposition == nil || *attempt.ClaimDisposition != "progress" || attempt.CheckpointObjectKey == nil || *attempt.CheckpointObjectKey != retainedCheckpointKey) {
+			t.Fatalf("replayed prefix replaced current publication claim facts: %+v", attempt)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 	previousAccessRepository := service.config.AccessRepository
 	service.config.AccessRepository = repository
@@ -358,7 +401,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}
 	newestParams := url.Values{"direction": {"newest"}, "limit": {"2"}, "view": {"timeline"}}
 	newest, err := service.readHistory(t.Context(), scope, string(secondIssue.WorkItemID), newestParams)
-	if err != nil || len(newest.Items) != 2 || newest.Items[0].Type != "run.finished" || newest.Items[1].Type != "run.observed" || newest.NextCursor == "" {
+	if err != nil || len(newest.Items) != 2 || newest.Items[0].Type != "run.finished" || newest.Items[1].Type != "run.checkpointed" || newest.NextCursor == "" {
 		t.Fatalf("typed newest history page=%+v error=%v", newest, err)
 	}
 	if newest.Items[0].Data.Run != nil || newest.Items[1].Data.Run != nil {
