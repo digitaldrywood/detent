@@ -213,8 +213,11 @@ BEGIN
         UNION ALL SELECT id,coverage FROM coverage WHERE $1::tsquery IS NULL OR numnode($1::tsquery)=0
         UNION ALL SELECT id,0 FROM refreshing_documents
     ) matches GROUP BY id
- ), scoped AS NOT MATERIALIZED (
-    SELECT d.*,ids.coverage FROM ids CROSS JOIN LATERAL (SELECT d.* FROM public.search_documents d WHERE d.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND d.id=ids.id OFFSET 0) d
+ ), scoped AS MATERIALIZED (
+    SELECT d.id,d.organization_id,d.updated_at,d.updated_at_submicrosecond,ids.coverage,
+        CASE WHEN $6='work' THEN ts_rank(d.vector,$1::tsquery) END AS search_rank,
+        (d.source_vector=''::tsvector AND d.vector=''::tsvector) AS empty_source
+    FROM ids CROSS JOIN LATERAL (SELECT d.* FROM public.search_documents d WHERE d.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND d.id=ids.id OFFSET 0) d
     WHERE ($6<>'thread' OR $13='' OR (d.updated_at,d.updated_at_submicrosecond,d.id COLLATE "C")<($12::timestamptz,$14::bigint,$13 COLLATE "C"))
         AND ($2='' OR d.project_id=$2) AND (NOT $4 OR d.project_id=ANY($3) OR d.scope='general')
         AND ($5='' OR d.work_item_id=$5)
@@ -247,9 +250,9 @@ BEGIN
 
  (SELECT d.id,false,''::text,0::double precision,false FROM scoped d
  WHERE ($6<>'work' OR d.id IN (SELECT id FROM owned_ids)
-    OR $1::tsquery IS NULL AND d.source_vector=''::tsvector AND d.vector=''::tsvector)
+    OR $1::tsquery IS NULL AND d.empty_source)
  ORDER BY CASE WHEN $6='work' THEN d.coverage END DESC,
-    CASE WHEN $6='work' THEN ts_rank(d.vector,$1::tsquery) END DESC,
+    CASE WHEN $6='work' THEN d.search_rank END DESC,
     d.updated_at DESC,d.updated_at_submicrosecond DESC,d.id COLLATE "C" DESC)
  UNION ALL SELECT b.document_id,true,b.key||':'||b.term||chr(9)||b.lexeme||CASE WHEN b.exhausted AND b.more_lexemes THEN chr(9)||'advance' ELSE '' END,b.impact,b.exhausted AND NOT b.more_lexemes FROM stream_boundaries b;
 END
