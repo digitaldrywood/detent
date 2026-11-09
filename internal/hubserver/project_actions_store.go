@@ -32,17 +32,6 @@ type actionRecord struct {
 	UpdatedAt             time.Time
 }
 
-// resource projects the row onto the wire shape.
-func (r actionRecord) resource() workspacesession.Action {
-	return workspacesession.Action{
-		ID: r.ID, OrganizationID: string(r.OrganizationID), ProjectID: string(r.ProjectID),
-		Name: r.Name, Command: r.Command, Keybinding: r.Keybinding, Icon: r.Icon,
-		PreviewURL: r.PreviewURL, OpenPreview: r.OpenPreview,
-		RunOnWorktreeCreation: r.RunOnWorktreeCreation, CreatedBy: r.CreatedBy,
-		Revision: r.Revision, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
-	}
-}
-
 // actionRunRecord is one row of project_action_runs. Output is the stored
 // bytes rather than a handle, which is what migration 00030 explains.
 type actionRunRecord struct {
