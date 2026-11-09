@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -259,6 +260,27 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 							t.Fatalf("unfinished shutdown recording=%+v", recording)
 						}
 						record.shutdownRecording = recording.ID
+						if len(readSession(record).RelaySessions) != 0 {
+							t.Error("operator token exposed owner-only relay audits")
+						}
+						if err := reopened.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+							audits, err := r.(workspaceReader).RecentRelaySessions(t.Context(), postgres.RelaySessionsInput{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkspaceID: f.workspace, Limit: 10})
+							if err != nil {
+								return err
+							}
+							for _, audit := range audits {
+								if audit.ID == recording.RelaySessionID {
+									if audit.ClosedAt == nil || audit.CloseReason != "server_shutdown" {
+										t.Errorf("relay audit after Hub shutdown=%+v", audit)
+									}
+									return nil
+								}
+							}
+							t.Errorf("shutdown recording has no durable relay audit: %s", recording.RelaySessionID)
+							return nil
+						}); err != nil {
+							t.Fatal(err)
+						}
 					}
 				}
 				if record.shutdownRecording == "" {
