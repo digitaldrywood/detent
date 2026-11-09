@@ -226,24 +226,28 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=NULL WHERE organization_id=$1 AND lease_id=(SELECT lease_id FROM native_attempts WHERE organization_id=$1 AND id=$2)`, f.project.OrganizationID, currentAttempt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)`, f.project.OrganizationID, r.binding.RunnerID); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2 AND runner_id=$3`, at, f.project.OrganizationID, r.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
-	runners, err := f.service.readHealthRunnerRecords(t.Context(), f.project.OrganizationID, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(runners) != 1 || runners[0].Leases != 1 {
-		t.Fatalf("runners=%+v", runners)
-	}
-	if _, active := heartbeatFinding(now, runners[0].healthRunner); !active {
-		t.Fatal("expired unreleased assignment lost heartbeat gap")
-	}
-	if runners[0].FreeSlots != 2 {
-		t.Fatalf("expired lease occupied capacity: %+v", runners[0])
+	for _, revoke := range []bool{false, true} {
+		if revoke {
+			if _, err := admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)`, f.project.OrganizationID, r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runners, err := f.service.readHealthRunnerRecords(t.Context(), f.project.OrganizationID, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runners) != 1 || runners[0].Leases != 1 || len(runners[0].Projects) != 1 || runners[0].Projects[0] != string(f.project.ID) {
+			t.Fatalf("revoked=%t runners=%+v", revoke, runners)
+		}
+		if _, active := heartbeatFinding(now, runners[0].healthRunner); !active {
+			t.Fatal("expired unreleased assignment lost heartbeat gap")
+		}
+		if runners[0].FreeSlots != 2 {
+			t.Fatalf("expired lease occupied capacity: %+v", runners[0])
+		}
 	}
 }
 
