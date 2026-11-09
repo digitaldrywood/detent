@@ -45,7 +45,6 @@ const (
 const (
 	conversationCommandQueueSize = 64
 	conversationMaxBatchEvents   = 500
-	conversationReportAttempts   = 3
 	conversationReportTimeout    = 15 * time.Second
 )
 
@@ -215,6 +214,7 @@ func conversationError(err error) error {
 // batches turn events; a waiter per control turns its Reply into a
 // control_result.
 type conversationSession struct {
+	lifetime     context.Context
 	timings      SessionTimings
 	client       *NativeClient
 	item         tracker.NativeWorkItemID
@@ -254,6 +254,7 @@ type conversationSession struct {
 	turnWaiters *sync.WaitGroup
 	cursor      int64
 	events      []runner.ConversationTurnEvent
+	reportRoom  chan struct{}
 	// held keeps a reported turn_completed, and anything after it, until
 	// FinishTurn has settled the turn's controls. The hub refuses turn events
 	// once a turn has ended, so a control result posted after the turn's end
@@ -268,8 +269,9 @@ func newConversationSession(ctx context.Context, client *NativeClient, item trac
 	pollCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	flushCtx, flushCancel := context.WithCancel(context.WithoutCancel(ctx))
 	s := &conversationSession{
-		timings: client.client.sessionTimings.withDefaults(),
-		client:  client, item: item, id: response.ConversationID, identity: identity, resume: response.Resume.ThreadID,
+		lifetime: ctx,
+		timings:  client.client.sessionTimings.withDefaults(),
+		client:   client, item: item, id: response.ConversationID, identity: identity, resume: response.Resume.ThreadID,
 		continuation: response.Continuation == nil || *response.Continuation,
 		resumeMode:   conversationResumeMode(response),
 		threadOrigin: response.Resume.ThreadOrigin,
@@ -428,16 +430,66 @@ func (s *conversationSession) drainCommands() {
 
 // Report queues events in order and tracks the live thread and turn so
 // controls can be addressed before the hub has processed turn_started.
-func (s *conversationSession) Report(_ context.Context, events []runner.ConversationTurnEvent) error {
+func (s *conversationSession) Report(ctx context.Context, events []runner.ConversationTurnEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
+	lifetime := s.lifetime
+	if lifetime == nil {
+		lifetime = ctx
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closing {
-		return fmt.Errorf("report conversation turn events: %w", ErrStaleConversation)
-	}
+	defer func() {
+		select {
+		case s.kick <- struct{}{}:
+		default:
+		}
+	}()
 	for _, event := range events {
+		for {
+			if s.closing {
+				return fmt.Errorf("report conversation turn events: %w", ErrStaleConversation)
+			}
+			if len(s.held) > 0 || event.Type == runner.ConversationEventTurnCompleted {
+				if len(s.held) >= conversationMaxBatchEvents || conversationQueuedBytes(s.held)+conversationEventBytes(event) > s.timings.withDefaults().MaxQueuedBytes {
+					if len(s.held) == 0 {
+						return errors.New("conversation turn completion exceeds report capacity")
+					}
+					return errors.New("finish the previous conversation turn before reporting more events")
+				}
+				s.held = append(s.held, event)
+				break
+			}
+			if len(s.events) < conversationMaxBatchEvents && (event.Type == runner.ConversationEventDelta || conversationQueuedBytes(s.events) < s.timings.withDefaults().MaxQueuedBytes) {
+				s.events = append(s.events, event)
+				s.boundQueuedLocked()
+				break
+			}
+			if s.reportRoom == nil {
+				s.reportRoom = make(chan struct{})
+			}
+			room := s.reportRoom
+			select {
+			case s.kick <- struct{}{}:
+			default:
+			}
+			s.mu.Unlock()
+			var err error
+			select {
+			case <-room:
+			case <-s.stop:
+				err = ErrStaleConversation
+			case <-ctx.Done():
+				err = ctx.Err()
+			case <-lifetime.Done():
+				err = context.Cause(lifetime)
+			}
+			s.mu.Lock()
+			if err != nil {
+				return fmt.Errorf("queue conversation turn events: %w", err)
+			}
+		}
 		switch event.Type {
 		case runner.ConversationEventTurnStarted:
 			if event.ThreadID != "" {
@@ -447,18 +499,6 @@ func (s *conversationSession) Report(_ context.Context, events []runner.Conversa
 		case runner.ConversationEventTurnCompleted:
 			s.lastStatus = event.Status
 		}
-	}
-	for _, event := range events {
-		if len(s.held) > 0 || event.Type == runner.ConversationEventTurnCompleted {
-			s.held = append(s.held, event)
-			continue
-		}
-		s.events = append(s.events, event)
-	}
-	s.boundQueuedLocked()
-	select {
-	case s.kick <- struct{}{}:
-	default:
 	}
 	return nil
 }
@@ -519,6 +559,8 @@ func (s *conversationSession) Close(ctx context.Context, outcome string, runErr 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancel := context.WithTimeout(ctx, conversationReportTimeout)
+	defer cancel()
 	var closeErr error
 	s.closeOnce.Do(func() {
 		// A report already in flight keeps its own bounded context, but no
@@ -545,14 +587,14 @@ func (s *conversationSession) Close(ctx context.Context, outcome string, runErr 
 		s.drainCommands()
 		close(s.commands)
 		if err := s.flush(ctx); err != nil {
-			s.logger.Warn("conversation turn events dropped at close", "error", err)
+			closeErr = fmt.Errorf("flush conversation turn events: %w", err)
 		}
 		request := ConversationUnbindRequest{ConversationIdentity: s.identity, Outcome: outcome}
 		if runErr != nil {
 			request.Error = runErr.Error()
 		}
 		if err := s.client.UnbindConversation(ctx, s.item, request); err != nil {
-			closeErr = fmt.Errorf("unbind conversation: %w", err)
+			closeErr = errors.Join(closeErr, fmt.Errorf("unbind conversation: %w", err))
 		}
 	})
 	return closeErr
@@ -749,6 +791,10 @@ func (s *conversationSession) flush(ctx context.Context) error {
 	s.mu.Lock()
 	events := coalesceConversationDeltas(s.events)
 	s.events = nil
+	if s.reportRoom != nil {
+		close(s.reportRoom)
+		s.reportRoom = nil
+	}
 	s.mu.Unlock()
 	var errs []error
 	for len(events) > 0 {
@@ -857,13 +903,14 @@ func conversationBatchRejected(err error) bool {
 }
 
 func (s *conversationSession) postBatch(ctx context.Context, batch []runner.ConversationTurnEvent) error {
-	var errs []error
-	// One key for the batch, repeated by every attempt: a retry of a batch the
-	// hub already applied is a duplicate it can drop.
+	var lastErr error
 	key := conversationBatchKey()
-	for attempt := range conversationReportAttempts {
-		if attempt > 0 && !sleepContext(ctx, s.timings.withDefaults().ReportBackoff<<uint(attempt-1)) {
-			break
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("report %d conversation turn events: %w", len(batch), errors.Join(lastErr, err))
+		}
+		if attempt > 0 && !sleepContext(ctx, s.timings.withDefaults().ReportBackoff<<uint(min(attempt-1, 3))) {
+			return fmt.Errorf("report %d conversation turn events: %w", len(batch), errors.Join(lastErr, ctx.Err()))
 		}
 		postCtx, cancel := context.WithTimeout(ctx, conversationReportTimeout)
 		_, err := s.client.ReportConversationTurnEvents(postCtx, s.id, ConversationTurnEventsRequest{ConversationIdentity: s.identity, BatchKey: key, Events: batch})
@@ -871,12 +918,11 @@ func (s *conversationSession) postBatch(ctx context.Context, batch []runner.Conv
 		if err == nil {
 			return nil
 		}
-		errs = append(errs, fmt.Errorf("attempt %d: %w", attempt+1, err))
+		lastErr = fmt.Errorf("attempt %d: %w", attempt+1, err)
 		if !errors.Is(err, ErrUnavailable) {
-			break
+			return fmt.Errorf("report %d conversation turn events: %w", len(batch), lastErr)
 		}
 	}
-	return fmt.Errorf("report %d conversation turn events: %w", len(batch), errors.Join(errs...))
 }
 
 // conversationBatchKey mints the idempotency key of one turn-events batch. A
