@@ -2,14 +2,21 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -175,6 +182,84 @@ func TestHealthIssueMaintenanceStartsAndBoundsPublication(t *testing.T) {
 			decodeHubResponse(t, response, &page)
 			if len(page.Items) != 1 || len(page.Items[0].Issues) != 1 || page.LastTickAt == nil {
 				t.Fatalf("organization=%s lost background findings after reopen: %+v", org, page)
+			}
+			if err := retained.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(t.Context(), identity.Subject)
+				if err != nil {
+					return err
+				}
+				if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: f.project.ID}); err != nil {
+					return err
+				}
+				return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: member.PrincipalID, ProjectID: f.project.ID})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			response = hosted.request(t, owner, http.MethodPost, "/api/v2/organizations/"+string(org)+"/api-keys", hostedKeyRequest{Name: "Health read " + string(f.project.ID), Scope: apikey.ScopeRead, Days: 1, ProjectAccess: hostedProjectsSelected, Projects: []string{string(f.project.ID)}})
+			requireNativeStatus(t, response, http.StatusCreated)
+			var key tokenResponse
+			decodeHubResponse(t, response, &key)
+			readMCP := func(project tracker.ProjectID, bearer string) *httptest.ResponseRecorder {
+				t.Helper()
+				params := map[string]any{
+					"name":      operatortool.HealthFindings,
+					"arguments": map[string]any{"project_id": project, "state": "open", "limit": 100},
+					"_meta": map[string]any{
+						"io.modelcontextprotocol/protocolVersion":    mcp.ProtocolVersion,
+						"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+						"io.modelcontextprotocol/clientInfo":         map[string]string{"name": "health-test", "version": "1"},
+					},
+				}
+				raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodPost, "/api/v2/organizations/"+string(org)+"/mcp", strings.NewReader(string(raw)))
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("Mcp-Protocol-Version", mcp.ProtocolVersion)
+				request.Header.Set("Mcp-Method", "tools/call")
+				request.Header.Set("Mcp-Name", operatortool.HealthFindings)
+				if bearer != "" {
+					request.Header.Set("Authorization", "Bearer "+bearer)
+				}
+				response := httptest.NewRecorder()
+				retained.Handler().ServeHTTP(response, request)
+				return response
+			}
+			requireNativeStatus(t, readMCP(f.project.ID, ""), http.StatusForbidden)
+			requireNativeStatus(t, readMCP(f.project.ID, "invalid"), http.StatusUnauthorized)
+			response = readMCP(f.project.ID, key.Token)
+			requireNativeStatus(t, response, http.StatusOK)
+			var rpc struct {
+				Error  json.RawMessage `json:"error"`
+				Result struct {
+					IsError bool `json:"isError"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"result"`
+			}
+			decodeHubResponse(t, response, &rpc)
+			if len(rpc.Error) > 0 || rpc.Result.IsError || len(rpc.Result.Content) != 1 {
+				t.Fatalf("health MCP read failed: %s", response.Body.String())
+			}
+			var mcpResult operatortool.WorkReadResult[healthFindingsPage]
+			if err := json.Unmarshal([]byte(rpc.Result.Content[0].Text), &mcpResult); err != nil {
+				t.Fatal(err)
+			}
+			mcpPage := mcpResult.Data
+			if mcpResult.ProjectID != string(f.project.ID) || len(mcpPage.Items) != 1 || mcpPage.Items[0].ID != page.Items[0].ID || len(mcpPage.Items[0].Issues) != 1 || mcpPage.Items[0].Issues[0].WorkItemID != page.Items[0].Issues[0].WorkItemID || mcpPage.LastTickAt == nil || !mcpPage.LastTickAt.Equal(*page.LastTickAt) {
+				t.Fatalf("health MCP lost produced rows: %+v", mcpPage)
+			}
+			other := fixtures[org][0].project.ID
+			if other == f.project.ID {
+				other = fixtures[org][1].project.ID
+			}
+			response = readMCP(other, key.Token)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &rpc)
+			if len(rpc.Error) == 0 && !rpc.Result.IsError {
+				t.Fatal("health MCP key read an ungranted project")
 			}
 		}
 		if err := retained.Close(); err != nil {
