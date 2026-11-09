@@ -66,6 +66,11 @@ func (c *healthContractCache) readRecords(ctx context.Context, s *Service, proje
 	if c == nil || issue.LinkedSource != nil || issue.IssueContract != nil && issue.IssueContract.ReleaseDelivery != nil {
 		return wait, nil
 	}
+	c.remember(key, healthContractResult{revision: revision, policyID: descriptor.ID, wait: wait})
+	return wait, nil
+}
+
+func (c *healthContractCache) remember(key healthContractKey, result healthContractResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
@@ -80,8 +85,7 @@ func (c *healthContractCache) readRecords(ctx context.Context, s *Service, proje
 			c.order = append(c.order, key)
 		}
 	}
-	c.entries[key] = healthContractResult{revision: revision, policyID: descriptor.ID, wait: wait}
-	return wait, nil
+	c.entries[key] = result
 }
 
 func (s *Service) evaluateHealthContractRecord(ctx context.Context, scope nativeScope, project projectstore.Record, descriptor policy.Descriptor, issue tracker.NativeIssue) (*healthWait, error) {

@@ -140,10 +140,7 @@ func TestHealthContractsReuseRevisions(t *testing.T) {
 
 func TestHealthContractsBoundedRetention(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "bounded-health-contracts")
-	issue := f.create(t, "candidate")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-	key := healthContractKey{organization: scope.organization, project: scope.project, item: string(issue.WorkItemID)}
+	key := healthContractKey{organization: "org_example", project: "prj_example", item: "wi_example"}
 	cache := healthContractCache{entries: make(map[healthContractKey]healthContractResult)}
 	for i := range healthReadLimit {
 		old := healthContractKey{item: strconv.Itoa(i)}
@@ -154,13 +151,11 @@ func TestHealthContractsBoundedRetention(t *testing.T) {
 		name     string
 		revision tracker.Revision
 	}{
-		{name: "evicts oldest at capacity", revision: issue.Revision},
-		{name: "updates existing without evicting", revision: issue.Revision + 1},
+		{name: "evicts oldest at capacity", revision: 1},
+		{name: "updates existing without evicting", revision: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := cache.read(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), test.revision, "policy"); err != nil {
-				t.Fatal(err)
-			}
+			cache.remember(key, healthContractResult{revision: test.revision, policyID: "policy"})
 			if _, stale := cache.entries[healthContractKey{item: "0"}]; stale {
 				t.Fatal("oldest entry retained")
 			}
