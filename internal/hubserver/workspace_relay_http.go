@@ -780,7 +780,7 @@ func (w *workspaceService) handlePersonAck(connection *relayConnection, frame wo
 	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
 		return
 	}
-	w.relay.acknowledge(stream, payload.Through)
+	w.relay.acknowledge(connection.workspaceID, stream, payload.Through)
 }
 
 // handlePersonResume moves a parked stream onto this connection and replays
@@ -919,21 +919,12 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 		return nil
 	}
 	defer finished()
-	previous, err := service.relay.attachRunner(connection)
+	replacement, err := service.relay.attachRunner(connection)
 	if err != nil {
 		service.closeRelaySocket(socket, "server_shutdown")
 		return nil
 	}
-	if previous != nil {
-		// A second runner connection replaces the first. Two runners
-		// answering one workspace would each be serving a different worktree,
-		// so the old one is told exactly why it lost the workspace.
-		previous.sendFinal(workspacesession.ErrorFrame("", "", workspacesession.CodeSuperseded, "Another runner connection took this workspace"),
-			workspacesession.CodeSuperseded)
-		// The PTYs being recorded were on the connection that just lost the
-		// workspace, so their recordings are complete.
-		service.relay.failWorkspaceExecRuns(ctx, record.ID, workspacesession.RunReasonStreamClosed)
-	}
+	service.finishRunnerReplacement(ctx, replacement)
 	service.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -982,46 +973,36 @@ func (w *workspaceService) handleRunnerFrame(ctx context.Context, connection *re
 	if stream == nil {
 		return
 	}
+	w.handleRunnerStreamFrame(ctx, connection, stream, person, frame)
+}
+
+func (w *workspaceService) handleRunnerStreamFrame(ctx context.Context, connection *relayConnection, stream *relayStream, person *relayConnection, frame workspacesession.Frame) {
 	if frame.Type == workspacesession.TypeAck {
 		return
 	}
-	outbound := frame
-	outbound.Actor = nil
-	outbound.Seq = w.relay.nextToPerson(stream)
+	output := w.decodeRunnerOutput(stream.channel, frame)
+	captured, accepted := w.relay.captureRunnerFrame(connection, stream, frame, output)
+	if !accepted {
+		return
+	}
 	// A hub stream has no person to deliver to and none to acknowledge, so
 	// nothing is buffered on it for a replay nobody can ask for.
 	// Buffering would make a long build overflow a stream with no
 	// reader behind it and kill the very run the hub started.
-	overflow := false
-	if !stream.hubOwned {
-		overflow = w.relay.bufferForPerson(connection.workspaceID, stream, outbound, outbound.Seq)
-	}
-	if stream.channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecOutput {
-		// A person can close the tab as soon as this output reaches them.
-		// Collect it before delivery so teardown cannot finalize the run
-		// without output the person already received.
-		w.recordExecFrame(ctx, connection, stream, frame)
-	}
 	if person != nil {
-		person.send(outbound)
+		person.send(captured.frame)
 	}
-	if overflow {
+	if captured.overflow {
 		// The reader stopped acknowledging and the buffer passed its cap.
 		// Closing the stream is the contract's answer: the alternative is
 		// the hub growing without bound for one reader's convenience.
-		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
+		w.failExecRuns(ctx, captured.execRuns, workspacesession.RunReasonStreamClosed)
+		w.finishTerminalRecordings(ctx, captured.recordings)
 		if person != nil {
 			person.send(workspacesession.ErrorFrame(stream.channel, stream.id, workspacesession.CodeOverflow, relayCodeMessage(workspacesession.CodeOverflow)))
 		}
 		connection.send(workspacesession.Frame{Channel: stream.channel, Stream: stream.id, Type: workspacesession.TypeClose})
 		return
-	}
-	if stream.channel == workspacesession.ChannelTerminal {
-		// The hub is not only forwarding a terminal stream, it is recording
-		// it. A recording is the only thing a closed tab
-		// leaves behind, and an owner auditing who was in a worktree has
-		// nothing else to read.
-		w.recordRunnerTerminalFrame(connection, stream, frame)
 	}
 	if stream.channel == workspacesession.ChannelExec && frame.Type != workspacesession.TypeExecOutput {
 		// The hub is not only forwarding an exec stream, it is recording
@@ -1030,8 +1011,44 @@ func (w *workspaceService) handleRunnerFrame(ctx context.Context, connection *re
 		w.recordExecFrame(ctx, connection, stream, frame)
 	}
 	if frame.Type == workspacesession.TypeClosed || frame.Type == workspacesession.TypeClose {
-		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
+		w.failExecRuns(ctx, captured.execRuns, workspacesession.RunReasonStreamClosed)
+		w.finishTerminalRecordings(ctx, captured.recordings)
 	}
+}
+
+func (w *workspaceService) decodeRunnerOutput(channel string, frame workspacesession.Frame) relayRunnerOutput {
+	output := relayRunnerOutput{at: w.now()}
+	switch {
+	case channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecOutput:
+		var payload workspacesession.ExecOutput
+		if json.Unmarshal(frame.Payload, &payload) != nil {
+			return output
+		}
+		data := []byte(payload.Data)
+		if payload.Encoding == workspacesession.EncodingBase64 {
+			decoded, err := base64.StdEncoding.DecodeString(payload.Data)
+			if err != nil {
+				return output
+			}
+			data = decoded
+		}
+		output.exec = data
+	case channel == workspacesession.ChannelTerminal && frame.Type == workspacesession.TypeTerminalOutput:
+		var payload workspacesession.TerminalOutput
+		if json.Unmarshal(frame.Payload, &payload) != nil {
+			return output
+		}
+		data := payload.Data
+		if payload.Encoding == workspacesession.EncodingBase64 {
+			decoded, err := base64.StdEncoding.DecodeString(payload.Data)
+			if err != nil {
+				return output
+			}
+			data = string(decoded)
+		}
+		output.terminal = &data
+	}
+	return output
 }
 
 // Recording action runs from relayed frames.
@@ -1073,45 +1090,39 @@ func (w *workspaceService) startExecRun(ctx context.Context, connection, runner 
 
 }
 
-// recordExecFrame reads one runner-originated exec frame into the run's
-// record: output accumulates in memory, and exited is what writes the terminal
-// row.
 func (w *workspaceService) recordExecFrame(ctx context.Context, connection *relayConnection, stream *relayStream, frame workspacesession.Frame) {
 	switch frame.Type {
-	case workspacesession.TypeExecOutput:
-		var payload workspacesession.ExecOutput
-		if err := json.Unmarshal(frame.Payload, &payload); err != nil {
-			return
-		}
-		data := []byte(payload.Data)
-		if payload.Encoding == "base64" {
-			// A command that writes binary to its stdout sends its spans
-			// encoded, and the stored output is the bytes rather than the
-			// envelope: a reader downloading the output wants what the command
-			// wrote.
-			decoded, err := base64.StdEncoding.DecodeString(payload.Data)
-			if err != nil {
-				return
-			}
-			data = decoded
-		}
-		w.relay.appendExecOutput(connection.workspaceID, stream.id, data)
 	case workspacesession.TypeExecExited:
 		var payload workspacesession.ExecExited
 		if err := json.Unmarshal(frame.Payload, &payload); err != nil {
 			return
 		}
-		state, ok := w.relay.takeExecRun(connection.workspaceID, stream.id)
-		if !ok {
-			// The run was already ended by a teardown path, or this stream
-			// never carried one. Either way there is nothing to write, and
-			// writing over a terminal status is exactly what is forbidden.
+		w.relay.mu.Lock()
+		room := w.relay.rooms[connection.workspaceID]
+		if !room.ownsRunnerStream(connection, stream) {
+			w.relay.mu.Unlock()
 			return
 		}
-		code := payload.Code
+		state := room.execRuns[stream.id]
+		if state == nil {
+			w.relay.mu.Unlock()
+			return
+		}
+		snapshot := *state
+		snapshot.output = append([]byte(nil), state.output...)
+		w.relay.mu.Unlock()
 		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
 		defer cancel()
-		w.finishExecRun(writeCtx, state, workspacesession.RunStatusForExit(code), &code, "")
+		if err := w.finishRelayActionRunRecord(writeCtx, &snapshot, connection, payload.Code); err != nil {
+			w.logger.Warn("action_run.not_recorded", "run_id", state.runID, "error", err)
+			return
+		}
+		w.relay.mu.Lock()
+		room = w.relay.rooms[connection.workspaceID]
+		if room != nil && room.execRuns[stream.id] == state {
+			delete(room.execRuns, stream.id)
+		}
+		w.relay.mu.Unlock()
 	}
 }
 

@@ -182,19 +182,6 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 	})
 }
 
-// redeemedRelayTicket is a ticket that has just been spent.
-type redeemedRelayTicket struct {
-	WorkspaceID   string
-	SessionID     string
-	PrincipalID   string
-	Subject       string
-	SupportReason string
-}
-
-// redeemRelayTicket spends a ticket exactly once. The update is the check: a
-// second connection presenting the same ticket changes no rows and is refused,
-// with no window between reading and marking it spent.
-
 // sweepRelayTickets drops spent and expired tickets. A ticket is worth 30
 // seconds, so the table is only ever a handful of rows; the sweep is here so
 // that stays true on a hub nobody restarts.

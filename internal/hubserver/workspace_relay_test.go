@@ -1918,11 +1918,11 @@ func TestWorkspaceRelayResumeReleasesAcknowledgedFrames(t *testing.T) {
 			if stream.bufferBytes != test.wantMemory || relay.memory != test.wantMemory {
 				t.Fatalf("stream bytes = %d, relay memory = %d, want %d", stream.bufferBytes, relay.memory, test.wantMemory)
 			}
-			relay.acknowledge(stream, test.lastSeq)
+			relay.acknowledge("ws_1", stream, test.lastSeq)
 			if relay.memory != test.wantMemory {
 				t.Fatalf("an ack of last_seq changed memory to %d", relay.memory)
 			}
-			relay.acknowledge(stream, 3)
+			relay.acknowledge("ws_1", stream, 3)
 			if len(stream.buffer) != 0 || stream.bufferBytes != 0 || relay.memory != 0 {
 				t.Fatalf("after the final ack: buffer %d, stream bytes %d, relay memory %d", len(stream.buffer), stream.bufferBytes, relay.memory)
 			}

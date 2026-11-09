@@ -92,30 +92,6 @@ func (w *workspaceService) recordPersonTerminalFrame(connection *relayConnection
 	}
 }
 
-// recordRunnerTerminalFrame records what the shell wrote.
-func (w *workspaceService) recordRunnerTerminalFrame(connection *relayConnection, stream *relayStream, frame workspacesession.Frame) {
-	if frame.Type != workspacesession.TypeTerminalOutput {
-		return
-	}
-	var payload workspacesession.TerminalOutput
-	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
-		return
-	}
-	// A terminal's output is always base64 on the wire, because a PTY's bytes
-	// are text interleaved with escape sequences and a span cut at a frame
-	// boundary routinely ends inside one. The recording holds what the shell
-	// wrote rather than the envelope it travelled in.
-	data := payload.Data
-	if payload.Encoding == workspacesession.EncodingBase64 {
-		decoded, err := base64.StdEncoding.DecodeString(payload.Data)
-		if err != nil {
-			return
-		}
-		data = string(decoded)
-	}
-	w.relay.appendTerminalEvent(connection.workspaceID, stream.id, workspacesession.AsciicastOutput, data, w.now())
-}
-
 // finishTerminalRecordings writes every recording it is given.
 //
 // It drops the caller's cancellation and keeps only its

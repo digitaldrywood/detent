@@ -525,21 +525,41 @@ func (r *workspaceRelay) detachPerson(ctx context.Context, connection *relayConn
 	}
 }
 
+type relayRunnerReplacement struct {
+	previous   *relayConnection
+	execRuns   []*execRunState
+	recordings []*terminalStreamState
+}
+
 // attachRunner registers the workspace's one runner connection and reports the
 // connection it replaced. A second runner connection for the same workspace
 // replaces the first, which closes with superseded: two runners answering one
 // workspace would each be serving a different worktree.
-func (r *workspaceRelay) attachRunner(connection *relayConnection) (*relayConnection, error) {
+func (r *workspaceRelay) attachRunner(connection *relayConnection) (relayRunnerReplacement, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopped {
-		return nil, errors.New("the relay is shutting down")
+		return relayRunnerReplacement{}, errors.New("the relay is shutting down")
 	}
 	room := r.ensureRoom(connection.workspaceID)
-	previous := room.runner
+	replacement := relayRunnerReplacement{previous: room.runner}
+	if replacement.previous != nil {
+		replacement.execRuns = room.takeExecRuns(nil)
+		replacement.recordings = room.takeTerminalRecordings(nil)
+	}
 	room.runner = connection
 	r.attachments++
-	return previous, nil
+	return replacement, nil
+}
+
+func (w *workspaceService) finishRunnerReplacement(ctx context.Context, replacement relayRunnerReplacement) {
+	if replacement.previous == nil {
+		return
+	}
+	replacement.previous.sendFinal(workspacesession.ErrorFrame("", "", workspacesession.CodeSuperseded, "Another runner connection took this workspace"),
+		workspacesession.CodeSuperseded)
+	w.failExecRuns(ctx, replacement.execRuns, workspacesession.RunReasonStreamClosed)
+	w.finishTerminalRecordings(ctx, replacement.recordings)
 }
 
 // detachRunner removes the runner connection when it is still the current one,
@@ -741,9 +761,15 @@ func (r *workspaceRelay) runnerStream(runner *relayConnection, id string) (*rela
 func (r *workspaceRelay) closeStream(ctx context.Context, workspaceID, id string) {
 	r.mu.Lock()
 	room := r.rooms[workspaceID]
+	orphaned, recorded := r.takeStreamState(room, id)
+	r.mu.Unlock()
+	r.service.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
+	r.service.finishTerminalRecordings(ctx, recorded)
+}
+
+func (r *workspaceRelay) takeStreamState(room *relayRoom, id string) ([]*execRunState, []*terminalStreamState) {
 	if room == nil {
-		r.mu.Unlock()
-		return
+		return nil, nil
 	}
 	for _, set := range []map[string]*relayStream{room.streams, room.detached} {
 		stream := set[id]
@@ -767,9 +793,7 @@ func (r *workspaceRelay) closeStream(ctx context.Context, workspaceID, id string
 	// A closed stream carries no more events either, so its recording is
 	// complete and is written with what it collected.
 	recorded := room.takeTerminalRecordings(func(streamID string) bool { return streamID == id })
-	r.mu.Unlock()
-	r.service.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
-	r.service.finishTerminalRecordings(ctx, recorded)
+	return orphaned, recorded
 }
 
 // resumeStream moves a detached stream onto a new connection. It is the whole
@@ -828,9 +852,17 @@ func (r *workspaceRelay) resumeStream(connection *relayConnection, id string, la
 // stream closes with overflow rather than the hub growing without bound for a
 // reader who has stopped acknowledging.
 func (r *workspaceRelay) bufferForPerson(workspaceID string, stream *relayStream, frame workspacesession.Frame, seq int64) bool {
-	size := int64(len(frame.Payload)) + 64
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	room := r.rooms[workspaceID]
+	if room == nil || room.streams[stream.id] != stream && room.detached[stream.id] != stream {
+		return false
+	}
+	return r.bufferPersonFrame(stream, frame, seq)
+}
+
+func (r *workspaceRelay) bufferPersonFrame(stream *relayStream, frame workspacesession.Frame, seq int64) bool {
+	size := int64(len(frame.Payload)) + 64
 	stream.buffer = append(stream.buffer, relayBufferedFrame{seq: seq, frame: frame, bytes: size})
 	stream.bufferBytes += size
 	r.memory += size
@@ -843,10 +875,57 @@ func (r *workspaceRelay) bufferForPerson(workspaceID string, stream *relayStream
 	return false
 }
 
-// acknowledge drops everything through seq from a stream's replay buffer.
-func (r *workspaceRelay) acknowledge(stream *relayStream, through int64) {
+type relayRunnerOutput struct {
+	exec     []byte
+	terminal *string
+	at       time.Time
+}
+
+type relayRunnerFrame struct {
+	frame      workspacesession.Frame
+	overflow   bool
+	execRuns   []*execRunState
+	recordings []*terminalStreamState
+}
+
+func (room *relayRoom) ownsRunnerStream(runner *relayConnection, stream *relayStream) bool {
+	return room != nil && room.runner == runner && stream != nil && (room.streams[stream.id] == stream || room.detached[stream.id] == stream)
+}
+
+func (r *workspaceRelay) captureRunnerFrame(runner *relayConnection, stream *relayStream, frame workspacesession.Frame, output relayRunnerOutput) (relayRunnerFrame, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	room := r.rooms[runner.workspaceID]
+	if !room.ownsRunnerStream(runner, stream) {
+		return relayRunnerFrame{}, false
+	}
+	stream.toPerson++
+	frame.Actor = nil
+	frame.Seq = stream.toPerson
+	captured := relayRunnerFrame{frame: frame}
+	if state := room.execRuns[stream.id]; state != nil && output.exec != nil {
+		state.append(output.exec)
+	}
+	if state := room.terminals[stream.id]; state != nil && output.terminal != nil {
+		state.recording.Append(workspacesession.AsciicastOutput, *output.terminal, output.at)
+	}
+	if !stream.hubOwned {
+		captured.overflow = r.bufferPersonFrame(stream, frame, frame.Seq)
+	}
+	if captured.overflow || frame.Type == workspacesession.TypeClosed || frame.Type == workspacesession.TypeClose {
+		captured.execRuns, captured.recordings = r.takeStreamState(room, stream.id)
+	}
+	return captured, true
+}
+
+// acknowledge drops everything through seq from a stream's replay buffer.
+func (r *workspaceRelay) acknowledge(workspaceID string, stream *relayStream, through int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	room := r.rooms[workspaceID]
+	if room == nil || room.streams[stream.id] != stream && room.detached[stream.id] != stream {
+		return
+	}
 	r.releaseThrough(stream, through)
 }
 
@@ -882,14 +961,6 @@ func (r *workspaceRelay) nextToRunner(stream *relayStream) int64 {
 	defer r.mu.Unlock()
 	stream.toRunner++
 	return stream.toRunner
-}
-
-// nextToPerson allocates the next person-bound sequence for a stream.
-func (r *workspaceRelay) nextToPerson(stream *relayStream) int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	stream.toPerson++
-	return stream.toPerson
 }
 
 // detachedCount reports how many of a workspace's streams are parked waiting
@@ -990,12 +1061,6 @@ func (r *workspaceRelay) resizeTerminalRecording(workspaceID, streamID string, c
 // the relay lock, and must write the rows only after releasing it, for the
 // reason takeExecRuns says: a transaction under this lock would make every
 // frame of every workspace on the hub wait on one disk.
-// There is deliberately no per-stream sibling, the way takeExecRun sits beside
-// takeExecRuns. A run ends at its `exited` frame and is written there; a
-// terminal's `exit` is not its end, because the runner follows it with a
-// `closed` that gives the stream's slot back, and that `closed` arrives here
-// through closeStream. Finishing on `exit` would write the row one frame early
-// and leave the close with nothing to take.
 func (room *relayRoom) takeTerminalRecordings(match func(string) bool) []*terminalStreamState {
 	if room == nil || len(room.terminals) == 0 {
 		return nil
@@ -1039,34 +1104,6 @@ func (r *workspaceRelay) appendExecOutput(workspaceID, streamID string, data []b
 	if state := room.execRuns[streamID]; state != nil {
 		state.append(data)
 	}
-}
-
-// takeExecRun removes a stream's run and reports what it collected. It is how
-// an exited frame claims the run: once taken, nothing else can fail it.
-func (r *workspaceRelay) takeExecRun(workspaceID, streamID string) (*execRunState, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	room := r.rooms[workspaceID]
-	if room == nil {
-		return nil, false
-	}
-	state := room.execRuns[streamID]
-	if state == nil {
-		return nil, false
-	}
-	delete(room.execRuns, streamID)
-	return state, true
-}
-
-// failWorkspaceExecRuns ends every in-flight run of one workspace.
-func (r *workspaceRelay) failWorkspaceExecRuns(ctx context.Context, workspaceID, reason string) {
-	r.mu.Lock()
-	room := r.rooms[workspaceID]
-	taken := room.takeExecRuns(nil)
-	recorded := room.takeTerminalRecordings(nil)
-	r.mu.Unlock()
-	r.service.failExecRuns(ctx, taken, reason)
-	r.service.finishTerminalRecordings(ctx, recorded)
 }
 
 // workspaceRunReason maps a workspace's own end onto the reason its runs

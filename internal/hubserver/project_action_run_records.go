@@ -285,6 +285,14 @@ func (s *Service) getActionRunRecord(ctx context.Context, scope nativeScope, act
 }
 
 func (w *workspaceService) finishActionRunRecord(ctx context.Context, state *execRunState, status string, exit *int, reason string) error {
+	return w.completeActionRunRecord(ctx, state, status, exit, reason, nil)
+}
+
+func (w *workspaceService) finishRelayActionRunRecord(ctx context.Context, state *execRunState, runner *relayConnection, code int) error {
+	return w.completeActionRunRecord(ctx, state, workspacesession.RunStatusForExit(code), &code, "", runner)
+}
+
+func (w *workspaceService) completeActionRunRecord(ctx context.Context, state *execRunState, status string, exit *int, reason string, runner *relayConnection) error {
 	var row postgres.ActionRun
 	err := w.server.config.TenantRepository.ReadTenant(ctx, state.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner := r.(workspaceReader)
@@ -297,6 +305,9 @@ func (w *workspaceService) finishActionRunRecord(ctx context.Context, state *exe
 	}
 	if workspacesession.TerminalRunStatus(row.Status) {
 		return nil
+	}
+	if runner != nil && (row.WorkspaceID != runner.owner.WorkspaceID || row.ClaimedBy != runner.owner.RunnerID || row.LeaseID != runner.owner.LeaseID || row.FencingToken != runner.owner.FencingToken) {
+		return nativeStaleExecution("The action run belongs to an earlier workspace owner")
 	}
 	output := state.output
 	truncated := state.truncated
@@ -325,7 +336,20 @@ func (w *workspaceService) finishActionRunRecord(ctx context.Context, state *exe
 		code = pgtype.Int4{Int32: int32(*exit), Valid: true}
 	}
 	return w.server.workspaceWrite(ctx, nativeScope{organization: row.OrganizationID, project: row.ProjectID}, func(writer workspaceWriter, now time.Time) error {
+		if runner != nil {
+			workspace, _, err := loadWorkspaceWorkerRecord(ctx, writer, runner.scope, row.WorkspaceID, workspaceWorkerIdentity{LeaseID: tracker.LeaseID(runner.owner.LeaseID), FencingToken: tracker.FencingToken(runner.owner.FencingToken)}, now)
+			if err != nil {
+				return err
+			}
+			if workspace.owner() != runner.owner || !workspacesession.Bound(workspace.State) {
+				return nativeStaleExecution("The workspace owner changed")
+			}
+		}
 		if err := keepActionOutputArchive(ctx, writer, row, ref, now); err != nil {
+			return err
+		}
+		if runner != nil {
+			_, err := writer.ReportActionRun(ctx, postgres.ReportActionRunInput{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, RunnerID: runner.owner.RunnerID, LeaseID: runner.owner.LeaseID, FencingToken: runner.owner.FencingToken, Status: status, ExitCode: code, Reason: reason, FinishedAt: &now, OutputObjectKey: outputKey, OutputSha256: ref.SHA256, OutputBytes: ref.CompressedSize, OutputContentBytes: ref.UncompressedSize, OutputSequence: row.OutputSequence + 1, Truncated: truncated, UpdatedAt: now})
 			return err
 		}
 		_, err := writer.FinishActionRun(ctx, postgres.FinishActionRunInput{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, ExpectedRevision: row.Revision, Status: status, ExitCode: code, Reason: reason, FinishedAt: &now, OutputObjectKey: outputKey, OutputSha256: ref.SHA256, OutputBytes: ref.CompressedSize, OutputContentBytes: ref.UncompressedSize, Truncated: truncated})
