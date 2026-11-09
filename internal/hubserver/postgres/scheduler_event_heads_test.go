@@ -295,6 +295,15 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := admin.ExecContext(t.Context(), "SET ROLE detent_migration_v2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
+		t.Fatal(err)
+	}
 	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
 	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
 	if err != nil {
@@ -308,6 +317,63 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, project := range []tracker.ProjectID{"prj_shared", "prj_other"} {
 			item := tracker.NativeWorkItemID("wi_" + string(project[4:]))
+			var historical eventstore.Event
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.Events(t.Context(), project, item, 0, 10)
+				if err == nil && len(rows) != 2 {
+					t.Fatalf("historical rows=%d, want2", len(rows))
+				}
+				if err == nil {
+					historical = rows[1]
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			value, err := content.Event(t.Context(), historical)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := value
+			decision := *value.Data.Decision
+			decision.Reason = "Different source"
+			changed.Data.Decision = &decision
+			changedPayload, err := content.PrepareEvent(t.Context(), org, historyJSON(t, changed))
+			if err != nil {
+				t.Fatal(err)
+			}
+			missingOutcome := prepared
+			missingOutcome.ID += "_new"
+			missingOutcome.SchedulerOutcome = ""
+			for _, test := range []struct {
+				name string
+				row  eventstore.Event
+				want error
+			}{
+				{"old typed replay", historical, nil},
+				{"prepared replay", prepared, nil},
+				{"different immutable source", changedPayload, corestore.ErrRevisionConflict},
+				{"new missing outcome", missingOutcome, eventstore.ErrInvalidRecord},
+			} {
+				t.Run(string(org)+"/"+string(project)+"/"+test.name, func(t *testing.T) {
+					var replayed eventstore.Event
+					err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						var err error
+						replayed, err = w.AppendEvent(t.Context(), test.row)
+						return err
+					})
+					if !errors.Is(err, test.want) {
+						t.Fatalf("replay error=%v, want%v; requested=%+v historical=%+v", err, test.want, test.row, historical)
+					}
+					if err == nil && !reflect.DeepEqual(replayed, historical) {
+						t.Fatalf("replay changed historical identity or projection: got=%+v want=%+v", replayed, historical)
+					}
+				})
+			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				rows, err := r.(eventstore.SchedulerDecisionReader).SchedulerDecisions(t.Context(), project, item)
 				if err != nil || !rows.Available || rows.Latest == nil || rows.Latest.Sequence != 2 || rows.Unprojected == nil || rows.Unprojected.ID != rows.Latest.ID || rows.Exclusion != nil {
@@ -320,7 +386,7 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), "DELETE FROM scheduler_event_heads WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND head_kind='unprojected'", org, project, item); err != nil {
 				t.Fatal(err)
 			}
-			err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			err = repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				_, err := r.(eventstore.SchedulerDecisionReader).SchedulerDecisions(t.Context(), project, item)
 				return err
 			})

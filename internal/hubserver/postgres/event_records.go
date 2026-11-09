@@ -423,9 +423,6 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return eventstore.Event{}, err
 	}
-	if record.Type == "scheduler.decision" && record.SchedulerOutcome == "" {
-		return eventstore.Event{}, eventstore.ErrInvalidRecord
-	}
 	if record.ID == "" || record.Type == "" || record.SchemaVersion != 1 || record.Sequence < 0 || record.ActorKind == "" || record.ActorPrincipalID == "" {
 		return eventstore.Event{}, eventstore.ErrInvalidRecord
 	}
@@ -455,6 +452,14 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 			requested.RecordedAt = previous.RecordedAt
 		}
 		requested = replayEventActor(requested, eventRecord(previous))
+		if previous.Type == "scheduler.decision" && previous.SchedulerOutcome == "" {
+			requested.SchedulerOutcome = ""
+		}
+		if previous.Type == "scheduler.decision" && !previous.PushKnown {
+			requested.PushKnown = false
+			requested.PushChangeID, requested.PushVersionID, requested.PushHeadSHA = previous.PushChangeID, previous.PushVersionID, previous.PushHeadSha
+			requested.PushExternalEffect, requested.PushEffectState = previous.PushExternalEffect, previous.PushEffectState
+		}
 		if !reflect.DeepEqual(eventRecord(previous), requested) {
 			return eventstore.Event{}, corestore.ErrRevisionConflict
 		}
@@ -465,6 +470,9 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return eventstore.Event{}, mapError(ctx, err)
+	}
+	if record.Type == "scheduler.decision" && record.SchedulerOutcome == "" {
+		return eventstore.Event{}, eventstore.ErrInvalidRecord
 	}
 	sequence, err := s.queries.RecordAdvanceIssue(ctx, pgquery.RecordAdvanceIssueParams{OrganizationID: s.organization, ProjectID: record.ProjectID, NativeID: record.WorkItemID, ImportedSequence: record.Sequence, ActivityAt: recordTime(record.RecordedAt)})
 	if err != nil {
