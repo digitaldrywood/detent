@@ -326,7 +326,6 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 				return operatortool.ErrAccessDenied
 			}
 		}
-		var query nativeQueryer
 		checkScope := scope
 		checkScope.action = requirement.Action
 		if requirement.ProjectID != "" {
@@ -344,7 +343,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 					return operatortool.ErrAccessDenied
 				}
 				if requirement.ProjectID != "" {
-					return s.checkOperatorResource(ctx, query, checkScope, requirement)
+					return s.checkOperatorResource(ctx, checkScope, requirement)
 				}
 				checkScope.requireHostedAdmin = requirement.Scope == apikey.ScopeAdmin
 				if operatortool.IsThreadTool(requirement.Action) {
@@ -356,7 +355,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 				if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
 					return nil
 				}
-				return s.checkOperatorResource(ctx, query, checkScope, requirement)
+				return s.checkOperatorResource(ctx, checkScope, requirement)
 			}
 			if requirement.Scope == apikey.ScopeAdmin && credential.Scope != apiScopeAdmin {
 				return operatortool.ErrAccessDenied
@@ -365,6 +364,6 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
 			return nil
 		}
-		return s.checkOperatorResource(ctx, query, checkScope, requirement)
+		return s.checkOperatorResource(ctx, checkScope, requirement)
 	}}, nil
 }

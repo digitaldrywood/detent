@@ -80,15 +80,15 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 				t.Fatalf("unexpected action: %+v", action)
 			}
 			scope := nativeScope{organization: organization, project: tracker.ProjectID(action.ProjectID)}
-			if err := service.checkOperatorResource(t.Context(), nil, scope, operatortool.Requirement{ResourceKind: "action", ResourceID: action.ID}); err != nil {
+			if err := service.checkOperatorResource(t.Context(), scope, operatortool.Requirement{ResourceKind: "action", ResourceID: action.ID}); err != nil {
 				t.Fatalf("typed action authority: %v", err)
 			}
-			if err := service.checkOperatorResource(t.Context(), nil, scope, operatortool.Requirement{ResourceKind: "action", ResourceID: "missing"}); !errors.Is(err, corestore.ErrNotFound) {
+			if err := service.checkOperatorResource(t.Context(), scope, operatortool.Requirement{ResourceKind: "action", ResourceID: "missing"}); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("missing action authority: %v", err)
 			}
 			foreign := scope
 			foreign.project = "other_project"
-			if err := service.checkOperatorResource(t.Context(), nil, foreign, operatortool.Requirement{ResourceKind: "action", ResourceID: action.ID}); !errors.Is(err, corestore.ErrNotFound) {
+			if err := service.checkOperatorResource(t.Context(), foreign, operatortool.Requirement{ResourceKind: "action", ResourceID: action.ID}); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("foreign project action authority: %v", err)
 			}
 			if replay := call(http.MethodPost, "", create, http.StatusCreated); string(replay) != string(created) {

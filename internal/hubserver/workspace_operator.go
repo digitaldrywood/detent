@@ -82,7 +82,7 @@ func workspaceRequirement(name string, r workspaceToolRequest, write bool) opera
 	}
 	return requirement
 }
-func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer, scope nativeScope, r operatortool.Requirement) error {
+func (s *Service) checkOperatorResource(ctx context.Context, scope nativeScope, r operatortool.Requirement) error {
 	kind := r.ResourceKind
 	if strings.HasPrefix(kind, "runners:") {
 		if err := s.requireOperatorRunners(ctx, scope); err != nil {
@@ -104,7 +104,7 @@ func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer
 		if s.conversations == nil {
 			return errWorkspaceOperationUnavailable
 		}
-		_, err := s.conversations.loadConversation(ctx, query, scope, r.ResourceID)
+		_, err := s.conversations.loadConversation(ctx, nil, scope, r.ResourceID)
 		return err
 	case "action":
 		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -116,7 +116,7 @@ func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer
 			return err
 		})
 	case "work_item":
-		_, err := s.resolveOperatorNativeItem(ctx, query, scope, r.ResourceID)
+		_, err := s.resolveOperatorNativeItem(ctx, nil, scope, r.ResourceID)
 		return err
 	default:
 		return operatortool.ErrAccessDenied
