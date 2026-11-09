@@ -28,7 +28,8 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		defer clockMu.Unlock()
 		return clock
 	}
-	first := newWorkspaceNativeService(t, Config{now: now, Workspace: &WorkspaceConfig{Enabled: true, MaxLifetime: time.Minute, IdleTimeout: time.Minute, maintenanceTicks: make(chan time.Time), Terminal: WorkspaceTerminalConfig{Enabled: true, Isolation: workspacesession.IsolationSandbox}}})
+	lifetime := 90 * time.Second
+	first := newWorkspaceNativeService(t, Config{now: now, Workspace: &WorkspaceConfig{Enabled: true, MaxLifetime: lifetime, IdleTimeout: lifetime, maintenanceTicks: make(chan time.Time), Terminal: WorkspaceTerminalConfig{Enabled: true, Isolation: workspacesession.IsolationSandbox}}})
 	config := first.config
 	workspace := first.workspaces.config
 	workspace.maintenanceTicks = make(chan time.Time)
@@ -212,6 +213,30 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 			}
 		}
 	}
+	clockMu.Lock()
+	clock = started.Add(65 * time.Second)
+	clockMu.Unlock()
+	for _, hub := range hubs {
+		hub.workspaces.sweep(t.Context())
+		for _, record := range saved {
+			f := record.fixture
+			if f.service != hub {
+				if session := readSession(record); session.State != workspacesession.StateReady {
+					t.Fatalf("another tenant's heartbeat recovery changed workspace state=%q", session.State)
+				}
+				continue
+			}
+			if session := readSession(record); session.State != workspacesession.StateUnreachable {
+				t.Fatalf("missed workspace heartbeats did not become unreachable: %+v", session)
+			}
+			path := f.base + "/workspaces/" + f.workspace + "/worker/heartbeat"
+			request := workspaceHeartbeatRequest{workspaceWorkerIdentity: workspaceIdentity(f.lease), State: workspacesession.StateReady, Capabilities: f.capabilities()}
+			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path, f.runner.redemption.Credential, request), http.StatusOK)
+			if session := readSession(record); session.State != workspacesession.StateReady {
+				t.Fatalf("current owner heartbeat did not recover workspace: %+v", session)
+			}
+		}
+	}
 	unboundAt := now()
 	for index, record := range saved {
 		f := record.fixture
@@ -227,7 +252,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		}
 	}
 	clockMu.Lock()
-	clock = started.Add(time.Minute)
+	clock = started.Add(lifetime)
 	clockMu.Unlock()
 	swept := map[tracker.OrganizationID]bool{}
 	for _, hub := range hubs {
@@ -287,7 +312,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			wantEnd := started.Add(time.Minute)
+			wantEnd := started.Add(lifetime)
 			if record.index == 0 {
 				wantEnd = unboundAt
 			}
