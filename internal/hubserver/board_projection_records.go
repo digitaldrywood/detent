@@ -151,7 +151,11 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 			err = &boardRefreshError{item: candidate.WorkItemID, step: step, cause: err}
 		}
 	}()
-	err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+	owner, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return snapshot, nativeRunEventStorageUnavailable()
+	}
+	err = owner.ReadTenantSnapshot(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		snapshot.project.Core, err = r.Project(ctx, candidate.ProjectID)
 		if err != nil {

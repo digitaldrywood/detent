@@ -45,6 +45,16 @@ func (r *boardChangeMutationRepository) ReadTenant(ctx context.Context, org trac
 	})
 }
 
+func (r *boardChangeMutationRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	r.reads++
+	if r.reads == r.failRead {
+		return context.DeadlineExceeded
+	}
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, func(reader tenantstore.Reader) error {
+		return read(boardChangeMutationReader{Reader: reader, AuditDispositionReader: reader.(eventstore.AuditDispositionReader), ChangeLandingReader: reader.(eventstore.ChangeLandingReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), repository: r, organization: org})
+	})
+}
+
 type boardChangeMutationReader struct {
 	tenantstore.Reader
 	eventstore.AuditDispositionReader
