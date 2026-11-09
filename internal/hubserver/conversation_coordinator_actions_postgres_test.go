@@ -2,24 +2,28 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/apikey"
+	"fmt"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
-	"fmt"
-
-	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -352,8 +356,15 @@ func seedCoordinatorActionIssues(t *testing.T, service *Service, scope nativeSco
 		if err != nil {
 			t.Fatal(err)
 		}
+		document, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + string(plan.issue.WorkItemID), SourceID: string(plan.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+		if err != nil {
+			t.Fatal(err)
+		}
 		writeCoordinatorActionTenant(t, service, scope.organization, func(w tenantstore.Writer) error {
 			if err := writeWorkItemRecord(t.Context(), w, plan, fields); err != nil {
+				return err
+			}
+			if err := w.PutSearch(t.Context(), document, 0); err != nil {
 				return err
 			}
 			_, err := w.CreateCollaborationVersion(t.Context(), version)
@@ -423,4 +434,76 @@ func TestCoordinatorChatMoveKeepsAnswerAndProvenance(t *testing.T) {
 			}
 		})
 	}
+}
+
+type coordinatorArchiveReplayRepository struct {
+	tenantstore.Repository
+	mu           sync.Mutex
+	operation    string
+	afterReceipt func(context.Context)
+}
+
+func (r *coordinatorArchiveReplayRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	missed := false
+	err := r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
+		return read(coordinatorArchiveReceiptReader{Reader: reader, operation: r.operation, missed: &missed})
+	})
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) || !missed || workload != corestore.Serving {
+		return err
+	}
+	r.mu.Lock()
+	after := r.afterReceipt
+	r.afterReceipt = nil
+	r.mu.Unlock()
+	if after != nil {
+		after(ctx)
+	}
+	return err
+}
+
+func (r *coordinatorArchiveReplayRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, read)
+}
+
+type coordinatorArchiveReceiptReader struct {
+	tenantstore.Reader
+	operation string
+	missed    *bool
+}
+
+func (r coordinatorArchiveReceiptReader) Receipt(ctx context.Context, actor, operation, key string) (eventstore.Receipt, error) {
+	receipt, err := r.Reader.Receipt(ctx, actor, operation, key)
+	if operation == r.operation && errors.Is(err, corestore.ErrNotFound) {
+		*r.missed = true
+	}
+	return receipt, err
+}
+
+func (r coordinatorArchiveReceiptReader) ProjectAccessPage(ctx context.Context, filter accessstore.ProjectAccessFilter) ([]accessstore.ProjectAccess, error) {
+	return r.Reader.(accessstore.ProjectAccessPageReader).ProjectAccessPage(ctx, filter)
+}
+
+func coordinatorActionRemoveCollaborationEntitlement(t *testing.T, f coordinatorActionFixture) {
+	t.Helper()
+	f.writeTenant(t, func(w tenantstore.Writer) error {
+		plans, err := w.BillingPlans(t.Context(), billingstore.PlanReference{}, 200)
+		if err != nil {
+			return err
+		}
+		for _, plan := range plans {
+			plan.Features = slices.DeleteFunc(slices.Clone(plan.Features), func(feature string) bool { return feature == "collaboration" })
+			if err := w.ReplaceBillingPlan(t.Context(), plan); err != nil {
+				return err
+			}
+		}
+		enabled, err := w.BillingFeatureEnabled(t.Context(), "collaboration", f.service.config.now(), nil)
+		if err == nil && enabled {
+			return errors.New("collaboration entitlement remained enabled")
+		}
+		return err
+	})
+}
+
+func (r coordinatorArchiveReceiptReader) WorkItemRelationshipFacts(ctx context.Context, project tracker.ProjectID, ids []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
+	return r.Reader.(tenantstore.WorkItemRelationshipBatchReader).WorkItemRelationshipFacts(ctx, project, ids)
 }

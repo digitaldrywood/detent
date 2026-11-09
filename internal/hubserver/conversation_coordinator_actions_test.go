@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -51,7 +52,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 			outcomes = append(outcomes, "child failure", "edge failure", "comment failure", "invalid state", "cycle", "validation then valid")
 		}
 		if tool == string(chat.ActionArchiveItems) {
-			outcomes = append(outcomes, "running", "merging", "became running", "became merging", "archive failure", "history failure", "already archived", "duplicate", "empty", "outside project", "number resolution")
+			outcomes = append(outcomes, "running", "merging", "became running", "became merging", "archive failure", "history failure", "already archived", "duplicate", "empty", "outside project", "number resolution", "concurrent replay", "completion without entitlement")
 		}
 		if coordinatorSpriteMutation(tool) {
 			outcomes = append(outcomes, "no runner grant", "runner grant revoked", "grantless project")
@@ -771,8 +772,46 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "human park recorded on submit" {
 					coordinatorActionHumanPark(t, f, string(id))
 				}
+				if outcome == "completion without entitlement" {
+					coordinatorActionRemoveCollaborationEntitlement(t, f)
+				}
+				var restoreArchiveRepository func()
+				if outcome == "concurrent replay" {
+					f.service.tokenUseWork.Wait()
+					original := f.service.config.TenantRepository
+					observed := &coordinatorArchiveReplayRepository{Repository: original, operation: nativeOperation(nativeScope{organization: "org_security", project: f.project}, "POST", "/work-items/archive")}
+					observed.afterReceipt = func(ctx context.Context) {
+						credential, err := currentHubOperator(ctx)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var archive chat.IssueArchive
+						if err := json.Unmarshal(action.Arguments, &archive); err != nil {
+							t.Fatal(err)
+						}
+						scope := nativeScope{organization: "org_security", project: f.project, credential: credential}
+						if _, err := f.service.executeCoordinatorArchiveTenant(ctx, scope, action, archive); err != nil {
+							t.Fatal(err)
+						}
+					}
+
+					f.service.config.TenantRepository = observed
+					restoreArchiveRepository = func() {
+						f.service.config.TenantRepository = original
+						observed.mu.Lock()
+						pending := observed.afterReceipt != nil
+						observed.mu.Unlock()
+						if pending {
+							t.Fatal("archive replay did not interleave after the missing receipt")
+						}
+					}
+					t.Cleanup(func() { f.service.config.TenantRepository = original })
+				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
-				changed := outcome == "human answer" || outcome == "dependency park" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
+				if restoreArchiveRepository != nil {
+					restoreArchiveRepository()
+				}
+				changed := outcome == "completion without entitlement" || outcome == "concurrent replay" || outcome == "human answer" || outcome == "dependency park" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
 					requireNativeStatus(t, response, http.StatusOK)
 				} else if outcome == "runner grant revoked" {
@@ -873,8 +912,17 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if changed && tool == string(chat.ActionArchiveItems) {
 					requireNativeStatus(t, f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
 					assertCoordinatorArchiveEffect(t, f, true)
+					for _, id := range archiveIDs {
+						if err := f.service.refreshBoardRecord(t.Context(), "org_security", viewstore.BoardCandidate{ProjectID: f.project, WorkItemID: tracker.NativeWorkItemID(id)}, f.service.config.now()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					credential, err := currentHubOperator(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
 					for _, archived := range []string{"", "true"} {
-						result, err := (operatorWorkReads{service: f.service, scope: nativeScope{organization: "org_security", project: f.project}}).ReadWork(ctx, operatortool.WorkList, operatortool.WorkReadRequest{ProjectID: string(f.project), Archived: archived, Limit: 100})
+						result, err := (operatorWorkReads{service: f.service, scope: nativeScope{organization: "org_security", project: f.project, credential: credential}}).ReadWork(ctx, operatortool.WorkList, operatortool.WorkReadRequest{ProjectID: string(f.project), Archived: archived, Limit: 100})
 						if err != nil {
 							t.Fatal(err)
 						}

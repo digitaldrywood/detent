@@ -2,12 +2,9 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -32,23 +29,6 @@ func validateCoordinatorArchiveIDs(ids []string) error {
 		seen[id] = true
 	}
 	return nil
-}
-
-func readCoordinatorArchiveIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string, revision tracker.Revision, now time.Time) (tracker.NativeIssue, error) {
-	issue, err := readNativeArchiveIssue(ctx, query, scope, id, revision, true, now)
-	if errors.Is(err, tracker.ErrLeaseConflict) {
-		return tracker.NativeIssue{}, nativeInvalid("Finish or stop the running issue before archiving: " + id)
-	}
-	if err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	if issue.State == "Merging" {
-		return tracker.NativeIssue{}, nativeInvalid("A Merging issue cannot be archived: " + id)
-	}
-	if issue.Archived {
-		return tracker.NativeIssue{}, nativeInvalid("Issue is already archived: " + id)
-	}
-	return issue, nil
 }
 
 func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -160,23 +140,7 @@ func (s *Service) executeCoordinatorIssueArchive(ctx context.Context, action cha
 			return chat.ActionExecution{}, err
 		}
 	}
-	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/archive"), RequireLease: true, Feature: "collaboration", Completion: true}
-	raw, err := s.executeNativeMutation(ctx, scope, options, tracker.MutationForContext(ctx, action.RequestID), archive, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		for _, item := range archive.Items {
-			if _, err := readCoordinatorArchiveIssue(ctx, tx, scope, item.WorkItemID, tracker.Revision(item.Revision), now); err != nil {
-				return nil, err
-			}
-		}
-		issues := make([]tracker.NativeIssue, 0, len(archive.Items))
-		for _, item := range archive.Items {
-			issue, err := setNativeArchiveTx(ctx, tx, scope, item.WorkItemID, tracker.Revision(item.Revision), true, now)
-			if err != nil {
-				return nil, err
-			}
-			issues = append(issues, s.nativeIssueResponse(issue))
-		}
-		return issues, nil
-	})
+	raw, err := s.executeCoordinatorArchiveTenant(ctx, scope, action, archive)
 	if err != nil {
 		return chat.ActionExecution{}, coordinatorActionError(err)
 	}
