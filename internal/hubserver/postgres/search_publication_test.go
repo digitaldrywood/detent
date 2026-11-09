@@ -25,16 +25,20 @@ func TestSearchPublicationReusesUnchangedPostings(t *testing.T) {
 	if _, err := f.admin.ExecContext(t.Context(), `CREATE TABLE search_publication_writes(organization_id text,document_id text,operation text,writes bigint,PRIMARY KEY(organization_id,document_id,operation));
 GRANT SELECT,INSERT,UPDATE ON search_publication_writes TO detent_runtime_v2;
 CREATE FUNCTION count_search_publication_writes() RETURNS trigger LANGUAGE plpgsql AS $fn$
-DECLARE posting public.search_postings;
 BEGIN
- IF TG_OP='DELETE' THEN posting:=OLD; ELSE posting:=NEW; END IF;
- IF posting.term NOT IN ('~all','~pending') THEN
-  INSERT INTO search_publication_writes VALUES(posting.organization_id,posting.document_id,TG_OP,1)
-  ON CONFLICT(organization_id,document_id,operation) DO UPDATE SET writes=search_publication_writes.writes+1;
- END IF;
+ INSERT INTO public.search_publication_writes
+ SELECT organization_id,document_id,TG_OP,count(*) FROM affected_postings
+ WHERE term NOT IN ('~all','~pending') GROUP BY organization_id,document_id
+ ON CONFLICT(organization_id,document_id,operation) DO UPDATE
+ SET writes=search_publication_writes.writes+EXCLUDED.writes;
  RETURN NULL;
 END $fn$;
-CREATE TRIGGER count_search_publication_writes AFTER INSERT OR UPDATE OR DELETE ON search_postings FOR EACH ROW EXECUTE FUNCTION count_search_publication_writes()`); err != nil {
+CREATE TRIGGER count_search_publication_inserts AFTER INSERT ON search_postings
+ REFERENCING NEW TABLE AS affected_postings FOR EACH STATEMENT EXECUTE FUNCTION count_search_publication_writes();
+CREATE TRIGGER count_search_publication_updates AFTER UPDATE ON search_postings
+ REFERENCING NEW TABLE AS affected_postings FOR EACH STATEMENT EXECUTE FUNCTION count_search_publication_writes();
+CREATE TRIGGER count_search_publication_deletes AFTER DELETE ON search_postings
+ REFERENCING OLD TABLE AS affected_postings FOR EACH STATEMENT EXECUTE FUNCTION count_search_publication_writes()`); err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -61,7 +65,7 @@ CREATE TRIGGER count_search_publication_writes AFTER INSERT OR UPDATE OR DELETE 
 			t.Fatalf("fixture has only %d postings", postings)
 		}
 		assertSearchPublicationWork(t, f, d, postings)
-		for _, mode := range []string{"identical refresh", "revision and time", "literal source change"} {
+		for _, mode := range []string{"identical refresh", "revision and time", "literal source change", "source word removal"} {
 			t.Run(string(org)+"/"+mode, func(t *testing.T) {
 				staleLiterals := []string{}
 				if mode == "identical refresh" {
@@ -85,6 +89,9 @@ CREATE TRIGGER count_search_publication_writes AFTER INSERT OR UPDATE OR DELETE 
 							}
 						}
 					}
+					if mode == "source word removal" {
+						text.Body = strings.ReplaceAll(text.Body, "exampleword059 ", "")
+					}
 					d = f.put(t, d, text, expected)
 				}
 				if _, err := f.admin.ExecContext(t.Context(), `DELETE FROM search_publication_writes WHERE organization_id=$1 AND document_id=$2`, org, d.ID); err != nil {
@@ -102,6 +109,9 @@ CREATE TRIGGER count_search_publication_writes AFTER INSERT OR UPDATE OR DELETE 
 				if mode == "revision and time" && (inserts != 0 || deletes != 0 || updates != postings) {
 					t.Errorf("revision-only publication recreated postings or lost current ordering: insert=%d update=%d delete=%d want_updates=%d", inserts, updates, deletes, postings)
 				}
+				if mode == "source word removal" && deletes == 0 {
+					t.Error("removed source word did not delete obsolete postings")
+				}
 				if mode != "identical refresh" {
 					var stale int64
 					if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND (updated_at<>$3 OR updated_at_submicrosecond<>$4)`, org, d.ID, d.UpdatedAt.Truncate(time.Microsecond), d.UpdatedAt.Nanosecond()%1000).Scan(&stale); err != nil {
@@ -113,6 +123,12 @@ CREATE TRIGGER count_search_publication_writes AFTER INSERT OR UPDATE OR DELETE 
 				}
 				for _, query := range []string{"exampleword059", "commentretainedsentinel"} {
 					page := f.find(t, org, searchstore.Query{Text: query})
+					if mode == "source word removal" && query == "exampleword059" {
+						if len(page.Items) != 0 {
+							t.Fatal("removed source word remains searchable")
+						}
+						continue
+					}
 					if len(page.Items) != 1 || page.Items[0].Document.Revision != d.Revision || !page.Items[0].Document.UpdatedAt.Equal(d.UpdatedAt) {
 						t.Fatal("reused publication lost current source identity or comment content")
 					}
