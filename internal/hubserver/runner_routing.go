@@ -313,6 +313,10 @@ func (s *Service) getRunnerRouting(c echo.Context) error {
 	return c.JSON(http.StatusOK, r)
 }
 
+type runnerProjectRankReader interface {
+	RunnerProjectSchedulingRanks(context.Context, string, int) (map[tracker.ProjectID]int, error)
+}
+
 func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runnerID string) (runnerauth.Runner, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
@@ -375,7 +379,12 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 			return err
 		}
 		runner = runnerFromRoutingRecord(record, now, urgent)
-		return nil
+		ranks, ok := reader.(runnerProjectRankReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		runner.ProjectRanks, err = ranks.RunnerProjectSchedulingRanks(ctx, runnerID, runnerstore.MaxRunnerProjectList)
+		return err
 	})
 	if err != nil {
 		return runnerauth.Runner{}, projectRecordError(err)
