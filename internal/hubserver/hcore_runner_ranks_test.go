@@ -1,9 +1,11 @@
 package hubserver
 
 import (
+	"bytes"
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -26,8 +28,56 @@ func TestRunnerProjectSchedulingRanksUsesPostgres(t *testing.T) {
 			change := map[string]any{"expected_revision": 1, "display_name": "Ranked runner", "state": "active", "capacity_limit": 2,
 				"project_ids": []tracker.ProjectID{first.project.ID, second.project.ID}, "project_ranks": map[tracker.ProjectID]int{second.project.ID: 3}, "idempotency_key": fmt.Sprintf("rank-%d", index)}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, runner.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
+			response := performHubAPIRequest(t, service, http.MethodGet, runner.identityPath()+"/routing", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var current runnerauth.Runner
+			decodeHubResponse(t, response, &current)
+			rename := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: fmt.Sprintf("rename-%d", index)}
+			rename.DisplayName = "Renamed runner"
+			renamed := performHubAPIRequest(t, service, http.MethodPut, runner.identityPath()+"/routing", testHubAdminToken, rename)
+			requireNativeStatus(t, renamed, http.StatusOK)
+			var view runnerauth.Runner
+			decodeHubResponse(t, renamed, &view)
+			if !maps.Equal(view.ProjectRanks, current.ProjectRanks) {
+				t.Fatalf("rename changed effective rank response: %v want %v", view.ProjectRanks, current.ProjectRanks)
+			}
+
+			for _, access := range []struct {
+				name, scope string
+				projects    []tracker.ProjectID
+				want        map[tracker.ProjectID]int
+			}{
+				{"remove second", "projects", []tracker.ProjectID{first.project.ID}, map[tracker.ProjectID]int{first.project.ID: 7}},
+				{"organization", "organization", nil, map[tracker.ProjectID]int{first.project.ID: 7, second.project.ID: 3}},
+			} {
+				existing := performHubAPIRequest(t, service, http.MethodGet, runner.identityPath()+"/routing", testHubAdminToken, nil)
+				requireNativeStatus(t, existing, http.StatusOK)
+				var current runnerauth.Runner
+				decodeHubResponse(t, existing, &current)
+				input := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: fmt.Sprintf("%s-%d", access.name, index)}
+				input.Scope, input.ProjectIDs, input.ProjectRanks = access.scope, access.projects, nil
+				applied := performHubAPIRequest(t, service, http.MethodPut, runner.identityPath()+"/routing", testHubAdminToken, input)
+				requireNativeStatus(t, applied, http.StatusOK)
+				replay := performHubAPIRequest(t, service, http.MethodPut, runner.identityPath()+"/routing", testHubAdminToken, input)
+				requireNativeStatus(t, replay, http.StatusOK)
+				if !bytes.Equal(applied.Body.Bytes(), replay.Body.Bytes()) {
+					t.Fatalf("%s replay changed routing receipt", access.name)
+				}
+				var written runnerauth.Runner
+				decodeHubResponse(t, applied, &written)
+				readback := performHubAPIRequest(t, service, http.MethodGet, runner.identityPath()+"/routing", testHubAdminToken, nil)
+				requireNativeStatus(t, readback, http.StatusOK)
+				var stored runnerauth.Runner
+				decodeHubResponse(t, readback, &stored)
+				if !maps.Equal(written.ProjectRanks, access.want) || !reflect.DeepEqual(written.Routing, stored.Routing) || written.Revision != stored.Revision {
+					t.Fatalf("%s PUT/replay/GET disagree: PUT=%+v GET=%+v want ranks=%v", access.name, written.Routing, stored.Routing, access.want)
+				}
+			}
 			runners = append(runners, runner)
-			expected = append(expected, map[tracker.ProjectID]int{first.project.ID: 7, second.project.ID: 3})
+			expected = append(expected, map[tracker.ProjectID]int{first.project.ID: 13, second.project.ID: 3})
+		}
+		if _, err := usagePostgresAdmin(t, service).ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=13 WHERE organization_id=$1 AND id=$2", organization, first.project.ID); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if err := service.Close(); err != nil {

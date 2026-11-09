@@ -317,6 +317,10 @@ type runnerProjectRankReader interface {
 	RunnerProjectSchedulingRanks(context.Context, string, int) (map[tracker.ProjectID]int, error)
 }
 
+type runnerProposedRankReader interface {
+	RunnerProposedSchedulingRanks(context.Context, runnerstore.Identity, int) (map[tracker.ProjectID]int, error)
+}
+
 func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runnerID string) (runnerauth.Runner, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
@@ -392,7 +396,7 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 
 	projects := runnerManagementProjects(runner)
 	if credential.Hosted != nil && projects != nil {
-		for project := range runner.ProjectRanks {
+		for project := range runner.ProjectRankOverrides {
 			if !slices.Contains(projects, project) {
 				projects = append(projects, project)
 			}
@@ -491,63 +495,6 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	change := request.effective(current.Routing)
-	if request.ProjectRanks == nil {
-		change.ProjectRanks = current.ProjectRanks
-	}
-	if err := change.Validate(); err != nil {
-		return nil, nativeInvalid(err.Error())
-	}
-	if !maps.Equal(change.ProjectCapacityLimits, current.ProjectCapacityLimits) && strings.TrimSpace(request.IdempotencyKey) == "" {
-		return nil, nativeInvalid("Project capacity updates require an idempotency key")
-	}
-	projects := append(slices.Clone(runnerManagementProjects(current)), change.ProjectIDs...)
-	for project := range change.ProjectCapacityLimits {
-		if !change.AllowsProject(project) {
-			return nil, nativeInvalid("Project capacity limits require existing runner project access")
-		}
-		projects = append(projects, project)
-	}
-	for project := range change.ProjectRanks {
-		projects = append(projects, project)
-	}
-	slices.Sort(projects)
-	projects = slices.Compact(projects)
-	if len(projects) > corestore.MaxPageSize {
-		return nil, corestore.ErrInvalidPage
-	}
-	authorize := func(reader tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
-			return err
-		}
-		for _, project := range projects {
-			row, err := reader.Project(ctx, project)
-			if err != nil {
-				return err
-			}
-			if row.DeletedAt != nil {
-				return corestore.ErrNotFound
-			}
-			selected := scope
-			selected.project = project
-			if err := s.authorizeAccessScope(ctx, reader, selected, true); err != nil {
-				return err
-			}
-			if scope.credential.Hosted != nil {
-				member, err := reader.AccessMember(ctx, scope.credential.Hosted.Subject)
-				if err != nil {
-					return err
-				}
-				if lesserHostedRole(member.Role, scope.credential.HostedRole) == "member" {
-					grant, err := reader.AccessProjectGrant(ctx, member.UserID, project)
-					if err != nil || !grant.ManageRunner {
-						return accessstore.ErrDenied
-					}
-				}
-			}
-		}
-		return nil
-	}
 	hash, err := nativeCommandHash(request)
 	if err != nil {
 		return nil, err
@@ -555,6 +502,22 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 	operation := "runner_routing " + resource
 	var identity runnerstore.Identity
 	var receipt eventstore.Receipt
+	projects := slices.Clone(runnerManagementProjects(current))
+	for project := range current.ProjectCapacityLimits {
+		projects = append(projects, project)
+	}
+	for project := range current.ProjectRankOverrides {
+		projects = append(projects, project)
+	}
+	slices.Sort(projects)
+	projects = slices.Compact(projects)
+	if len(projects) > corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
+	}
+	authorizationScope := current.Scope
+	authorize := func(reader tenantstore.Reader) error {
+		return s.authorizeRunnerRoutingAccess(ctx, reader, scope, projects, authorizationScope)
+	}
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := authorize(reader); err != nil {
 			return err
@@ -578,7 +541,33 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		if receipt.RequestHash != hash {
 			return nil, nativeConflict(0)
 		}
-		return content.Receipt(ctx, receipt)
+		return s.readRunnerRoutingReceipt(ctx, scope, resource, receipt, content)
+	}
+	change := request.effective(current.Routing)
+	ranksUnchanged := request.ProjectRanks == nil || maps.Equal(request.ProjectRanks, current.ProjectRanks)
+	if ranksUnchanged {
+		change.ProjectRanks = current.ProjectRankOverrides
+	}
+	if err := change.Validate(); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	if !maps.Equal(change.ProjectCapacityLimits, current.ProjectCapacityLimits) && strings.TrimSpace(request.IdempotencyKey) == "" {
+		return nil, nativeInvalid("Project capacity updates require an idempotency key")
+	}
+	projects = append(projects, change.ProjectIDs...)
+	for project := range change.ProjectCapacityLimits {
+		if !change.AllowsProject(project) {
+			return nil, nativeInvalid("Project capacity limits require existing runner project access")
+		}
+		projects = append(projects, project)
+	}
+	for project := range change.ProjectRanks {
+		projects = append(projects, project)
+	}
+	slices.Sort(projects)
+	projects = slices.Compact(projects)
+	if len(projects) > corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
 	}
 	if identity.Revision != change.ExpectedRevision || current.Revision != identity.Revision {
 		return nil, nativeConflict(tracker.Revision(identity.Revision))
@@ -591,13 +580,32 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 	}
 	identity.CapacityRequest = change.CapacityRequest
 	identity.Scope, identity.ProjectIDs = change.Scope, change.ProjectIDs
+	authorizationScope = identity.Scope
 	identity.DisplayName, identity.State, identity.Tags = change.DisplayName, change.State, change.Tags
 	identity.CapacityLimit, identity.MachineUse = int64(change.CapacityLimit), change.MachineUse
 	identity.IsolationTier, identity.HostServices = change.IsolationTier, change.HostServices
 	identity.Availability = runnerstore.Availability(change.Availability)
 	identity.ProjectCapacityLimits, identity.ProjectRanks = change.ProjectCapacityLimits, change.ProjectRanks
+	var responseRanks map[tracker.ProjectID]int
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := authorize(reader); err != nil {
+			return err
+		}
+
+		ranks, ok := reader.(runnerProposedRankReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		var err error
+		responseRanks, err = ranks.RunnerProposedSchedulingRanks(ctx, identity, runnerstore.MaxRunnerProjectList)
+		return err
+	})
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
 	previousRouting := current.Routing
 	current.Routing, current.Revision = change.Routing, identity.Revision+1
+	current.ProjectRanks = responseRanks
 	raw, err := json.Marshal(current)
 	if err != nil {
 		return nil, err
@@ -671,7 +679,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		return nil, projectRecordError(err)
 	}
 	if request.IdempotencyKey != "" {
-		return content.Receipt(ctx, receipt)
+		return s.readRunnerRoutingReceipt(ctx, scope, resource, receipt, content)
 	}
 	return json.RawMessage(raw), nil
 }

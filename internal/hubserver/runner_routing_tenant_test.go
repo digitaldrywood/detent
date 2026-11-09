@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,12 +19,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -652,6 +655,154 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					t.Fatalf("runner capacity request=%+v status=%d", received.CapacityRequest, rec.Code)
 				}
 			})
+
+			t.Run("receipt and proposed access authority", func(t *testing.T) {
+				initial := read("runner_one")
+				var saved runnerstore.Identity
+				var creator string
+				if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					saved, err = r.RunnerIdentity(t.Context(), "runner_one")
+					if err != nil {
+						return err
+					}
+					enrollment, err := r.RunnerEnrollment(t.Context(), saved.EnrollmentID)
+					creator = enrollment.CreatedBy
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				saved.ProjectIDs = slices.Clone(initial.ProjectIDs)
+				membership.Role.Slug = "member"
+				provider.members[membership.ID] = membership
+				if _, err := admin.ExecContext(t.Context(), "UPDATE hosted_members SET role='member' WHERE organization_id='org_first' AND user_id='user_example'"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), "UPDATE runner_enrollments SET created_by='credential_member' WHERE organization_id='org_first' AND id=$1", saved.EnrollmentID); err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+					if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_first", TokenID: "credential_member", ProjectID: "project_two"}); err != nil {
+						return err
+					}
+					return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_first", UserID: "user_example", ProjectID: "project_two", CanWrite: true, ManageRunner: true})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					membership.Role.Slug = "admin"
+					provider.members[membership.ID] = membership
+					if _, err := admin.ExecContext(parentContext, "UPDATE hosted_members SET role='admin' WHERE organization_id='org_first' AND user_id='user_example'"); err != nil {
+						t.Error(err)
+					}
+					if _, err := admin.ExecContext(parentContext, "UPDATE runner_enrollments SET created_by=$2 WHERE organization_id='org_first' AND id=$1", saved.EnrollmentID, creator); err != nil {
+						t.Error(err)
+					}
+					if err := repository.WriteTenant(parentContext, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+						current, err := w.RunnerIdentity(parentContext, "runner_one")
+						if err != nil {
+							return err
+						}
+						saved.Revision = current.Revision
+						if err := w.UpdateRunnerRouting(parentContext, current.Revision, saved); err != nil {
+							return err
+						}
+						if err := w.DeleteAccessTokenGrant(parentContext, "runner_one", "project_two"); err != nil {
+							return err
+						}
+						if err := w.SetAccessTokenGrant(parentContext, accessstore.TokenGrant{OrganizationID: "org_first", TokenID: "runner_one", ProjectID: "project_one"}); err != nil {
+							return err
+						}
+						if err := w.DeleteAccessTokenGrant(parentContext, "credential_member", "project_two"); err != nil {
+							return err
+						}
+						return w.DeleteAccessProjectGrant(parentContext, "user_example", "project_two")
+					}); err != nil {
+						t.Error(err)
+					}
+				}()
+				t.Run("narrowed runner cannot disclose old B receipt", func(t *testing.T) {
+					current := read("runner_one")
+					original := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "receipt_AB"}
+					original.ProjectIDs, original.ProjectRanks = []tracker.ProjectID{"project_one", "project_two"}, nil
+					accepted := put("example_member_token", original)
+					if accepted.Code != http.StatusOK {
+						t.Fatalf("AB status=%d body=%s", accepted.Code, accepted.Body.String())
+					}
+					current = read("runner_one")
+					narrow := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "receipt_A"}
+					narrow.ProjectIDs, narrow.ProjectRanks = []tracker.ProjectID{"project_one"}, nil
+					if rec := put("example_member_token", narrow); rec.Code != http.StatusOK {
+						t.Fatalf("narrow status=%d body=%s", rec.Code, rec.Body.String())
+					}
+					if _, err := admin.ExecContext(t.Context(), "UPDATE hosted_project_grants SET manage_runner=false WHERE organization_id='org_first' AND user_id='user_example' AND project_id='project_two'"); err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						if _, err := admin.ExecContext(parentContext, "UPDATE hosted_project_grants SET manage_runner=true WHERE organization_id='org_first' AND user_id='user_example' AND project_id='project_two'"); err != nil {
+							t.Error(err)
+						}
+					}()
+					counter := &routingReplayRepository{Repository: repository}
+					details := &routingReplayDetails{DetailStore: service.runDetailStore()}
+					priorRepository, priorDetails := service.config.TenantRepository, service.config.RunDetails
+					service.config.TenantRepository, service.config.RunDetails = counter, details
+					defer func() { service.config.TenantRepository, service.config.RunDetails = priorRepository, priorDetails }()
+					before := read("runner_one")
+					rec := put("example_member_token", original)
+					if rec.Code != http.StatusNotFound && rec.Code != http.StatusForbidden {
+						t.Errorf("old receipt disclosed after B revocation: status=%d body=%s", rec.Code, rec.Body.String())
+					}
+					if strings.Contains(rec.Body.String(), "project_two") || strings.Contains(rec.Body.String(), "runner_id") || rec.Body.String() == accepted.Body.String() {
+						t.Error("denied replay disclosed receipt payload")
+					}
+					if counter.writes != 0 || details.writes != 0 {
+						t.Errorf("denied replay wrote state: transactions=%d objects=%d", counter.writes, details.writes)
+					}
+					if after := read("runner_one"); !reflect.DeepEqual(before, after) {
+						t.Error("denied replay changed routing")
+					}
+				})
+				t.Run("organization grant revoked during receipt storage", func(t *testing.T) {
+					before := read("runner_one")
+					input := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}, IdempotencyKey: "org_revoke_at_store"}
+					input.Scope, input.ProjectIDs, input.ProjectRanks = "organization", nil, nil
+					hook := &routingGrantInterleaveDetails{DetailStore: service.runDetailStore(), afterStore: func(ctx context.Context) error {
+						_, err := admin.ExecContext(ctx, "UPDATE hosted_project_grants SET manage_runner=false WHERE organization_id='org_first' AND user_id='user_example' AND project_id='project_two'")
+						return err
+					}}
+					prior := service.config.RunDetails
+					service.config.RunDetails = hook
+					defer func() {
+						service.config.RunDetails = prior
+						if _, err := admin.ExecContext(parentContext, "UPDATE hosted_project_grants SET manage_runner=true WHERE organization_id='org_first' AND user_id='user_example' AND project_id='project_two'"); err != nil {
+							t.Error(err)
+						}
+					}()
+					rec := put("example_member_token", input)
+					if !hook.fired {
+						t.Fatal("grant revocation was not interleaved with receipt storage")
+					}
+					if rec.Code != http.StatusNotFound && rec.Code != http.StatusForbidden {
+						t.Errorf("revoked organization proposal committed: status=%d body=%s", rec.Code, rec.Body.String())
+					}
+					if strings.Contains(rec.Body.String(), "runner_id") {
+						t.Error("revoked proposal disclosed receipt")
+					}
+					if after := read("runner_one"); !reflect.DeepEqual(before, after) {
+						t.Error("revoked proposal changed routing")
+					}
+					if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+						_, err := r.Receipt(t.Context(), "credential_member", "runner_routing runner_one", input.IdempotencyKey)
+						if !errors.Is(err, corestore.ErrNotFound) {
+							t.Errorf("revoked proposal persisted receipt: %v", err)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+			})
 			t.Run("organization edit ignores unrelated projects", func(t *testing.T) {
 				if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 					for i := 0; i < 201; i++ {
@@ -690,13 +841,79 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				input := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "rename_large_organization"}
 				input.ProjectIDs = nil
 				input.DisplayName = "Renamed runner"
-				if rec := put("example_member_token", input); rec.Code != http.StatusOK {
-					t.Fatalf("rename status=%d body=%s", rec.Code, rec.Body.String())
+				original := put("example_member_token", input)
+				if original.Code != http.StatusOK {
+					t.Fatalf("rename status=%d body=%s", original.Code, original.Body.String())
 				}
 				got := read("runner_one")
 				if got.DisplayName != input.DisplayName || got.Revision != current.Revision+1 || !reflect.DeepEqual(got.CapacityRequest, current.CapacityRequest) {
 					t.Fatal("rename lost routing or capacity request")
 				}
+				if _, err := admin.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=17 WHERE organization_id='org_first' AND id='unrelated_0'"); err != nil {
+					t.Fatal(err)
+				}
+				counter := &routingReplayRepository{Repository: repository}
+				objects := &routingReplayDetails{DetailStore: service.runDetailStore()}
+				priorRepository, priorDetails := service.config.TenantRepository, service.config.RunDetails
+				service.config.TenantRepository, service.config.RunDetails = counter, objects
+				defer func() { service.config.TenantRepository, service.config.RunDetails = priorRepository, priorDetails }()
+				beforeReplay := read("runner_one")
+				for _, test := range []struct {
+					name   string
+					alter  bool
+					status int
+				}{
+					{"identical replay after default changes", false, http.StatusOK},
+					{"same key different hash", true, http.StatusConflict},
+				} {
+					t.Run(test.name, func(t *testing.T) {
+						request := input
+						if test.alter {
+							request.DisplayName = "Different name"
+						}
+						rec := put("example_member_token", request)
+						if rec.Code != test.status {
+							t.Fatalf("replay status=%d want=%d body=%s", rec.Code, test.status, rec.Body.String())
+						}
+						if !test.alter && rec.Body.String() != original.Body.String() {
+							t.Fatal("default change replaced original receipt")
+						}
+					})
+				}
+				t.Run("replay current grant denied", func(t *testing.T) {
+					membership.Role.Slug = "member"
+					provider.members[membership.ID] = membership
+					if _, err := admin.ExecContext(t.Context(), "UPDATE hosted_members SET role='member' WHERE organization_id='org_first' AND user_id='user_example'"); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := admin.ExecContext(t.Context(), "UPDATE hosted_project_grants SET manage_runner=false WHERE organization_id='org_first' AND user_id='user_example' AND project_id='project_one'"); err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						membership.Role.Slug = "admin"
+						provider.members[membership.ID] = membership
+						if _, err := admin.ExecContext(parentContext, "UPDATE hosted_members SET role='admin' WHERE organization_id='org_first' AND user_id='user_example'"); err != nil {
+							t.Error(err)
+						}
+						if _, err := admin.ExecContext(parentContext, "UPDATE hosted_project_grants SET manage_runner=true WHERE organization_id='org_first' AND user_id='user_example' AND project_id='project_one'"); err != nil {
+							t.Error(err)
+						}
+					}()
+					rec := put("example_member_token", input)
+					if rec.Code != http.StatusNotFound {
+						t.Fatalf("revoked replay status=%d body=%s", rec.Code, rec.Body.String())
+					}
+					if rec.Body.String() == original.Body.String() || strings.Contains(rec.Body.String(), "runner_id") {
+						t.Fatal("revoked replay disclosed receipt")
+					}
+				})
+				if counter.writes != 0 || objects.writes != 0 {
+					t.Fatalf("replay wrote state: transactions=%d objects=%d", counter.writes, objects.writes)
+				}
+				if after := read("runner_one"); !reflect.DeepEqual(beforeReplay, after) {
+					t.Fatal("replay changed current routing")
+				}
+
 			})
 		})
 
@@ -751,28 +968,76 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				t.Fatalf("failed audit persisted rows: count=%d, want 1 successful prior audit", count)
 			}
 		})
-		for _, query := range []string{
-			`INSERT INTO runner_project_ranks (organization_id,runner_id,project_id,rank) VALUES ('org_first','runner_one','project_two',9)`,
-			`INSERT INTO runner_project_capacity_limits (organization_id,runner_id,project_id,capacity_limit) VALUES ('org_first','runner_one','project_two',1)`,
-			`INSERT INTO token_grants (organization_id,token_id,project_id) VALUES ('org_first','runner_one','project_two')`,
+		for _, test := range []struct{ name, query string }{
+			{"rank override", `INSERT INTO runner_project_ranks (organization_id,runner_id,project_id,rank) VALUES ('org_first','runner_one','project_two',9)`},
+			{"capacity override", `INSERT INTO runner_project_capacity_limits (organization_id,runner_id,project_id,capacity_limit) VALUES ('org_first','runner_one','project_two',1)`},
+			{"project grant", `INSERT INTO token_grants (organization_id,token_id,project_id) VALUES ('org_first','runner_one','project_two')`},
 		} {
-			if _, err := admin.ExecContext(t.Context(), query); err != nil {
-				t.Fatal(err)
-			}
-			rec := request("org_first", "runner_one", "example_member_token")
-			if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "project_two") {
-				t.Fatalf("hidden routing project leaked: status=%d body=%s", rec.Code, rec.Body.String())
-			}
-			for _, table := range []string{"runner_project_ranks", "runner_project_capacity_limits", "token_grants"} {
-				column := "runner_id"
-				if table == "token_grants" {
-					column = "token_id"
-				}
-				if _, err := admin.ExecContext(t.Context(), "DELETE FROM "+table+" WHERE organization_id='org_first' AND "+column+"='runner_one' AND project_id='project_two'"); err != nil {
+			t.Run("hidden "+test.name, func(t *testing.T) {
+				if _, err := admin.ExecContext(t.Context(), test.query); err != nil {
 					t.Fatal(err)
 				}
-			}
+				defer func() {
+					for _, table := range []string{"runner_project_ranks", "runner_project_capacity_limits", "token_grants"} {
+						column := "runner_id"
+						if table == "token_grants" {
+							column = "token_id"
+						}
+						if _, err := admin.ExecContext(parentContext, "DELETE FROM "+table+" WHERE organization_id='org_first' AND "+column+"='runner_one' AND project_id='project_two'"); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}()
+				rec := request("org_first", "runner_one", "example_member_token")
+				if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "project_two") {
+					t.Fatalf("hidden routing project leaked: status=%d body=%s", rec.Code, rec.Body.String())
+				}
+			})
 		}
+
+		t.Run("proposed organization access requires current grants", func(t *testing.T) {
+			membership.Role.Slug = "admin"
+			provider.members[membership.ID] = membership
+			if _, err := admin.ExecContext(t.Context(), "UPDATE hosted_members SET role='admin' WHERE organization_id='org_first' AND user_id='user_example'"); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				membership.Role.Slug = "member"
+				provider.members[membership.ID] = membership
+				if _, err := admin.ExecContext(parentContext, "UPDATE hosted_members SET role='member' WHERE organization_id='org_first' AND user_id='user_example'"); err != nil {
+					t.Error(err)
+				}
+				if _, err := admin.ExecContext(parentContext, "UPDATE runner_identities SET scope='projects' WHERE organization_id='org_first' AND runner_id='runner_one'"); err != nil {
+					t.Error(err)
+				}
+				if _, err := admin.ExecContext(parentContext, "INSERT INTO token_grants(organization_id,token_id,project_id) VALUES('org_first','runner_one','project_one') ON CONFLICT DO NOTHING"); err != nil {
+					t.Error(err)
+				}
+			}()
+			hostedConfig := service.config.Hosted
+			service.config.Hosted = nil
+			response := request("org_first", "runner_one", "org_first_admin")
+			service.config.Hosted = hostedConfig
+			if response.Code != http.StatusOK {
+				t.Fatalf("routing read status=%d", response.Code)
+			}
+			var current runnerauth.Runner
+			decodeHubResponse(t, response, &current)
+			input := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "scope_requires_all_grants"}
+			input.Scope, input.ProjectIDs, input.ProjectRanks = "organization", nil, nil
+			raw, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPut, "/api/v2/organizations/org_first/runners/runner_one/routing", strings.NewReader(string(raw)))
+			req.Header.Set(echo.HeaderAuthorization, "Bearer example_member_token")
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "unrelated_0") {
+				t.Fatalf("proposed organization scope leaked ranks: status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
 	})
 	for _, query := range []string{
 		`EXPLAIN SELECT runner_id FROM runner_identities WHERE organization_id='org_first' AND runner_id='runner_one' AND removed_at IS NULL`,
@@ -932,4 +1197,43 @@ func TestPostgresRunnerHostChangeWithoutLegacyDatabase(t *testing.T) {
 			}
 		})
 	}
+}
+
+type routingReplayRepository struct {
+	*postgres.Repository
+	writes int
+}
+
+func (r *routingReplayRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, work corestore.Workload, write func(tenantstore.Writer) error) error {
+	r.writes++
+	return r.Repository.WriteTenant(ctx, org, work, write)
+}
+
+type routingReplayDetails struct {
+	attachment.DetailStore
+	writes int
+}
+
+func (s *routingReplayDetails) StoreDetail(ctx context.Context, org string, raw []byte) (attachment.ArchiveReference, error) {
+	s.writes++
+	return s.DetailStore.StoreDetail(ctx, org, raw)
+}
+
+type routingGrantInterleaveDetails struct {
+	attachment.DetailStore
+	afterStore func(context.Context) error
+	fired      bool
+}
+
+func (s *routingGrantInterleaveDetails) StoreDetail(ctx context.Context, org string, raw []byte) (attachment.ArchiveReference, error) {
+	ref, err := s.DetailStore.StoreDetail(ctx, org, raw)
+	if err != nil {
+		return ref, err
+	}
+	var value runnerauth.Runner
+	if !s.fired && json.Unmarshal(raw, &value) == nil && value.RunnerID == "runner_one" && value.Scope == "organization" {
+		s.fired = true
+		err = s.afterStore(ctx)
+	}
+	return ref, err
 }

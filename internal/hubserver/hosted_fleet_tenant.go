@@ -278,6 +278,7 @@ func runnerFromFleetRecord(record runnerstore.FleetRecord, now time.Time, urgent
 		Problems:         slices.Clone(record.Problems),
 		Operations:       slices.Clone(identity.Operations),
 		Routing: runnerauth.Routing{
+			ProjectRankOverrides:  maps.Clone(identity.ProjectRanks),
 			UpdateRequest:         record.Update.Desired,
 			CapacityRequest:       identity.CapacityRequest,
 			Scope:                 identity.Scope,
