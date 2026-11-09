@@ -494,50 +494,92 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		if runtimeUpdateIdle(t.Context(), registry) {
 			t.Fatal("updater treated pending completion as idle")
 		}
-		cacheRoot := t.TempDir()
-		cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(cacheRoot, "README"), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Mkdir(filepath.Join(cacheRoot, "00"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		output := filepath.Join(cacheRoot, "00", strings.Repeat("a", 64)+"-d")
-		if err := os.WriteFile(output, make([]byte, 2000), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		aged := now.Add(-26 * time.Hour)
-		if err := os.Chtimes(output, aged, aged); err != nil {
-			t.Fatal(err)
-		}
-		candidate := scheduler.ProjectCandidate{ID: "fixture"}
-		gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{candidate})
-		if err != nil {
-			t.Fatal(err)
-		}
-		managed := &runnerBuildCache{cache: cache, root: cacheRoot}
-		if err := managed.trim(ctx, toolcache.Policy{MaxBytes: 1000}, now); err != nil {
-			t.Fatalf("deferred publication blocked quiescent cache reclamation: %v", err)
-		}
-		if report := managed.observe(); report == nil || report.SizeEvictedBytes != 2000 || report.RetainedBytes > 1000 {
-			t.Fatalf("quiescent cache did not reclaim to budget during publication hold: %+v", report)
-		}
-		if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("reclaimed cache output still exists: %v", err)
-		}
-		state, err = tracked.Orchestrator().State(ctx)
-		if err != nil || state.UnsettledWork() != 1 {
-			t.Fatalf("cache maintenance altered completion custody: unsettled=%d err=%v", state.UnsettledWork(), err)
-		}
-		slot, acquired, err := gate.TryAcquire(ctx, candidate, scheduler.SlotRequest{State: "Todo"}, now)
-		if err != nil || !acquired {
-			t.Fatalf("dispatch remained paused after cache reclamation: acquired=%t err=%v", acquired, err)
-		}
-		if err := gate.Release(slot); err != nil {
-			t.Fatal(err)
+		for _, observation := range []struct {
+			name        string
+			freeBefore  uint64
+			wantEvicted int64
+			pressure    bool
+		}{
+			{name: "no pressure", freeBefore: 25000, wantEvicted: 2000},
+			{name: "pressure", freeBefore: 500, wantEvicted: 2500, pressure: true},
+		} {
+			t.Run(observation.name, func(t *testing.T) {
+				cacheRoot := t.TempDir()
+				cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(cacheRoot, "README"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(cacheRoot, "00"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				output := filepath.Join(cacheRoot, "00", strings.Repeat("a", 64)+"-d")
+				if err := os.WriteFile(output, make([]byte, 2000), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				retained := filepath.Join(cacheRoot, "00", strings.Repeat("b", 64)+"-d")
+				if err := os.WriteFile(retained, make([]byte, 500), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				warm := now.Add(-4 * time.Hour)
+				if err := os.Chtimes(retained, warm, warm); err != nil {
+					t.Fatal(err)
+				}
+				aged := now.Add(-26 * time.Hour)
+				if err := os.Chtimes(output, aged, aged); err != nil {
+					t.Fatal(err)
+				}
+				candidate := scheduler.ProjectCandidate{ID: "fixture"}
+				gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{candidate})
+				if err != nil {
+					t.Fatal(err)
+				}
+				managed := &runnerBuildCache{cache: cache, root: cacheRoot}
+				observations := 0
+				volume := func(root string) (uint64, uint64, error) {
+					if root != cacheRoot {
+						t.Fatalf("observed unrelated cache volume: %s", root)
+					}
+					observations++
+					if observations == 1 {
+						return observation.freeBefore, 100000, nil
+					}
+					return 25000, 100000, nil
+				}
+				if err := managed.trimForVolume(ctx, toolcache.Policy{MaxBytes: 1000}, now, volume); err != nil {
+					t.Fatalf("deferred publication blocked quiescent cache reclamation: %v", err)
+				}
+				if observations != 2 {
+					t.Fatalf("cache volume observations=%d, want before and after", observations)
+				}
+				if report := managed.observe(); report == nil || report.SizeEvictedBytes != observation.wantEvicted || report.RetainedBytes > 1000 {
+					t.Fatalf("quiescent cache did not reclaim to budget during publication hold: %+v", report)
+				}
+				if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("reclaimed cache output still exists: %v", err)
+				}
+				_, retainedErr := os.Stat(retained)
+				if observation.pressure {
+					if !errors.Is(retainedErr, os.ErrNotExist) {
+						t.Fatalf("pressure retained reclaimable cache entry: %v", retainedErr)
+					}
+				} else if retainedErr != nil {
+					t.Fatalf("no-pressure maintenance removed within-budget entry: %v", retainedErr)
+				}
+				state, err = tracked.Orchestrator().State(ctx)
+				if err != nil || state.UnsettledWork() != 1 {
+					t.Fatalf("cache maintenance altered completion custody: unsettled=%d err=%v", state.UnsettledWork(), err)
+				}
+				slot, acquired, err := gate.TryAcquire(ctx, candidate, scheduler.SlotRequest{State: "Todo"}, now)
+				if err != nil || !acquired {
+					t.Fatalf("dispatch remained paused after cache reclamation: acquired=%t err=%v", acquired, err)
+				}
+				if err := gate.Release(slot); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
 	})
 }
