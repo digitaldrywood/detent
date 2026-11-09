@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -118,10 +117,7 @@ func validSpritesSlug(slug string) bool {
 // call, audit before the call, and clear the byte buffer on every exit. No API
 // or coordinator tool exposes a plaintext reader or an arbitrary callback.
 func (s *Service) checkProjectSprites(ctx context.Context, scope nativeScope) (string, error) {
-	scope, _, envelope, err := s.resolveSpritesSecret(ctx, s.database.reader, scope)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", err
-	}
+	scope, _, envelope, err := s.resolveSpritesSecret(ctx, nil, scope)
 	if err != nil {
 		return "", err
 	}
