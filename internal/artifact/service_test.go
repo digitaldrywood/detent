@@ -704,6 +704,92 @@ func TestRejectedManifestCandidateDoesNotBlockInterruption(t *testing.T) {
 	}
 }
 
+func TestIntentReceiptCleanupResumesWithoutStarvingOtherUploads(t *testing.T) {
+	service, storage := testService(t)
+	catalog := service.catalog.(*memoryCatalog)
+	ids := []string{NewID("artifact"), NewID("artifact")}
+	deleted := service.now().Add(-time.Duration(service.config.Policy.DeletionRecordSeconds+1) * time.Second)
+	for index, id := range ids {
+		upload := Upload{ArtifactID: id, Reservation: testReservation(service), State: "deleted", DeletedAt: &deleted}
+		catalog.uploads[id] = upload
+		catalog.intents[id] = map[string]CatalogIntent{}
+		count := 65
+		if index == 1 {
+			count = 1
+		}
+		for range count {
+			intentID := NewID("intent")
+			key := service.scopedObjectKey(upload.ProjectID, id, "discarded/"+intentID)
+			catalog.intents[id][intentID] = CatalogIntent{ID: intentID, State: "discarded", WriteState: "rejected", Receipt: key}
+			storage.data[key] = []byte("receipt")
+		}
+	}
+	if err := service.Maintain(t.Context()); err != nil && !errors.Is(err, ErrConflict) {
+		t.Fatal(err)
+	}
+	if len(storage.data) < 34 || len(storage.data) >= 66 {
+		t.Fatalf("one maintenance tick drained intent history: remaining receipts=%d, want 34..65", len(storage.data))
+	}
+	if _, exists := catalog.uploads[ids[1]]; exists {
+		t.Fatal("long intent history starved another upload")
+	}
+	for range 4 {
+		if err := service.Maintain(t.Context()); err != nil && !errors.Is(err, ErrConflict) {
+			t.Fatal(err)
+		}
+	}
+	if len(storage.data) != 0 || len(catalog.uploads) != 0 {
+		t.Fatal("cleanup did not resume from Hub progress", len(storage.data), len(catalog.uploads))
+	}
+}
+
+func TestRetiredIntentCannotReceiveALateCleanupReceipt(t *testing.T) {
+	cleaner, storage := testService(t)
+	upload, err := cleaner.Reserve(t.Context(), testReservation(cleaner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := cleaner.command(t.Context(), CatalogCommand{Operation: "prepare_manifest", UploadID: upload.ArtifactID, Intent: CatalogIntent{ID: NewID("intent"), Revision: 1, ManifestState: "complete", SHA256: Digest([]byte("manifest")), Bytes: 100}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	barrier := &admittedPutBarrier{Storage: storage, match: func(key string) bool { return strings.Contains(key, "/discarded/intent_") }, entered: make(chan string, 1), resume: make(chan struct{})}
+	cfg := cleaner.config
+	cfg.Catalog = cleaner.catalog
+	other, err := newTestService(t.Context(), cfg, barrier, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan struct{})
+	var discardErr error
+	t.Cleanup(func() { barrier.unblock(); <-finished })
+	go func() {
+		discardErr = other.discardManifestIntent(t.Context(), upload, prepared.Intent)
+		close(finished)
+	}()
+	select {
+	case key := <-barrier.entered:
+		if err := cleaner.discardManifestIntent(t.Context(), upload, prepared.Intent); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cleaner.retireIntentBatch(t.Context(), upload, 32, false); err != nil {
+			t.Fatal(err)
+		}
+		barrier.unblock()
+		<-finished
+		if _, err := storage.Get(t.Context(), key, "", 0); !errors.Is(err, ErrMissing) {
+			t.Fatal("a retired intent received an orphan cleanup receipt", err)
+		}
+	case <-finished:
+		if discardErr != nil {
+			t.Fatal(discardErr)
+		}
+		if _, err := cleaner.retireIntentBatch(t.Context(), upload, 32, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 type admittedPutBarrier struct {
 	Storage
 	match   func(string) bool
@@ -711,6 +797,74 @@ type admittedPutBarrier struct {
 	resume  chan struct{}
 	once    sync.Once
 	release sync.Once
+}
+
+type uncertainPutStorage struct {
+	*memoryStorage
+	manifest  bool
+	committed bool
+	key       string
+	body      []byte
+	calls     int
+}
+
+func (s *uncertainPutStorage) Put(ctx context.Context, key string, body []byte) (string, error) {
+	if s.key == "" && strings.Contains(key, "/manifests/") == s.manifest {
+		s.key, s.body = key, bytes.Clone(body)
+	}
+	if key != s.key {
+		return s.memoryStorage.Put(ctx, key, body)
+	}
+	s.calls++
+	if s.committed {
+		if _, err := s.memoryStorage.Put(ctx, key, body); err != nil {
+			return "", err
+		}
+	}
+	return "", ErrStorage
+}
+
+func TestUncertainPutRetainsCustodyUntilItsSingleWriteIsObserved(t *testing.T) {
+	for _, manifest := range []bool{false, true} {
+		for _, committed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("manifest=%t/committed=%t", manifest, committed), func(t *testing.T) {
+				storage := &uncertainPutStorage{memoryStorage: &memoryStorage{data: map[string][]byte{}}, manifest: manifest, committed: committed}
+				service, err := newTestService(t.Context(), testConfig(t), storage, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				upload, err := service.Reserve(t.Context(), testReservation(service))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.Append(t.Context(), upload.ArtifactID, testPart(0, "example")); !errors.Is(err, ErrStorage) {
+					t.Fatal("fixture did not lose the physical Put result", err)
+				}
+				if !committed {
+					if err := service.Delete(t.Context(), upload.ArtifactID); !errors.Is(err, ErrConflict) {
+						t.Fatal("absence settled an uncertain Put", err)
+					}
+					current, err := service.Upload(t.Context(), upload.ArtifactID)
+					if err != nil || current.ReservedBytes+current.RetainedBytes != upload.Bytes {
+						t.Fatal("uncertain Put lost quota custody", current, err)
+					}
+					if _, err := storage.memoryStorage.Put(t.Context(), storage.key, storage.body); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := service.Delete(t.Context(), upload.ArtifactID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := storage.Get(t.Context(), storage.key, "", 0); !errors.Is(err, ErrMissing) || storage.calls != 1 {
+					t.Fatal("reconciliation repeated the uncertain Put or orphaned its blob", storage.calls, err)
+				}
+				usage, err := service.Usage(t.Context())
+				if err != nil || usage.ReservedBytes != 0 || usage.RetainedBytes != 0 {
+					t.Fatal("reconciled cleanup retained quota", usage, err)
+				}
+			})
+		}
+	}
 }
 
 func (b *admittedPutBarrier) Put(ctx context.Context, key string, data []byte) (string, error) {

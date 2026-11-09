@@ -151,6 +151,42 @@ func (q *Queries) BeginCatalogManifestDiscard(ctx context.Context, arg BeginCata
 	return i, err
 }
 
+const catalogIntentHistory = `-- name: CatalogIntentHistory :many
+SELECT id FROM artifact_catalog_manifest_intents WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 ORDER BY id LIMIT 64
+`
+
+type CatalogIntentHistoryParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ServiceID      string
+	UploadID       string
+}
+
+func (q *Queries) CatalogIntentHistory(ctx context.Context, arg CatalogIntentHistoryParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, catalogIntentHistory,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.ServiceID,
+		arg.UploadID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const catalogManifestIntent = `-- name: CatalogManifestIntent :one
 SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id FROM artifact_catalog_manifest_intents WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5
 `
@@ -238,7 +274,7 @@ func (q *Queries) CatalogManifestIntentByKey(ctx context.Context, arg CatalogMan
 const catalogManifestIntents = `-- name: CatalogManifestIntents :many
 SELECT organization_id, project_id, service_id, upload_id, id, revision, body_object_key, sha256, body_bytes, manifest_state, state, storage_version, receipt_object_key, created_at, write_state, write_id FROM artifact_catalog_manifest_intents
 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id>$5
-AND (NOT $7::boolean OR state IN ('pending','discarding')) ORDER BY id LIMIT $6
+AND (NOT $7::boolean OR state IN ('pending','discarding')) AND (NOT $8::boolean OR state IN ('committed','discarded')) ORDER BY id LIMIT $6
 `
 
 type CatalogManifestIntentsParams struct {
@@ -249,6 +285,7 @@ type CatalogManifestIntentsParams struct {
 	ID             string
 	Limit          int32
 	PendingOnly    bool
+	RetiredOnly    bool
 }
 
 func (q *Queries) CatalogManifestIntents(ctx context.Context, arg CatalogManifestIntentsParams) ([]ArtifactCatalogManifestIntent, error) {
@@ -260,6 +297,7 @@ func (q *Queries) CatalogManifestIntents(ctx context.Context, arg CatalogManifes
 		arg.ID,
 		arg.Limit,
 		arg.PendingOnly,
+		arg.RetiredOnly,
 	)
 	if err != nil {
 		return nil, err
@@ -435,6 +473,29 @@ func (q *Queries) FinishCatalogManifestDiscard(ctx context.Context, arg FinishCa
 		&i.WriteID,
 	)
 	return i, err
+}
+
+const pruneCatalogManifestIntent = `-- name: PruneCatalogManifestIntent :exec
+DELETE FROM artifact_catalog_manifest_intents WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND id=$5 AND state IN ('committed','discarded')
+`
+
+type PruneCatalogManifestIntentParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ServiceID      string
+	UploadID       string
+	ID             string
+}
+
+func (q *Queries) PruneCatalogManifestIntent(ctx context.Context, arg PruneCatalogManifestIntentParams) error {
+	_, err := q.db.Exec(ctx, pruneCatalogManifestIntent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.ServiceID,
+		arg.UploadID,
+		arg.ID,
+	)
+	return err
 }
 
 const verifyCatalogManifestIntent = `-- name: VerifyCatalogManifestIntent :one

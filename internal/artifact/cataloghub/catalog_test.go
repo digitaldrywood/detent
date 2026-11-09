@@ -503,6 +503,11 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 		}
 		persistedRows = append(persistedRows, persisted{fixture: fixture, upload: upload, reference: ref, object: object, part: part})
 	}
+	for _, index := range []int{0, 4} {
+		cfg := fixtures[index].config
+		cfg.Catalog = remote(fixtures[index], fixtures[index].token)
+		verifyIntentMaintenanceProgress(t, backend.repository, cfg, storage, fixtures[index].item)
+	}
 	server.Close()
 	if err := backend.repository.Close(); err != nil {
 		t.Fatal(err)
@@ -551,6 +556,92 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			t.Fatal("revoked publisher accepted", err)
 		}
 	}
+}
+
+func verifyIntentMaintenanceProgress(t *testing.T, repository *postgres.Repository, cfg artifact.Config, storage artifact.Storage, item string) {
+	t.Helper()
+	service, err := artifact.NewService(t.Context(), cfg, storage, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploads := []artifact.Upload{}
+	for index, count := range []int{64, 1} {
+		request := artifact.Reservation{Scope: artifact.Scope{OrganizationID: cfg.OrganizationID, ProjectID: cfg.ProjectID, WorkItemID: item, RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, ServiceID: cfg.ServiceID, Mode: cfg.Mode, Key: fmt.Sprintf("intent-maintenance-%d", index), Kind: "log", Bytes: 4 << 20, LeaseID: "example", FencingToken: 1}
+		upload, err := service.Reserve(t.Context(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		uploads = append(uploads, upload)
+		receipts := []string{}
+		err = repository.WriteArtifactCatalog(t.Context(), tracker.OrganizationID(cfg.OrganizationID), corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+			scope := postgres.CatalogScope{OrganizationID: tracker.OrganizationID(cfg.OrganizationID), ProjectID: tracker.ProjectID(cfg.ProjectID), ServiceID: cfg.ServiceID, UploadID: upload.ArtifactID}
+			for range count {
+				intent, err := w.PrepareCatalogManifestIntent(t.Context(), postgres.CatalogManifestIntent{OrganizationID: scope.OrganizationID, ProjectID: scope.ProjectID, ServiceID: scope.ServiceID, UploadID: scope.UploadID, ID: artifact.NewID("intent"), Revision: 1, BodyObjectKey: "proposed", Sha256: artifact.Digest([]byte("manifest")), BodyBytes: 100, ManifestState: "complete"}, time.Now().UTC())
+				if err != nil {
+					return err
+				}
+				transition := postgres.CatalogIntentTransition{CatalogScope: scope, ID: intent.ID, State: "discarding"}
+				if _, err := w.TransitionCatalogManifestIntent(t.Context(), transition); err != nil {
+					return err
+				}
+				transition.State = "discarded"
+				transition.ReceiptObjectKey = fmt.Sprintf("%s/%s/%s/%s/discarded/%s", cfg.OrganizationID, cfg.ProjectID, cfg.ServiceID, upload.ArtifactID, intent.ID)
+				receipts = append(receipts, transition.ReceiptObjectKey)
+				if _, err := w.TransitionCatalogManifestIntent(t.Context(), transition); err != nil {
+					return err
+				}
+			}
+			_, err := w.BeginCatalogDeletion(t.Context(), scope)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range receipts {
+			if _, err := storage.Put(t.Context(), key, []byte("receipt")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := service.Maintain(t.Context()); err != nil && !errors.Is(err, artifact.ErrConflict) {
+		t.Fatal(err)
+	}
+	other, err := service.Upload(t.Context(), uploads[1].ArtifactID)
+	if err != nil || other.State != "deleted" {
+		t.Fatal("intent history starved a second PostgreSQL upload", other.State, err)
+	}
+	scope := artifact.CatalogScope{OrganizationID: cfg.OrganizationID, ProjectID: cfg.ProjectID, ServiceID: cfg.ServiceID}
+	page, err := cfg.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: scope, Operation: "manifest_intents", UploadID: uploads[0].ArtifactID, Limit: 32})
+	if err != nil || len(page.Intents) != 32 || page.Next == "" {
+		t.Fatal("one maintenance tick drained more than its intent budget", len(page.Intents), err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err = artifact.NewService(t.Context(), cfg, storage, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	for range 64 {
+		current, err := service.Upload(t.Context(), uploads[0].ArtifactID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.State == "deleted" {
+			if current.ReservedBytes != 0 || current.RetainedBytes != 0 {
+				t.Fatal("completed cleanup retained quota", current)
+			}
+			return
+		}
+		if current.ReservedBytes == 0 {
+			t.Fatal("bounded cleanup released custody before completion")
+		}
+		if err := service.Maintain(t.Context()); err != nil && !errors.Is(err, artifact.ErrConflict) {
+			t.Fatal(err)
+		}
+	}
+	t.Fatal("Hub-persisted cleanup did not finish across maintenance ticks and service restart")
 }
 
 func (o *objects) GetVersion(ctx context.Context, key, version string, limit int64) ([]byte, string, error) {

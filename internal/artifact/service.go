@@ -75,6 +75,7 @@ type Upload struct {
 	RetainedBytes    int64      `json:"retained_bytes"`
 	ReservedBytes    int64      `json:"reserved_bytes"`
 	ManifestRevision int64      `json:"manifest_revision"`
+	IntentCleanup    bool       `json:"intent_cleanup,omitempty"`
 	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
 }
 
@@ -389,6 +390,10 @@ func (s *Service) Finalize(ctx context.Context, id, state string, capture *Captu
 }
 
 func (s *Service) seal(ctx context.Context, id, state string, capture *Capture) (Reference, error) {
+	return s.sealWithIntentBudget(ctx, id, state, capture, 32)
+}
+
+func (s *Service) sealWithIntentBudget(ctx context.Context, id, state string, capture *Capture, budget int) (Reference, error) {
 	u, err := s.Upload(ctx, id)
 	if err != nil {
 		return Reference{}, err
@@ -463,7 +468,10 @@ func (s *Service) seal(ctx context.Context, id, state string, capture *Capture) 
 		return Reference{}, ErrQuota
 	}
 	ref := Reference{SchemaVersion: 1, Scope: m.Scope, ServiceID: s.config.ServiceID, ArtifactID: id, ManifestID: m.ManifestID, Revision: revision, SHA256: Digest(raw), Kind: m.Kind, State: state, Availability: "available", Bytes: m.TotalBytes, Objects: len(objects), ExpiresAt: m.ExpiresAt, ObservedAt: s.now().UTC()}
-	if err := s.cleanManifestIntents(ctx, u, revision, ref.SHA256); err != nil {
+	if _, err := s.retireIntentBatch(ctx, u, budget, false); err != nil {
+		return Reference{}, err
+	}
+	if err := s.cleanManifestIntents(ctx, u, revision, ref.SHA256, budget); err != nil {
 		return Reference{}, err
 	}
 	prepared, err := s.command(ctx, CatalogCommand{Operation: "prepare_manifest", UploadID: id, Intent: CatalogIntent{ManifestState: state, ID: NewID("intent"), Revision: revision, SHA256: ref.SHA256, Bytes: int64(len(raw))}})

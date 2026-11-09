@@ -2,8 +2,11 @@ package artifact
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"slices"
@@ -221,10 +224,14 @@ func (h *HTTPServer) failure(c echo.Context, err error) error {
 }
 
 func (h *HTTPServer) Serve(ctx context.Context, listener net.Listener, publisher Publisher) error {
+	jitter, err := rand.Int(rand.Reader, big.NewInt(int64(10*time.Second)))
+	if err != nil {
+		return fmt.Errorf("choose maintenance interval: %w", err)
+	}
 	server := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 45 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	finished := make(chan error, 1)
 	go func() { finished <- server.Serve(listener) }()
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(5*time.Second + time.Duration(jitter.Int64()))
 	defer ticker.Stop()
 	for {
 		select {
@@ -234,13 +241,7 @@ func (h *HTTPServer) Serve(ctx context.Context, listener net.Listener, publisher
 			}
 			return err
 		case <-ticker.C:
-			maintenanceCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			err := h.service.Maintain(maintenanceCtx)
-			err = errors.Join(err, h.service.ReportHostedUsage(maintenanceCtx))
-			if err == nil && publisher != nil {
-				err = h.service.PublishPending(maintenanceCtx, publisher)
-			}
-			cancel()
+			err := h.maintain(ctx, publisher)
 			if err != nil && ctx.Err() == nil {
 				slog.Warn("artifact maintenance or publication deferred")
 				continue
@@ -259,4 +260,22 @@ func (h *HTTPServer) Serve(ctx context.Context, listener net.Listener, publisher
 			return errors.Join(err, serveErr)
 		}
 	}
+}
+
+func (h *HTTPServer) maintain(ctx context.Context, publisher Publisher) error {
+	operations := []func(context.Context) error{h.service.Maintain, h.service.ReportHostedUsage}
+	if publisher != nil {
+		operations = append(operations, func(ctx context.Context) error { return h.service.PublishPending(ctx, publisher) })
+	}
+	var failures []error
+	for _, operation := range operations {
+		operationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := operation(operationCtx)
+		cancel()
+		failures = append(failures, err)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return errors.Join(failures...)
 }

@@ -33,6 +33,11 @@ func TestArtifactCatalogMigrationBackfillsExistingTenants(t *testing.T) {
 					if _, err := w.ReserveCatalogUpload(t.Context(), request); err != nil {
 						return err
 					}
+					for sequence := range 2 {
+						if _, err := w.PutCatalogObject(t.Context(), postgres.CatalogObject{OrganizationID: org, ProjectID: project, ServiceID: service, UploadID: request.Upload.ID, Sequence: int32(sequence), ID: artifact.NewID("object"), Size: 10, ByteOffset: int64(sequence * 10), MediaType: "text/plain", Sha256: artifact.Digest([]byte("pending"))}, now); err != nil {
+							return err
+						}
+					}
 					return w.RecordCatalogTrafficNow(t.Context(), postgres.CatalogTrafficReport{OrganizationID: org, ProjectID: project, ServiceID: service, ID: "example", UploadBytes: 10, DownloadBytes: 20, Requests: 1}, now)
 				}); err != nil {
 					t.Fatal(err)
@@ -68,7 +73,7 @@ func TestArtifactCatalogMigrationBackfillsExistingTenants(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"artifact_catalog_uploads", "artifact_catalog_traffic", "artifact_services"} {
+	for _, table := range []string{"artifact_catalog_uploads", "artifact_catalog_objects", "artifact_catalog_manifest_intents", "artifact_catalog_traffic", "artifact_services"} {
 		var enabled, forced bool
 		if err := admin.QueryRowContext(t.Context(), "SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=$1::regclass", table).Scan(&enabled, &forced); err != nil || !enabled || !forced {
 			t.Fatal("migration did not restore forced tenant isolation", table, enabled, forced, err)
@@ -101,6 +106,18 @@ func TestArtifactCatalogMigrationBackfillsExistingTenants(t *testing.T) {
 				}
 				if upload.BindingMode != "hosted" || !upload.HostedOptIn {
 					t.Fatal("migration changed admitted custody", org, project)
+				}
+				objects, err := r.CatalogObjects(t.Context(), postgres.CatalogObjectsInput{OrganizationID: org, ProjectID: project, ServiceID: service, UploadID: upload.ID, Limit: 2})
+				if err != nil {
+					return err
+				}
+				if len(objects) != 2 {
+					t.Fatal("migration lost pending descriptors", len(objects))
+				}
+				for _, object := range objects {
+					if object.WriteState != "uncertain" || !artifact.ValidID(object.WriteID, "write") {
+						t.Fatal("migration released or stranded unresolved physical writes", object.WriteState, object.WriteID)
+					}
 				}
 			}
 			return nil

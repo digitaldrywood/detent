@@ -22,7 +22,7 @@ type pagePosition struct {
 type pageCursor struct {
 	Phase     int             `json:"phase"`
 	Position  pagePosition    `json:"position,omitzero"`
-	Retention [4]pagePosition `json:"retention"`
+	Retention [5]pagePosition `json:"retention"`
 }
 
 func readCursor(value string) (pageCursor, error) {
@@ -82,20 +82,25 @@ func (c *Catalog) page(ctx context.Context, command artifact.CatalogCommand, cfg
 			}
 			return err
 		case "retention":
-			for category := range 4 {
+			for category := range 5 {
 				pos := cursor.Retention[category]
-				budget := max(1, command.Limit/4)
+				budget := max(1, command.Limit/5)
 				rows, err := r.ScopedCatalogRetention(ctx, postgres.ScopedCatalogRetentionInput{OrganizationID: org, ServiceID: command.ServiceID, ProjectID: command.ProjectID, PublisherID: cfg.PublisherID, Category: int32(category), Now: command.At, Before: command.Before, AfterTime: pos.At, AfterProject: pos.Project, AfterID: pos.ID, PageLimit: int32(budget)})
 				if err != nil {
 					return err
 				}
 				for _, row := range rows {
-					result.Uploads = append(result.Uploads, upload(row, cfg))
+					u := upload(row, cfg)
+					u.IntentCleanup = category == 4
+					result.Uploads = append(result.Uploads, u)
 				}
 				cursor.Retention[category] = pagePosition{}
 				if len(rows) == budget {
 					last := rows[len(rows)-1]
 					at := last.ExpiresAt
+					if category == 4 {
+						at = last.CreatedAt
+					}
 					if category == 1 {
 						at = last.UploadDeadline
 					}

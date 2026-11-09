@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -46,22 +47,12 @@ func (s *session) PrepareCatalogManifestIntent(ctx context.Context, row CatalogM
 	if err != nil {
 		return CatalogManifestIntent{}, err
 	}
-	if !slices.Contains([]string{"partial", "complete", "interrupted"}, row.ManifestState) || row.ID == "" || len(row.ID) > 128 || !artifact.ValidHash(row.Sha256, 64) || row.BodyObjectKey == "" || row.Revision < 1 || row.BodyBytes < 1 || row.BodyBytes > artifact.MaxManifestBytes || at.IsZero() {
+	if !slices.Contains([]string{"partial", "complete", "interrupted"}, row.ManifestState) || row.ID == "" || len(row.ID) > 128 || !artifact.ValidHash(row.Sha256, 64) || row.BodyObjectKey == "" || row.Revision < 1 || row.Revision > artifact.MaxObjects+1 || row.BodyBytes < 1 || row.BodyBytes > artifact.MaxManifestBytes || at.IsZero() {
 		return CatalogManifestIntent{}, artifact.ErrInvalid
 	}
 	existing, err := s.queries.ActiveCatalogManifestIntent(ctx, pgquery.ActiveCatalogManifestIntentParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, Revision: row.Revision, Sha256: row.Sha256})
 	if err == nil {
 		if existing.BodyBytes != row.BodyBytes || existing.ManifestState != row.ManifestState {
-			return CatalogManifestIntent{}, corestore.ErrRevisionConflict
-		}
-		return existing, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return CatalogManifestIntent{}, mapError(ctx, err)
-	}
-	existing, err = s.queries.CatalogManifestIntent(ctx, pgquery.CatalogManifestIntentParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, ID: row.ID})
-	if err == nil {
-		if existing.Revision != row.Revision || existing.BodyObjectKey != row.BodyObjectKey || existing.Sha256 != row.Sha256 || existing.BodyBytes != row.BodyBytes {
 			return CatalogManifestIntent{}, corestore.ErrRevisionConflict
 		}
 		return existing, nil
@@ -75,6 +66,15 @@ func (s *session) PrepareCatalogManifestIntent(ctx context.Context, row CatalogM
 	if upload.State != "uploading" || row.Revision != upload.ManifestRevision+1 {
 		return CatalogManifestIntent{}, corestore.ErrRevisionConflict
 	}
+	history, err := s.queries.CatalogIntentHistory(ctx, pgquery.CatalogIntentHistoryParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID})
+	if err != nil {
+		return CatalogManifestIntent{}, mapError(ctx, err)
+	}
+	if len(history) >= artifact.MaxIntentHistory {
+		return CatalogManifestIntent{}, artifact.ErrQuota
+	}
+	row.ID = artifact.NewID("intent")
+	row.BodyObjectKey = fmt.Sprintf("%s/%s/%s/%s/manifests/%d/%s/%s", row.OrganizationID, row.ProjectID, row.ServiceID, row.UploadID, row.Revision, row.Sha256, row.ID)
 	totals, err := s.queries.CatalogObjectTotals(ctx, pgquery.CatalogObjectTotalsParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID})
 	if err != nil {
 		return CatalogManifestIntent{}, mapError(ctx, err)
@@ -149,4 +149,21 @@ func (s *session) TransitionCatalogManifestIntent(ctx context.Context, arg Catal
 		return CatalogManifestIntent{}, artifact.ErrInvalid
 	}
 	return result, updated(ctx, err)
+}
+
+func (s *session) PruneCatalogManifestIntent(ctx context.Context, arg CatalogIntentTransition) error {
+	if _, err := s.lockCatalogUpload(ctx, arg.CatalogScope); err != nil {
+		return err
+	}
+	row, err := s.queries.CatalogManifestIntent(ctx, pgquery.CatalogManifestIntentParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, ServiceID: arg.ServiceID, UploadID: arg.UploadID, ID: arg.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if row.State != "committed" && row.State != "discarded" || row.State == "discarded" && (arg.ReceiptObjectKey == "" || arg.ReceiptObjectKey != row.ReceiptObjectKey) {
+		return corestore.ErrRevisionConflict
+	}
+	return mapError(ctx, s.queries.PruneCatalogManifestIntent(ctx, pgquery.PruneCatalogManifestIntentParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, ServiceID: arg.ServiceID, UploadID: arg.UploadID, ID: arg.ID}))
 }

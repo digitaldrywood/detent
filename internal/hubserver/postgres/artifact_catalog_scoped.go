@@ -87,7 +87,7 @@ func (s *session) ScopedCatalogRetention(ctx context.Context, arg ScopedCatalogR
 	if arg.PageLimit < 1 || arg.PageLimit > 32 {
 		return nil, corestore.ErrInvalidPage
 	}
-	if arg.Category < 0 || arg.Category > 3 {
+	if arg.Category < 0 || arg.Category > 4 {
 		return nil, corestore.ErrInvalidPage
 	}
 	rows, err := s.queries.ScopedCatalogRetention(ctx, arg)

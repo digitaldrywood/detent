@@ -18,7 +18,7 @@ func (s *session) CommitCatalogManifest(ctx context.Context, row CatalogManifest
 	if err != nil {
 		return CatalogManifest{}, err
 	}
-	if row.ID == "" || row.Revision < 1 || row.RetentionPolicyID == "" || !artifact.ValidHash(row.Sha256, 64) || row.BodyObjectKey == "" || row.BodyBytes < 1 || row.BodyBytes > artifact.MaxManifestBytes || row.ObservedAt.IsZero() || row.State != "partial" && row.State != "complete" && row.State != "interrupted" || !row.CreatedAt.Equal(upload.CreatedAt) || !row.ExpiresAt.Equal(upload.ExpiresAt) {
+	if row.ID == "" || row.Revision < 1 || row.Revision > artifact.MaxObjects+1 || row.RetentionPolicyID == "" || !artifact.ValidHash(row.Sha256, 64) || row.BodyObjectKey == "" || row.BodyBytes < 1 || row.BodyBytes > artifact.MaxManifestBytes || row.ObservedAt.IsZero() || row.State != "partial" && row.State != "complete" && row.State != "interrupted" || !row.CreatedAt.Equal(upload.CreatedAt) || !row.ExpiresAt.Equal(upload.ExpiresAt) {
 		return CatalogManifest{}, artifact.ErrInvalid
 	}
 	existing, err := s.queries.CatalogManifest(ctx, pgquery.CatalogManifestParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, Revision: row.Revision})
@@ -60,7 +60,7 @@ func (s *session) CommitCatalogManifest(ctx context.Context, row CatalogManifest
 	if _, err := s.queries.CommitCatalogManifestIntent(ctx, pgquery.CommitCatalogManifestIntentParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, ID: intent.ID}); err != nil {
 		return CatalogManifest{}, updated(ctx, err)
 	}
-	result, err := s.queries.CreateCatalogManifest(ctx, pgquery.CreateCatalogManifestParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, Revision: row.Revision, ID: row.ID, State: row.State, Sha256: row.Sha256, BodyObjectKey: row.BodyObjectKey, BodyBytes: row.BodyBytes, TotalBytes: row.TotalBytes, Objects: row.Objects, RetentionPolicyID: row.RetentionPolicyID, CaptureBase: row.CaptureBase, CaptureHead: row.CaptureHead, CaptureMergeBase: row.CaptureMergeBase, CaptureContextLines: row.CaptureContextLines, CaptureFileContext: row.CaptureFileContext, CaptureWorkingTree: row.CaptureWorkingTree, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, ObservedAt: row.ObservedAt})
+	result, err := s.queries.CreateCatalogManifest(ctx, pgquery.CreateCatalogManifestParams(row))
 	if err != nil {
 		return CatalogManifest{}, mapError(ctx, err)
 	}
@@ -147,8 +147,19 @@ func (s *session) PruneCatalogUpload(ctx context.Context, scope CatalogScope, be
 	if before.IsZero() {
 		return artifact.ErrInvalid
 	}
-	if _, err := s.lockCatalogUpload(ctx, scope); err != nil {
+	upload, err := s.lockCatalogUpload(ctx, scope)
+	if err != nil {
 		return err
+	}
+	if upload.State != "deleted" || upload.DeletedAt == nil || upload.DeletedAt.After(before) {
+		return corestore.ErrNotFound
+	}
+	history, err := s.queries.CatalogIntentHistory(ctx, pgquery.CatalogIntentHistoryParams{OrganizationID: s.organization, ProjectID: scope.ProjectID, ServiceID: scope.ServiceID, UploadID: scope.UploadID})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if len(history) != 0 {
+		return corestore.ErrRevisionConflict
 	}
 	count, err := s.queries.PruneCatalogUpload(ctx, pgquery.PruneCatalogUploadParams{OrganizationID: s.organization, ProjectID: scope.ProjectID, ServiceID: scope.ServiceID, ID: scope.UploadID, DeletedAt: new(before)})
 	if err := affected(ctx, count, err); err != nil {

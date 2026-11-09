@@ -43,7 +43,7 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 	case "manifest_intents":
 		ids := []string{}
 		for id, v := range m.intents[c.UploadID] {
-			if id > c.After && (c.Outcome != "pending" || v.State == "pending" || v.State == "discarding") {
+			if id > c.After && (c.Outcome != "pending" || v.State == "pending" || v.State == "discarding") && (c.Outcome != "retired" || v.State == "committed" || v.State == "discarded") {
 				ids = append(ids, id)
 			}
 		}
@@ -77,10 +77,20 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 		}
 		v := c.Intent
 		v.State = "pending"
+		if len(m.intents[c.UploadID]) >= MaxIntentHistory {
+			return result, ErrQuota
+		}
+		v.ID = NewID("intent")
 		v.WriteState = "ready"
 		v.BodyKey = c.OrganizationID + "/" + c.ProjectID + "/" + c.ServiceID + "/" + c.UploadID + "/manifests/" + fmt.Sprint(v.Revision) + "/" + v.SHA256 + "/" + v.ID
 		m.intents[c.UploadID][v.ID] = v
 		result.Intent = v
+	case "prune_intent":
+		v, ok := m.intents[c.UploadID][c.Intent.ID]
+		if ok && v.State != "committed" && v.State != "discarded" {
+			return result, ErrConflict
+		}
+		delete(m.intents[c.UploadID], c.Intent.ID)
 	case "verify_manifest", "begin_manifest_discard", "finish_manifest_discard":
 		v, ok := m.intents[c.UploadID][c.Intent.ID]
 		if !ok {
@@ -396,6 +406,9 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 			m.uploads[c.UploadID] = u
 			result.Upload = u
 		case "prune":
+			if len(m.intents[c.UploadID]) != 0 {
+				return result, ErrConflict
+			}
 			delete(m.uploads, c.UploadID)
 			delete(m.objects, c.UploadID)
 			delete(m.manifests, c.UploadID)

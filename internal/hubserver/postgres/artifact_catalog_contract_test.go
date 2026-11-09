@@ -109,7 +109,7 @@ func TestArtifactCatalogContractAccountsReceiptsOnceAcrossReopen(t *testing.T) {
 						}
 					}
 					manifest := postgres.CatalogManifest{OrganizationID: org, ProjectID: project, ServiceID: service, UploadID: "upload", Revision: 1, ID: "manifest", State: "complete", Sha256: artifact.Digest([]byte("manifest")), BodyObjectKey: "objects/manifest/" + string(org) + "/" + suffix + "/" + service, BodyBytes: 100, TotalBytes: 50, Objects: 2, RetentionPolicyID: "example", CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour), ObservedAt: now}
-					if err := prepareCatalogManifest(t, w, manifest); err != nil {
+					if err := prepareCatalogManifest(t, w, &manifest); err != nil {
 						return err
 					}
 					for range 2 {
@@ -275,6 +275,29 @@ func TestArtifactCatalogContractAccountsReceiptsOnceAcrossReopen(t *testing.T) {
 		}
 		if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Background, func(w postgres.ArtifactCatalogWriter) error {
 			return w.PruneCatalogUpload(t.Context(), scope, now.Add(time.Hour))
+		}); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatal("tombstone prune cascaded retained intent history", err)
+		}
+		var retired []postgres.CatalogManifestIntent
+		if err := repository.ReadArtifactCatalog(t.Context(), org, corestore.Serving, func(r postgres.ArtifactCatalogReader) error {
+			var err error
+			retired, err = r.CatalogManifestIntents(t.Context(), postgres.CatalogManifestIntentsInput{OrganizationID: org, ProjectID: scope.ProjectID, ServiceID: scope.ServiceID, UploadID: scope.UploadID, RetiredOnly: true, Limit: 32})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Background, func(w postgres.ArtifactCatalogWriter) error {
+			for _, row := range retired {
+				if err := w.PruneCatalogManifestIntent(t.Context(), postgres.CatalogIntentTransition{CatalogScope: scope, ID: row.ID, ReceiptObjectKey: row.ReceiptObjectKey}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Background, func(w postgres.ArtifactCatalogWriter) error {
+			return w.PruneCatalogUpload(t.Context(), scope, now.Add(time.Hour))
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -346,7 +369,7 @@ func TestArtifactCatalogContractSerializesQuotaAndRequiresDiscardReceipt(t *test
 			t.Fatal(err)
 		}
 		if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
-			if err := prepareCatalogManifest(t, w, manifest); err != nil {
+			if err := prepareCatalogManifest(t, w, &manifest); err != nil {
 				return err
 			}
 			_, err := w.CommitCatalogManifest(t.Context(), manifest)
@@ -358,7 +381,7 @@ func TestArtifactCatalogContractSerializesQuotaAndRequiresDiscardReceipt(t *test
 			if _, err := w.DiscardCatalogObject(t.Context(), object, now.Add(time.Hour), "objects/definite-rejection"); err != nil {
 				return err
 			}
-			if err := prepareCatalogManifest(t, w, manifest); err != nil {
+			if err := prepareCatalogManifest(t, w, &manifest); err != nil {
 				return err
 			}
 			if _, err := w.CommitCatalogManifest(t.Context(), manifest); err != nil {
@@ -614,12 +637,13 @@ func TestArtifactCatalogTrafficPruneSeeksBoundedHistoryPages(t *testing.T) {
 	}
 }
 
-func prepareCatalogManifest(t *testing.T, w postgres.ArtifactCatalogWriter, m postgres.CatalogManifest) error {
+func prepareCatalogManifest(t *testing.T, w postgres.ArtifactCatalogWriter, m *postgres.CatalogManifest) error {
 	t.Helper()
 	row, err := w.PrepareCatalogManifestIntent(t.Context(), postgres.CatalogManifestIntent{OrganizationID: m.OrganizationID, ProjectID: m.ProjectID, ServiceID: m.ServiceID, UploadID: m.UploadID, ID: m.ID + "_body", Revision: m.Revision, BodyObjectKey: m.BodyObjectKey, Sha256: m.Sha256, BodyBytes: m.BodyBytes, ManifestState: m.State}, m.ObservedAt)
 	if err != nil {
 		return err
 	}
+	m.BodyObjectKey = row.BodyObjectKey
 	write := postgres.CatalogWrite{CatalogScope: postgres.CatalogScope{OrganizationID: m.OrganizationID, ProjectID: m.ProjectID, ServiceID: m.ServiceID, UploadID: m.UploadID}, ID: row.ID, WriteID: artifact.NewID("write"), At: m.ObservedAt, Outcome: "written", StorageVersion: "version"}
 	if _, err := w.BeginCatalogManifestWrite(t.Context(), write); err != nil {
 		return err

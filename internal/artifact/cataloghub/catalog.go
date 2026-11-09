@@ -129,7 +129,7 @@ func (c *Catalog) Execute(ctx context.Context, command artifact.CatalogCommand) 
 				if command.Limit < 1 || command.Limit > 32 {
 					return artifact.ErrInvalid
 				}
-				rows, err := r.CatalogManifestIntents(ctx, postgres.CatalogManifestIntentsInput{OrganizationID: org, ProjectID: project, ServiceID: scope.ServiceID, UploadID: scope.UploadID, ID: command.After, Limit: int32(command.Limit), PendingOnly: command.Outcome == "pending"})
+				rows, err := r.CatalogManifestIntents(ctx, postgres.CatalogManifestIntentsInput{OrganizationID: org, ProjectID: project, ServiceID: scope.ServiceID, UploadID: scope.UploadID, ID: command.After, Limit: int32(command.Limit), PendingOnly: command.Outcome == "pending", RetiredOnly: command.Outcome == "retired"})
 				for _, row := range rows {
 					result.Intents = append(result.Intents, intent(row))
 				}
@@ -249,6 +249,8 @@ func (c *Catalog) Execute(ctx context.Context, command artifact.CatalogCommand) 
 				row, err := w.PrepareCatalogManifestIntent(ctx, postgres.CatalogManifestIntent{OrganizationID: org, ProjectID: project, ServiceID: scope.ServiceID, UploadID: scope.UploadID, ID: v.ID, Revision: v.Revision, BodyObjectKey: key, Sha256: v.SHA256, BodyBytes: v.Bytes, ManifestState: v.ManifestState}, now)
 				result.Intent = intent(row)
 				return err
+			case "prune_intent":
+				return w.PruneCatalogManifestIntent(ctx, postgres.CatalogIntentTransition{CatalogScope: scope, ID: command.Intent.ID, ReceiptObjectKey: command.Intent.Receipt})
 			case "verify_manifest", "begin_manifest_discard", "finish_manifest_discard":
 				if !artifact.ValidID(command.Intent.ID, "intent") || command.Operation == "finish_manifest_discard" && command.Intent.Receipt != storagePrefix+"discarded/"+command.Intent.ID {
 					return artifact.ErrInvalid

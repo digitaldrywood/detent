@@ -26,7 +26,7 @@ func TestArtifactCatalogScopedPagesKeepRejectedPublicationProgress(t *testing.T)
 						if _, err := w.ReserveCatalogUpload(t.Context(), request); err != nil {
 							return err
 						}
-						if err := prepareCatalogManifest(t, w, manifest); err != nil {
+						if err := prepareCatalogManifest(t, w, &manifest); err != nil {
 							return err
 						}
 						_, err := w.CommitCatalogManifest(t.Context(), manifest)

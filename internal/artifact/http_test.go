@@ -24,6 +24,46 @@ type testAuthorizer struct {
 	revision   int64
 }
 
+type deferredMaintenanceCatalog struct{ Catalog }
+
+func (c deferredMaintenanceCatalog) Execute(ctx context.Context, command CatalogCommand) (CatalogResult, error) {
+	if command.Operation == "retention" {
+		return CatalogResult{}, ErrConflict
+	}
+	return c.Catalog.Execute(ctx, command)
+}
+
+func TestMaintenanceDeferralDoesNotSuppressPublication(t *testing.T) {
+	service, _ := testService(t)
+	upload, err := service.Reserve(t.Context(), testReservation(service))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Append(t.Context(), upload.ArtifactID, testPart(0, "example")); err != nil {
+		t.Fatal(err)
+	}
+	reference, err := service.Finalize(t.Context(), upload.ArtifactID, "complete", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.catalog = deferredMaintenanceCatalog{Catalog: service.catalog}
+	handler, err := NewHTTPServer(service, &testAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := &testPublisher{}
+	if err := handler.maintain(t.Context(), publisher); !errors.Is(err, ErrConflict) {
+		t.Fatal("maintenance deferral disappeared", err)
+	}
+	published := false
+	for _, ref := range publisher.refs {
+		published = published || ref.ManifestID == reference.ManifestID
+	}
+	if !published {
+		t.Fatal("cleanup deferral suppressed an independent publication", publisher.refs)
+	}
+}
+
 func (a *testAuthorizer) Upload(_ context.Context, token string, _ Reservation) error {
 	if a.denied.Load() || token != "worker" {
 		return ErrDenied

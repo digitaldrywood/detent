@@ -75,6 +75,7 @@ type ArtifactCatalogWriter interface {
 	CatalogExecutionAuthority(context.Context, CatalogExecutionAuthorityInput) error
 	PruneScopedCatalogTraffic(context.Context, ScopedCatalogTrafficPrune) error
 	RecordCatalogTrafficNow(context.Context, CatalogTrafficReport, time.Time) error
+	PruneCatalogManifestIntent(context.Context, CatalogIntentTransition) error
 	PrepareCatalogManifestIntent(context.Context, CatalogManifestIntent, time.Time) (CatalogManifestIntent, error)
 	TransitionCatalogManifestIntent(context.Context, CatalogIntentTransition) (CatalogManifestIntent, error)
 	ReserveCatalogUpload(context.Context, CatalogReservation) (CatalogUpload, error)

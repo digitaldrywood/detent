@@ -108,8 +108,9 @@ func (s *Service) Maintain(ctx context.Context) error {
 	s.maintainAfter = result.Next
 	s.publishMu.Unlock()
 	var failures []error
+	budget := max(1, 32/max(1, len(result.Uploads)))
 	for _, upload := range result.Uploads {
-		if err := s.maintainUpload(ctx, upload, now); err != nil {
+		if err := s.maintainUpload(ctx, upload, now, budget); err != nil {
 			failures = append(failures, err)
 		}
 		if ctx.Err() != nil {
@@ -122,23 +123,27 @@ func (s *Service) Maintain(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-func (s *Service) maintainUpload(ctx context.Context, upload Upload, now time.Time) error {
+func (s *Service) maintainUpload(ctx context.Context, upload Upload, now time.Time, budget int) error {
+	if upload.IntentCleanup {
+		_, err := s.retireIntentBatch(ctx, upload, budget, false)
+		return err
+	}
 	id := upload.ArtifactID
 	if upload.State == "deleted" {
-		if err := s.pruneReceipts(ctx, upload); err != nil {
+		if err := s.pruneReceipts(ctx, upload, budget); err != nil {
 			return err
 		}
 		_, err := s.command(ctx, CatalogCommand{Operation: "prune", UploadID: id, Before: now.Add(-time.Duration(s.config.Policy.DeletionRecordSeconds) * time.Second)})
 		return err
 	}
 	if upload.State == "uploading" && now.Before(upload.ExpiresAt) && upload.Kind == "log" {
-		_, err := s.seal(ctx, id, "interrupted", nil)
+		_, err := s.sealWithIntentBudget(ctx, id, "interrupted", nil, max(2, budget))
 		return err
 	}
-	return s.delete(ctx, id)
+	return s.deleteWithBudget(ctx, id, budget)
 }
 
-func (s *Service) pruneReceipts(ctx context.Context, upload Upload) error {
+func (s *Service) pruneReceipts(ctx context.Context, upload Upload, budget int) error {
 	result, err := s.command(ctx, CatalogCommand{Operation: "objects", UploadID: upload.ArtifactID, Limit: MaxObjects})
 	if err != nil {
 		return err
@@ -150,26 +155,12 @@ func (s *Service) pruneReceipts(ctx context.Context, upload Upload) error {
 			}
 		}
 	}
-	after := ""
-	for {
-		result, err := s.command(ctx, CatalogCommand{Operation: "manifest_intents", UploadID: upload.ArtifactID, After: after, Limit: 32})
-		if err != nil {
-			return err
-		}
-		for _, intent := range result.Intents {
-			if intent.Receipt != "" {
-				if err := s.deleteReceipt(ctx, s.scopedObjectKey(upload.ProjectID, upload.ArtifactID, "discarded/"+intent.ID)); err != nil {
-					return err
-				}
-			}
-		}
-		if result.Next == "" {
-			break
-		}
-		if result.Next == after {
-			return ErrIntegrity
-		}
-		after = result.Next
+	more, err := s.retireIntentBatch(ctx, upload, budget, true)
+	if err != nil {
+		return err
+	}
+	if more {
+		return ErrConflict
 	}
 	return s.deleteReceipt(ctx, s.scopedObjectKey(upload.ProjectID, upload.ArtifactID, "deleted"))
 }
@@ -187,6 +178,10 @@ func (s *Service) deleteReceipt(ctx context.Context, key string) error {
 func (s *Service) Delete(ctx context.Context, id string) error { return s.delete(ctx, id) }
 
 func (s *Service) delete(ctx context.Context, id string) error {
+	return s.deleteWithBudget(ctx, id, 32)
+}
+
+func (s *Service) deleteWithBudget(ctx context.Context, id string, budget int) error {
 	upload, err := s.Upload(ctx, id)
 	if err != nil {
 		return err
@@ -247,45 +242,20 @@ func (s *Service) delete(ctx context.Context, id string) error {
 			return errors.Join(ErrStorage, err)
 		}
 	}
-	after := ""
-	for {
-		candidates, err := s.command(ctx, CatalogCommand{Operation: "manifest_intents", UploadID: id, After: after, Limit: 32})
-		if err != nil {
-			return err
-		}
-		for _, intent := range candidates.Intents {
-			if intent.State == "pending" || intent.State == "discarding" {
-				if err := s.discardManifestIntent(ctx, upload, intent); err != nil {
-					return err
-				}
-				continue
-			}
-			intent, err = s.settleIntentForCleanup(ctx, upload, intent)
-			if err != nil {
-				return err
-			}
-			if err := s.storage.Delete(ctx, intent.BodyKey, intent.StorageVersion); err != nil {
-				return err
-			}
-			if _, err := s.storage.Get(ctx, intent.BodyKey, intent.StorageVersion, 0); !errors.Is(err, ErrMissing) {
-				return errors.Join(ErrStorage, err)
-			}
-		}
-		if candidates.Next == "" {
-			break
-		}
-		if candidates.Next == after {
-			return ErrIntegrity
-		}
-		after = candidates.Next
+	more, err := s.retireIntentBatch(ctx, upload, budget, true)
+	if err != nil {
+		return err
+	}
+	if more {
+		return ErrConflict
 	}
 	_, err = s.command(ctx, CatalogCommand{Operation: "finish_delete", UploadID: id, At: s.now().UTC(), Receipt: receipt})
 	return err
 }
 
-func (s *Service) cleanManifestIntents(ctx context.Context, upload Upload, revision int64, digest string) error {
+func (s *Service) cleanManifestIntents(ctx context.Context, upload Upload, revision int64, digest string, budget int) error {
 	id := upload.ArtifactID
-	result, err := s.command(ctx, CatalogCommand{Operation: "manifest_intents", UploadID: id, Outcome: "pending", Limit: 32})
+	result, err := s.command(ctx, CatalogCommand{Operation: "manifest_intents", UploadID: id, Outcome: "pending", Limit: budget})
 	if err != nil {
 		return err
 	}
@@ -323,14 +293,39 @@ func (s *Service) discardManifestIntent(ctx context.Context, upload Upload, inte
 		return errors.Join(ErrStorage, err)
 	}
 	receipt := s.scopedObjectKey(upload.ProjectID, upload.ArtifactID, "discarded/"+intent.ID)
-	version, err := s.storage.Put(ctx, receipt, []byte(intent.SHA256))
-	if err != nil && !errors.Is(err, ErrConflict) {
-		return err
-	}
-	if _, err := s.storage.Get(ctx, receipt, version, 128); err != nil {
-		return err
-	}
 	intent.Receipt = receipt
 	_, err = s.command(ctx, CatalogCommand{Operation: "finish_manifest_discard", UploadID: upload.ArtifactID, Intent: intent})
 	return err
+}
+
+func (s *Service) retireIntentBatch(ctx context.Context, upload Upload, budget int, deleting bool) (bool, error) {
+	outcome := "retired"
+	if deleting {
+		outcome = ""
+	}
+	result, err := s.command(ctx, CatalogCommand{Operation: "manifest_intents", UploadID: upload.ArtifactID, Outcome: outcome, Limit: budget})
+	if err != nil {
+		return false, err
+	}
+	for _, intent := range result.Intents {
+		if intent.State == "pending" || intent.State == "discarding" {
+			if !deleting {
+				return false, ErrIntegrity
+			}
+			if err := s.discardManifestIntent(ctx, upload, intent); err != nil {
+				return false, err
+			}
+			intent.Receipt = s.scopedObjectKey(upload.ProjectID, upload.ArtifactID, "discarded/"+intent.ID)
+		}
+		if intent.Receipt != "" {
+			if err := s.deleteReceipt(ctx, intent.Receipt); err != nil {
+				return false, err
+			}
+		}
+		if _, err := s.command(ctx, CatalogCommand{Operation: "prune_intent", UploadID: upload.ArtifactID, Intent: intent}); err != nil {
+			return false, err
+		}
+	}
+	remaining, err := s.command(ctx, CatalogCommand{Operation: "manifest_intents", UploadID: upload.ArtifactID, Outcome: outcome, Limit: 1})
+	return len(remaining.Intents) != 0, err
 }

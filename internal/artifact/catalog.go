@@ -28,6 +28,8 @@ type CatalogObject struct {
 	Discarded      bool   `json:"discarded"`
 }
 
+const MaxIntentHistory = 64
+
 type CatalogIntent struct {
 	WriteState     string `json:"write_state"`
 	WriteID        string `json:"write_id,omitempty"`
