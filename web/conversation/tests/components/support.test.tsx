@@ -5,10 +5,8 @@
 // bootstrap and has to find the organization somewhere else.
 import {
   cleanup,
-  fireEvent,
   render,
   screen,
-  waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -18,7 +16,7 @@ import {
   supportOrganization,
 } from "../../src/app/account/Support.tsx";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe("supportOrganization", () => {
   it("reads the organization out of the path", () => {
@@ -85,92 +83,13 @@ describe("SupportCard", () => {
     expect(screen.queryByTestId("support-start")).toBeNull();
   });
 
-  it("starts the window against the named organization, then names the provider step", async () => {
-    const onStarted = vi.fn();
-    const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            support: {
-              actor: "support@example.test",
-              reason: "",
-              expires_at: expiresAt,
-            },
-          }),
-          { status: 200 },
-        ),
-    );
-    render(
-      <SupportCard
-        organization="org_7"
-        csrfToken="csrf_1"
-        fetchImpl={fetchImpl as unknown as typeof globalThis.fetch}
-        onStarted={onStarted}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("support-start"));
-    await waitFor(() => expect(onStarted).toHaveBeenCalled());
-    expect(fetchImpl).toHaveBeenCalledWith(
-      "/api/v2/organizations/org_7/support/start",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ "X-CSRF-Token": "csrf_1" }),
-      }),
-    );
-    const started = await screen.findByTestId("support-started");
-    expect(started.textContent).toContain("impersonate the customer");
-    expect(started.querySelector("time")?.getAttribute("dateTime")).toBe(
-      expiresAt,
-    );
-    expect(screen.queryByTestId("support-start")).toBeNull();
-  });
-
-  it("returns to the start button once the window has closed", async () => {
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            support: { actor: "support@example.test", reason: "", expires_at: "2020-01-01T00:00:00Z" },
-          }),
-          { status: 200 },
-        ),
-    );
-    render(
-      <SupportCard
-        organization="org_7"
-        csrfToken="csrf_1"
-        fetchImpl={fetchImpl as unknown as typeof globalThis.fetch}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("support-start"));
-    expect((await screen.findByTestId("support-expired")).textContent).toContain("closed");
-    expect(screen.queryByTestId("support-started")).toBeNull();
-    expect(screen.getByTestId("support-start")).toBeTruthy();
-  });
-
-  it("says what the hub said when it refuses", async () => {
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            code: "forbidden",
-            message: "Not a support actor.",
-          }),
-          {
-            status: 403,
-          },
-        ),
-    );
-    render(
-      <SupportCard
-        organization="org_7"
-        fetchImpl={fetchImpl as unknown as typeof globalThis.fetch}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("support-start"));
-    expect((await screen.findByTestId("support-error")).textContent).toBe(
-      "Not a support actor.",
-    );
+  it.each(["org_7/part", "//other.example.test/path", "https://other.example.test/path?x=1#y"])("opens the existing entry support form safely for %s", (organization) => {
+    const fetchImpl = vi.spyOn(globalThis, "fetch");
+    render(<SupportCard organization={organization} />);
+    const link = screen.getByRole("link", { name: "Start the support session" });
+    expect(link.getAttribute("href")).toBe(`/support?organization=${encodeURIComponent(organization)}`);
+    expect(new URL(link.getAttribute("href")!, "https://app.example.test").origin).toBe("https://app.example.test");
+    expect(link.getAttribute("target")).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

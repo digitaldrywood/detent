@@ -1483,6 +1483,13 @@ function mockPlanUsage(usage: BillingUsageReport = usageFixture, plan: PlanRepor
 }
 
 describe("plan usage meters", () => {
+  it("shows unavailable usage without fabricating an empty population", async () => {
+    mockPlanUsage(usageFixture, { ...planFixture, allowances: { projects: 100 }, usage: {}, unavailable: ["projects"] });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    await screen.findByText("Usage unavailable");
+    expect(screen.queryByRole("meter", { name: "Projects" })).toBeNull();
+  });
+
   it.each([
     [79, false],
     [80, true],

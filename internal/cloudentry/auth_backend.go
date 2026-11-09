@@ -74,12 +74,12 @@ func postgresAuthorizations(ctx context.Context, query queryer, selector authori
 	if !ok {
 		return nil, platformstore.ErrInvalid
 	}
-	predicate := `binding=$1 AND revoked_at IS NULL`
+	predicate := `binding=$1 AND revoked_at IS NULL AND expires_at>$2 AND identity_expires_at>$2`
 	expires := `$2`
 	args := []any{selector.Binding, clock.entryNow()}
 	switch selector.Kind {
 	case lookupSessionOrganization:
-		predicate = `session_hash=$1 AND organization_id=$2 AND revoked_at IS NULL`
+		predicate = `session_hash=$1 AND organization_id=$2 AND revoked_at IS NULL AND expires_at>$3 AND identity_expires_at>$3`
 		expires = `$3`
 		args = []any{selector.SessionHash, selector.Organization, clock.entryNow()}
 	case lookupSession:

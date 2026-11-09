@@ -43,7 +43,7 @@ func (s *Service) hostedPlanJSON(c echo.Context) error {
 	if _, err := s.hostedAdministrator(c); err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "Organization plan and usage require owner or admin access")
 	}
-	entitlement, err := s.database.hostedPlanUsage(c.Request().Context(), s.config.now())
+	entitlement, err := s.hostedPlanUsageTenant(c.Request().Context())
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Plan information is temporarily unavailable")
 	}

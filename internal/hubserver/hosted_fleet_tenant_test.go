@@ -299,9 +299,40 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		if _, known := measured.Usage.Allowances["history_records"]; known || !slices.Contains(measured.Usage.Unavailable, "history_records") {
 			t.Fatalf("unknown history usage was reported as a measurement: %+v", measured.Usage)
 		}
+		plan, err := service.hostedPlanUsageTenant(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.OrganizationID != string(org) || plan.Usage["api_mutations"] != int64(index+4) || plan.Usage["collaboration_bytes"] != int64(73+index) || plan.Allowances["projects"] != 100 || plan.Usage["projects"] != 2 {
+			t.Fatalf("customer plan leaked tenant facts: %+v", plan)
+		}
+		if _, fabricated := plan.Usage["history_records"]; fabricated || !slices.Contains(plan.Unavailable, "history_records") {
+			t.Fatalf("customer plan fabricated unavailable usage: %+v", plan)
+		}
+
+	}
+	if _, err := admin.ExecContext(t.Context(), `WITH added AS (
+ INSERT INTO projects(organization_id,id,name,slug,profile) SELECT 'org_second','overflow_'||n,'Overflow '||n,'overflow-'||n,'native' FROM generate_series(1,10000) n RETURNING organization_id,id
+) INSERT INTO project_settings(organization_id,project_id) SELECT organization_id,id FROM added`); err != nil {
+		t.Fatal(err)
+	}
+	overflow, err := service.hostedPlanUsageTenant(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, fabricated := overflow.Usage["projects"]; fabricated || !slices.Contains(overflow.Unavailable, "projects") || overflow.Allowances["projects"] != 100 {
+		t.Fatalf("population read overflow fabricated a customer count or lost allowance: %+v", overflow)
 	}
 	service.config.Hosted.OrganizationID = "org_first"
 	service.database = conversationAllowanceDatabase("org_first", ref, allowances, repository)
+	stableRuntime := *service.database.hostedRuntime.Load()
+	stableRuntime.Plans.ConnectedSeconds = 90
+	service.database.hostedRuntime.Store(&stableRuntime)
+	stable, err := service.hostedPlanUsageTenant(t.Context())
+	if err != nil || stable.OrganizationID != "org_first" || stable.Usage["projects"] != 2 || slices.Contains(stable.Unavailable, "projects") {
+		t.Fatalf("other tenant overflow affected stable customer plan: %+v %v", stable, err)
+	}
+
 	owner := apiCredential{ID: "credential_owner", Hash: apikey.HashToken("org_first_owner"), Scope: apiScopeOperator, NativeOnly: true, HostedRole: "owner", HostedMembership: "membership_example", HostedKeyScope: apikey.ScopeAdmin, HostedProjectAccess: hostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}}
 	provider := newHostedSecurityProvider()
 	membership := auth.Membership{ID: "membership_example", UserID: "user_example", OrganizationID: "provider_example", Status: "active"}

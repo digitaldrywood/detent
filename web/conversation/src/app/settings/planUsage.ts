@@ -21,23 +21,25 @@ const ALLOWANCES: Readonly<Record<string, { label: string; group: string; unit?:
   connected_runners: { label: "Connected runners", group: "Organization" },
 };
 
-export function planUsageRows(plan: Pick<PlanReport, "allowances" | "usage">) {
+export function planUsageRows(plan: Pick<PlanReport, "allowances" | "usage" | "unavailable">) {
   return Object.entries(plan.allowances).map(([name, limit]) => ({
     name,
     limit,
     used: plan.usage[name] ?? 0,
+    available: !plan.unavailable?.includes(name),
     ...(ALLOWANCES[name] ?? { label: name.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()), group: "Organization" }),
   })).sort((a, b) => Object.keys(ALLOWANCES).indexOf(a.name) - Object.keys(ALLOWANCES).indexOf(b.name));
 }
 
 export function approachingPlanLimits(plan: PlanReport) {
   return planUsageRows(plan).filter((row) =>
-    row.group !== "This hour" && !row.limitOnly &&
+    row.available && row.group !== "This hour" && !row.limitOnly &&
     (row.limit > 0 || row.used > 0) && usageMeterState(row.used, row.limit) !== "normal",
   );
 }
 
 export function nextFittingPlan(plan: PlanReport, comparisons: readonly ComparisonPlan[]): ComparisonPlan | undefined {
+  if (planUsageRows(plan).some((row) => !row.limitOnly && !row.available)) return undefined;
   const currentPrice = plan.monthly_usd_cents ?? 0;
   return comparisons.toSorted((a, b) => (a.monthly_usd_cents ?? Infinity) - (b.monthly_usd_cents ?? Infinity)).find((candidate) =>
     (candidate.id !== plan.effective_base.id || candidate.version !== plan.effective_base.version) && (candidate.monthly_usd_cents ?? 0) > currentPrice &&

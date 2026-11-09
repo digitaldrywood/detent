@@ -538,7 +538,11 @@ export function PlanSettings(): React.ReactElement {
                     </span>
                   ) : null}
                 </div>
-                {meters.map((row) => (
+                {meters.map((row) => !row.available ? (
+                  <SettingsRow key={row.name} title={row.label}>
+                    <span className="text-muted-foreground text-sm">Usage unavailable</span>
+                  </SettingsRow>
+                ) : (
                   <UsageMeter
                     key={row.name}
                     layout="row"

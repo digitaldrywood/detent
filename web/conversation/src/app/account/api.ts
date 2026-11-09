@@ -34,7 +34,6 @@ import {
   RunnerHostHour,
   Member,
   MembersResponse,
-  NextResponse,
   Onboarding,
   OnboardingProgress,
   PlanReport,
@@ -49,7 +48,6 @@ import {
   OrganizationProjectRank,
   type ProjectGrant,
   RunnerEnrollment,
-  SupportResponse,
   type WorkflowState,
 } from "../../contracts/account.ts";
 import { isApiError } from "../../contracts/index.ts";
@@ -370,21 +368,10 @@ export function makeAccountApi(options: AccountApiOptions) {
         name: input.name,
         idempotency_key: input.key,
       }),
-    acceptInvitation: (input: { token: string; key: string }) =>
-      send(NextResponse, "POST", `${base}/invitations/accept`, {
-        token: input.token,
-        idempotency_key: input.key,
-      }),
     switchOrganization: async (input: { organization: string; key: string }) => {
-      const next = await send(NextResponse, "POST", `${base}/switch`, {
-        organization: input.organization,
-        idempotency_key: input.key,
-      });
       clearBoardCache();
-      return next;
+      return { next: `/auth/oidc/start?organization=${encodeURIComponent(input.organization)}` };
     },
-    startSupport: (input: { key: string }) =>
-      send(SupportResponse, "POST", `${base}/support/start`, { idempotency_key: input.key }),
     /** `POST /logout` answers 204 for a JSON caller. */
     logout: async () => {
       await send(null, "POST", hubPath("/logout"), {});

@@ -110,6 +110,7 @@ type HostedGrant struct {
 }
 
 type HostedEntitlement struct {
+	Unavailable            []string         `json:"unavailable,omitempty"`
 	IncludedAICreditMicros *int64           `json:"included_ai_credit_micros"`
 	Name                   string           `json:"name"`
 	MonthlyUSDCents        *int64           `json:"monthly_usd_cents"`

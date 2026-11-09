@@ -11,8 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-func (s *Service) hostedFleetUsageTenant(ctx context.Context) (hostedFleetUsage, error) {
-	out := hostedFleetUsage{Allowances: map[string]hostedFleetAllowance{}}
+func (s *Service) hostedPlanUsageTenant(ctx context.Context) (HostedEntitlement, error) {
+	out := HostedEntitlement{Usage: map[string]int64{}}
 	now := s.config.now().UTC()
 	plans := s.database.plans()
 	if plans == nil || plans.WindowSeconds <= 0 {
@@ -23,8 +23,10 @@ func (s *Service) hostedFleetUsageTenant(ctx context.Context) (hostedFleetUsage,
 		if err != nil {
 			return err
 		}
+		out = entitlement
+		out.Usage = map[string]int64{}
 		window := now.Unix() / plans.WindowSeconds * plans.WindowSeconds
-		out.WindowEndsAt = time.Unix(window+plans.WindowSeconds, 0).UTC().Format(time.RFC3339)
+		out.WindowEndsAt = time.Unix(window+plans.WindowSeconds, 0).UTC()
 		usages, err := r.BillingUsages(ctx, time.Unix(window, 0).UTC(), 64)
 		if err != nil {
 			return err
@@ -38,7 +40,7 @@ func (s *Service) hostedFleetUsageTenant(ctx context.Context) (hostedFleetUsage,
 			return ErrBillingUsageUnavailable
 		}
 		for _, metric := range hostedAllowanceNames() {
-			limit, limited := entitlement.Allowances[metric]
+			_, limited := entitlement.Allowances[metric]
 			if !limited {
 				continue
 			}
@@ -65,10 +67,22 @@ func (s *Service) hostedFleetUsageTenant(ctx context.Context) (hostedFleetUsage,
 				out.Unavailable = append(out.Unavailable, metric)
 				continue
 			}
-			out.Allowances[metric] = hostedFleetAllowance{Used: used, Limit: limit}
+			out.Usage[metric] = used
 		}
 		return nil
 	})
 	slices.Sort(out.Unavailable)
 	return out, err
+}
+
+func (s *Service) hostedFleetUsageTenant(ctx context.Context) (hostedFleetUsage, error) {
+	plan, err := s.hostedPlanUsageTenant(ctx)
+	if err != nil {
+		return hostedFleetUsage{}, err
+	}
+	out := hostedFleetUsage{WindowEndsAt: plan.WindowEndsAt.Format(time.RFC3339), Unavailable: plan.Unavailable, Allowances: map[string]hostedFleetAllowance{}}
+	for metric, used := range plan.Usage {
+		out.Allowances[metric] = hostedFleetAllowance{Used: used, Limit: plan.Allowances[metric]}
+	}
+	return out, nil
 }

@@ -431,28 +431,45 @@ func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
 		CSRF string `json:"csrf"`
 	}
 	decodeJSON(t, body, &listing)
+	f.provider.users["user_staff"] = "staff@example.test"
+	viewer := newBrowser(t, f.service.Handler())
+	viewer.login("/auth/oidc/start", "user_staff:")
+	viewerResponse, viewerBody := viewer.get("/api/cloud/session")
+	var viewerSession struct {
+		CSRF         string `json:"csrf"`
+		PlatformRole string `json:"platform_role"`
+	}
+	decodeJSON(t, viewerBody, &viewerSession)
+	if viewerResponse.StatusCode != http.StatusOK || viewerSession.PlatformRole != "viewer" || viewerSession.CSRF == "" {
+		t.Fatalf("viewer session = %d %+v", viewerResponse.StatusCode, viewerSession)
+	}
 	for _, test := range []struct {
 		name    string
 		form    url.Values
 		headers map[string]string
 		status  int
 		want    string
+		client  *browser
 	}{
-		{"missing csrf", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}}, nil, http.StatusForbidden, ""},
-		{"wrong csrf", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {"forged"}}, nil, http.StatusForbidden, ""},
-		{"cross origin", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {listing.CSRF}}, map[string]string{"Origin": "https://attacker.example.test"}, http.StatusForbidden, ""},
-		{"missing reason", url.Values{"organization": {"org_alpha"}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, ""},
-		{"invalid reason", url.Values{"organization": {"org_alpha"}, "reason": {"curiosity"}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, ""},
-		{"valid", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {listing.CSRF}}, nil, http.StatusOK, "using reason troubleshooting"},
-		{"with note", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "note": {" Ticket 123 "}, "csrf": {listing.CSRF}}, nil, http.StatusOK, "using reason troubleshooting"},
-		{"oversized note", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "note": {strings.Repeat("n", 2001)}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, ""},
+		{"platform viewer cannot start support", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {viewerSession.CSRF}}, nil, http.StatusForbidden, "", viewer},
+		{"missing csrf", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}}, nil, http.StatusForbidden, "", staff},
+		{"wrong csrf", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {"forged"}}, nil, http.StatusForbidden, "", staff},
+		{"cross origin", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {listing.CSRF}}, map[string]string{"Origin": "https://attacker.example.test"}, http.StatusForbidden, "", staff},
+		{"missing reason", url.Values{"organization": {"org_alpha"}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, "", staff},
+		{"invalid reason", url.Values{"organization": {"org_alpha"}, "reason": {"curiosity"}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, "", staff},
+		{"valid", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {listing.CSRF}}, nil, http.StatusOK, "using reason troubleshooting", staff},
+		{"with note", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "note": {" Ticket 123 "}, "csrf": {listing.CSRF}}, nil, http.StatusOK, "using reason troubleshooting", staff},
+		{"oversized note", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "note": {strings.Repeat("n", 2001)}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, "", staff},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := staff.do(http.MethodPost, "/support/start", test.form, test.headers)
+			response := test.client.do(http.MethodPost, "/support/start", test.form, test.headers)
 			if response.StatusCode != test.status || !strings.Contains(response.Body, test.want) {
 				t.Fatalf("support start = %d: %s", response.StatusCode, response.Body)
 			}
 		})
+	}
+	if got := platformAuditCount(t, f.service, "user_staff", "support_requested:troubleshooting"); got != 0 {
+		t.Fatalf("denied viewer support request audited %d times", got)
 	}
 	if got := platformAuditCount(t, f.service, "user_support", "support_requested:troubleshooting"); got != 1 {
 		t.Fatalf("support request audit = %d, want 1", got)

@@ -295,7 +295,7 @@ templ hostedSupport(data HostedPageData) {
 					<label for="support-organization" class="block text-sm font-medium">Organization</label>
 					<select id="support-organization" name="organization" required class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
 						for _, organization := range data.Organizations {
-							<option value={ organization.ID }>{ organization.Name + " (" + organization.ID + ")" }</option>
+							<option value={ organization.ID } selected?={ organization.ID == data.OrganizationID }>{ organization.Name + " (" + organization.ID + ")" }</option>
 						}
 					</select>
 					<label for="support-reason" class="block text-sm font-medium">Reason</label>

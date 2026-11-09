@@ -26,7 +26,19 @@ func (s *Service) supportPage(c echo.Context) error {
 	}
 	data := templates.HostedPageData{Mode: "support", Title: "Temporary support access", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), CanSupport: session.Identity.SupportActor == "" && s.supportActor(c.Request().Context(), session.Email)}
 	if data.CanSupport {
-		organizations, err := s.registry.List(c.Request().Context())
+		var organizations []Organization
+		var err error
+		if selected := c.QueryParam("organization"); selected != "" {
+			var organization Organization
+			organization, err = s.readyOrganization(c.Request().Context(), selected)
+			if err != nil {
+				return s.loginDenied(c, http.StatusForbidden, "Select an allocated organization before starting support access", auth.HostedDenial{Flow: "support", Reason: "organization_unavailable"})
+			}
+			data.OrganizationID = organization.ID
+			organizations = []Organization{organization}
+		} else {
+			organizations, err = s.registry.List(c.Request().Context())
+		}
 		if err != nil {
 			return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", auth.HostedDenial{Flow: "support", Reason: "support_unavailable", Email: session.Email})
 		}

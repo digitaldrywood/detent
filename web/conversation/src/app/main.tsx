@@ -12,7 +12,6 @@ import {
 } from "../runtime/bootstrap.ts";
 import {
   SupportCard,
-  supportCSRF,
   supportOrganization,
 } from "./account/Support.tsx";
 import { ClientProvider } from "./client.ts";
@@ -136,11 +135,6 @@ function startOrganizationClient(): void {
                   body:
                     cause instanceof BootstrapRefused ? cause.body : undefined,
                 })}
-                csrfToken={
-                  cause instanceof BootstrapRefused
-                    ? supportCSRF(cause.body)
-                    : null
-                }
               />
             </div>
           </React.StrictMode>,

@@ -986,11 +986,16 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct {
-		name, query, selected, authorized, location, role string
-		status                                            int
-		fallback                                          bool
+		name, query, selected, authorized, location, role, code string
+		missingMembership                                       bool
+		status                                                  int
+		fallback                                                bool
 	}{
 		{name: "selected alpha", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/work", status: http.StatusSeeOther},
+		{name: "switch alpha", query: "organization=org_alpha", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/work", status: http.StatusSeeOther},
+		{name: "switch beta", query: "organization=org_beta", selected: "porg_beta", authorized: "org_beta", location: "/beta/work", status: http.StatusSeeOther},
+		{name: "switch removed membership", query: "organization=org_beta", selected: "porg_beta", missingMembership: true, status: http.StatusUnauthorized},
+		{name: "support identity cannot switch", query: "organization=org_beta", code: "support|support@example.test|user_alice|porg_beta|customer-request", status: http.StatusUnauthorized},
 		{name: "selected beta", selected: "porg_beta", authorized: "org_beta", location: "/beta/work", status: http.StatusSeeOther},
 		{name: "reporter selected", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/reporter", role: "reporter", status: http.StatusSeeOther},
 		{name: "reporter invitation return", query: "organization=org_alpha&return=/organizations/org_alpha/work", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/reporter", role: "reporter", status: http.StatusSeeOther},
@@ -1005,6 +1010,10 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		{name: "server rendered fallback", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/organization", status: http.StatusSeeOther, fallback: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.missingMembership {
+				f.provider.removeMember("user_alice", tt.selected)
+				t.Cleanup(func() { f.provider.member("user_alice", tt.selected, "owner") })
+			}
 			if tt.role != "" {
 				f.provider.member("user_alice", tt.selected, tt.role)
 				t.Cleanup(func() { f.provider.member("user_alice", tt.selected, "owner") })
@@ -1019,7 +1028,11 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 			}
 			b := newBrowser(t, f.service.Handler())
 			start, _ := b.get("/auth/oidc/start?" + tt.query)
-			response, _ := b.get("/auth/oidc/callback?" + url.Values{"code": {"user_alice:" + tt.selected}, "state": {stateOf(t, start)}}.Encode())
+			code := tt.code
+			if code == "" {
+				code = "user_alice:" + tt.selected
+			}
+			response, _ := b.get("/auth/oidc/callback?" + url.Values{"code": {code}, "state": {stateOf(t, start)}}.Encode())
 			if response.StatusCode != tt.status || response.Header.Get("Location") != tt.location {
 				t.Fatalf("callback = %d %q, want %d %q", response.StatusCode, response.Header.Get("Location"), tt.status, tt.location)
 			}
@@ -1036,14 +1049,25 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		})
 	}
 	f.service.config.clientFS = fstest.MapFS{}
-	for _, tt := range []struct{ name, query, organization, screenHint string }{
+	for _, tt := range []struct {
+		name, query, organization, screenHint string
+		status                                int
+	}{
 		{name: "sign in"},
 		{name: "create account", query: "screen_hint=sign-up", screenHint: "sign-up"},
 		{name: "organization create account", query: "organization=org_alpha&screen_hint=sign-up", organization: "porg_alpha", screenHint: "sign-up"},
 		{name: "unknown hint", query: "screen_hint=unexpected"},
+		{name: "switch unknown organization", query: "organization=org_missing", status: http.StatusNotFound},
+		{name: "switch unready organization", query: "organization=org_disabled", status: http.StatusNotFound},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			response, _ := alice.get("/auth/oidc/start?" + tt.query)
+			if tt.status != 0 {
+				if response.StatusCode != tt.status || response.Header.Get("Location") != "" {
+					t.Fatalf("switch target admission = %d %q, want %d without redirect", response.StatusCode, response.Header.Get("Location"), tt.status)
+				}
+				return
+			}
 			location, err := url.Parse(response.Header.Get("Location"))
 			if response.StatusCode != http.StatusSeeOther || err != nil {
 				t.Fatalf("authorization redirect = %d %q: %v", response.StatusCode, response.Header.Get("Location"), err)
@@ -1465,9 +1489,15 @@ func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) 
 	if response, _ := support.get("/organizations/org_alpha/app/bootstrap"); response.StatusCode == http.StatusOK {
 		t.Fatal("staff session read customer content without support access")
 	}
-	response, page := support.get("/support")
-	if response.StatusCode != http.StatusOK || !strings.Contains(page, `<option value="org_alpha">`) {
+	response, page := support.get("/support?organization=org_alpha")
+	if response.StatusCode != http.StatusOK || !strings.Contains(page, `value="org_alpha"`) {
 		t.Fatalf("support page = %d %s", response.StatusCode, page)
+	}
+	if !strings.Contains(page, `value="org_alpha" selected`) || strings.Contains(page, `value="org_beta"`) {
+		t.Fatalf("support request lost or widened organization context: %s", page)
+	}
+	if invalid, _ := support.get("/support?organization=org_missing"); invalid.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown support organization = %d", invalid.StatusCode)
 	}
 	start := support.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "reason": {"customer-request"}, "csrf": {csrfFrom(t, page)}}, nil)
 	if start.StatusCode != http.StatusOK || !strings.Contains(start.Body, "impersonate") {
@@ -1491,6 +1521,43 @@ func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) 
 	}
 	if replay, _ := support.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|customer-request")); replay.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("replayed support callback = %d", replay.StatusCode)
+	}
+	base, err := url.Parse(testPublicURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staff accountSession
+	for _, cookie := range support.jar.Cookies(base) {
+		if cookie.Name == f.service.cookieName("session") {
+			staff, err = f.service.auth.session(t.Context(), apikey.HashToken(cookie.Value))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if staff.Hash == "" {
+		t.Fatal("support callback lost staff session")
+	}
+	authorized, err := f.service.auth.authorization(t.Context(), staff, "org_alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerIdentity, err := f.provider.CurrentSession(t.Context(), authorized.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.service.auth.store.db.postgres.Authorization(t.Context(), staff.Hash, "org_alpha")
+	if err != nil || !stored.Support || !stored.ExpiresAt.Equal(providerIdentity.ExpiresAt) || !stored.Identity.ExpiresAt.Equal(providerIdentity.ExpiresAt) || !stored.ExpiresAt.After(time.Now().Add(10*time.Minute)) {
+		t.Fatalf("resulting support authorization expiry differs from provider session: %+v %v", stored, err)
+	}
+	if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.authorizations SET expires_at=$1 WHERE binding=$2 AND organization_id=$3", time.Now().UTC(), stored.Binding, "org_alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.auth.authorization(t.Context(), staff, "org_alpha"); !errors.Is(err, errNoSession) {
+		t.Fatalf("expired support authorization remains usable: %v", err)
+	}
+	if expired, _ := support.get("/organizations/org_alpha/app/bootstrap"); expired.StatusCode == http.StatusOK {
+		t.Fatal("expired support authorization reached customer content")
 	}
 	support.login("/auth/oidc/start", "user_support:")
 	if response, _ := support.get("/organizations/org_alpha/app/bootstrap"); response.StatusCode == http.StatusOK {

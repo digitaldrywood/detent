@@ -851,6 +851,7 @@ export type PlanGrant = typeof PlanGrant.Type;
 
 /** `GET /plan`: `hubserver.HostedEntitlement`, verbatim. */
 export const PlanReport = Schema.Struct({
+  unavailable: Schema.optional(Schema.Array(Schema.String)),
   name: Schema.optional(Schema.String),
   monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
   included_ai_credit_micros: Schema.optional(Schema.NullOr(Schema.Number)),

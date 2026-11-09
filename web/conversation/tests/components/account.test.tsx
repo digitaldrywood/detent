@@ -128,6 +128,23 @@ describe("the footer workspace picker", () => {
     }
   });
 
+  it("hands an unprefixed workspace switch to entry without a tenant POST", async () => {
+    const account = decodeAccountBootstrap({
+      ...accountFixture,
+      organization: { ...accountFixture.organization, ...current },
+      organizations: [current, other].map((org) => ({ ...org, public_url: `https://${org.id}.example.test`, current: org.id === current.id })),
+    });
+    const request = vi.fn(async () => Response.json({ code: "not_found", message: "No Hub switch route" }, { status: 404 }));
+    const assign = vi.fn();
+    vi.stubGlobal("fetch", request);
+    vi.stubGlobal("location", { assign });
+    const user = mountAccount(account);
+    await user.click(await screen.findByRole("button", { name: /Switch workspace/ }));
+    await user.click(await screen.findByRole("menuitem", { name: other.name }));
+    await waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith("/auth/oidc/start?organization=org_b"));
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it.each(["unauthorized", "unavailable", "network", "decode", "success"] as const)("shows the shared organization read's %s state without a partial bootstrap list", async (outcome) => {
     applyHubPaths({ base_path: "/organizations/org_a" });
     const account = decodeAccountBootstrap({

@@ -11,7 +11,7 @@
 //
 // jsdom is here for `sessionStorage`, which the wizard's idempotency keys live
 // in, not for a DOM: nothing below renders.
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { startMockHub, type MockHub } from "../dev/mock-hub.ts";
 import { makeAccountApi, AccountError, type AccountApi } from "../src/app/account/api.ts";
@@ -600,43 +600,37 @@ describe("the wizard's persisted keys", () => {
 });
 
 describe("support and the organization switch", () => {
-  it("opens a support session and the bootstrap says so", async () => {
+  it("keeps billing closed for an impersonated support session", async () => {
     await reset();
-    const { support } = await api.startSupport({ key: "support-1" });
-    expect(support.actor.length).toBeGreaterThan(0);
-    await loadBootstrap(hub.url);
-    expect(lastAccountBootstrap()?.support?.actor).toBe(support.actor);
-    // Billing is closed while somebody is impersonating.
-    const failure = await api.billing().catch((cause: unknown) => cause);
-    expect((failure as AccountError).status).toBe(403);
-    await reset();
+    try {
+      const opened = await fetch(`${hub.url}/__mock/support`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ open: true }),
+      });
+      expect(opened.status).toBe(200);
+      await loadBootstrap(hub.url);
+      expect(lastAccountBootstrap()?.support?.actor).toBe("support@example.com");
+      const failure = await api.billing().catch((cause: unknown) => cause);
+      expect((failure as AccountError).status).toBe(403);
+    } finally {
+      await reset();
+    }
   });
 
-  it("names where the browser goes to switch organization", async () => {
-    await reset();
-    const other = bootstrap.organizations.find((organization) => !organization.current)!;
-    const { next } = await api.switchOrganization({
-      organization: other.id,
-      key: "switch-1",
-    });
-    expect(next).toContain("/auth/oidc/start");
+  it.each(["org_other", "org_elsewhere", "//other.example.test/path?x=1#fragment"])("hands workspace %s to the existing entry login owner", async (organization) => {
+    const request = vi.fn(async () => new Response(JSON.stringify({ code: "not_found", message: "No Hub switch route" }), { status: 404 }));
+    const client = makeAccountApi({ origin: hub.url, apiBase: "/api/v2/organizations/org_current", csrfToken: "tenant-csrf", fetch: request });
+    const { next } = await client.switchOrganization({ organization, key: "switch-1" });
+    const target = new URL(next, hub.url);
+    expect(target.origin).toBe(new URL(hub.url).origin);
+    expect(target.pathname).toBe("/auth/oidc/start");
+    expect(target.searchParams.get("organization")).toBe(organization);
+    expect([...target.searchParams.keys()]).toEqual(["organization"]);
+    expect(request).not.toHaveBeenCalled();
   });
 
-  it("is 404 for an organization the actor does not belong to", async () => {
-    await reset();
-    const failure = await api
-      .switchOrganization({ organization: "org_elsewhere", key: "switch-2" })
-      .catch((cause: unknown) => cause);
-    expect((failure as AccountError).status).toBe(404);
-  });
 
-  it("accepts a valid invitation token and refuses an invented one", async () => {
-    await reset();
-    const failure = await api
-      .acceptInvitation({ token: "invented", key: "accept-1" })
-      .catch((cause: unknown) => cause);
-    expect((failure as AccountError).status).toBe(404);
-  });
 });
 
 describe("runner list pagination", () => {

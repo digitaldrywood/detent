@@ -1,21 +1,8 @@
-// `/support`.
-//
-// The one screen a Detent staff account reaches before it has any access to
-// the organization it is about to support, so — like `/login` — it renders
-// without the bootstrap payload: the hub serves
-// the shell for `/support` to anybody holding a session, and `/app/bootstrap`
-// answers 403 until the support session has actually been started.
-//
-// It does one thing: `POST {apiBase}/support/start`. That opens a ten-minute
-// window, not the session itself: the actor still impersonates the customer
-// in the identity provider and returns in this browser, so the card says so
-// instead of reloading into itself.
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
 import { useAccountBootstrap } from "./context.ts";
 import { DetentCloudLogo } from "./Login.tsx";
-import { newKey } from "./idempotency.ts";
 import { routerBasePath, withoutBasePath } from "../../runtime/basePath.ts";
 import { usePageTitle } from "../pageTitle.ts";
 
@@ -53,14 +40,6 @@ export function supportCSRF(body: unknown): string | null {
   return typeof token === "string" && token.length > 0 ? token : null;
 }
 
-function supportExpiry(body: unknown): string | null {
-  if (body === null || typeof body !== "object") return null;
-  const support = (body as Record<string, unknown>)["support"];
-  if (support === null || typeof support !== "object") return null;
-  const expires = (support as Record<string, unknown>)["expires_at"];
-  return typeof expires === "string" && expires.length > 0 ? expires : null;
-}
-
 /** The `organization` a hub names in an error body, wherever it puts it. */
 function organizationFromBody(body: unknown): string | null {
   if (body === null || typeof body !== "object") return null;
@@ -76,177 +55,29 @@ function organizationFromBody(body: unknown): string | null {
 }
 
 export interface SupportCardProps {
-  /** The organization the session will be started against, if one is known. */
   readonly organization: string | null;
-  /** The CSRF token, where a bootstrap succeeded and carried one. */
-  readonly csrfToken?: string | null;
-  readonly fetchImpl?: typeof globalThis.fetch;
-  /** Called once the hub accepts, after the card shows the provider step. */
-  readonly onStarted?: () => void;
 }
 
-/**
- * The card. It carries no dependency on the conversation client, so it renders
- * for a reader whose bootstrap was refused as readily as for one whose was not.
- */
-export function SupportCard(props: SupportCardProps): React.ReactElement {
-  const [pending, setPending] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [expiresAt, setExpiresAt] = React.useState<string | null>(null);
-  const [expired, setExpired] = React.useState(false);
-  React.useEffect(() => {
-    if (expiresAt === null || expiresAt.length === 0) return;
-    const remaining = new Date(expiresAt).getTime() - Date.now();
-    if (!(remaining > 0)) {
-      setExpiresAt(null);
-      setExpired(true);
-      return;
-    }
-    const timer = setTimeout(() => {
-      setExpiresAt(null);
-      setExpired(true);
-    }, remaining);
-    return () => clearTimeout(timer);
-  }, [expiresAt]);
-  const organization = props.organization;
-
-  const start = async () => {
-    if (organization === null) return;
-    setPending(true);
-    setError(null);
-    setExpired(false);
-    const doFetch = props.fetchImpl ?? globalThis.fetch;
-    try {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      };
-      if (props.csrfToken != null && props.csrfToken.length > 0) {
-        headers["X-CSRF-Token"] = props.csrfToken;
-      }
-      const response = await doFetch(
-        `/api/v2/organizations/${encodeURIComponent(organization)}/support/start`,
-        {
-          method: "POST",
-          credentials: "same-origin",
-          headers,
-          body: JSON.stringify({ idempotency_key: newKey() }),
-        },
-      );
-      if (!response.ok) {
-        const body: unknown = await response.json().catch(() => undefined);
-        const message =
-          body !== null &&
-          typeof body === "object" &&
-          typeof (body as { message?: unknown }).message === "string"
-            ? (body as { message: string }).message
-            : `The hub refused the support session (${response.status}).`;
-        setPending(false);
-        setError(message);
-        return;
-      }
-      const body: unknown = await response.json().catch(() => undefined);
-      setPending(false);
-      setExpiresAt(supportExpiry(body) ?? "");
-      props.onStarted?.();
-    } catch (cause) {
-      setPending(false);
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "The support session could not start.",
-      );
-    }
-  };
-
+export function SupportCard({ organization }: SupportCardProps): React.ReactElement {
   return (
     <div className="grid flex-1 place-items-center p-10">
       <div className="w-full max-w-[640px] overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_80px_rgb(0_0_0/45%)]">
-        <div className="border-b border-border/60 px-7 pt-[26px] pb-[18px]">
-          <DetentCloudLogo />
-        </div>
+        <div className="border-b border-border/60 px-7 pt-[26px] pb-[18px]"><DetentCloudLogo /></div>
         <div className="px-7 pt-6 pb-[26px]">
-          <h1 className="mb-2 text-2xl font-semibold tracking-[-0.02em] text-balance">
-            Start a support session
-          </h1>
-          {expiresAt !== null && organization !== null ? (
-            <div
-              data-testid="support-started"
-              className="text-muted-foreground text-sm"
-            >
-              <p className="mb-3">
-                The support window for organization{" "}
-                <b className="font-medium text-foreground">{organization}</b> is
-                open
-                {expiresAt.length > 0 ? (
-                  <>
-                    {" "}
-                    until{" "}
-                    <time dateTime={expiresAt}>
-                      {new Date(expiresAt).toLocaleString()}
-                    </time>
-                  </>
-                ) : null}
-                .
-              </p>
-              <p className="mb-[18px]">
-                Open the organization in the identity provider dashboard and
-                impersonate the customer with the reason customer-request,
-                account-recovery or troubleshooting, then return in this browser
-                before the window closes.
-              </p>
-              <Button
-                size="lg"
-                variant="outline"
-                className="w-full justify-center"
-                data-testid="support-reload"
-                onClick={() => globalThis.location?.reload()}
-              >
-                I have returned from the provider
-              </Button>
-            </div>
-          ) : organization === null ? (
-            <p
-              className="text-muted-foreground text-sm"
-              data-testid="support-no-organization"
-            >
-              Sign in as a support actor. This page starts a support session
-              against the organization this hub serves, and the sign-in has to
-              name it.
+          <h1 className="mb-2 text-2xl font-semibold tracking-[-0.02em] text-balance">Start a support session</h1>
+          {organization === null ? (
+            <p className="text-muted-foreground text-sm" data-testid="support-no-organization">
+              Sign in as a support actor. The sign-in must name the organization you need to support.
             </p>
           ) : (
             <>
               <p className="mb-[18px] text-muted-foreground text-sm">
-                You are about to act as organization{" "}
-                <b className="font-medium text-foreground">{organization}</b>.
-                Everything you do is recorded against your own account and the
-                organization can see that the session is open, who opened it and
-                when it expires.
+                Continue to the secure support request for organization <b className="font-medium text-foreground">{organization}</b>.
+                Choose a reason there, then follow the identity provider instructions. Support access remains bound to your account and the selected organization.
               </p>
-              {expired ? (
-                <p className="mb-4 text-muted-foreground text-sm" data-testid="support-expired">
-                  The support window closed before the session started. Start it again.
-                </p>
-              ) : null}
-              {error === null ? null : (
-                <div
-                  role="alert"
-                  className="mb-4 rounded-[10px] border border-destructive/30 bg-destructive/8 px-3.5 py-3 text-[13px] text-destructive-foreground"
-                  data-testid="support-error"
-                >
-                  {error}
-                </div>
-              )}
-              <Button
-                size="lg"
-                className="w-full justify-center"
-                disabled={pending}
-                data-testid="support-start"
-                onClick={() => void start()}
-              >
-                {pending
-                  ? "Starting the session…"
-                  : "Start the support session"}
+              <Button size="lg" className="w-full justify-center" data-testid="support-start"
+                render={<a href={`/support?organization=${encodeURIComponent(organization)}`} />}>
+                Start the support session
               </Button>
             </>
           )}
@@ -275,7 +106,6 @@ export function SupportRoute(): React.ReactElement {
         bootstrap?.organization.id ??
         null
       }
-      csrfToken={bootstrap?.csrf_token ?? null}
     />
   );
 }

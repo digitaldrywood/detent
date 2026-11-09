@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
@@ -21,16 +20,6 @@ import (
 func TestHostedAccountAPI(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
-	csrf := func(account string) map[string]string {
-		return map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies[account].Value)}
-	}
-	invite := f.rawAPI(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/members/invitations", `{"email":"invitee@example.test","role":"viewer","idempotency_key":"account-invite"}`, csrf("owner"))
-	browserHostedStatus(t, invite, http.StatusCreated)
-	var invitation string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM hosted_invitations WHERE email = 'invitee@example.test'").Scan(&invitation); err != nil {
-		t.Fatal(err)
-	}
-	accept := `{"token":"` + invitation + `","idempotency_key":"accept"}`
 	for _, test := range []struct {
 		name, account, method, path, body string
 		headers                           map[string]string
@@ -41,6 +30,10 @@ func TestHostedAccountAPI(t *testing.T) {
 		{name: "anonymous plan", method: http.MethodGet, path: "/plan", status: http.StatusUnauthorized, code: "unauthorized"},
 		{name: "viewer plan", account: "viewer", method: http.MethodGet, path: "/plan", status: http.StatusForbidden, code: "forbidden"},
 		{name: "staff plan", account: "staff", method: http.MethodGet, path: "/plan", status: http.StatusForbidden, code: "forbidden"},
+		{name: "support viewer plan", account: "support-viewer", method: http.MethodGet, path: "/plan", status: http.StatusForbidden, code: "forbidden"},
+		{name: "wrong organization plan", account: "wrong-organization", method: http.MethodGet, path: "/plan", status: http.StatusForbidden, code: "forbidden"},
+		{name: "revoked session plan", account: "revoked", method: http.MethodGet, path: "/plan", status: http.StatusUnauthorized, code: "unauthorized"},
+		{name: "expired session plan", account: "expired", method: http.MethodGet, path: "/plan", status: http.StatusUnauthorized, code: "unauthorized"},
 		{name: "owner plan", account: "owner", method: http.MethodGet, path: "/plan", status: http.StatusOK, check: func(t *testing.T, body []byte) {
 			var plan HostedEntitlement
 			if err := json.Unmarshal(body, &plan); err != nil {
@@ -51,55 +44,6 @@ func TestHostedAccountAPI(t *testing.T) {
 			}
 			if _, ok := plan.Usage["events_total"]; ok {
 				t.Fatalf("plan usage carries the internal events total: %#v", plan.Usage)
-			}
-		}},
-		{name: "switch without CSRF", account: "owner", method: http.MethodPost, path: "/switch", body: `{"organization":"org_browser_preview","idempotency_key":"s"}`, status: http.StatusForbidden, code: "invalid_csrf"},
-		{name: "anonymous switch", method: http.MethodPost, path: "/switch", body: `{"organization":"org_browser_preview","idempotency_key":"s"}`, status: http.StatusForbidden, code: "invalid_csrf"},
-		{name: "switch with unknown field", account: "owner", method: http.MethodPost, path: "/switch", body: `{"organization":"org_browser_preview","target":"x"}`, headers: csrf("owner"), status: http.StatusUnprocessableEntity, code: "invalid_request"},
-		{name: "switch to an unknown organization", account: "viewer", method: http.MethodPost, path: "/switch", body: `{"organization":"org_unknown","idempotency_key":"s"}`, headers: csrf("viewer"), status: http.StatusForbidden, code: "forbidden"},
-		{name: "support session cannot switch", account: "support-viewer", method: http.MethodPost, path: "/switch", body: `{"organization":"org_browser_preview","idempotency_key":"s"}`, headers: csrf("support-viewer"), status: http.StatusForbidden, code: "forbidden"},
-		{name: "owner switches", account: "owner", method: http.MethodPost, path: "/switch", body: `{"organization":"org_browser_preview","idempotency_key":"s"}`, headers: csrf("owner"), status: http.StatusOK, check: func(t *testing.T, body []byte) {
-			var next hostedNextResponse
-			if err := json.Unmarshal(body, &next); err != nil {
-				t.Fatal(err)
-			}
-			if next.Next != f.server.URL+"/auth/oidc/start" {
-				t.Fatalf("next = %q", next.Next)
-			}
-		}},
-		{name: "accept without CSRF", account: "invitee", method: http.MethodPost, path: "/invitations/accept", body: accept, status: http.StatusForbidden, code: "invalid_csrf"},
-		{name: "wrong account accepts", account: "viewer", method: http.MethodPost, path: "/invitations/accept", body: accept, headers: csrf("viewer"), status: http.StatusForbidden, code: "forbidden"},
-		{name: "staff accepts", account: "staff", method: http.MethodPost, path: "/invitations/accept", body: accept, headers: csrf("staff"), status: http.StatusForbidden, code: "forbidden"},
-		{name: "invitee accepts", account: "invitee", method: http.MethodPost, path: "/invitations/accept", body: accept, headers: csrf("invitee"), status: http.StatusOK, check: func(t *testing.T, body []byte) {
-			var next hostedNextResponse
-			if err := json.Unmarshal(body, &next); err != nil {
-				t.Fatal(err)
-			}
-			if next.Next != f.server.URL+"/auth/oidc/start" {
-				t.Fatalf("next = %q", next.Next)
-			}
-		}},
-		{name: "invitation replay by the same account", account: "invitee", method: http.MethodPost, path: "/invitations/accept", body: accept, headers: csrf("invitee"), status: http.StatusOK, check: func(t *testing.T, body []byte) {
-			var next hostedNextResponse
-			if err := json.Unmarshal(body, &next); err != nil {
-				t.Fatal(err)
-			}
-			if next.Next != f.server.URL+"/auth/oidc/start" {
-				t.Fatalf("next = %q", next.Next)
-			}
-		}},
-		{name: "invitation replay by another account", account: "viewer", method: http.MethodPost, path: "/invitations/accept", body: accept, headers: csrf("viewer"), status: http.StatusForbidden, code: "forbidden"},
-		{name: "ordinary staff cannot start support", account: "staff", method: http.MethodPost, path: "/support/start", body: `{"idempotency_key":"support"}`, headers: csrf("staff"), status: http.StatusForbidden, code: "forbidden"},
-		{name: "member cannot start support", account: "owner", method: http.MethodPost, path: "/support/start", body: `{"idempotency_key":"support"}`, headers: csrf("owner"), status: http.StatusForbidden, code: "forbidden"},
-		{name: "support without CSRF", account: "support-staff", method: http.MethodPost, path: "/support/start", body: `{"idempotency_key":"support"}`, status: http.StatusForbidden, code: "invalid_csrf"},
-		{name: "authorized support starts", account: "support-staff", method: http.MethodPost, path: "/support/start", body: `{"idempotency_key":"support"}`, headers: csrf("support-staff"), status: http.StatusOK, check: func(t *testing.T, body []byte) {
-			var support hostedSupportResponse
-			if err := json.Unmarshal(body, &support); err != nil {
-				t.Fatal(err)
-			}
-			remaining := time.Until(support.Support.ExpiresAt)
-			if support.Support.Actor != "support@example.test" || remaining <= 0 || remaining > 10*time.Minute {
-				t.Fatalf("support = %#v", support)
 			}
 		}},
 	} {
@@ -121,14 +65,8 @@ func TestHostedAccountAPI(t *testing.T) {
 		})
 	}
 	t.Run("another organization is not found", func(t *testing.T) {
-		for _, path := range []string{"/plan", "/switch", "/invitations/accept", "/support/start"} {
-			method := http.MethodPost
-			if path == "/plan" {
-				method = http.MethodGet
-			}
-			response := f.rawAPI(t, "owner", method, "/api/v2/organizations/org_other"+path, `{"idempotency_key":"k"}`, csrf("owner"))
-			browserHostedStatus(t, response, http.StatusNotFound)
-		}
+		response := f.rawAPI(t, "owner", http.MethodGet, "/api/v2/organizations/org_other/plan", "", nil)
+		browserHostedStatus(t, response, http.StatusNotFound)
 	})
 }
 
@@ -460,12 +398,7 @@ func TestAppBootstrapRefusalCarriesSupportCSRF(t *testing.T) {
 			if refusal.Details.Organization != "org_browser_preview" || refusal.Details.CSRFToken != hostedCSRF(f.cookies[test.account].Value) {
 				t.Fatalf("refusal = %#v", refusal)
 			}
-			start := f.rawAPI(t, test.account, http.MethodPost, browserHostedOrganizationBase+"/support/start", `{"idempotency_key":"support"}`, map[string]string{"X-CSRF-Token": refusal.Details.CSRFToken})
-			want := http.StatusForbidden
-			if test.account == "support-staff" {
-				want = http.StatusOK
-			}
-			browserHostedStatus(t, start, want)
+
 		})
 	}
 }
