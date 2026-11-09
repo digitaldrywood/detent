@@ -971,6 +971,39 @@ func (q *Queries) SpriteRetainedPoolCount(ctx context.Context, organizationID tr
 	return count, err
 }
 
+const spriteRetirementProjects = `-- name: SpriteRetirementProjects :many
+SELECT a.project_id FROM runner_sprite_memberships m
+JOIN project_sprite_allocations a ON a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id
+WHERE m.organization_id=$1 AND m.name=ANY($2::text[]) AND m.state<>'deleted'
+GROUP BY a.project_id,a.desired_count,a.requested_at
+ORDER BY (a.desired_count=0) DESC,a.requested_at DESC,a.project_id DESC
+`
+
+type SpriteRetirementProjectsParams struct {
+	OrganizationID tracker.OrganizationID
+	MemberNames    []string
+}
+
+func (q *Queries) SpriteRetirementProjects(ctx context.Context, arg SpriteRetirementProjectsParams) ([]tracker.ProjectID, error) {
+	rows, err := q.db.Query(ctx, spriteRetirementProjects, arg.OrganizationID, arg.MemberNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []tracker.ProjectID{}
+	for rows.Next() {
+		var project_id tracker.ProjectID
+		if err := rows.Scan(&project_id); err != nil {
+			return nil, err
+		}
+		items = append(items, project_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const spriteWakeTarget = `-- name: SpriteWakeTarget :one
 SELECT EXISTS(SELECT 1 FROM runner_identities r JOIN machines m ON m.organization_id=r.organization_id AND m.id=r.machine_id
 JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id

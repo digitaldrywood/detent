@@ -1432,13 +1432,37 @@ func (s *Service) scaleSpritePoolRecord(ctx context.Context, scope nativeScope, 
 	}
 	projects := []tracker.ProjectID{""}
 	seen := map[tracker.ProjectID]bool{"": true}
+	names := make([]string, 0, len(view.Members))
+	for _, member := range view.Members {
+		if member.State != "deleted" && member.AllocationProjectID != "" {
+			names = append(names, member.Name)
+		}
+	}
+	if len(names) > 0 {
+		var ordered []tracker.ProjectID
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			owner, ok := r.(postgres.SpriteReader)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			var err error
+			ordered, err = owner.SpriteRetirementProjects(ctx, names)
+			return err
+		})
+		if err != nil {
+			return errors.Join(operationErrors, err)
+		}
+		for _, project := range ordered {
+			seen[project] = true
+			projects = append(projects, project)
+		}
+	}
 	for _, member := range view.Members {
 		if member.State != "deleted" && !seen[member.AllocationProjectID] {
 			seen[member.AllocationProjectID] = true
 			projects = append(projects, member.AllocationProjectID)
 		}
 	}
-	slices.Reverse(projects[1:])
 	retired := 0
 	for _, project := range projects {
 		ownerScope := scope

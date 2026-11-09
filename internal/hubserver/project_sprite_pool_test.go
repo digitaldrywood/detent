@@ -2128,6 +2128,22 @@ func TestSpritePoolProvisionRetryDoesNotDelayOtherProjects(t *testing.T) {
 	if err != nil || first.AllocatedCount != 1 || len(provider.created) != 3 || len(provider.runners) != 2 {
 		t.Fatalf("due retry did not resume: first=%+v creates=%d enrollments=%d error=%v", first, len(provider.created), len(provider.runners), err)
 	}
+	updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.MaxRunners = 1 })
+	if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+		t.Fatal(err)
+	}
+	first, err = f.service.projectSpriteAllocation(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err = f.service.projectSpriteAllocation(t.Context(), laterScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AllocatedCount != 1 || second.AllocatedCount != 0 || len(provider.deleted) != 1 {
+		t.Fatalf("pool shrink lost older request: first=%+v second=%+v deletes=%d", first, second, len(provider.deleted))
+	}
+
 }
 
 func TestSpritePoolFulfilledAllocationsDoNotHidePendingRequest(t *testing.T) {

@@ -453,6 +453,50 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 		}); err != nil {
 			t.Fatal(err)
 		}
+		if err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
+			row, err := w.SpriteAllocation(t.Context(), "completed-100")
+			if err != nil {
+				return err
+			}
+			row.DesiredCount = 0
+			_, err = w.PutSpriteAllocation(t.Context(), row, row.Revision)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
+			projects, err := r.SpriteRetirementProjects(t.Context(), []string{"second", "filled", "first", "filled", "absent"})
+			if err != nil {
+				return err
+			}
+			want := []tracker.ProjectID{"completed-100", "prj_first", "prj_second"}
+			if len(projects) != len(want) {
+				t.Fatalf("retirement projects=%v, want %v", projects, want)
+			}
+			for i, project := range want {
+				if projects[i] != project {
+					t.Fatalf("retirement projects=%v, want %v", projects, want)
+				}
+			}
+			projects, err = r.SpriteRetirementProjects(t.Context(), []string{"first"})
+			if err != nil {
+				return err
+			}
+			if len(projects) != 1 || projects[0] != "prj_first" {
+				t.Fatalf("retirement ignored member scope: %v", projects)
+			}
+			projects, err = r.SpriteRetirementProjects(t.Context(), []string{"absent"})
+			if err != nil {
+				return err
+			}
+			if len(projects) != 0 {
+				t.Fatalf("retirement returned unselected members: %v", projects)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+
 	}
 
 }

@@ -48,6 +48,7 @@ type SpriteReader interface {
 	SpritePoolMemberPage(context.Context, SpriteMemberCursor, int) ([]SpritePoolMember, error)
 	SpriteAllocationQueue(context.Context, SpriteAllocationCursor, int) ([]SpriteAllocation, error)
 	SpriteProvisionQueue(context.Context, SpriteAllocationCursor, int) ([]SpriteAllocation, error)
+	SpriteRetirementProjects(context.Context, []string) ([]tracker.ProjectID, error)
 	SpriteAllocation(context.Context, tracker.ProjectID) (SpriteAllocation, error)
 	SpriteAllocationAuthority(context.Context, tracker.ProjectID, time.Time) (bool, error)
 	SpriteAllocations(context.Context, tracker.ProjectID, int) ([]SpriteAllocation, error)
@@ -297,6 +298,18 @@ func (s *session) SpriteProvisionQueue(ctx context.Context, after SpriteAllocati
 	}
 	rows, err := s.queries.SpriteProvisionQueue(ctx, pgquery.SpriteProvisionQueueParams{OrganizationID: s.organization, AfterRequestedAt: after.RequestedAt, AfterProjectID: string(after.ProjectID), PageLimit: int32(limit)})
 	return rows, mapError(ctx, err)
+}
+
+func (s *session) SpriteRetirementProjects(ctx context.Context, names []string) ([]tracker.ProjectID, error) {
+	rows, err := s.queries.SpriteRetirementProjects(ctx, pgquery.SpriteRetirementProjectsParams{OrganizationID: s.organization, MemberNames: names})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	projects := make([]tracker.ProjectID, len(rows))
+	for i, id := range rows {
+		projects[i] = tracker.ProjectID(id)
+	}
+	return projects, nil
 }
 
 func (s *session) SpriteAllocationAuthority(ctx context.Context, project tracker.ProjectID, at time.Time) (bool, error) {
