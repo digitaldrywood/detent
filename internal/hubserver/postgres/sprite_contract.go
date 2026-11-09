@@ -65,6 +65,7 @@ type SpriteWriter interface {
 	PromoteSpriteSecret(context.Context, accessstore.Secret, accessstore.Secret) error
 	SpriteReader
 	LockSpritePool(context.Context) (SpritePool, error)
+	SetSpriteProvisionCursor(context.Context, SpriteAllocationCursor) error
 	PutSpritePool(context.Context, SpritePool, int64) (SpritePool, error)
 	PutSpriteAllocation(context.Context, SpriteAllocation, int64) (SpriteAllocation, error)
 	CreateRunnerSpriteMembership(context.Context, runnerstore.SpriteMembership) error
@@ -298,6 +299,20 @@ func (s *session) SpriteProvisionQueue(ctx context.Context, after SpriteAllocati
 	}
 	rows, err := s.queries.SpriteProvisionQueue(ctx, pgquery.SpriteProvisionQueueParams{OrganizationID: s.organization, AfterRequestedAt: after.RequestedAt, AfterProjectID: string(after.ProjectID), PageLimit: int32(limit)})
 	return rows, mapError(ctx, err)
+}
+
+func (s *session) SetSpriteProvisionCursor(ctx context.Context, after SpriteAllocationCursor) error {
+	if after.RequestedAt.IsZero() {
+		after.RequestedAt = time.Unix(0, 0).UTC()
+	}
+	count, err := s.queries.SetSpriteProvisionCursor(ctx, pgquery.SetSpriteProvisionCursorParams{OrganizationID: s.organization, AfterRequestedAt: after.RequestedAt, AfterProjectID: string(after.ProjectID)})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if count != 1 {
+		return corestore.ErrNotFound
+	}
+	return nil
 }
 
 func (s *session) SpriteRetirementProjects(ctx context.Context, names []string) ([]tracker.ProjectID, error) {

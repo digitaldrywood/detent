@@ -2942,19 +2942,21 @@ type OrganizationSlug struct {
 }
 
 type OrganizationSpritePool struct {
-	OrganizationID     tracker.OrganizationID
-	MinRunners         int32
-	MaxRunners         int32
-	IdleSeconds        int32
-	BootstrapObjectKey *string
-	ConfiguredBy       string
-	Revision           int64
-	IsolationTier      string
-	ShareIdleCapacity  bool
-	PlacementMode      string
-	TodoThreshold      int32
-	OverflowSlots      int32
-	MaxSpriteSlots     int32
+	OrganizationID            tracker.OrganizationID
+	MinRunners                int32
+	MaxRunners                int32
+	IdleSeconds               int32
+	BootstrapObjectKey        *string
+	ConfiguredBy              string
+	Revision                  int64
+	IsolationTier             string
+	ShareIdleCapacity         bool
+	PlacementMode             string
+	TodoThreshold             int32
+	OverflowSlots             int32
+	MaxSpriteSlots            int32
+	ProvisionAfterRequestedAt time.Time
+	ProvisionAfterProjectID   string
 }
 
 type PlatformAccessKey struct {

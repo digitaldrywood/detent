@@ -349,10 +349,21 @@ func (s *Service) createPoolSpriteRecord(ctx context.Context, scope nativeScope,
 		}
 		var source string
 		var attempts int64
-		allocations, err := owner.SpriteProvisionQueue(ctx, postgres.SpriteAllocationCursor{}, 100)
+		const allocationPageSize = 100
+		begin := postgres.SpriteAllocationCursor{RequestedAt: time.Unix(0, 0).UTC()}
+		stored := postgres.SpriteAllocationCursor{RequestedAt: pool.ProvisionAfterRequestedAt, ProjectID: tracker.ProjectID(pool.ProvisionAfterProjectID)}
+		page, err := owner.SpriteProvisionQueue(ctx, stored, allocationPageSize+1)
 		if err != nil {
 			return err
 		}
+		if len(page) == 0 && stored.ProjectID != "" {
+			page, err = owner.SpriteProvisionQueue(ctx, begin, allocationPageSize+1)
+			if err != nil {
+				return err
+			}
+		}
+		more := len(page) > allocationPageSize
+		allocations := page[:min(len(page), allocationPageSize)]
 		var revision int64
 		floor := settings.MinRunners
 		for _, allocation := range allocations {
@@ -397,7 +408,17 @@ func (s *Service) createPoolSpriteRecord(ctx context.Context, scope nativeScope,
 			source, attempts = candidateSource, candidateAttempts
 			break
 		}
-		if scope.project == "" && !allowOrganization {
+		next := begin
+		if scope.project == "" && more {
+			last := allocations[len(allocations)-1]
+			next = postgres.SpriteAllocationCursor{RequestedAt: last.RequestedAt, ProjectID: last.ProjectID}
+		}
+		if next.ProjectID != stored.ProjectID || !next.RequestedAt.Equal(stored.RequestedAt) {
+			if err := owner.SetSpriteProvisionCursor(ctx, next); err != nil {
+				return err
+			}
+		}
+		if scope.project == "" && (more || !allowOrganization) {
 			return nil
 		}
 		active, err := owner.SpriteActiveMemberCount(ctx, scope.project)

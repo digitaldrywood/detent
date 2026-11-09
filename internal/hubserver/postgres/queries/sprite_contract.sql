@@ -1,6 +1,11 @@
 -- name: SpritePool :one
 SELECT * FROM organization_sprite_pools WHERE organization_id=$1;
 
+-- name: SetSpriteProvisionCursor :execrows
+UPDATE organization_sprite_pools
+SET provision_after_requested_at=sqlc.arg(after_requested_at)::timestamptz,provision_after_project_id=sqlc.arg(after_project_id)::text
+WHERE organization_id=sqlc.arg(organization_id);
+
 -- name: PutSpritePool :one
 INSERT INTO organization_sprite_pools(organization_id,min_runners,max_runners,idle_seconds,bootstrap_object_key,configured_by,revision,isolation_tier,share_idle_capacity,placement_mode,todo_threshold,overflow_slots,max_sprite_slots)
 SELECT sqlc.arg(organization_id),sqlc.arg(min_runners),sqlc.arg(max_runners),sqlc.arg(idle_seconds),sqlc.narg(bootstrap_object_key),sqlc.arg(configured_by),1,sqlc.arg(isolation_tier),sqlc.arg(share_idle_capacity),sqlc.arg(placement_mode),sqlc.arg(todo_threshold),sqlc.arg(overflow_slots),sqlc.arg(max_sprite_slots)

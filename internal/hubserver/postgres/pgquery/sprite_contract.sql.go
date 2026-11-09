@@ -104,7 +104,7 @@ func (q *Queries) CreateSpriteOperation(ctx context.Context, arg CreateSpriteOpe
 }
 
 const lockSpritePool = `-- name: LockSpritePool :one
-SELECT organization_id, min_runners, max_runners, idle_seconds, bootstrap_object_key, configured_by, revision, isolation_tier, share_idle_capacity, placement_mode, todo_threshold, overflow_slots, max_sprite_slots FROM organization_sprite_pools WHERE organization_id=$1 FOR UPDATE
+SELECT organization_id, min_runners, max_runners, idle_seconds, bootstrap_object_key, configured_by, revision, isolation_tier, share_idle_capacity, placement_mode, todo_threshold, overflow_slots, max_sprite_slots, provision_after_requested_at, provision_after_project_id FROM organization_sprite_pools WHERE organization_id=$1 FOR UPDATE
 `
 
 func (q *Queries) LockSpritePool(ctx context.Context, organizationID tracker.OrganizationID) (OrganizationSpritePool, error) {
@@ -124,6 +124,8 @@ func (q *Queries) LockSpritePool(ctx context.Context, organizationID tracker.Org
 		&i.TodoThreshold,
 		&i.OverflowSlots,
 		&i.MaxSpriteSlots,
+		&i.ProvisionAfterRequestedAt,
+		&i.ProvisionAfterProjectID,
 	)
 	return i, err
 }
@@ -221,7 +223,7 @@ SELECT $1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12
 WHERE $13::bigint=0
 ON CONFLICT (organization_id) DO UPDATE SET min_runners=EXCLUDED.min_runners,max_runners=EXCLUDED.max_runners,idle_seconds=EXCLUDED.idle_seconds,bootstrap_object_key=EXCLUDED.bootstrap_object_key,configured_by=EXCLUDED.configured_by,revision=organization_sprite_pools.revision+1,isolation_tier=EXCLUDED.isolation_tier,share_idle_capacity=EXCLUDED.share_idle_capacity,placement_mode=EXCLUDED.placement_mode,todo_threshold=EXCLUDED.todo_threshold,overflow_slots=EXCLUDED.overflow_slots,max_sprite_slots=EXCLUDED.max_sprite_slots
 WHERE organization_sprite_pools.revision=$13
-RETURNING organization_id, min_runners, max_runners, idle_seconds, bootstrap_object_key, configured_by, revision, isolation_tier, share_idle_capacity, placement_mode, todo_threshold, overflow_slots, max_sprite_slots
+RETURNING organization_id, min_runners, max_runners, idle_seconds, bootstrap_object_key, configured_by, revision, isolation_tier, share_idle_capacity, placement_mode, todo_threshold, overflow_slots, max_sprite_slots, provision_after_requested_at, provision_after_project_id
 `
 
 type PutSpritePoolParams struct {
@@ -271,6 +273,8 @@ func (q *Queries) PutSpritePool(ctx context.Context, arg PutSpritePoolParams) (O
 		&i.TodoThreshold,
 		&i.OverflowSlots,
 		&i.MaxSpriteSlots,
+		&i.ProvisionAfterRequestedAt,
+		&i.ProvisionAfterProjectID,
 	)
 	return i, err
 }
@@ -314,6 +318,26 @@ func (q *Queries) SetSpriteExecSession(ctx context.Context, arg SetSpriteExecSes
 		arg.IdempotencyKey,
 		arg.ExpectedAttempts,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setSpriteProvisionCursor = `-- name: SetSpriteProvisionCursor :execrows
+UPDATE organization_sprite_pools
+SET provision_after_requested_at=$1::timestamptz,provision_after_project_id=$2::text
+WHERE organization_id=$3
+`
+
+type SetSpriteProvisionCursorParams struct {
+	AfterRequestedAt time.Time
+	AfterProjectID   string
+	OrganizationID   tracker.OrganizationID
+}
+
+func (q *Queries) SetSpriteProvisionCursor(ctx context.Context, arg SetSpriteProvisionCursorParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSpriteProvisionCursor, arg.AfterRequestedAt, arg.AfterProjectID, arg.OrganizationID)
 	if err != nil {
 		return 0, err
 	}
@@ -734,7 +758,7 @@ func (q *Queries) SpriteOperation(ctx context.Context, arg SpriteOperationParams
 }
 
 const spritePool = `-- name: SpritePool :one
-SELECT organization_id, min_runners, max_runners, idle_seconds, bootstrap_object_key, configured_by, revision, isolation_tier, share_idle_capacity, placement_mode, todo_threshold, overflow_slots, max_sprite_slots FROM organization_sprite_pools WHERE organization_id=$1
+SELECT organization_id, min_runners, max_runners, idle_seconds, bootstrap_object_key, configured_by, revision, isolation_tier, share_idle_capacity, placement_mode, todo_threshold, overflow_slots, max_sprite_slots, provision_after_requested_at, provision_after_project_id FROM organization_sprite_pools WHERE organization_id=$1
 `
 
 func (q *Queries) SpritePool(ctx context.Context, organizationID tracker.OrganizationID) (OrganizationSpritePool, error) {
@@ -754,6 +778,8 @@ func (q *Queries) SpritePool(ctx context.Context, organizationID tracker.Organiz
 		&i.TodoThreshold,
 		&i.OverflowSlots,
 		&i.MaxSpriteSlots,
+		&i.ProvisionAfterRequestedAt,
+		&i.ProvisionAfterProjectID,
 	)
 	return i, err
 }
@@ -1104,7 +1130,7 @@ func (q *Queries) UpdateSpriteOperation(ctx context.Context, arg UpdateSpriteOpe
 
 const updateSpritePool = `-- name: UpdateSpritePool :one
 UPDATE organization_sprite_pools SET min_runners=$1,max_runners=$2,idle_seconds=$3,bootstrap_object_key=$4,configured_by=$5,revision=revision+1,isolation_tier=$6,share_idle_capacity=$7,placement_mode=$8,todo_threshold=$9,overflow_slots=$10,max_sprite_slots=$11
-WHERE organization_id=$12 AND revision=$13 RETURNING organization_id, min_runners, max_runners, idle_seconds, bootstrap_object_key, configured_by, revision, isolation_tier, share_idle_capacity, placement_mode, todo_threshold, overflow_slots, max_sprite_slots
+WHERE organization_id=$12 AND revision=$13 RETURNING organization_id, min_runners, max_runners, idle_seconds, bootstrap_object_key, configured_by, revision, isolation_tier, share_idle_capacity, placement_mode, todo_threshold, overflow_slots, max_sprite_slots, provision_after_requested_at, provision_after_project_id
 `
 
 type UpdateSpritePoolParams struct {
@@ -1154,6 +1180,8 @@ func (q *Queries) UpdateSpritePool(ctx context.Context, arg UpdateSpritePoolPara
 		&i.TodoThreshold,
 		&i.OverflowSlots,
 		&i.MaxSpriteSlots,
+		&i.ProvisionAfterRequestedAt,
+		&i.ProvisionAfterProjectID,
 	)
 	return i, err
 }

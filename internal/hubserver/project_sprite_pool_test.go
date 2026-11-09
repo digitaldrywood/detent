@@ -208,6 +208,15 @@ func TestSpritePoolPostgresSettingsAndAuthority(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		cursor := postgres.SpriteAllocationCursor{RequestedAt: now, ProjectID: "first"}
+		if org == "org_second" {
+			cursor = postgres.SpriteAllocationCursor{RequestedAt: now.Add(time.Second), ProjectID: "second"}
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.(postgres.SpriteWriter).SetSpriteProvisionCursor(t.Context(), cursor)
+		}); err != nil {
+			t.Fatal(err)
+		}
 		var revokeErr error
 		details.afterStore = func(attachment.ArchiveReference) {
 			details.afterStore = nil
@@ -277,6 +286,13 @@ func TestSpritePoolPostgresSettingsAndAuthority(t *testing.T) {
 			}
 			if row.Revision != 2 || row.MaxRunners != 4 || !row.ShareIdleCapacity || row.PlacementMode != "local_first" || row.TodoThreshold != 3 || row.OverflowSlots != 2 || row.BootstrapObjectKey == nil {
 				t.Fatalf("reopened settings=%+v", row)
+			}
+			cursor := postgres.SpriteAllocationCursor{RequestedAt: now, ProjectID: "first"}
+			if org == "org_second" {
+				cursor = postgres.SpriteAllocationCursor{RequestedAt: now.Add(time.Second), ProjectID: "second"}
+			}
+			if row.ProvisionAfterProjectID != string(cursor.ProjectID) || !row.ProvisionAfterRequestedAt.Equal(cursor.RequestedAt) {
+				t.Fatalf("reopened cursor=(%s,%s), want (%s,%s)", row.ProvisionAfterRequestedAt, row.ProvisionAfterProjectID, cursor.RequestedAt, cursor.ProjectID)
 			}
 			return nil
 		}); err != nil {
@@ -2224,27 +2240,62 @@ func TestSpritePoolProvisionRetryDoesNotDelayOtherProjects(t *testing.T) {
 
 }
 
-func TestSpritePoolFulfilledAllocationsDoNotHidePendingRequest(t *testing.T) {
-	f, scope, provider := newSpritePoolFixture(t, "")
-	now := f.service.config.now()
-	f.service.config.now = func() time.Time { return now }
-	for i := range 100 {
-		writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
-			id := tracker.ProjectID(fmt.Sprintf("completed-%03d", i))
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: id, Name: fmt.Sprintf("Completed allocation %03d", i), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
-				return err
+func TestSpritePoolAllocationPagesDoNotHidePendingRequests(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		inactive bool
+		desired  int32
+		created  []int
+	}{
+		{"fulfilled allocations", false, 0, []int{2}},
+		{"inactive allocation authority", true, 1, []int{0, 1, 2}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "")
+			now := f.service.config.now()
+			f.service.config.now = func() time.Time { return now }
+			actor := scope.credential.ID
+			if test.inactive {
+				actor = "prior_allocation_author"
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: scope.organization, ID: actor, Hash: actor, Name: "Prior allocator", Scope: "admin", Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
+				})
 			}
-			_, err := w.(postgres.SpriteWriter).PutSpriteAllocation(t.Context(), postgres.SpriteAllocation{OrganizationID: scope.organization, ProjectID: id, DesiredCount: 0, ConfiguredBy: scope.credential.ID, RequestedAt: now.Add(-time.Duration(100-i) * time.Minute)}, 0)
-			return err
+			for i := range 100 {
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					id := tracker.ProjectID(fmt.Sprintf("prior-%03d", i))
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: id, Name: fmt.Sprintf("Prior allocation %03d", i), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+						return err
+					}
+					_, err := w.(postgres.SpriteWriter).PutSpriteAllocation(t.Context(), postgres.SpriteAllocation{OrganizationID: scope.organization, ProjectID: id, DesiredCount: test.desired, ConfiguredBy: actor, RequestedAt: now.Add(-time.Duration(100-i) * time.Minute)}, 0)
+					return err
+				})
+			}
+			if test.inactive {
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error { return w.RevokeAccessCredential(t.Context(), actor, now) })
+			}
+			setSpriteAllocationFixture(t, f, 2, 0)
+			settings, _, err := f.service.spritePoolSettingsRecord(t.Context(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for pass, want := range test.created {
+				if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
+					t.Fatal(err)
+				}
+				if len(provider.created) != want {
+					t.Fatalf("pass %d created %d members, want %d", pass, len(provider.created), want)
+				}
+				current, _, err := f.service.spritePoolSettingsRecord(t.Context(), scope)
+				if err != nil || current.Revision != settings.Revision {
+					t.Fatalf("scan changed configuration revision from %d to %d: %v", settings.Revision, current.Revision, err)
+				}
+			}
+			allocation, err := f.service.projectSpriteAllocation(t.Context(), scope)
+			if err != nil || allocation.AllocatedCount != 2 || len(provider.created) != 2 || len(provider.runners) != 2 {
+				t.Fatalf("pending allocation=%+v creates=%d enrollments=%d error=%v", allocation, len(provider.created), len(provider.runners), err)
+			}
 		})
-	}
-	setSpriteAllocationFixture(t, f, 2, 0)
-	if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
-		t.Fatal(err)
-	}
-	allocation, err := f.service.projectSpriteAllocation(t.Context(), scope)
-	if err != nil || allocation.AllocatedCount != 2 || len(provider.created) != 2 || len(provider.runners) != 2 {
-		t.Fatalf("pending allocation=%+v creates=%d enrollments=%d error=%v", allocation, len(provider.created), len(provider.runners), err)
 	}
 }
 
