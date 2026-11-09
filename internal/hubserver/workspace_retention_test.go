@@ -15,7 +15,7 @@ import (
 
 func TestPostgresWorkspaceRetainsOnlyItsSubjectAttemptRunner(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	first := newWorkspaceNativeService(t, Config{now: func() time.Time { return now }, Workspace: &WorkspaceConfig{Enabled: true, maintenanceTicks: make(chan time.Time)}})
+	first := newWorkspaceHostedNativeService(t, Config{now: func() time.Time { return now }, Workspace: &WorkspaceConfig{Enabled: true, maintenanceTicks: make(chan time.Time)}})
 	second := openWorkspaceTenantHub(t, first.config, workspaceTestDB(t, first), "org_first_second")
 	hubs := []*Service{first, second}
 	type retainedAttempt struct {
@@ -44,7 +44,7 @@ func TestPostgresWorkspaceRetainsOnlyItsSubjectAttemptRunner(t *testing.T) {
 			identity := &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}
 			path := fixture.base + "/work-items/" + string(subject.WorkItemID) + "/events"
 			started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: identity, LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: run, AttemptID: attempt, PolicyID: policy.ID}}
-			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path, "", started), http.StatusUnauthorized)
+			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path, "invalid_workspace_credential", started), http.StatusUnauthorized)
 			requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path, worker, started), http.StatusOK)
 			if index == 1 {
 				finished := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 2, Identity: identity, LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: run, AttemptID: attempt, PolicyID: policy.ID, Outcome: "succeeded"}}
