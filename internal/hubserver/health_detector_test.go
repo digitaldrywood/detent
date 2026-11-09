@@ -14,8 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -371,7 +371,18 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "cloud-detail-health")
 	addHealthBacklog(t, f)
-	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.Core.RequireDependencies = true
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
 	waiting, recent, limited, explained := f.create(t, "waiting"), f.create(t, "recent"), f.create(t, "limited"), f.create(t, "explained")
 	gated, chained, held, active := f.create(t, "gated"), f.create(t, "chained"), f.create(t, "held"), f.create(t, "active")
 	sibling := f.create(t, "sibling")
@@ -380,7 +391,7 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 	appendTestHealthEvent(t, f, limited, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "lifetime limit"}, now.Add(-time.Hour))
 	appendTestHealthEventAs(t, f, tracker.Actor{Kind: "human", PrincipalID: "operator"}, explained, "workflow.transitioned", tracker.CollaborationData{Reason: "user_requested", ReasonDetail: "lifetime limit"}, now.Add(-time.Hour))
 	snapshot := healthSnapshot{}
-	if err := readHealthCurrentWaits(t.Context(), f.service.database.db, f.project.OrganizationID, now, &snapshot); err != nil {
+	if err := f.service.readHealthWaitRecords(t.Context(), f.project.OrganizationID, now, &snapshot); err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]string{}
@@ -394,76 +405,93 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("findings=%v want %v", got, want)
 	}
-
 	for i, edge := range []struct{ dependent, blocker tracker.NativeIssue }{{gated, held}, {chained, active}} {
 		request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprint("edge-", i)}, ExpectedRevision: edge.dependent.Revision, RelatedWorkItemID: edge.blocker.WorkItemID, Operation: "add"}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(edge.dependent.WorkItemID)+"/dependencies", f.token, request), http.StatusOK)
 	}
 	request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "hold"}, ExpectedRevision: held.Revision, State: "Backlog", Reason: "user_requested"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(held.WorkItemID)+"/workflow", f.token, request), http.StatusOK)
-	var latestEdge string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT max(created_at) FROM issue_dependencies").Scan(&latestEdge); err != nil {
-		t.Fatal(err)
-	}
-	edgeAt, err := parseTimeValue(latestEdge)
-	if err != nil {
+	admin := healthFixtureDatabase(t, f)
+	var edgeAt time.Time
+	if err := admin.QueryRowContext(t.Context(), `SELECT max(created_at) FROM issue_dependencies WHERE organization_id=$1 AND dependent_project_id=$2`, f.project.OrganizationID, f.project.ID).Scan(&edgeAt); err != nil {
 		t.Fatal(err)
 	}
 	heldAt := edgeAt.Add(time.Hour)
-	siblingProject := tracker.ProjectID("prj_sibling_health")
-	for _, statement := range []string{
-		"INSERT INTO projects (id, organization_id, name, profile, states_json, require_dependencies, created_at, github_repository_enabled) SELECT ?, organization_id, 'sibling', profile, states_json, require_dependencies, created_at, github_repository_enabled FROM projects WHERE id = ?",
-		"INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) SELECT ?, source_name, detent_state, terminal, dispatchable, created_at, updated_at FROM workflow_states WHERE project_id = ?",
-	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement, siblingProject, f.project.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	external, err := createNativeFixtureIssueTx(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: siblingProject}, tracker.CreateIssue{Title: "external", Body: issueContractTestSections, State: "Backlog"}, heldAt.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), "INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at) SELECT b.id, d.id, 'native', ?, ? FROM issues b, issues d WHERE b.native_id=? AND d.native_id=?", formatHubTime(heldAt.Add(time.Hour)), formatHubTime(heldAt.Add(time.Hour)), external.WorkItemID, sibling.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	siblingFixture := newNativeFixture(t, f.service, f.project.OrganizationID, "Sibling health")
+	addHealthBacklog(t, siblingFixture)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, siblingFixture.base+"/work-items", siblingFixture.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "external-health"}, Title: "External dependency", Body: issueContractTestSections, State: "Backlog"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var external tracker.NativeIssue
+	decodeHubResponse(t, response, &external)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: sibling.WorkItemID, RelatedProjectID: siblingFixture.project.ID, RelatedWorkItemID: external.WorkItemID, Type: "dependency"}, "add", heldAt.Add(time.Hour))
+	}); err != nil {
 		t.Fatal(err)
 	}
 	appendTestHealthEventAs(t, f, tracker.Actor{Kind: "human", PrincipalID: "operator"}, held, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Backlog", Reason: "user_requested"}, heldAt)
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	gatedCount, heldCount, blockers, since, err := readHealthDependencyHolds(t.Context(), f.service.database.db, scope)
+	holds, err := f.service.readHealthDependencyRecords(t.Context(), f.project.OrganizationID, f.project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gatedCount != 3 || heldCount != 2 || !reflect.DeepEqual(blockers, []string{string(held.WorkItemID)}) || !since.Equal(heldAt) {
-		t.Fatalf("gated=%d held=%d blockers=%v since=%v want %v", gatedCount, heldCount, blockers, since, heldAt)
+	if holds.DependencyGated != 3 || holds.HeldCount != 2 || !reflect.DeepEqual(holds.HeldBlockers, []string{string(held.WorkItemID)}) || !holds.HoldSince.Equal(heldAt) {
+		t.Fatalf("gated=%d held=%d blockers=%v since=%v want %v", holds.DependencyGated, holds.HeldCount, holds.HeldBlockers, holds.HoldSince, heldAt)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=0 WHERE id=?", f.project.ID); err != nil {
-		t.Fatal(err)
-	}
-	if gatedCount, heldCount, blockers, since, err = readHealthDependencyHolds(t.Context(), f.service.database.db, scope); err != nil || gatedCount != 0 || heldCount != 0 || len(blockers) != 0 || !since.IsZero() {
-		t.Fatalf("ignored dependencies gated=%d held=%d blockers=%v since=%v err=%v", gatedCount, heldCount, blockers, since, err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id IN (?,?)", active.WorkItemID, external.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	window := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: f.service.config.now().Add(24 * time.Hour)}
-	for _, live := range []bool{false, true} {
-		ctx := t.Context()
-		if live {
-			ctx = withAnalyticsLiveIssues(ctx)
-		}
-		_, issues, _, err := readAnalyticsResidenceHistory(ctx, f.service.database.db, scope, window)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		present := slices.ContainsFunc(issues, func(issue analyticsResidenceIssue) bool { return issue.id == string(active.WorkItemID) })
-		if present == live || !slices.ContainsFunc(issues, func(issue analyticsResidenceIssue) bool { return issue.id == string(gated.WorkItemID) }) {
-			t.Fatalf("archived present=%v live=%v issues=%d", present, live, len(issues))
+		project.Core.RequireDependencies = false
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	holds, err = f.service.readHealthDependencyRecords(t.Context(), f.project.OrganizationID, f.project.ID)
+	if err != nil || holds.DependencyGated != 0 || holds.HeldCount != 0 || len(holds.HeldBlockers) != 0 || !holds.HoldSince.IsZero() {
+		t.Fatalf("ignored dependencies gated=%d held=%d blockers=%v since=%v err=%v", holds.DependencyGated, holds.HeldCount, holds.HeldBlockers, holds.HoldSince, err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET archived=true WHERE organization_id=$1 AND native_id=ANY($2::text[])`, f.project.OrganizationID, []string{string(active.WorkItemID), string(external.WorkItemID)}); err != nil {
+		t.Fatal(err)
+	}
+	query := reportstore.OverviewQuery{Projects: []tracker.ProjectID{f.project.ID}, From: now.Add(-24 * time.Hour), To: f.service.config.now().Add(24 * time.Hour), Limit: 5000}
+	for _, live := range []bool{false, true} {
+		var ids []tracker.NativeWorkItemID
+		if live {
+			snapshot, err := f.service.readHealthSnapshotRecords(t.Context(), f.project.OrganizationID, query.To)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, project := range snapshot.Rates {
+				if project.ID == string(f.project.ID) {
+					for _, timeline := range project.Timelines {
+						ids = append(ids, tracker.NativeWorkItemID(timeline.issue.id))
+					}
+				}
+			}
+		} else {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
+				owner, ok := r.(reportstore.HistoryReader)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				history, err := owner.ReadHistory(t.Context(), query)
+				if err != nil {
+					return err
+				}
+				for _, project := range history {
+					for _, issue := range project.Issues {
+						ids = append(ids, issue.WorkItemID)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		present := slices.Contains(ids, active.WorkItemID)
+		if present == live || !slices.Contains(ids, gated.WorkItemID) {
+			t.Fatalf("archived present=%v live=%v issues=%d", present, live, len(ids))
 		}
 	}
 }

@@ -17,6 +17,33 @@ func healthObservationLimit(limit int) error {
 	return nil
 }
 
+func (s *session) HealthArchivedWorkItems(ctx context.Context, project tracker.ProjectID, items []tracker.NativeWorkItemID) (map[tracker.NativeWorkItemID]bool, error) {
+	if project == "" || len(items) > 10000 {
+		return nil, corestore.ErrInvalidPage
+	}
+	result := map[tracker.NativeWorkItemID]bool{}
+	if len(items) == 0 {
+		return result, nil
+	}
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = string(item)
+	}
+	rows, err := s.db.Query(ctx, `SELECT native_id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=ANY($3::text[]) AND archived`, s.organization, project, ids)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id tracker.NativeWorkItemID
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		result[id] = true
+	}
+	return result, mapError(ctx, rows.Err())
+}
+
 func (s *session) HealthUsage(ctx context.Context, project tracker.ProjectID, baseline, now time.Time, limit int) ([]healthstore.UsageObservation, error) {
 	if err := healthObservationLimit(limit); err != nil {
 		return nil, err

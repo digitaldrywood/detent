@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -85,38 +84,11 @@ func (s *Service) readHealthSnapshotRecords(ctx context.Context, organization tr
 			}
 			after = page.Next
 		}
-		err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
-			owner, ok := r.(healthstore.ObservationReader)
-			if !ok {
-				return workItemStorageUnavailable()
-			}
-			dependencies, err := owner.HealthDependencies(ctx, project.ID, healthReadLimit+1)
-			if err != nil {
-				return err
-			}
-			if len(dependencies) > healthReadLimit {
-				return errHealthReadLimit
-			}
-			gated, held, listed := map[string]bool{}, map[string]bool{}, map[string]bool{}
-			for _, dependency := range dependencies {
-				gated[dependency.Dependent] = true
-				if dependency.Dispatchable {
-					continue
-				}
-				held[dependency.Blocker] = true
-				if dependency.SameProject {
-					listed[dependency.Blocker] = true
-				}
-				if p.HoldSince.IsZero() || dependency.Since.Before(p.HoldSince) {
-					p.HoldSince = dependency.Since
-				}
-			}
-			p.DependencyGated, p.HeldCount, p.HeldBlockers = len(gated), len(held), slices.Sorted(maps.Keys(listed))
-			return nil
-		})
+		holds, err := s.readHealthDependencyRecords(ctx, organization, project.ID)
 		if err != nil {
 			return snapshot, err
 		}
+		p.DependencyGated, p.HeldCount, p.HeldBlockers, p.HoldSince = holds.DependencyGated, holds.HeldCount, holds.HeldBlockers, holds.HoldSince
 		applyHealthRunnerAvailability(now, runners, &p)
 		snapshot.Projects = append(snapshot.Projects, p)
 	}

@@ -25,7 +25,12 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 		var events []eventstore.Event
 		var landings []reportstore.LandingFact
 		var usage []healthstore.UsageObservation
-		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+		archived := map[tracker.NativeWorkItemID]bool{}
+		repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		err := repository.ReadTenantSnapshot(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 			h, ok := r.(reportstore.HistoryReader)
 			if !ok {
 				return workItemStorageUnavailable()
@@ -46,6 +51,16 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 			history, err = h.ReadHistory(ctx, query)
 			if err != nil {
 				return fmt.Errorf("read health residence: %w", err)
+			}
+			var ids []tracker.NativeWorkItemID
+			for _, history := range history {
+				for _, issue := range history.Issues {
+					ids = append(ids, issue.WorkItemID)
+				}
+			}
+			archived, err = u.HealthArchivedWorkItems(ctx, tracker.ProjectID(p.ID), ids)
+			if err != nil {
+				return err
 			}
 			attempts, err = a.ReadAttemptFacts(ctx, reportstore.AttemptQuery{Projects: query.Projects, From: query.From, To: query.To, Limit: query.Limit})
 			if err != nil {
@@ -77,6 +92,9 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 				states[state.Name] = state
 			}
 			for _, item := range history.Issues {
+				if archived[item.WorkItemID] {
+					continue
+				}
 				issue := analyticsResidenceIssue{id: string(item.WorkItemID), created: item.CreatedAt, initial: item.InitialState}
 				for _, event := range item.Events {
 					issue.events = append(issue.events, analyticsResidenceEvent{at: event.At, kind: event.Type, data: tracker.CollaborationData{FromState: event.FromState, ToState: event.ToState}})

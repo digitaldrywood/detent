@@ -51,6 +51,7 @@ type UsageObservation struct {
 }
 
 type ObservationReader interface {
+	HealthArchivedWorkItems(context.Context, tracker.ProjectID, []tracker.NativeWorkItemID) (map[tracker.NativeWorkItemID]bool, error)
 	HealthUsage(context.Context, tracker.ProjectID, time.Time, time.Time, int) ([]UsageObservation, error)
 	HealthRunners(context.Context, string, time.Time, int) ([]RunnerObservation, error)
 	HealthDependencies(context.Context, tracker.ProjectID, int) ([]DependencyObservation, error)
