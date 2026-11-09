@@ -1166,7 +1166,13 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 			return err
 		}
 		if busy {
-			return nil
+			return s.config.TenantRepository.WriteTenant(ctx, op.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				owner, ok := w.(postgres.SpriteWriter)
+				if !ok {
+					return accessstore.ErrTransactionRequired
+				}
+				return owner.RescheduleBusySpriteOperation(ctx, op, s.config.now())
+			})
 		}
 	}
 	path := "/" + url.PathEscape(op.Name)

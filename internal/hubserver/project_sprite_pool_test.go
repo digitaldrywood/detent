@@ -2794,7 +2794,10 @@ func TestProjectSpriteDrain(t *testing.T) {
 				})
 			}
 			setSpriteAllocationFixture(t, f, 0, 1)
+			clock := &leaseTestClock{value: f.service.config.now().UTC().Truncate(time.Microsecond)}
+			f.service.config.now = clock.Now
 			for range 2 {
+				clock.Advance(time.Second)
 				if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
 					t.Fatal(err)
 				}
@@ -2807,6 +2810,9 @@ func TestProjectSpriteDrain(t *testing.T) {
 				operation, err := r.(postgres.SpriteReader).SpriteOperation(t.Context(), "delete:"+member.EnrollmentID)
 				if err != nil {
 					return err
+				}
+				if !operation.NextAttemptAt.Equal(clock.Now()) {
+					t.Errorf("busy cleanup did not yield queue position: next=%s checked=%s", operation.NextAttemptAt, clock.Now())
 				}
 				if operation.Outcome != "pending" || operation.Attempts != 0 || operation.ProviderResourceID == "" {
 					t.Errorf("lease-held deletion attempted provider work: %+v", operation)
