@@ -175,11 +175,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 	return nil
 }
 
-// updateWorkspace rewrites every mutable column and bumps the revision. The
-// write is conditional on the revision the caller read, so two concurrent
-// transitions cannot both believe they applied: the loser writes nothing and
-// is told to read again.
-
 // readWorkspaceRow reads one workspace by id inside a scope. It is the raw
 // read: the caller applies the issue's read rule on top.
 func readWorkspaceRow(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (workspaceRecord, error) {
@@ -192,33 +187,6 @@ WHERE id = ? AND organization_id = ? AND project_id = ?`, id, scope.organization
 func readWorkspaceByID(ctx context.Context, query nativeQueryer, id string) (workspaceRecord, error) {
 	return scanWorkspace(query.QueryRowContext(ctx, `SELECT `+workspaceColumns+` FROM workspace_sessions WHERE id = ?`, id))
 }
-
-// listWorkspaceRows reads the workspaces of a project, newest first, optionally
-// filtered by subject work item and state.
-
-// openWorkspaceStates is the state list an "open" workspace holds. It is spelt
-// out for SQL rather than derived from workspacesession.Open so the predicate
-// and the index's partial predicate stay the same sentence.
-const openWorkspaceStates = `('requested', 'starting', 'ready', 'idle', 'unreachable', 'closing')`
-
-// readOpenWorkspaceForAttempt reports the workspace already open on an attempt,
-// which is what answers a second request with 409 workspace_exists.
-
-// countOpenWorkspaces reports the organization's open workspaces and how many
-// of them one actor holds, in one read: the two limits of the workspace session contract are
-// checked together so a request cannot pass one and race past the other.
-
-// insertWorkspaceItem records the association.
-
-// closeWorkspaceItem marks the association closed, which is what returns the
-// issue to ordinary history and lets the claim gate stop offering it.
-
-// readWorkspaceItem resolves the workspace a work item carries.
-
-// readWorkspaceItemByWorkspace resolves the dispatch issue a workspace was
-// given, which is the direction the close path reads it in.
-
-// readWorkspaceByItem resolves the workspace an issue dispatches, open or not.
 
 // prefixedWorkspaceColumns is workspaceColumns qualified for a join. It is
 // written out rather than derived from workspaceColumns at run time: a query
@@ -292,24 +260,7 @@ func (p prefixedScanner) Scan(dest ...any) error {
 	return p.rows.Scan(combined...)
 }
 
-// openWorkspaceOccupancy writes the runner occupancy row for a workspace that
-// has just become starting.
-
-// closeWorkspaceOccupancy ends every open occupancy row of a workspace at
-// endedAt. An unreachable workspace whose lease expires is ended at lease
-// expiry rather than at the moment the hub noticed, so a crashed runner does
-// not accrue time it was not serving.
-
-// readWorkspaceRelaySessions reads a workspace's audit rows, newest first.
-// They are served to the workspace's creator and to owners and admins only,
-// which the caller decides: a row names who was inside a workspace, and that is
-// not part of the issue's read rule.
-
 // workspaceRelaySessionPage bounds the audit rows one resource carries. A
 // workspace with more connections than this has a full record in the table; the
 // resource is a summary, not the audit log itself.
 const workspaceRelaySessionPage = 50
-
-// hostedRunnerGrants reports whether the member holds the runner grant on
-// every project named, or on any project in the organization when none is
-// named.

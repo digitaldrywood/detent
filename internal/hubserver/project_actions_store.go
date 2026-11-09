@@ -113,33 +113,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return nil
 }
 
-// readProjectAction reads one action inside a scope, so an action of another
-// project is simply not found.
-
-// readProjectActions lists a project's whole catalogue.
-
-// readRunOnCreationActions lists the actions a fresh worktree runs. It is
-// written out rather than folded into readProjectActions behind a flag: the two
-// have different callers, different audiences -- one a person's menu, one the
-// bind response -- and a reader of either should see the whole predicate.
-
-// countProjectActions reports how many actions a project holds, which is what
-// MaxActionsPerProject is applied to inside the create transaction.
-
-// projectActionKeybindingOwner reports the action that already claims a chord
-// in this project, ignoring one id so a PATCH that keeps its own chord is not
-// a conflict with itself. An empty chord is never a conflict: it means the
-// action has no shortcut, and any number of actions may have none.
-
-// updateProjectActionRow rewrites every mutable column and bumps the revision.
-// The write is conditional on the revision the caller read, so two concurrent
-// edits cannot both believe they applied: the loser writes nothing and is told
-// to read again.
-
-// deleteProjectActionRow removes an action. Its runs go with it: the migration
-// declares ON DELETE CASCADE, because a run of an action nobody can name any
-// more is a row no surface could ever show.
-
 const actionRunColumns = `id, action_id, organization_id, project_id, workspace_id, command, status,
  exit_code, reason, started_at, finished_at, output, output_bytes, output_artifact, truncated,
  created_by, claimed_by, revision, created_at, updated_at`
@@ -210,91 +183,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return nil
 }
 
-// readProjectActionRun reads one run of one action inside a scope.
-
-// readProjectActionRuns lists one action's runs, newest first. The filter and
-// the order are project_action_runs_action_idx's own, so the page is an index
-// scan; the scope columns are in the predicate as well, so a run of another
-// project cannot be reached through an action id guessed from elsewhere.
-
-// activeRunStatuses and terminalWorkspaceStates are spelt out for SQL rather
-// than derived from workspacesession.TerminalRunStatus and Terminal, so the
-// sweep's predicate and the contract it enforces stay the same sentence. The
-// same choice openWorkspaceStates makes, for the same reason.
-const (
-	activeRunStatuses       = `('queued', 'running')`
-	terminalWorkspaceStates = `('closed', 'failed')`
-)
-
-// actionRunSweepBatch bounds one sweep of orphaned runs.
-//
-// A long-neglected hub must not turn one five-second tick into a transaction of
-// unbounded length; what is left over is taken by the next tick.
-const actionRunSweepBatch = 500
-
-// boundWorkspaceStates are the states a workspace is actually serving a runner
-// relay connection in. A run may only be handed out on a workspace in one of
-// them, because a workspace no runner has bound has no worktree to run in.
-const boundWorkspaceStates = `('ready', 'idle')`
-
-// actionRunDispatchBatch bounds how many queued runs one tick hands out.
-//
-// It is small where actionRunSweepBatch is large, and the asymmetry is the
-// point: failing a row costs a write, while dispatching one starts a process on
-// somebody's machine. A hub catching up after an outage must not start five
-// hundred commands in one tick; what is left over is taken by the next one.
 const actionRunDispatchBatch = 20
-
-// readDispatchableActionRuns lists the runs still queued past the grace period
-// on a workspace a runner has bound, oldest first.
-//
-// The grace period is the whole of the rule, which is why it is in the
-// predicate rather than applied to the rows afterwards. A person who queued a
-// run and then opened the exec channel for it is the executor the contract
-// prefers, because only their stream shows the output as it is produced. The
-// hub steps in for the run nobody came back for -- which is every run a
-// headless caller makes, and is exactly the run the eighth dogfood run found
-// sitting queued for three minutes and forty seconds.
-//
-// read_only is in the predicate for the same reason it is in the queue's own
-// refusal: a workspace can become the one an attempt is editing after a run was
-// queued on it, and a command must not write into a worktree a model is using.
-
-// orphanedActionRun is one run to fail and the reason its workspace ended.
-//
-// The workspace's reason is carried rather than assumed, because the relay's
-// own teardown reads the same column: if the sweep stamped a blanket reason
-// the two recovery paths would disagree about why the very same run died, and
-// which answer an operator saw would depend on which path got there first.
-type orphanedActionRun struct {
-	run             actionRunRecord
-	workspaceReason string
-}
-
-// readOrphanedActionRuns lists runs still queued or running on a workspace
-// that has reached a terminal state, oldest first, with that workspace's own
-// end reason.
-//
-// The predicate is the workspace's state and never a run's age, which is what
-// makes it exact rather than a guess: a terminal workspace holds no runner and
-// no worktree, so no legitimate report can still arrive for one of its runs.
-// A long `bun test` on a healthy workspace is indistinguishable from a stuck
-// row by age alone, so an age heuristic here would fail live runs.
-
-// trailingScanner binds the caller's own destinations after the ones a scan
-// function supplies, so one scan function serves a plain read and one that
-// selects an extra column beside it. It is prefixedScanner's mirror.
-type trailingScanner struct {
-	rows     *sql.Rows
-	trailing []any
-}
-
-func (t trailingScanner) Scan(dest ...any) error {
-	combined := make([]any, 0, len(dest)+len(t.trailing))
-	combined = append(combined, dest...)
-	combined = append(combined, t.trailing...)
-	return t.rows.Scan(combined...)
-}
 
 // readProjectActionRunByID reads one run without a project scope, for the
 // relay paths that resolve the project from the row itself -- a relay frame
@@ -303,12 +192,3 @@ func readProjectActionRunByID(ctx context.Context, query nativeQueryer, runID st
 	return scanActionRun(query.QueryRowContext(ctx, `SELECT `+actionRunColumns+`
 FROM project_action_runs WHERE id = ?`, runID))
 }
-
-// readWorkspaceActionRun reads one run of a workspace, which is the read the
-// worker report is fenced by: a runner may only move a run of the workspace it
-// currently holds.
-
-// updateProjectActionRunRow rewrites every mutable column and bumps the
-// revision, conditional on the revision the caller read. The receipt is
-// recomputed here rather than taken from the record, so no caller can store a
-// row whose output_artifact and output_bytes disagree.
