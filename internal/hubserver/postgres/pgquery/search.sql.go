@@ -34,7 +34,7 @@ WITH scoped AS NOT MATERIALIZED (
     SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_id, d.comment_id, d.event_id, d.change_id, d.revision, d.indexed_revision, d.title, d.scope, d.status, d.updated_at, d.updated_at_submicrosecond, d.payload_object_key, d.payload_sha256, d.payload_bytes, d.payload_content_bytes, d.vector, d.token_count, d.terms, d.term_frequencies, d.refresh_order, d.source_vector, d.generation, d.source_visible, d.placeholder, d.aggregate_object_key, d.aggregate_sha256, d.aggregate_bytes, d.aggregate_content_bytes, d.progress_generation, d.progress_after_id, d.progress_object_key, d.progress_sha256, d.progress_bytes, d.progress_content_bytes, d.content_revision, d.content_sha256, d.indexed_generation, d.search_format FROM search_documents d
     WHERE d.organization_id = $1
         AND ($2::text = '' OR (d.updated_at, d.updated_at_submicrosecond, d.id COLLATE "C") < ($3::timestamptz, $4::bigint, $2 COLLATE "C"))
-        AND ($5::text = '' OR d.project_id = $5)
+        AND ($5::text = '' OR coalesce(d.project_id,'') = $5)
         AND (NOT $6::boolean OR d.project_id = ANY($7::text[]) OR d.scope = 'general')
         AND ($8::text = '' OR d.work_item_id = $8)
         AND CASE d.kind WHEN 'issue' THEN 'work' WHEN 'thread' THEN 'thread' END = $9::text

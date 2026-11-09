@@ -569,7 +569,8 @@ func TestSearchExactTermContinuesBeyondCandidateLimit(t *testing.T) {
 	}
 	for _, text := range []string{"commonterm", "commonterm otherterm"} {
 		t.Run(text, func(t *testing.T) {
-			query := searchstore.Query{Text: text, Exact: true, Limit: 1}
+			query := searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: text, Exact: true, Limit: 1}
+			assertSearchCandidatePointLookups(t, f, "org_first", query, searchstore.CandidateLimit+2)
 			for pageNumber := range 10 {
 				page := f.find(t, "org_first", query)
 				if slices.Contains(searchIDs(page), "wi_first_2") {

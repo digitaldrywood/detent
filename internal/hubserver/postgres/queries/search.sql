@@ -161,7 +161,7 @@ WITH scoped AS NOT MATERIALIZED (
     SELECT d.* FROM search_documents d
     WHERE d.organization_id = sqlc.arg(organization_id)
         AND (sqlc.arg(before_id)::text = '' OR (d.updated_at, d.updated_at_submicrosecond, d.id COLLATE "C") < (sqlc.arg(before_updated_at)::timestamptz, sqlc.arg(before_submicrosecond)::bigint, sqlc.arg(before_id) COLLATE "C"))
-        AND (sqlc.arg(project_id)::text = '' OR d.project_id = sqlc.arg(project_id))
+        AND (sqlc.arg(project_id)::text = '' OR coalesce(d.project_id,'') = sqlc.arg(project_id))
         AND (NOT sqlc.arg(restrict_projects)::boolean OR d.project_id = ANY(sqlc.arg(project_ids)::text[]) OR d.scope = 'general')
         AND (sqlc.arg(work_item_id)::text = '' OR d.work_item_id = sqlc.arg(work_item_id))
         AND CASE d.kind WHEN 'issue' THEN 'work' WHEN 'thread' THEN 'thread' END = sqlc.arg(kind)::text
