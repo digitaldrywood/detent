@@ -1,9 +1,6 @@
 -- name: WorkspaceSession :one
 SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$3;
 
--- name: WorkspaceSessions :many
-SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND id>$3 ORDER BY id LIMIT $4;
-
 -- name: WorkspaceSubjectSessions :many
 SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND subject_work_item_id=$3 AND id>$4 ORDER BY id LIMIT $5;
 

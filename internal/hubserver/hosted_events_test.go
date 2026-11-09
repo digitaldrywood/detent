@@ -39,17 +39,13 @@ func TestHostedEventsWorkspace(t *testing.T) {
 			if state == workspacesession.StateClosed {
 				requireNativeStatus(t, f.request(t, user, http.MethodDelete, f.base+"/workspaces/"+session.ID, nil), http.StatusNoContent)
 			} else if state != workspacesession.StateRequested {
-				err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-					record, err := readWorkspaceByID(t.Context(), tx, session.ID)
-					if err != nil {
-						return err
-					}
-					record.Capabilities = &workspacesession.Capabilities{Files: true}
-					record.ReadOnly = true
-					_, err = f.service.workspaces.transition(t.Context(), record, state, "", now)
-					return err
-				})
+				record, err := f.service.workspaces.readWorkspaceIDRecord(t.Context(), tracker.OrganizationID(session.OrganizationID), session.ID)
 				if err != nil {
+					t.Fatal(err)
+				}
+				record.Capabilities = &workspacesession.Capabilities{Files: true}
+				record.ReadOnly = true
+				if _, err := f.service.workspaces.transition(t.Context(), record, state, "", f.service.workspaces.now()); err != nil {
 					t.Fatal(err)
 				}
 			}

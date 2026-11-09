@@ -17,7 +17,7 @@ type RelayTicket = pgquery.WorkspaceRelayTicket
 type RelaySession = pgquery.WorkspaceRelaySession
 type TerminalRecording = pgquery.WorkspaceTerminalRecording
 type ActionRunInput = pgquery.ActionRunParams
-type ActionRunsInput = pgquery.ActionRunsParams
+type ActionRunsInput = pgquery.RecentActionRunsParams
 type RelaySessionsInput = pgquery.RelaySessionsParams
 type TerminalRecordingsInput = pgquery.TerminalRecordingsParams
 type CreateRelayTicketInput = pgquery.CreateRelayTicketParams
@@ -31,7 +31,6 @@ type ReportActionRunInput = pgquery.ReportActionRunParams
 type RelayActionReader interface {
 	actionstore.Reader
 	ActionRun(context.Context, ActionRunInput) (ActionRun, error)
-	ActionRuns(context.Context, ActionRunsInput) ([]ActionRun, error)
 	RelaySessions(context.Context, RelaySessionsInput) ([]RelaySession, error)
 	TerminalRecordings(context.Context, TerminalRecordingsInput) ([]TerminalRecording, error)
 }
@@ -71,16 +70,6 @@ func (s *session) LockActionRun(ctx context.Context, arg ActionRunInput) (Action
 	return row, mapError(ctx, err)
 }
 
-func (s *session) ActionRuns(ctx context.Context, arg ActionRunsInput) ([]ActionRun, error) {
-	if err := s.checkOrganization(arg.OrganizationID); err != nil {
-		return nil, err
-	}
-	if err := checkPage(int(arg.Limit)); err != nil {
-		return nil, err
-	}
-	row, err := s.queries.ActionRuns(ctx, arg)
-	return row, mapError(ctx, err)
-}
 func (s *session) RelaySessions(ctx context.Context, arg RelaySessionsInput) ([]RelaySession, error) {
 	if err := s.checkOrganization(arg.OrganizationID); err != nil {
 		return nil, err

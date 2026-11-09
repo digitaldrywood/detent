@@ -20,7 +20,6 @@ type WorkspaceOccupancyEnd = pgquery.EndWorkspaceOccupancyParams
 
 type WorkspaceReader interface {
 	WorkspaceSession(context.Context, tracker.ProjectID, string) (WorkspaceSession, error)
-	WorkspaceSessions(context.Context, tracker.ProjectID, string, int) ([]WorkspaceSession, error)
 	WorkspaceSubjectSessions(context.Context, tracker.ProjectID, string, string, int) ([]WorkspaceSession, error)
 	ExpiringWorkspaces(context.Context, time.Time, int) ([]WorkspaceSession, error)
 	WorkspaceOccupancy(context.Context, tracker.ProjectID, string, int) ([]WorkspaceOccupancy, error)
@@ -46,13 +45,6 @@ func (r *Repository) WriteWorkspace(ctx context.Context, org tracker.Organizatio
 func (s *session) WorkspaceSession(ctx context.Context, project tracker.ProjectID, id string) (WorkspaceSession, error) {
 	row, err := s.queries.WorkspaceSession(ctx, pgquery.WorkspaceSessionParams{OrganizationID: s.organization, ProjectID: project, ID: id})
 	return row, mapError(ctx, err)
-}
-func (s *session) WorkspaceSessions(ctx context.Context, project tracker.ProjectID, after string, limit int) ([]WorkspaceSession, error) {
-	if err := checkPage(limit); err != nil {
-		return nil, err
-	}
-	rows, err := s.queries.WorkspaceSessions(ctx, pgquery.WorkspaceSessionsParams{OrganizationID: s.organization, ProjectID: project, ID: after, Limit: int32(limit)})
-	return rows, mapError(ctx, err)
 }
 func (s *session) WorkspaceSubjectSessions(ctx context.Context, project tracker.ProjectID, item, after string, limit int) ([]WorkspaceSession, error) {
 	if err := checkPage(limit); err != nil {

@@ -182,12 +182,6 @@ func readWorkspaceRow(ctx context.Context, query nativeQueryer, scope nativeScop
 WHERE id = ? AND organization_id = ? AND project_id = ?`, id, scope.organization, scope.project))
 }
 
-// readWorkspaceByID reads one workspace without a project scope, for the
-// worker and relay paths that resolve the project from the row itself.
-func readWorkspaceByID(ctx context.Context, query nativeQueryer, id string) (workspaceRecord, error) {
-	return scanWorkspace(query.QueryRowContext(ctx, `SELECT `+workspaceColumns+` FROM workspace_sessions WHERE id = ?`, id))
-}
-
 // prefixedWorkspaceColumns is workspaceColumns qualified for a join. It is
 // written out rather than derived from workspaceColumns at run time: a query
 // built by concatenating a computed string is indistinguishable, to a reader

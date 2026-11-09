@@ -30,9 +30,6 @@ SELECT * FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND
 -- name: LockActionRun :one
 SELECT * FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE;
 
--- name: ActionRuns :many
-SELECT * FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND action_id=$3 AND id>$4 ORDER BY id LIMIT $5;
-
 -- name: CreateActionRun :one
 INSERT INTO project_action_runs(organization_id,project_id,id,action_id,workspace_id,command_object_key,command_sha256,command_bytes,command_content_bytes,created_by,created_at,updated_at)
 SELECT a.organization_id,a.project_id,sqlc.arg(id)::text,a.id,w.id,a.command_object_key,a.command_sha256,a.command_bytes,a.command_content_bytes,sqlc.arg(created_by)::text,sqlc.arg(created_at)::timestamptz,sqlc.arg(created_at)::timestamptz
