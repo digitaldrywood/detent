@@ -4,29 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"sync"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type healthContractKey struct {
-	organization tracker.OrganizationID
-	project      tracker.ProjectID
-	item         string
-}
-
-type healthContractResult struct {
-	revision tracker.Revision
-	policyID string
-	wait     *healthWait
-}
-
-type healthContractCache struct {
-	mu      sync.Mutex
-	entries map[healthContractKey]healthContractResult
-	order   []healthContractKey
-	oldest  int
-}
 
 func readHealthContractPolicyID(ctx context.Context, q nativeQueryer, scope nativeScope) (string, error) {
 	var id string

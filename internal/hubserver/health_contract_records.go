@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -14,6 +15,25 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type healthContractKey struct {
+	organization tracker.OrganizationID
+	project      tracker.ProjectID
+	item         string
+}
+
+type healthContractResult struct {
+	revision tracker.Revision
+	policyID string
+	wait     *healthWait
+}
+
+type healthContractCache struct {
+	mu      sync.Mutex
+	entries map[healthContractKey]healthContractResult
+	order   []healthContractKey
+	oldest  int
+}
 
 func (s *Service) readHealthContractProject(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID) (projectstore.Record, policy.Descriptor, error) {
 	var record projectstore.Record

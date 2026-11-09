@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -312,4 +313,53 @@ func readHealthItemCosts(ctx context.Context, q nativeQueryer, scope nativeScope
 		out[id] = healthItemCost{Cost: cost, Known: true}
 	}
 	return out, errors.Join(rows.Err(), rows.Close())
+}
+
+func readHealthProductivityAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, attempts []healthRateAttempt) error {
+	if len(attempts) == 0 {
+		return nil
+	}
+	if len(attempts) > healthReadLimit {
+		return errHealthReadLimit
+	}
+	positions := make(map[string]int, len(attempts))
+	args := []any{scope.organization, scope.project}
+	for i, a := range attempts {
+		positions[a.ID] = i
+		args = append(args, a.ID)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(attempts)), ",")
+	rows, err := q.QueryContext(ctx, `SELECT id,started_at,session_id,failure_stage,
+ CASE WHEN finalization_settled=1 AND finalization_changed=1 THEN finalization_version_id ELSE '' END,
+ CASE WHEN hot_projection_version=0 THEN COALESCE(NULLIF(payload_object_key,''),data_json) ELSE '' END
+ FROM native_attempts WHERE organization_id=? AND project_id=? AND id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, started, session, stage, source, raw string
+		if err := rows.Scan(&id, &started, &session, &stage, &source, &raw); err != nil {
+			return err
+		}
+		a := &attempts[positions[id]]
+		if a.Started, err = parseTimeValue(started); err != nil {
+			return err
+		}
+		a.Session, a.Stage, a.SourceVersion = session, stage, source
+		if raw != "" {
+			var data tracker.NativeRunData
+			if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
+				return err
+			}
+			a.Session = data.SessionID
+			if data.TerminalFailure != nil {
+				a.Stage = data.TerminalFailure.Stage
+			}
+			if f := data.Finalization; f != nil && f.Settled && f.Changed {
+				a.SourceVersion = f.VersionID
+			}
+		}
+	}
+	return rows.Err()
 }
