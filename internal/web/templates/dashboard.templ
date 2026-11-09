@@ -2343,7 +2343,7 @@ templ runtimeStoreEvidenceSection(report telemetry.WorkflowMetrics) {
 		<div class="grid gap-4 p-4">
 			<div class="flex min-w-0 items-start gap-2">
 				@primitives.StatusDot(runtimeStoreStatusKind(report.RuntimeStore), false)
-				<p class="text-xs text-sec">SQLite persistence evidence for workflow metrics and scheduler telemetry.</p>
+				<p class="text-xs text-sec">Persistence evidence for workflow metrics and scheduler telemetry.</p>
 			</div>
 			<div class="grid gap-2 lg:grid-cols-3">
 				@diagnosticsKeyValueTile("Database path", runtimeStorePathLabel(report.RuntimeStore))
@@ -2356,7 +2356,7 @@ templ runtimeStoreEvidenceSection(report telemetry.WorkflowMetrics) {
 				<span>Oldest event { runtimeWorkflowEventOldestLabel(report.RuntimeStore) }. Newest event { runtimeWorkflowEventNewestLabel(report.RuntimeStore) }.</span>
 			</div>
 			if report.RuntimeStore.Status == "healthy" && report.RuntimeStore.WorkflowPhaseEvents.RowCount == 0 {
-				@primitives.EmptyLine("SQLite history is empty")
+				@primitives.EmptyLine("Recorded history is empty")
 			}
 			if len(runtimeStoreTableRows(report.RuntimeStore)) > 0 {
 				<div class="overflow-hidden rounded-card border border-line">

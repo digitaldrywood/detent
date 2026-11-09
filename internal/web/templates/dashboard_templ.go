@@ -5599,7 +5599,7 @@ func runtimeStoreEvidenceSection(report telemetry.WorkflowMetrics) templ.Compone
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 322, "<p class=\"text-xs text-sec\">SQLite persistence evidence for workflow metrics and scheduler telemetry.</p></div><div class=\"grid gap-2 lg:grid-cols-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 322, "<p class=\"text-xs text-sec\">Persistence evidence for workflow metrics and scheduler telemetry.</p></div><div class=\"grid gap-2 lg:grid-cols-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5659,7 +5659,7 @@ func runtimeStoreEvidenceSection(report telemetry.WorkflowMetrics) templ.Compone
 				return templ_7745c5c3_Err
 			}
 			if report.RuntimeStore.Status == "healthy" && report.RuntimeStore.WorkflowPhaseEvents.RowCount == 0 {
-				templ_7745c5c3_Err = primitives.EmptyLine("SQLite history is empty").Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = primitives.EmptyLine("Recorded history is empty").Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

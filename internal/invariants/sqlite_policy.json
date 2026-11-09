@@ -2196,8 +2196,8 @@
       "sqlite_open": 2
     },
     "internal/web/server_test.go": {
-      "backend_sqlite": 2,
-      "sqlite_open": 2
+      "backend_sqlite": 1,
+      "sqlite_open": 1
     },
     "internal/web/staleness_warning_test.go": {
       "sqlite_open": 2

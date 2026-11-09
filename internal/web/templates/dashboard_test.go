@@ -153,10 +153,10 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 			WorkflowMetrics: telemetry.WorkflowMetrics{
 				Available: true,
 				RuntimeStore: telemetry.RuntimeStoreEvidence{
-					Backend:         "sqlite",
+					Backend:         "postgres",
 					Status:          "healthy",
 					Healthy:         true,
-					Path:            "tmp/detent.db",
+					Path:            "Hub",
 					MigrationStatus: "applied through 6",
 					Tables: []telemetry.RuntimeStoreTableEvidence{
 						{Name: "workflow_phase_events", RowCount: 12, Scope: "project"},
@@ -230,12 +230,12 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 		`event.key === "Home"`,
 		`event.key === "End"`,
 		`data-preserve-scroll="diagnostics-workflow-timing"`,
-		"SQLite-backed history",
+		"Recorded history",
 		"Hourly concurrency",
 		"median / p90 / max",
 		"detent",
 		"Rolling 24h from recorded work attempts",
-		"tmp/detent.db",
+		"Hub",
 		"workflow_phase_events",
 		"applied through 6",
 		`hx-get="/api/v1/projects/detent/work-attempts/42"`,
@@ -355,7 +355,7 @@ func TestProjectDiagnosticsPageRendersWorkflowDiagnosticPromptCopyControls(t *te
 			WorkflowMetrics: telemetry.WorkflowMetrics{
 				Available: true,
 				RuntimeStore: telemetry.RuntimeStoreEvidence{
-					Backend: "sqlite",
+					Backend: "postgres",
 					Status:  "healthy",
 					Healthy: true,
 				},

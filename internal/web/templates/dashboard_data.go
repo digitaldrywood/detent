@@ -5867,7 +5867,7 @@ func diagnosticsLatestCompleted(snapshot telemetry.Snapshot) *telemetry.Complete
 func diagnosticsDataFreshnessValue(snapshot telemetry.Snapshot) string {
 	store := snapshot.WorkflowMetrics.RuntimeStore
 	if store.Status == "healthy" {
-		return "SQLite-backed history"
+		return "Recorded history"
 	}
 	if store.Status == "not_configured" {
 		return "No runtime store"
@@ -5898,11 +5898,11 @@ func diagnosticsDataFreshnessDetail(snapshot telemetry.Snapshot) string {
 func runtimeStoreStatusLabel(store telemetry.RuntimeStoreEvidence) string {
 	switch strings.TrimSpace(store.Status) {
 	case "healthy":
-		return "SQLite-backed history healthy"
+		return "Recorded history healthy"
 	case "not_configured":
-		return "SQLite runtime store not configured"
+		return "Runtime store not configured"
 	case "degraded":
-		return "SQLite runtime store degraded"
+		return "Runtime store degraded"
 	default:
 		if strings.TrimSpace(store.Backend) == "" {
 			return "Runtime store evidence unavailable"
@@ -5996,7 +5996,7 @@ func runtimeWorkflowEventScope(store telemetry.RuntimeStoreEvidence) string {
 
 func workflowMetricsEmptyHistoryTitle(report telemetry.WorkflowMetrics) string {
 	if report.RuntimeStore.Status == "healthy" && report.RuntimeStore.WorkflowPhaseEvents.RowCount == 0 {
-		return "SQLite history is empty."
+		return "Recorded history is empty."
 	}
 	return "No workflow timing events yet."
 }

@@ -11656,28 +11656,24 @@ func TestWorkflowMetricsStateAPIIncludesLaneTrendComparisons(t *testing.T) {
 }
 
 func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
-	ctx := context.Background()
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
-	dbPath := filepath.Join(t.TempDir(), "detent.db")
-	backend, err := store.Open(ctx, store.Config{
-		Backend: store.BackendSQLite,
-		Path:    dbPath,
-	})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
+	evidenceSource := "Hub"
+	oldest, newest := now.Add(-27*time.Hour), now.Add(-30*time.Minute)
+	backend := storeProbe{
+		workflowMetrics: workflowComparisonReportFixture(now),
+		runtimeEvidence: func(ctx context.Context, query store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
+			if query.ProjectID != "" && query.ProjectID != "detent" {
+				return store.RuntimeEvidence{}, errors.New("unexpected runtime evidence project")
+			}
+			return store.RuntimeEvidence{
+				Backend: "postgres", Path: evidenceSource, Healthy: true, MigrationStatus: "current",
+				Tables:              []store.RuntimeTableEvidence{{Name: "workflow_phase_events", Scope: "project", RowCount: 8}},
+				WorkflowPhaseEvents: store.RuntimeWorkflowPhaseEventEvidence{RowCount: 8, OldestFinishedAt: &oldest, NewestFinishedAt: &newest},
+			}, ctx.Err()
+		},
 	}
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
-	seedWorkflowTrendEvents(t, ctx, backend, now)
 
 	deps := testDeps(t)
 	deps.Store = backend
@@ -11698,8 +11694,8 @@ func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
 	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
 	for _, want := range []string{
 		"Runtime store",
-		"SQLite-backed history",
-		dbPath,
+		"Recorded history",
+		evidenceSource,
 		"workflow_phase_events",
 		"8 project rows",
 		"Newest event",
@@ -11714,8 +11710,8 @@ func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
 
 	metrics := state["workflow_metrics"].(map[string]any)
 	runtimeStore := metrics["runtime_store"].(map[string]any)
-	if runtimeStore["backend"] != "sqlite" || runtimeStore["path"] != dbPath || runtimeStore["status"] != "healthy" {
-		t.Fatalf("runtime_store = %#v, want healthy sqlite evidence for %q", runtimeStore, dbPath)
+	if runtimeStore["backend"] != "postgres" || runtimeStore["path"] != evidenceSource || runtimeStore["status"] != "healthy" {
+		t.Fatalf("runtime_store = %#v, want healthy PostgreSQL evidence for %q", runtimeStore, evidenceSource)
 	}
 	workflowPhaseEvents := runtimeStore["workflow_phase_events"].(map[string]any)
 	if workflowPhaseEvents["row_count"] != float64(8) {
@@ -11750,7 +11746,7 @@ func TestProjectDiagnosticsRendersWorkflowMetricsEmptyHistory(t *testing.T) {
 	requestDashboardEnrichment(t, server)
 	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
 	for _, want := range []string{
-		"SQLite history is empty.",
+		"Recorded history is empty.",
 		"Lane averages appear after Detent records lane exits.",
 		"workflow_phase_events",
 		"0 project rows",
@@ -11808,10 +11804,26 @@ func TestProjectDiagnosticsRendersWorkflowMetricsTrends(t *testing.T) {
 func TestProjectDiagnosticsRendersWorkflowFlowEfficiencyCharts(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
-	backend := openWebTestStore(t)
-	seedWorkflowFlowEvents(t, ctx, backend, now)
+	backend := storeProbe{workflowMetrics: func(ctx context.Context, query store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
+		if query.ProjectID != "" && query.ProjectID != "detent" {
+			return store.WorkflowMetricsReport{}, errors.New("unexpected workflow project")
+		}
+		if !query.To.Equal(now) {
+			return store.WorkflowMetricsReport{}, ctx.Err()
+		}
+		return store.WorkflowMetricsReport{
+			Lanes: []store.WorkflowPhaseMetric{
+				{ProjectID: "detent", PhaseType: string(store.WorkflowPhaseTypeLane), PhaseName: "In Progress", Count: 1, TotalSeconds: 600, AverageSeconds: 600, ActiveSeconds: 300, WaitSeconds: 300, ActivePercent: 50},
+				{ProjectID: "detent", PhaseType: string(store.WorkflowPhaseTypeLane), PhaseName: "Rework", Count: 1, TotalSeconds: 300, AverageSeconds: 300, WaitSeconds: 300},
+				{ProjectID: "detent", PhaseType: string(store.WorkflowPhaseTypeLane), PhaseName: "Todo", Count: 1, TotalSeconds: 240, AverageSeconds: 240, WaitSeconds: 240},
+			},
+			LaneTrends: []store.WorkflowLaneTrend{
+				{ProjectID: "detent", PhaseName: "In Progress", TotalCount: 1, Points: []store.WorkflowLaneTrendPoint{{Label: "10:00", BucketEnd: now.Add(-2 * time.Hour), Count: 1, AverageSeconds: 600}}},
+				{ProjectID: "detent", PhaseName: "Rework", TotalCount: 1, Points: []store.WorkflowLaneTrendPoint{{Label: "10:30", BucketEnd: now.Add(-90 * time.Minute), Count: 1, AverageSeconds: 300}}},
+			},
+		}, ctx.Err()
+	}}
 
 	deps := testDeps(t)
 	deps.Store = backend
@@ -12456,83 +12468,6 @@ func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssu
 func openWebTestStore(t *testing.T) store.Store {
 	t.Helper()
 	return storetest.Open(t)
-}
-
-func seedWorkflowTrendEvents(t *testing.T, ctx context.Context, backend store.Store, now time.Time) {
-	t.Helper()
-
-	events := []struct {
-		phaseName string
-		finished  time.Time
-		duration  time.Duration
-		phaseType store.WorkflowPhaseType
-		turns     int64
-		tokens    int64
-	}{
-		{phaseName: "Merging", finished: now.Add(-time.Hour), duration: 5 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-		{phaseName: "Merging", finished: now.Add(-25 * time.Hour), duration: 8 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-		{phaseName: "Human Review", finished: now.Add(-2 * time.Hour), duration: 10 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-		{phaseName: "Human Review", finished: now.Add(-26 * time.Hour), duration: 7 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-		{phaseName: "Todo", finished: now.Add(-3 * time.Hour), duration: 2 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-		{phaseName: "Todo", finished: now.Add(-27 * time.Hour), duration: 2 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-		{phaseName: "In Progress", finished: now.Add(-4 * time.Hour), duration: 4 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-		{phaseName: "agent_active", finished: now.Add(-30 * time.Minute), duration: 3 * time.Minute, phaseType: store.WorkflowPhaseTypeAgentSession, turns: 2, tokens: 600},
-	}
-	for i, event := range events {
-		attrs := store.WorkflowPhaseEvent{
-			ProjectID:       "detent",
-			IssueID:         "issue-" + strconv.Itoa(i+1),
-			Identifier:      "example-org/example-project#" + strconv.Itoa(900+i),
-			PhaseType:       event.phaseType,
-			PhaseName:       event.phaseName,
-			Status:          "completed",
-			StartedAt:       event.finished.Add(-event.duration),
-			FinishedAt:      event.finished,
-			DurationSeconds: int64(event.duration / time.Second),
-			Turns:           event.turns,
-			TotalTokens:     event.tokens,
-			EndpointFamily:  "codex",
-		}
-		if _, err := backend.RecordWorkflowPhaseEvent(ctx, attrs); err != nil {
-			t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
-		}
-	}
-}
-
-func seedWorkflowFlowEvents(t *testing.T, ctx context.Context, backend store.Store, now time.Time) {
-	t.Helper()
-
-	events := []struct {
-		issueID   string
-		phaseName string
-		finished  time.Time
-		duration  time.Duration
-		phaseType store.WorkflowPhaseType
-	}{
-		{issueID: "issue-progress", phaseName: "In Progress", finished: now.Add(-2 * time.Hour), duration: 10 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-		{issueID: "issue-progress", phaseName: "agent_active", finished: now.Add(-2*time.Hour - 6*time.Minute), duration: 2 * time.Minute, phaseType: store.WorkflowPhaseTypeAgentSession},
-		{issueID: "issue-progress", phaseName: "ci", finished: now.Add(-2*time.Hour - time.Minute), duration: 3 * time.Minute, phaseType: store.WorkflowPhaseTypeCI},
-		{issueID: "issue-progress", phaseName: "github_backoff", finished: now.Add(-2*time.Hour - 4*time.Minute), duration: 2 * time.Minute, phaseType: store.WorkflowPhaseTypeGitHubBackoff},
-		{issueID: "issue-rework", phaseName: "Rework", finished: now.Add(-90 * time.Minute), duration: 5 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-		{issueID: "issue-todo", phaseName: "Todo", finished: now.Add(-80 * time.Minute), duration: 4 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
-	}
-	for i, event := range events {
-		attrs := store.WorkflowPhaseEvent{
-			ProjectID:       "detent",
-			IssueID:         event.issueID,
-			Identifier:      "example-org/example-project#" + strconv.Itoa(980+i),
-			PhaseType:       event.phaseType,
-			PhaseName:       event.phaseName,
-			Status:          "completed",
-			StartedAt:       event.finished.Add(-event.duration),
-			FinishedAt:      event.finished,
-			DurationSeconds: int64(event.duration / time.Second),
-			EndpointFamily:  "codex",
-		}
-		if _, err := backend.RecordWorkflowPhaseEvent(ctx, attrs); err != nil {
-			t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
-		}
-	}
 }
 
 func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) {
