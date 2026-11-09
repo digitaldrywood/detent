@@ -578,6 +578,10 @@ func (r countedProjectReader) ProjectRecord(ctx context.Context, project tracker
 	return r.Reader.ProjectRecord(ctx, project)
 }
 
+func (r countedProjectReader) IntegrationPage(ctx context.Context, project tracker.ProjectID) (projectstore.Integration, error) {
+	return r.Reader.(projectstore.IntegrationPageReader).IntegrationPage(ctx, project)
+}
+
 func (r countedProjectReader) OrganizationModels(ctx context.Context) (policystore.OrganizationModels, error) {
 	r.owner.models++
 	return r.Reader.OrganizationModels(ctx)
