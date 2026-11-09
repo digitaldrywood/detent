@@ -248,15 +248,6 @@ func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connect
 // Every non-terminal state either reaches the terminal one directly or
 // reaches it through closing; there is no third shape.
 
-// readWorkspaceForActor reads a workspace under the issue's read rule: the
-// subject issue is resolved in the caller's scope, so a reader who cannot see
-// the issue cannot see its workspace.
-func (w *workspaceService) readWorkspaceForActor(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (workspaceRecord, error) {
-
-	return w.server.readWorkspaceRecord(ctx, scope, id)
-
-}
-
 // sweep enforces every deadline of the workspace session contract that no request would reach on
 // its own: a request no runner claimed, two missed heartbeats, a lost lease, an
 // idle workspace, the hard lifetime cap and the re-bind grace.

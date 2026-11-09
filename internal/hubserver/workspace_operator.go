@@ -95,11 +95,10 @@ func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer
 	}
 	switch kind {
 	case "workspace":
-		w, err := s.requireWorkspaces()
-		if err != nil {
+		if _, err := s.requireWorkspaces(); err != nil {
 			return err
 		}
-		_, err = w.readWorkspaceForActor(ctx, query, scope, r.ResourceID)
+		_, err := s.readWorkspaceRecord(ctx, scope, r.ResourceID)
 		return err
 	case "conversation":
 		if s.conversations == nil {
