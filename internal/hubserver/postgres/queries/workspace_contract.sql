@@ -8,8 +8,8 @@ SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND 
 SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND subject_work_item_id=$3 AND id>$4 ORDER BY id LIMIT $5;
 
 -- name: CreateWorkspaceSession :one
-INSERT INTO workspace_sessions(organization_id,project_id,id,subject_work_item_id,attempt_id,ref,requires,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at,state)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,'requested') RETURNING *;
+INSERT INTO workspace_sessions(organization_id,project_id,id,subject_work_item_id,attempt_id,ref,requires,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at,state,read_only)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,'requested',$13) RETURNING *;
 
 -- name: UpdateWorkspaceSession :one
 UPDATE workspace_sessions SET state=sqlc.arg(state),reason=sqlc.arg(reason),runner_id=sqlc.arg(runner_id),machine_id=sqlc.arg(machine_id),lease_id=sqlc.arg(lease_id),fencing_token=sqlc.arg(fencing_token),head_sha=sqlc.arg(head_sha),capabilities=sqlc.narg(capabilities)::text[],isolation=sqlc.arg(isolation),worktree=sqlc.arg(worktree),machine_hostname=sqlc.arg(machine_hostname),worktree_path=sqlc.arg(worktree_path),read_only=sqlc.arg(read_only),opened_at=sqlc.narg(opened_at),last_activity_at=sqlc.narg(last_activity_at),last_heartbeat_at=sqlc.narg(last_heartbeat_at),rebind_deadline=sqlc.narg(rebind_deadline),revision=revision+1,updated_at=sqlc.arg(updated_at)
@@ -20,7 +20,7 @@ RETURNING *;
 SELECT EXISTS(SELECT 1 FROM leases l JOIN runner_identities r ON r.organization_id=l.organization_id AND r.machine_id=l.machine_id
  JOIN workspace_items w ON w.organization_id=l.organization_id AND w.project_id=sqlc.arg(project_id) AND w.workspace_id=sqlc.arg(workspace_id)
  JOIN issues i ON i.organization_id=w.organization_id AND i.project_id=w.project_id AND i.native_id=w.work_item_id AND i.id=l.issue_id
- WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id) AND l.fencing_token=sqlc.arg(fencing_token) AND l.machine_id=sqlc.arg(machine_id) AND r.runner_id=sqlc.arg(runner_id) AND l.released_at IS NULL AND l.expires_at>clock_timestamp());
+ WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id) AND l.fencing_token=sqlc.arg(fencing_token) AND l.machine_id=sqlc.arg(machine_id) AND r.runner_id=sqlc.arg(runner_id) AND l.released_at IS NULL AND l.expires_at>sqlc.arg(now)::timestamptz);
 
 -- name: ExpiringWorkspaces :many
 SELECT * FROM workspace_sessions WHERE organization_id=$1 AND state NOT IN ('closed','failed') AND expires_at<=$2 ORDER BY expires_at,id LIMIT $3;
@@ -33,3 +33,39 @@ UPDATE workspace_occupancy SET ended_at=$5 WHERE organization_id=$1 AND project_
 
 -- name: WorkspaceOccupancy :many
 SELECT * FROM workspace_occupancy WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3 ORDER BY started_at,runner_id LIMIT $4;
+
+-- name: WorkspaceSessionByItem :one
+SELECT w.* FROM workspace_sessions w JOIN workspace_items i ON i.organization_id=w.organization_id AND i.project_id=w.project_id AND i.workspace_id=w.id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.work_item_id=$3;
+
+-- name: WorkspaceDispatchItem :one
+SELECT work_item_id FROM workspace_items WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3;
+
+-- name: OpenWorkspaceCounts :one
+SELECT count(*)::bigint AS total, count(*) FILTER (WHERE created_by=sqlc.arg(actor))::bigint AS mine FROM workspace_sessions WHERE organization_id=sqlc.arg(organization_id) AND state NOT IN ('closed','failed');
+
+-- name: OpenWorkspaceAttempt :one
+SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND state NOT IN ('closed','failed');
+
+-- name: ActiveWorkspaceSessions :many
+SELECT * FROM workspace_sessions WHERE organization_id=$1 AND state NOT IN ('closed','failed') AND id>$2 ORDER BY id LIMIT $3;
+
+-- name: WorkspaceSessionByID :one
+SELECT * FROM workspace_sessions WHERE organization_id=$1 AND id=$2;
+
+-- name: WorkspaceProjectRecent :many
+SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at DESC,id DESC LIMIT $3;
+
+-- name: WorkspaceStateRecent :many
+SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND state=$3 ORDER BY created_at DESC,id DESC LIMIT $4;
+
+-- name: WorkspaceSubjectRecent :many
+SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND subject_work_item_id=$3 ORDER BY created_at DESC,id DESC LIMIT $4;
+
+-- name: WorkspaceSubjectStateRecent :many
+SELECT * FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND subject_work_item_id=$3 AND state=$4 ORDER BY created_at DESC,id DESC LIMIT $5;
+
+-- name: WorkspaceSessionsByIDs :many
+SELECT * FROM workspace_sessions WHERE organization_id=$1 AND id=ANY($2::text[]) ORDER BY id;
+
+-- name: WorkspaceSubjectActors :many
+SELECT native_id, actor_principal_id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=ANY($3::text[]);

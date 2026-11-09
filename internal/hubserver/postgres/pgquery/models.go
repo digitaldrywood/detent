@@ -3389,6 +3389,7 @@ type ProjectAction struct {
 	CommandSha256         string
 	CommandBytes          int64
 	CommandContentBytes   int64
+	DeletedAt             *time.Time
 }
 
 type ProjectActionRun struct {
@@ -3419,6 +3420,7 @@ type ProjectActionRun struct {
 	Revision            int64
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	ClaimedStreamID     string
 }
 
 type ProjectBudgetOverride struct {

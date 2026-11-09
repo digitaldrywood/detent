@@ -12,6 +12,68 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const activeWorkspaceSessions = `-- name: ActiveWorkspaceSessions :many
+SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND state NOT IN ('closed','failed') AND id>$2 ORDER BY id LIMIT $3
+`
+
+type ActiveWorkspaceSessionsParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+	Limit          int32
+}
+
+func (q *Queries) ActiveWorkspaceSessions(ctx context.Context, arg ActiveWorkspaceSessionsParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, activeWorkspaceSessions, arg.OrganizationID, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createWorkspaceOccupancy = `-- name: CreateWorkspaceOccupancy :execrows
 INSERT INTO workspace_occupancy(organization_id,project_id,workspace_id,runner_id,started_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING
 `
@@ -39,8 +101,8 @@ func (q *Queries) CreateWorkspaceOccupancy(ctx context.Context, arg CreateWorksp
 }
 
 const createWorkspaceSession = `-- name: CreateWorkspaceSession :one
-INSERT INTO workspace_sessions(organization_id,project_id,id,subject_work_item_id,attempt_id,ref,requires,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at,state)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,'requested') RETURNING organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at
+INSERT INTO workspace_sessions(organization_id,project_id,id,subject_work_item_id,attempt_id,ref,requires,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at,state,read_only)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,'requested',$13) RETURNING organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at
 `
 
 type CreateWorkspaceSessionParams struct {
@@ -56,6 +118,7 @@ type CreateWorkspaceSessionParams struct {
 	RequestedExpiresAt time.Time
 	CreatedBy          string
 	CreatedAt          time.Time
+	ReadOnly           bool
 }
 
 func (q *Queries) CreateWorkspaceSession(ctx context.Context, arg CreateWorkspaceSessionParams) (WorkspaceSession, error) {
@@ -72,6 +135,7 @@ func (q *Queries) CreateWorkspaceSession(ctx context.Context, arg CreateWorkspac
 		arg.RequestedExpiresAt,
 		arg.CreatedBy,
 		arg.CreatedAt,
+		arg.ReadOnly,
 	)
 	var i WorkspaceSession
 	err := row.Scan(
@@ -198,6 +262,76 @@ func (q *Queries) ExpiringWorkspaces(ctx context.Context, arg ExpiringWorkspaces
 	return items, nil
 }
 
+const openWorkspaceAttempt = `-- name: OpenWorkspaceAttempt :one
+SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND state NOT IN ('closed','failed')
+`
+
+type OpenWorkspaceAttemptParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+}
+
+func (q *Queries) OpenWorkspaceAttempt(ctx context.Context, arg OpenWorkspaceAttemptParams) (WorkspaceSession, error) {
+	row := q.db.QueryRow(ctx, openWorkspaceAttempt, arg.OrganizationID, arg.ProjectID, arg.AttemptID)
+	var i WorkspaceSession
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ID,
+		&i.SubjectWorkItemID,
+		&i.AttemptID,
+		&i.Ref,
+		&i.HeadSHA,
+		&i.RunnerID,
+		&i.MachineID,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.State,
+		&i.Reason,
+		&i.Requires,
+		&i.Capabilities,
+		&i.Isolation,
+		&i.Worktree,
+		&i.MachineHostname,
+		&i.WorktreePath,
+		&i.ReadOnly,
+		&i.IdleTimeoutSeconds,
+		&i.ExpiresAt,
+		&i.RequestedExpiresAt,
+		&i.OpenedAt,
+		&i.LastActivityAt,
+		&i.LastHeartbeatAt,
+		&i.RebindDeadline,
+		&i.CreatedBy,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const openWorkspaceCounts = `-- name: OpenWorkspaceCounts :one
+SELECT count(*)::bigint AS total, count(*) FILTER (WHERE created_by=$1)::bigint AS mine FROM workspace_sessions WHERE organization_id=$2 AND state NOT IN ('closed','failed')
+`
+
+type OpenWorkspaceCountsParams struct {
+	Actor          string
+	OrganizationID tracker.OrganizationID
+}
+
+type OpenWorkspaceCountsRow struct {
+	Total int64
+	Mine  int64
+}
+
+func (q *Queries) OpenWorkspaceCounts(ctx context.Context, arg OpenWorkspaceCountsParams) (OpenWorkspaceCountsRow, error) {
+	row := q.db.QueryRow(ctx, openWorkspaceCounts, arg.Actor, arg.OrganizationID)
+	var i OpenWorkspaceCountsRow
+	err := row.Scan(&i.Total, &i.Mine)
+	return i, err
+}
+
 const updateWorkspaceSession = `-- name: UpdateWorkspaceSession :one
 UPDATE workspace_sessions SET state=$1,reason=$2,runner_id=$3,machine_id=$4,lease_id=$5,fencing_token=$6,head_sha=$7,capabilities=$8::text[],isolation=$9,worktree=$10,machine_hostname=$11,worktree_path=$12,read_only=$13,opened_at=$14,last_activity_at=$15,last_heartbeat_at=$16,rebind_deadline=$17,revision=revision+1,updated_at=$18
 WHERE organization_id=$19 AND project_id=$20 AND id=$21 AND revision=$22 AND runner_id=$23 AND lease_id=$24 AND fencing_token=$25
@@ -297,6 +431,23 @@ func (q *Queries) UpdateWorkspaceSession(ctx context.Context, arg UpdateWorkspac
 	return i, err
 }
 
+const workspaceDispatchItem = `-- name: WorkspaceDispatchItem :one
+SELECT work_item_id FROM workspace_items WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3
+`
+
+type WorkspaceDispatchItemParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkspaceID    string
+}
+
+func (q *Queries) WorkspaceDispatchItem(ctx context.Context, arg WorkspaceDispatchItemParams) (string, error) {
+	row := q.db.QueryRow(ctx, workspaceDispatchItem, arg.OrganizationID, arg.ProjectID, arg.WorkspaceID)
+	var work_item_id string
+	err := row.Scan(&work_item_id)
+	return work_item_id, err
+}
+
 const workspaceOccupancy = `-- name: WorkspaceOccupancy :many
 SELECT organization_id, project_id, workspace_id, runner_id, started_at, ended_at FROM workspace_occupancy WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3 ORDER BY started_at,runner_id LIMIT $4
 `
@@ -344,7 +495,7 @@ const workspaceOwnerLease = `-- name: WorkspaceOwnerLease :one
 SELECT EXISTS(SELECT 1 FROM leases l JOIN runner_identities r ON r.organization_id=l.organization_id AND r.machine_id=l.machine_id
  JOIN workspace_items w ON w.organization_id=l.organization_id AND w.project_id=$1 AND w.workspace_id=$2
  JOIN issues i ON i.organization_id=w.organization_id AND i.project_id=w.project_id AND i.native_id=w.work_item_id AND i.id=l.issue_id
- WHERE l.organization_id=$3 AND l.lease_id=$4 AND l.fencing_token=$5 AND l.machine_id=$6 AND r.runner_id=$7 AND l.released_at IS NULL AND l.expires_at>clock_timestamp())
+ WHERE l.organization_id=$3 AND l.lease_id=$4 AND l.fencing_token=$5 AND l.machine_id=$6 AND r.runner_id=$7 AND l.released_at IS NULL AND l.expires_at>$8::timestamptz)
 `
 
 type WorkspaceOwnerLeaseParams struct {
@@ -355,6 +506,7 @@ type WorkspaceOwnerLeaseParams struct {
 	FencingToken   int64
 	MachineID      string
 	RunnerID       string
+	Now            time.Time
 }
 
 func (q *Queries) WorkspaceOwnerLease(ctx context.Context, arg WorkspaceOwnerLeaseParams) (bool, error) {
@@ -366,10 +518,73 @@ func (q *Queries) WorkspaceOwnerLease(ctx context.Context, arg WorkspaceOwnerLea
 		arg.FencingToken,
 		arg.MachineID,
 		arg.RunnerID,
+		arg.Now,
 	)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const workspaceProjectRecent = `-- name: WorkspaceProjectRecent :many
+SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at DESC,id DESC LIMIT $3
+`
+
+type WorkspaceProjectRecentParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Limit          int32
+}
+
+func (q *Queries) WorkspaceProjectRecent(ctx context.Context, arg WorkspaceProjectRecentParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, workspaceProjectRecent, arg.OrganizationID, arg.ProjectID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const workspaceSession = `-- name: WorkspaceSession :one
@@ -384,6 +599,103 @@ type WorkspaceSessionParams struct {
 
 func (q *Queries) WorkspaceSession(ctx context.Context, arg WorkspaceSessionParams) (WorkspaceSession, error) {
 	row := q.db.QueryRow(ctx, workspaceSession, arg.OrganizationID, arg.ProjectID, arg.ID)
+	var i WorkspaceSession
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ID,
+		&i.SubjectWorkItemID,
+		&i.AttemptID,
+		&i.Ref,
+		&i.HeadSHA,
+		&i.RunnerID,
+		&i.MachineID,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.State,
+		&i.Reason,
+		&i.Requires,
+		&i.Capabilities,
+		&i.Isolation,
+		&i.Worktree,
+		&i.MachineHostname,
+		&i.WorktreePath,
+		&i.ReadOnly,
+		&i.IdleTimeoutSeconds,
+		&i.ExpiresAt,
+		&i.RequestedExpiresAt,
+		&i.OpenedAt,
+		&i.LastActivityAt,
+		&i.LastHeartbeatAt,
+		&i.RebindDeadline,
+		&i.CreatedBy,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const workspaceSessionByID = `-- name: WorkspaceSessionByID :one
+SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND id=$2
+`
+
+type WorkspaceSessionByIDParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+}
+
+func (q *Queries) WorkspaceSessionByID(ctx context.Context, arg WorkspaceSessionByIDParams) (WorkspaceSession, error) {
+	row := q.db.QueryRow(ctx, workspaceSessionByID, arg.OrganizationID, arg.ID)
+	var i WorkspaceSession
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ID,
+		&i.SubjectWorkItemID,
+		&i.AttemptID,
+		&i.Ref,
+		&i.HeadSHA,
+		&i.RunnerID,
+		&i.MachineID,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.State,
+		&i.Reason,
+		&i.Requires,
+		&i.Capabilities,
+		&i.Isolation,
+		&i.Worktree,
+		&i.MachineHostname,
+		&i.WorktreePath,
+		&i.ReadOnly,
+		&i.IdleTimeoutSeconds,
+		&i.ExpiresAt,
+		&i.RequestedExpiresAt,
+		&i.OpenedAt,
+		&i.LastActivityAt,
+		&i.LastHeartbeatAt,
+		&i.RebindDeadline,
+		&i.CreatedBy,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const workspaceSessionByItem = `-- name: WorkspaceSessionByItem :one
+SELECT w.organization_id, w.project_id, w.id, w.subject_work_item_id, w.attempt_id, w.ref, w.head_sha, w.runner_id, w.machine_id, w.lease_id, w.fencing_token, w.state, w.reason, w.requires, w.capabilities, w.isolation, w.worktree, w.machine_hostname, w.worktree_path, w.read_only, w.idle_timeout_seconds, w.expires_at, w.requested_expires_at, w.opened_at, w.last_activity_at, w.last_heartbeat_at, w.rebind_deadline, w.created_by, w.revision, w.created_at, w.updated_at FROM workspace_sessions w JOIN workspace_items i ON i.organization_id=w.organization_id AND i.project_id=w.project_id AND i.workspace_id=w.id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.work_item_id=$3
+`
+
+type WorkspaceSessionByItemParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+}
+
+func (q *Queries) WorkspaceSessionByItem(ctx context.Context, arg WorkspaceSessionByItemParams) (WorkspaceSession, error) {
+	row := q.db.QueryRow(ctx, workspaceSessionByItem, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
 	var i WorkspaceSession
 	err := row.Scan(
 		&i.OrganizationID,
@@ -489,6 +801,238 @@ func (q *Queries) WorkspaceSessions(ctx context.Context, arg WorkspaceSessionsPa
 	return items, nil
 }
 
+const workspaceSessionsByIDs = `-- name: WorkspaceSessionsByIDs :many
+SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND id=ANY($2::text[]) ORDER BY id
+`
+
+type WorkspaceSessionsByIDsParams struct {
+	OrganizationID tracker.OrganizationID
+	Column2        []string
+}
+
+func (q *Queries) WorkspaceSessionsByIDs(ctx context.Context, arg WorkspaceSessionsByIDsParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, workspaceSessionsByIDs, arg.OrganizationID, arg.Column2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const workspaceStateRecent = `-- name: WorkspaceStateRecent :many
+SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND state=$3 ORDER BY created_at DESC,id DESC LIMIT $4
+`
+
+type WorkspaceStateRecentParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	State          string
+	Limit          int32
+}
+
+func (q *Queries) WorkspaceStateRecent(ctx context.Context, arg WorkspaceStateRecentParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, workspaceStateRecent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.State,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const workspaceSubjectActors = `-- name: WorkspaceSubjectActors :many
+SELECT native_id, actor_principal_id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=ANY($3::text[])
+`
+
+type WorkspaceSubjectActorsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Column3        []string
+}
+
+type WorkspaceSubjectActorsRow struct {
+	NativeID         tracker.NativeWorkItemID
+	ActorPrincipalID *string
+}
+
+func (q *Queries) WorkspaceSubjectActors(ctx context.Context, arg WorkspaceSubjectActorsParams) ([]WorkspaceSubjectActorsRow, error) {
+	rows, err := q.db.Query(ctx, workspaceSubjectActors, arg.OrganizationID, arg.ProjectID, arg.Column3)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSubjectActorsRow{}
+	for rows.Next() {
+		var i WorkspaceSubjectActorsRow
+		if err := rows.Scan(&i.NativeID, &i.ActorPrincipalID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const workspaceSubjectRecent = `-- name: WorkspaceSubjectRecent :many
+SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND subject_work_item_id=$3 ORDER BY created_at DESC,id DESC LIMIT $4
+`
+
+type WorkspaceSubjectRecentParams struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	SubjectWorkItemID string
+	Limit             int32
+}
+
+func (q *Queries) WorkspaceSubjectRecent(ctx context.Context, arg WorkspaceSubjectRecentParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, workspaceSubjectRecent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.SubjectWorkItemID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const workspaceSubjectSessions = `-- name: WorkspaceSubjectSessions :many
 SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND subject_work_item_id=$3 AND id>$4 ORDER BY id LIMIT $5
 `
@@ -507,6 +1051,76 @@ func (q *Queries) WorkspaceSubjectSessions(ctx context.Context, arg WorkspaceSub
 		arg.ProjectID,
 		arg.SubjectWorkItemID,
 		arg.ID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceSession{}
+	for rows.Next() {
+		var i WorkspaceSession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.SubjectWorkItemID,
+			&i.AttemptID,
+			&i.Ref,
+			&i.HeadSHA,
+			&i.RunnerID,
+			&i.MachineID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.State,
+			&i.Reason,
+			&i.Requires,
+			&i.Capabilities,
+			&i.Isolation,
+			&i.Worktree,
+			&i.MachineHostname,
+			&i.WorktreePath,
+			&i.ReadOnly,
+			&i.IdleTimeoutSeconds,
+			&i.ExpiresAt,
+			&i.RequestedExpiresAt,
+			&i.OpenedAt,
+			&i.LastActivityAt,
+			&i.LastHeartbeatAt,
+			&i.RebindDeadline,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const workspaceSubjectStateRecent = `-- name: WorkspaceSubjectStateRecent :many
+SELECT organization_id, project_id, id, subject_work_item_id, attempt_id, ref, head_sha, runner_id, machine_id, lease_id, fencing_token, state, reason, requires, capabilities, isolation, worktree, machine_hostname, worktree_path, read_only, idle_timeout_seconds, expires_at, requested_expires_at, opened_at, last_activity_at, last_heartbeat_at, rebind_deadline, created_by, revision, created_at, updated_at FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND subject_work_item_id=$3 AND state=$4 ORDER BY created_at DESC,id DESC LIMIT $5
+`
+
+type WorkspaceSubjectStateRecentParams struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	SubjectWorkItemID string
+	State             string
+	Limit             int32
+}
+
+func (q *Queries) WorkspaceSubjectStateRecent(ctx context.Context, arg WorkspaceSubjectStateRecentParams) ([]WorkspaceSession, error) {
+	rows, err := q.db.Query(ctx, workspaceSubjectStateRecent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.SubjectWorkItemID,
+		arg.State,
 		arg.Limit,
 	)
 	if err != nil {

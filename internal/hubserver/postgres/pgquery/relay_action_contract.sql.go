@@ -14,7 +14,7 @@ import (
 )
 
 const actionRun = `-- name: ActionRun :one
-SELECT organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND id=$3
+SELECT organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND id=$3
 `
 
 type ActionRunParams struct {
@@ -54,12 +54,58 @@ func (q *Queries) ActionRun(ctx context.Context, arg ActionRunParams) (ProjectAc
 		&i.Revision,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClaimedStreamID,
+	)
+	return i, err
+}
+
+const actionRunByID = `-- name: ActionRunByID :one
+SELECT organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id FROM project_action_runs WHERE organization_id=$1 AND id=$2
+`
+
+type ActionRunByIDParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+}
+
+func (q *Queries) ActionRunByID(ctx context.Context, arg ActionRunByIDParams) (ProjectActionRun, error) {
+	row := q.db.QueryRow(ctx, actionRunByID, arg.OrganizationID, arg.ID)
+	var i ProjectActionRun
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ID,
+		&i.ActionID,
+		&i.WorkspaceID,
+		&i.CommandObjectKey,
+		&i.CommandSha256,
+		&i.CommandBytes,
+		&i.CommandContentBytes,
+		&i.Status,
+		&i.ExitCode,
+		&i.Reason,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OutputObjectKey,
+		&i.OutputSha256,
+		&i.OutputBytes,
+		&i.OutputContentBytes,
+		&i.OutputSequence,
+		&i.Truncated,
+		&i.ClaimedBy,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.CreatedBy,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClaimedStreamID,
 	)
 	return i, err
 }
 
 const actionRuns = `-- name: ActionRuns :many
-SELECT organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND action_id=$3 AND id>$4 ORDER BY id LIMIT $5
+SELECT organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND action_id=$3 AND id>$4 ORDER BY id LIMIT $5
 `
 
 type ActionRunsParams struct {
@@ -113,6 +159,66 @@ func (q *Queries) ActionRuns(ctx context.Context, arg ActionRunsParams) ([]Proje
 			&i.Revision,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ClaimedStreamID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const activeActionRunsAfter = `-- name: ActiveActionRunsAfter :many
+SELECT organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id FROM project_action_runs WHERE organization_id=$1 AND id>$2 AND status IN ('queued','running') ORDER BY id LIMIT $3
+`
+
+type ActiveActionRunsAfterParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+	Limit          int32
+}
+
+func (q *Queries) ActiveActionRunsAfter(ctx context.Context, arg ActiveActionRunsAfterParams) ([]ProjectActionRun, error) {
+	rows, err := q.db.Query(ctx, activeActionRunsAfter, arg.OrganizationID, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectActionRun{}
+	for rows.Next() {
+		var i ProjectActionRun
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.ActionID,
+			&i.WorkspaceID,
+			&i.CommandObjectKey,
+			&i.CommandSha256,
+			&i.CommandBytes,
+			&i.CommandContentBytes,
+			&i.Status,
+			&i.ExitCode,
+			&i.Reason,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.OutputObjectKey,
+			&i.OutputSha256,
+			&i.OutputBytes,
+			&i.OutputContentBytes,
+			&i.OutputSequence,
+			&i.Truncated,
+			&i.ClaimedBy,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClaimedStreamID,
 		); err != nil {
 			return nil, err
 		}
@@ -125,23 +231,26 @@ func (q *Queries) ActionRuns(ctx context.Context, arg ActionRunsParams) ([]Proje
 }
 
 const claimActionRun = `-- name: ClaimActionRun :one
-UPDATE project_action_runs a SET status='running',claimed_by=$1,lease_id=$2,fencing_token=$3,started_at=$4,updated_at=$4,revision=a.revision+1
-FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>clock_timestamp()
-WHERE a.organization_id=$5 AND a.project_id=$6 AND a.id=$7 AND a.status='queued' AND a.claimed_by='' AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=$1 AND w.lease_id=$2 AND w.fencing_token=$3 AND w.state IN ('starting','ready','idle') RETURNING a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at
+UPDATE project_action_runs a SET status='running',claimed_stream_id=$1,claimed_by=$2,lease_id=$3,fencing_token=$4,started_at=$5,updated_at=$5,revision=a.revision+1
+FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>$9::timestamptz
+WHERE a.organization_id=$6 AND a.project_id=$7 AND a.id=$8 AND EXISTS (SELECT 1 FROM project_actions d WHERE d.organization_id=a.organization_id AND d.project_id=a.project_id AND d.id=a.action_id AND d.deleted_at IS NULL) AND a.status='queued' AND a.claimed_by='' AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=$2 AND w.lease_id=$3 AND w.fencing_token=$4 AND w.state IN ('starting','ready','idle') RETURNING a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at, a.claimed_stream_id
 `
 
 type ClaimActionRunParams struct {
-	RunnerID       string
-	LeaseID        string
-	FencingToken   int64
-	StartedAt      *time.Time
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	ID             string
+	ClaimedStreamID string
+	RunnerID        string
+	LeaseID         string
+	FencingToken    int64
+	StartedAt       *time.Time
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	ID              string
+	Now             time.Time
 }
 
 func (q *Queries) ClaimActionRun(ctx context.Context, arg ClaimActionRunParams) (ProjectActionRun, error) {
 	row := q.db.QueryRow(ctx, claimActionRun,
+		arg.ClaimedStreamID,
 		arg.RunnerID,
 		arg.LeaseID,
 		arg.FencingToken,
@@ -149,6 +258,7 @@ func (q *Queries) ClaimActionRun(ctx context.Context, arg ClaimActionRunParams) 
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
+		arg.Now,
 	)
 	var i ProjectActionRun
 	err := row.Scan(
@@ -179,12 +289,13 @@ func (q *Queries) ClaimActionRun(ctx context.Context, arg ClaimActionRunParams) 
 		&i.Revision,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClaimedStreamID,
 	)
 	return i, err
 }
 
 const closeRelaySession = `-- name: CloseRelaySession :execrows
-UPDATE workspace_relay_sessions SET closed_at=$1,close_reason=$2,bytes_in=$3,bytes_out=$4,recording_artifact=$5
+UPDATE workspace_relay_sessions SET closed_at=$1,close_reason=$2,bytes_in=$3,bytes_out=$4,recording_artifact=COALESCE(NULLIF($5::text,''),recording_artifact)
 WHERE organization_id=$6 AND project_id=$7 AND id=$8 AND connection_id=$9 AND closed_at IS NULL
 `
 
@@ -222,7 +333,7 @@ const createActionRun = `-- name: CreateActionRun :one
 INSERT INTO project_action_runs(organization_id,project_id,id,action_id,workspace_id,command_object_key,command_sha256,command_bytes,command_content_bytes,created_by,created_at,updated_at)
 SELECT a.organization_id,a.project_id,$1::text,a.id,w.id,a.command_object_key,a.command_sha256,a.command_bytes,a.command_content_bytes,$2::text,$3::timestamptz,$3::timestamptz
 FROM project_actions a JOIN workspace_sessions w ON w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=$4 AND w.state IN ('starting','ready','idle')
-WHERE a.organization_id=$5 AND a.project_id=$6 AND a.id=$7 ON CONFLICT DO NOTHING RETURNING organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at
+WHERE a.organization_id=$5 AND a.project_id=$6 AND a.id=$7 AND a.deleted_at IS NULL ON CONFLICT DO NOTHING RETURNING organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id
 `
 
 type CreateActionRunParams struct {
@@ -274,6 +385,7 @@ func (q *Queries) CreateActionRun(ctx context.Context, arg CreateActionRunParams
 		&i.Revision,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClaimedStreamID,
 	)
 	return i, err
 }
@@ -376,6 +488,343 @@ func (q *Queries) CreateRelayTicket(ctx context.Context, arg CreateRelayTicketPa
 	return i, err
 }
 
+const createReportedActionRun = `-- name: CreateReportedActionRun :one
+INSERT INTO project_action_runs(organization_id,project_id,id,action_id,workspace_id,command_object_key,command_sha256,command_bytes,command_content_bytes,status,exit_code,reason,started_at,finished_at,output_object_key,output_sha256,output_bytes,output_content_bytes,output_sequence,truncated,claimed_by,lease_id,fencing_token,created_by,created_at,updated_at)
+SELECT a.organization_id,a.project_id,$1::text,a.id,w.id,a.command_object_key,a.command_sha256,a.command_bytes,a.command_content_bytes,$2::text,$3::integer,$4::text,$5::timestamptz,$6::timestamptz,NULLIF($7::text,''),$8::text,$9::bigint,$10::bigint,$11::bigint,$12::boolean,w.runner_id,w.lease_id,w.fencing_token,'',$13::timestamptz,$13::timestamptz
+FROM project_actions a JOIN workspace_sessions w ON w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=$14 AND w.state IN ('starting','ready','idle') AND w.read_only=false AND 'exec'=ANY(w.capabilities)
+JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>$15::timestamptz
+WHERE a.organization_id=$16 AND a.project_id=$17 AND a.id=$18 AND a.run_on_worktree_creation=true AND a.deleted_at IS NULL AND w.runner_id=$19 AND w.lease_id=$20 AND w.fencing_token=$21
+ON CONFLICT DO NOTHING RETURNING organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id
+`
+
+type CreateReportedActionRunParams struct {
+	ID                 string
+	Status             string
+	ExitCode           pgtype.Int4
+	Reason             string
+	StartedAt          time.Time
+	FinishedAt         *time.Time
+	OutputObjectKey    string
+	OutputSha256       string
+	OutputBytes        int64
+	OutputContentBytes int64
+	OutputSequence     int64
+	Truncated          bool
+	CreatedAt          time.Time
+	WorkspaceID        string
+	Now                time.Time
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	ActionID           string
+	RunnerID           string
+	LeaseID            string
+	FencingToken       int64
+}
+
+func (q *Queries) CreateReportedActionRun(ctx context.Context, arg CreateReportedActionRunParams) (ProjectActionRun, error) {
+	row := q.db.QueryRow(ctx, createReportedActionRun,
+		arg.ID,
+		arg.Status,
+		arg.ExitCode,
+		arg.Reason,
+		arg.StartedAt,
+		arg.FinishedAt,
+		arg.OutputObjectKey,
+		arg.OutputSha256,
+		arg.OutputBytes,
+		arg.OutputContentBytes,
+		arg.OutputSequence,
+		arg.Truncated,
+		arg.CreatedAt,
+		arg.WorkspaceID,
+		arg.Now,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.ActionID,
+		arg.RunnerID,
+		arg.LeaseID,
+		arg.FencingToken,
+	)
+	var i ProjectActionRun
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ID,
+		&i.ActionID,
+		&i.WorkspaceID,
+		&i.CommandObjectKey,
+		&i.CommandSha256,
+		&i.CommandBytes,
+		&i.CommandContentBytes,
+		&i.Status,
+		&i.ExitCode,
+		&i.Reason,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OutputObjectKey,
+		&i.OutputSha256,
+		&i.OutputBytes,
+		&i.OutputContentBytes,
+		&i.OutputSequence,
+		&i.Truncated,
+		&i.ClaimedBy,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.CreatedBy,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClaimedStreamID,
+	)
+	return i, err
+}
+
+const deletedProjectActions = `-- name: DeletedProjectActions :many
+SELECT project_id,id FROM project_actions WHERE organization_id=$1 AND deleted_at IS NOT NULL ORDER BY project_id,id LIMIT $2
+`
+
+type DeletedProjectActionsParams struct {
+	OrganizationID tracker.OrganizationID
+	Limit          int32
+}
+
+type DeletedProjectActionsRow struct {
+	ProjectID tracker.ProjectID
+	ID        string
+}
+
+func (q *Queries) DeletedProjectActions(ctx context.Context, arg DeletedProjectActionsParams) ([]DeletedProjectActionsRow, error) {
+	rows, err := q.db.Query(ctx, deletedProjectActions, arg.OrganizationID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeletedProjectActionsRow{}
+	for rows.Next() {
+		var i DeletedProjectActionsRow
+		if err := rows.Scan(&i.ProjectID, &i.ID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const finishActionRun = `-- name: FinishActionRun :one
+UPDATE project_action_runs SET status=$1,exit_code=$2,reason=$3,finished_at=$4,output_object_key=$5,output_sha256=$6,output_bytes=$7,output_content_bytes=$8,output_sequence=output_sequence+1,truncated=$9,revision=revision+1,updated_at=$4
+WHERE organization_id=$10 AND project_id=$11 AND id=$12 AND revision=$13 AND status IN ('queued','running') RETURNING organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id
+`
+
+type FinishActionRunParams struct {
+	Status             string
+	ExitCode           pgtype.Int4
+	Reason             string
+	FinishedAt         *time.Time
+	OutputObjectKey    *string
+	OutputSha256       string
+	OutputBytes        int64
+	OutputContentBytes int64
+	Truncated          bool
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	ID                 string
+	ExpectedRevision   int64
+}
+
+func (q *Queries) FinishActionRun(ctx context.Context, arg FinishActionRunParams) (ProjectActionRun, error) {
+	row := q.db.QueryRow(ctx, finishActionRun,
+		arg.Status,
+		arg.ExitCode,
+		arg.Reason,
+		arg.FinishedAt,
+		arg.OutputObjectKey,
+		arg.OutputSha256,
+		arg.OutputBytes,
+		arg.OutputContentBytes,
+		arg.Truncated,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.ID,
+		arg.ExpectedRevision,
+	)
+	var i ProjectActionRun
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ID,
+		&i.ActionID,
+		&i.WorkspaceID,
+		&i.CommandObjectKey,
+		&i.CommandSha256,
+		&i.CommandBytes,
+		&i.CommandContentBytes,
+		&i.Status,
+		&i.ExitCode,
+		&i.Reason,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OutputObjectKey,
+		&i.OutputSha256,
+		&i.OutputBytes,
+		&i.OutputContentBytes,
+		&i.OutputSequence,
+		&i.Truncated,
+		&i.ClaimedBy,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.CreatedBy,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClaimedStreamID,
+	)
+	return i, err
+}
+
+const pendingActionRuns = `-- name: PendingActionRuns :many
+SELECT a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at, a.claimed_stream_id FROM workspace_sessions w JOIN LATERAL (SELECT a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at, a.claimed_stream_id FROM project_action_runs a WHERE a.organization_id=w.organization_id AND a.project_id=w.project_id AND a.workspace_id=w.id AND a.status='queued' AND a.created_at<=$2 AND EXISTS (SELECT 1 FROM project_actions d WHERE d.organization_id=a.organization_id AND d.project_id=a.project_id AND d.id=a.action_id AND d.deleted_at IS NULL) ORDER BY a.created_at,a.id LIMIT $3) a ON true WHERE w.organization_id=$1 AND w.state IN ('ready','idle') ORDER BY a.created_at,a.id LIMIT $3
+`
+
+type PendingActionRunsParams struct {
+	OrganizationID tracker.OrganizationID
+	CreatedAt      time.Time
+	Limit          int32
+}
+
+func (q *Queries) PendingActionRuns(ctx context.Context, arg PendingActionRunsParams) ([]ProjectActionRun, error) {
+	rows, err := q.db.Query(ctx, pendingActionRuns, arg.OrganizationID, arg.CreatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectActionRun{}
+	for rows.Next() {
+		var i ProjectActionRun
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.ActionID,
+			&i.WorkspaceID,
+			&i.CommandObjectKey,
+			&i.CommandSha256,
+			&i.CommandBytes,
+			&i.CommandContentBytes,
+			&i.Status,
+			&i.ExitCode,
+			&i.Reason,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.OutputObjectKey,
+			&i.OutputSha256,
+			&i.OutputBytes,
+			&i.OutputContentBytes,
+			&i.OutputSequence,
+			&i.Truncated,
+			&i.ClaimedBy,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClaimedStreamID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pruneRelayTickets = `-- name: PruneRelayTickets :execrows
+DELETE FROM workspace_relay_tickets t WHERE t.organization_id=$1 AND t.digest IN (SELECT expired.digest FROM workspace_relay_tickets expired WHERE expired.organization_id=$1 AND expired.expires_at<=$2 ORDER BY expired.expires_at,expired.digest LIMIT $3)
+`
+
+type PruneRelayTicketsParams struct {
+	OrganizationID tracker.OrganizationID
+	ExpiresAt      time.Time
+	Limit          int32
+}
+
+func (q *Queries) PruneRelayTickets(ctx context.Context, arg PruneRelayTicketsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, pruneRelayTickets, arg.OrganizationID, arg.ExpiresAt, arg.Limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const purgeDeletedActionRun = `-- name: PurgeDeletedActionRun :one
+DELETE FROM project_action_runs r WHERE r.organization_id=$1 AND r.project_id=$2 AND r.action_id=$3 AND r.id=(SELECT selected.id FROM project_action_runs selected WHERE selected.organization_id=$1 AND selected.project_id=$2 AND selected.action_id=$3 ORDER BY selected.id LIMIT 1) AND EXISTS (SELECT 1 FROM project_actions a WHERE a.organization_id=$1 AND a.project_id=$2 AND a.id=$3 AND a.deleted_at IS NOT NULL) RETURNING r.organization_id, r.project_id, r.id, r.action_id, r.workspace_id, r.command_object_key, r.command_sha256, r.command_bytes, r.command_content_bytes, r.status, r.exit_code, r.reason, r.started_at, r.finished_at, r.output_object_key, r.output_sha256, r.output_bytes, r.output_content_bytes, r.output_sequence, r.truncated, r.claimed_by, r.lease_id, r.fencing_token, r.created_by, r.revision, r.created_at, r.updated_at, r.claimed_stream_id
+`
+
+type PurgeDeletedActionRunParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ActionID       string
+}
+
+func (q *Queries) PurgeDeletedActionRun(ctx context.Context, arg PurgeDeletedActionRunParams) (ProjectActionRun, error) {
+	row := q.db.QueryRow(ctx, purgeDeletedActionRun, arg.OrganizationID, arg.ProjectID, arg.ActionID)
+	var i ProjectActionRun
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ID,
+		&i.ActionID,
+		&i.WorkspaceID,
+		&i.CommandObjectKey,
+		&i.CommandSha256,
+		&i.CommandBytes,
+		&i.CommandContentBytes,
+		&i.Status,
+		&i.ExitCode,
+		&i.Reason,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OutputObjectKey,
+		&i.OutputSha256,
+		&i.OutputBytes,
+		&i.OutputContentBytes,
+		&i.OutputSequence,
+		&i.Truncated,
+		&i.ClaimedBy,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.CreatedBy,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClaimedStreamID,
+	)
+	return i, err
+}
+
+const purgeEmptyDeletedAction = `-- name: PurgeEmptyDeletedAction :execrows
+DELETE FROM project_actions a WHERE a.organization_id=$1 AND a.project_id=$2 AND a.id=$3 AND a.deleted_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM project_action_runs r WHERE r.organization_id=a.organization_id AND r.project_id=a.project_id AND r.action_id=a.id)
+`
+
+type PurgeEmptyDeletedActionParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ID             string
+}
+
+func (q *Queries) PurgeEmptyDeletedAction(ctx context.Context, arg PurgeEmptyDeletedActionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeEmptyDeletedAction, arg.OrganizationID, arg.ProjectID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const putTerminalRecording = `-- name: PutTerminalRecording :one
 INSERT INTO workspace_terminal_recordings(organization_id,project_id,workspace_id,id,relay_session_id,stream_id,principal_id,subject,isolation,support_reason,started_at,finished_at,terminal_cols,terminal_rows,cast_object_key,cast_sha256,cast_bytes,cast_content_bytes,truncated,updated_at)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
@@ -458,6 +907,181 @@ func (q *Queries) PutTerminalRecording(ctx context.Context, arg PutTerminalRecor
 	return i, err
 }
 
+const recentActionRuns = `-- name: RecentActionRuns :many
+SELECT organization_id, project_id, id, action_id, workspace_id, command_object_key, command_sha256, command_bytes, command_content_bytes, status, exit_code, reason, started_at, finished_at, output_object_key, output_sha256, output_bytes, output_content_bytes, output_sequence, truncated, claimed_by, lease_id, fencing_token, created_by, revision, created_at, updated_at, claimed_stream_id FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND action_id=$3 ORDER BY created_at DESC,id DESC LIMIT $4
+`
+
+type RecentActionRunsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ActionID       string
+	Limit          int32
+}
+
+func (q *Queries) RecentActionRuns(ctx context.Context, arg RecentActionRunsParams) ([]ProjectActionRun, error) {
+	rows, err := q.db.Query(ctx, recentActionRuns,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.ActionID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectActionRun{}
+	for rows.Next() {
+		var i ProjectActionRun
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.ActionID,
+			&i.WorkspaceID,
+			&i.CommandObjectKey,
+			&i.CommandSha256,
+			&i.CommandBytes,
+			&i.CommandContentBytes,
+			&i.Status,
+			&i.ExitCode,
+			&i.Reason,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.OutputObjectKey,
+			&i.OutputSha256,
+			&i.OutputBytes,
+			&i.OutputContentBytes,
+			&i.OutputSequence,
+			&i.Truncated,
+			&i.ClaimedBy,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.CreatedBy,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClaimedStreamID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recentRelaySessions = `-- name: RecentRelaySessions :many
+SELECT organization_id, project_id, workspace_id, id, principal_id, subject, connection_id, channels, opened_at, closed_at, close_reason, bytes_in, bytes_out, recording_artifact, support_reason FROM workspace_relay_sessions WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3 ORDER BY opened_at DESC,id DESC LIMIT $4
+`
+
+type RecentRelaySessionsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkspaceID    string
+	Limit          int32
+}
+
+func (q *Queries) RecentRelaySessions(ctx context.Context, arg RecentRelaySessionsParams) ([]WorkspaceRelaySession, error) {
+	rows, err := q.db.Query(ctx, recentRelaySessions,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkspaceID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceRelaySession{}
+	for rows.Next() {
+		var i WorkspaceRelaySession
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.WorkspaceID,
+			&i.ID,
+			&i.PrincipalID,
+			&i.Subject,
+			&i.ConnectionID,
+			&i.Channels,
+			&i.OpenedAt,
+			&i.ClosedAt,
+			&i.CloseReason,
+			&i.BytesIn,
+			&i.BytesOut,
+			&i.RecordingArtifact,
+			&i.SupportReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recentTerminalRecordings = `-- name: RecentTerminalRecordings :many
+SELECT organization_id, project_id, workspace_id, id, relay_session_id, stream_id, principal_id, subject, isolation, support_reason, started_at, finished_at, terminal_cols, terminal_rows, cast_object_key, cast_sha256, cast_bytes, cast_content_bytes, truncated, revision, updated_at FROM workspace_terminal_recordings WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3 ORDER BY started_at DESC,id DESC LIMIT $4
+`
+
+type RecentTerminalRecordingsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkspaceID    string
+	Limit          int32
+}
+
+func (q *Queries) RecentTerminalRecordings(ctx context.Context, arg RecentTerminalRecordingsParams) ([]WorkspaceTerminalRecording, error) {
+	rows, err := q.db.Query(ctx, recentTerminalRecordings,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkspaceID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceTerminalRecording{}
+	for rows.Next() {
+		var i WorkspaceTerminalRecording
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.WorkspaceID,
+			&i.ID,
+			&i.RelaySessionID,
+			&i.StreamID,
+			&i.PrincipalID,
+			&i.Subject,
+			&i.Isolation,
+			&i.SupportReason,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.TerminalCols,
+			&i.TerminalRows,
+			&i.CastObjectKey,
+			&i.CastSha256,
+			&i.CastBytes,
+			&i.CastContentBytes,
+			&i.Truncated,
+			&i.Revision,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const redeemRelayTicket = `-- name: RedeemRelayTicket :one
 UPDATE workspace_relay_tickets SET redeemed_at=$1::timestamptz
 WHERE organization_id=$2 AND project_id=$3 AND digest=$4 AND session_id=$5 AND principal_id=$6 AND subject=$7 AND redeemed_at IS NULL AND expires_at>$1 AND created_at<=$1 RETURNING organization_id, project_id, digest, workspace_id, session_id, principal_id, subject, support_reason, created_at, expires_at, redeemed_at
@@ -498,6 +1122,30 @@ func (q *Queries) RedeemRelayTicket(ctx context.Context, arg RedeemRelayTicketPa
 		&i.RedeemedAt,
 	)
 	return i, err
+}
+
+const referenceRelayRecording = `-- name: ReferenceRelayRecording :execrows
+UPDATE workspace_relay_sessions SET recording_artifact=$4 WHERE organization_id=$1 AND project_id=$2 AND id=$3 AND recording_artifact=''
+`
+
+type ReferenceRelayRecordingParams struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	ID                string
+	RecordingArtifact string
+}
+
+func (q *Queries) ReferenceRelayRecording(ctx context.Context, arg ReferenceRelayRecordingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, referenceRelayRecording,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.ID,
+		arg.RecordingArtifact,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const relaySessions = `-- name: RelaySessions :many
@@ -555,13 +1203,17 @@ func (q *Queries) RelaySessions(ctx context.Context, arg RelaySessionsParams) ([
 }
 
 const reportActionRun = `-- name: ReportActionRun :one
-UPDATE project_action_runs a SET status=$1,exit_code=$2,reason=$3,finished_at=$4,output_object_key=$5,output_sha256=$6,output_bytes=$7,output_content_bytes=$8,output_sequence=$9,truncated=$10,revision=a.revision+1,updated_at=$11
-FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>clock_timestamp()
-WHERE a.organization_id=$12 AND a.project_id=$13 AND a.id=$14 AND a.status='running' AND a.claimed_by=$15 AND a.lease_id=$16 AND a.fencing_token=$17 AND a.output_sequence<$9
-AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=a.claimed_by AND w.lease_id=a.lease_id AND w.fencing_token=a.fencing_token RETURNING a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at
+UPDATE project_action_runs a SET claimed_by=$1,lease_id=$2,fencing_token=$3,started_at=coalesce(a.started_at,$4),status=$5,exit_code=$6,reason=$7,finished_at=$8,output_object_key=$9,output_sha256=$10,output_bytes=$11,output_content_bytes=$12,output_sequence=$13,truncated=$14,revision=a.revision+1,updated_at=$4
+FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>$18::timestamptz
+WHERE a.organization_id=$15 AND a.project_id=$16 AND a.id=$17 AND (a.status='queued' AND a.claimed_by='' OR a.status='running' AND a.claimed_by=$1 AND a.lease_id=$2 AND a.fencing_token=$3) AND a.output_sequence<$13
+AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=$1 AND w.lease_id=$2 AND w.fencing_token=$3 RETURNING a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at, a.claimed_stream_id
 `
 
 type ReportActionRunParams struct {
+	RunnerID           string
+	LeaseID            string
+	FencingToken       int64
+	UpdatedAt          time.Time
 	Status             string
 	ExitCode           pgtype.Int4
 	Reason             string
@@ -572,17 +1224,18 @@ type ReportActionRunParams struct {
 	OutputContentBytes int64
 	OutputSequence     int64
 	Truncated          bool
-	UpdatedAt          time.Time
 	OrganizationID     tracker.OrganizationID
 	ProjectID          tracker.ProjectID
 	ID                 string
-	RunnerID           string
-	LeaseID            string
-	FencingToken       int64
+	Now                time.Time
 }
 
 func (q *Queries) ReportActionRun(ctx context.Context, arg ReportActionRunParams) (ProjectActionRun, error) {
 	row := q.db.QueryRow(ctx, reportActionRun,
+		arg.RunnerID,
+		arg.LeaseID,
+		arg.FencingToken,
+		arg.UpdatedAt,
 		arg.Status,
 		arg.ExitCode,
 		arg.Reason,
@@ -593,13 +1246,10 @@ func (q *Queries) ReportActionRun(ctx context.Context, arg ReportActionRunParams
 		arg.OutputContentBytes,
 		arg.OutputSequence,
 		arg.Truncated,
-		arg.UpdatedAt,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
-		arg.RunnerID,
-		arg.LeaseID,
-		arg.FencingToken,
+		arg.Now,
 	)
 	var i ProjectActionRun
 	err := row.Scan(
@@ -630,6 +1280,7 @@ func (q *Queries) ReportActionRun(ctx context.Context, arg ReportActionRunParams
 		&i.Revision,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClaimedStreamID,
 	)
 	return i, err
 }
@@ -646,6 +1297,51 @@ type TerminalRecordingParams struct {
 
 func (q *Queries) TerminalRecording(ctx context.Context, arg TerminalRecordingParams) (WorkspaceTerminalRecording, error) {
 	row := q.db.QueryRow(ctx, terminalRecording, arg.OrganizationID, arg.ProjectID, arg.ID)
+	var i WorkspaceTerminalRecording
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.WorkspaceID,
+		&i.ID,
+		&i.RelaySessionID,
+		&i.StreamID,
+		&i.PrincipalID,
+		&i.Subject,
+		&i.Isolation,
+		&i.SupportReason,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.TerminalCols,
+		&i.TerminalRows,
+		&i.CastObjectKey,
+		&i.CastSha256,
+		&i.CastBytes,
+		&i.CastContentBytes,
+		&i.Truncated,
+		&i.Revision,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const terminalRecordingByID = `-- name: TerminalRecordingByID :one
+SELECT organization_id, project_id, workspace_id, id, relay_session_id, stream_id, principal_id, subject, isolation, support_reason, started_at, finished_at, terminal_cols, terminal_rows, cast_object_key, cast_sha256, cast_bytes, cast_content_bytes, truncated, revision, updated_at FROM workspace_terminal_recordings WHERE organization_id=$1 AND project_id=$2 AND workspace_id=$3 AND id=$4
+`
+
+type TerminalRecordingByIDParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkspaceID    string
+	ID             string
+}
+
+func (q *Queries) TerminalRecordingByID(ctx context.Context, arg TerminalRecordingByIDParams) (WorkspaceTerminalRecording, error) {
+	row := q.db.QueryRow(ctx, terminalRecordingByID,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkspaceID,
+		arg.ID,
+	)
 	var i WorkspaceTerminalRecording
 	err := row.Scan(
 		&i.OrganizationID,

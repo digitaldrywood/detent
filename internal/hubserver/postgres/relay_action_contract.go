@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -173,9 +174,14 @@ func (s *session) ClaimActionRun(ctx context.Context, arg ClaimActionRunInput) (
 	if err := s.checkOrganization(arg.OrganizationID); err != nil {
 		return ActionRun{}, err
 	}
-	if arg.StartedAt.IsZero() || arg.FencingToken < 1 {
+	if arg.StartedAt == nil || arg.StartedAt.IsZero() || arg.FencingToken < 1 {
 		return ActionRun{}, corestore.ErrInvalidPage
 	}
+	now, err := s.leaseTime(ctx)
+	if err != nil {
+		return ActionRun{}, err
+	}
+	arg.Now = now
 	row, err := s.queries.ClaimActionRun(ctx, arg)
 	return row, updated(ctx, err)
 }
@@ -186,6 +192,11 @@ func (s *session) ReportActionRun(ctx context.Context, arg ReportActionRunInput)
 	if arg.UpdatedAt.IsZero() || arg.OutputSequence < 1 || arg.Status != "running" && arg.Status != "succeeded" && arg.Status != "failed" || arg.Status != "running" && arg.FinishedAt == nil || arg.OutputObjectKey != nil && (*arg.OutputObjectKey == "" || len(arg.OutputSha256) != 64) {
 		return ActionRun{}, corestore.ErrInvalidPage
 	}
+	now, err := s.leaseTime(ctx)
+	if err != nil {
+		return ActionRun{}, err
+	}
+	arg.Now = now
 	row, err := s.queries.ReportActionRun(ctx, arg)
 	return row, updated(ctx, err)
 }

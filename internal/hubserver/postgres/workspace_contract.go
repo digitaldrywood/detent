@@ -66,7 +66,7 @@ func (s *session) CreateWorkspaceSession(ctx context.Context, arg WorkspaceCreat
 		return WorkspaceSession{}, err
 	}
 	requires, err := workspacesession.NormalizeRequires(arg.Requires)
-	if err != nil || workspacesession.ValidateID(arg.ID) != nil || arg.Ref == "" || arg.CreatedBy == "" || arg.CreatedAt.IsZero() || !arg.ExpiresAt.After(arg.CreatedAt) || !arg.RequestedExpiresAt.After(arg.CreatedAt) || arg.IdleTimeoutSeconds <= 0 {
+	if err != nil || workspacesession.ValidateID(arg.ID) != nil || arg.CreatedBy == "" || arg.CreatedAt.IsZero() || !arg.ExpiresAt.After(arg.CreatedAt) || !arg.RequestedExpiresAt.After(arg.CreatedAt) || arg.IdleTimeoutSeconds <= 0 {
 		return WorkspaceSession{}, corestore.ErrInvalidPage
 	}
 	arg.Requires = requires
@@ -92,8 +92,12 @@ func (s *session) UpdateWorkspaceSession(ctx context.Context, arg WorkspaceUpdat
 			return WorkspaceSession{}, corestore.ErrInvalidPage
 		}
 	}
-	if arg.LeaseID != "" {
-		valid, err := s.queries.WorkspaceOwnerLease(ctx, pgquery.WorkspaceOwnerLeaseParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, WorkspaceID: arg.ID, LeaseID: arg.LeaseID, FencingToken: arg.FencingToken, MachineID: arg.MachineID, RunnerID: arg.RunnerID})
+	if arg.LeaseID != "" && !workspacesession.Terminal(arg.State) && arg.State != workspacesession.StateRequested && arg.State != workspacesession.StateUnreachable {
+		now, err := s.leaseTime(ctx)
+		if err != nil {
+			return WorkspaceSession{}, err
+		}
+		valid, err := s.queries.WorkspaceOwnerLease(ctx, pgquery.WorkspaceOwnerLeaseParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, WorkspaceID: arg.ID, LeaseID: arg.LeaseID, FencingToken: arg.FencingToken, MachineID: arg.MachineID, RunnerID: arg.RunnerID, Now: now})
 		if err != nil {
 			return WorkspaceSession{}, mapError(ctx, err)
 		}
