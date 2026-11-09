@@ -100,7 +100,11 @@ func recordHealthPublication(ctx context.Context, writer tenantstore.Writer, sco
 func (s *Service) filterHealthPublicationDuplicates(ctx context.Context, scope nativeScope, search *workItemDuplicateSearch) error {
 	if scope.healthPublication.report != nil {
 		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Background, func(r tenantstore.Reader) error {
-			latest, err := r.(healthstore.IssueReader).LatestHealthIssueReport(ctx, scope.project, scope.healthPublication.report.IntakeFingerprint)
+			owner, ok := r.(healthstore.IssueReader)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			latest, err := owner.LatestHealthIssueReport(ctx, scope.project, scope.healthPublication.report.IntakeFingerprint)
 			if errors.Is(err, corestore.ErrNotFound) {
 				scope.healthPublication.linked = ""
 				return nil
@@ -156,8 +160,12 @@ func (s *Service) filterHealthPublicationDuplicates(ctx context.Context, scope n
 		renew := issue.Terminal && issue.State == "Done" && issue.Actor == scope.actor() && issue.Provenance == nil && healthDetectorIssueBody(issue.Body)
 		if issue.Terminal && issue.State == "Cancelled" && issue.Actor == scope.actor() && issue.Provenance == nil && healthDetectorIssueBody(issue.Body) {
 			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Background, func(r tenantstore.Reader) error {
+				owner, ok := r.(healthstore.IssueReader)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
 				var err error
-				renew, err = r.(healthstore.IssueReader).HealthIssueAutoCancelledBefore(ctx, scope.project, issue.WorkItemID, scope.healthPublication.openedAt)
+				renew, err = owner.HealthIssueAutoCancelledBefore(ctx, scope.project, issue.WorkItemID, scope.healthPublication.openedAt)
 				return err
 			})
 			if err != nil {

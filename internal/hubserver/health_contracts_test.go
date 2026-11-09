@@ -287,7 +287,8 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 				}
 				service.config.TenantRepository = queries
 				queries.issues = 0
-				wait, err := cache.readRecords(t.Context(), service, project, issue.WorkItemID, issue.Revision, descriptor)
+				result, err := cache.readRecords(t.Context(), service, project, issue.WorkItemID, issue.Revision, descriptor)
+				wait := result.wait
 				if err != nil {
 					t.Fatal(err)
 				}

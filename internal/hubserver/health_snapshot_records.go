@@ -70,12 +70,12 @@ func (s *Service) readHealthSnapshotRecords(ctx context.Context, organization tr
 					return snapshot, errHealthReadLimit
 				}
 				p.CandidateIDs[string(candidate.WorkItemID)] = true
-				wait, err := s.healthContracts.readRecords(ctx, s, contractProject, candidate.WorkItemID, tracker.Revision(candidate.Revision), descriptor)
+				result, err := s.healthContracts.readRecords(ctx, s, contractProject, candidate.WorkItemID, tracker.Revision(candidate.Revision), descriptor)
 				if err != nil {
 					return snapshot, err
 				}
-				if wait != nil {
-					snapshot.Waits = append(snapshot.Waits, *wait)
+				if result.wait != nil {
+					snapshot.Waits = append(snapshot.Waits, *result.wait)
 				}
 				if p.CandidateSince.IsZero() || candidate.CreatedAt.Before(p.CandidateSince) {
 					p.CandidateSince = candidate.CreatedAt

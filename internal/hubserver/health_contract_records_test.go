@@ -51,7 +51,8 @@ func TestPostgresHealthContractCacheTracksRevisions(t *testing.T) {
 				}
 				service.config.TenantRepository = counter
 				counter.reads = 0
-				wait, err := cache.readRecords(t.Context(), service, project, issue.WorkItemID, issue.Revision, descriptor)
+				result, err := cache.readRecords(t.Context(), service, project, issue.WorkItemID, issue.Revision, descriptor)
+				wait := result.wait
 				if err != nil || wait != nil {
 					t.Fatalf("step=%s wait=%+v err=%v", step, wait, err)
 				}

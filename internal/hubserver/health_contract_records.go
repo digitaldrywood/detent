@@ -37,37 +37,38 @@ func (s *Service) readHealthContractProject(ctx context.Context, organization tr
 	return record, descriptor, err
 }
 
-func (c *healthContractCache) readRecords(ctx context.Context, s *Service, project projectstore.Record, item tracker.NativeWorkItemID, revision tracker.Revision, descriptor policy.Descriptor) (*healthWait, error) {
+func (c *healthContractCache) readRecords(ctx context.Context, s *Service, project projectstore.Record, item tracker.NativeWorkItemID, revision tracker.Revision, descriptor policy.Descriptor) (healthContractResult, error) {
 	key := healthContractKey{organization: project.Core.OrganizationID, project: project.Core.ID, item: string(item)}
 	if c != nil {
 		c.mu.Lock()
 		cached, found := c.entries[key]
 		c.mu.Unlock()
 		if found && cached.revision == revision && cached.policyID == descriptor.ID {
-			return cached.wait, nil
+			return cached, nil
 		}
 	}
 	scope := nativeScope{organization: project.Core.OrganizationID, project: project.Core.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 	row, version, err := s.readWorkItemRecord(ctx, scope, string(item))
 	if err != nil {
-		return nil, err
+		return healthContractResult{}, err
 	}
 	if tracker.Revision(row.Revision) != revision {
-		return nil, corestore.ErrRevisionConflict
+		return healthContractResult{}, corestore.ErrRevisionConflict
 	}
 	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
 	if err != nil {
-		return nil, err
+		return healthContractResult{}, err
 	}
-	wait, err := s.evaluateHealthContractRecord(ctx, scope, project, descriptor, issue)
+	result, err := s.evaluateHealthContractRecord(ctx, scope, project, descriptor, issue)
 	if err != nil {
-		return nil, err
+		return healthContractResult{}, err
 	}
+	result.revision, result.policyID = revision, descriptor.ID
 	if c == nil || issue.LinkedSource != nil || issue.IssueContract != nil && issue.IssueContract.ReleaseDelivery != nil {
-		return wait, nil
+		return result, nil
 	}
-	c.remember(key, healthContractResult{revision: revision, policyID: descriptor.ID, wait: wait})
-	return wait, nil
+	c.remember(key, result)
+	return result, nil
 }
 
 func (c *healthContractCache) remember(key healthContractKey, result healthContractResult) {
@@ -88,16 +89,16 @@ func (c *healthContractCache) remember(key healthContractKey, result healthContr
 	c.entries[key] = result
 }
 
-func (s *Service) evaluateHealthContractRecord(ctx context.Context, scope nativeScope, project projectstore.Record, descriptor policy.Descriptor, issue tracker.NativeIssue) (*healthWait, error) {
+func (s *Service) evaluateHealthContractRecord(ctx context.Context, scope nativeScope, project projectstore.Record, descriptor policy.Descriptor, issue tracker.NativeIssue) (healthContractResult, error) {
 	if strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") || issue.LinkedSource != nil && issue.LinkedSource.Status != "complete" || strings.EqualFold(issue.State, "Triage") || issue.IssueContract != nil && issue.IssueContract.Exempt {
-		return nil, nil
+		return healthContractResult{}, nil
 	}
 	workflow := config.Workflow{Config: config.Default()}
 	if descriptor.ID != "" {
 		var err error
 		workflow, err = config.ApplyNativePolicy(workflow, descriptor)
 		if err != nil {
-			return nil, err
+			return healthContractResult{}, err
 		}
 	}
 	target := workflow.Config.BacklogAdmission.TargetState
@@ -105,22 +106,22 @@ func (s *Service) evaluateHealthContractRecord(ctx context.Context, scope native
 		target = "Todo"
 	}
 	if !strings.EqualFold(issue.State, target) {
-		return nil, nil
+		return healthContractResult{}, nil
 	}
 	contract, err := config.ResolvePolicyIssueContract(descriptor)
 	if err != nil {
-		return nil, err
+		return healthContractResult{}, err
 	}
 	wait := &healthWait{Item: string(issue.WorkItemID), Project: string(scope.project), Since: issue.UpdatedAt, Active: true}
 	if valid, err := s.healthReleaseContractCurrent(ctx, scope, project, descriptor, issue, contract); err != nil {
-		return nil, err
+		return healthContractResult{}, err
 	} else if !valid {
 		wait.Reason = "The verified release delivery contract changed; current approved policy and exact associated delivery are required"
-		return wait, nil
+		return healthContractResult{wait: wait}, nil
 	}
 	evaluation := contract.Evaluate(nativeContractIssue(issue))
 	if evaluation.Satisfied() {
-		return nil, nil
+		return healthContractResult{}, nil
 	}
 	var reasons []string
 	if len(evaluation.Missing) > 0 {
@@ -130,7 +131,7 @@ func (s *Service) evaluateHealthContractRecord(ctx context.Context, scope native
 		reasons = append(reasons, "A human must confirm the success criteria by editing or saving the issue body")
 	}
 	wait.Reason = strings.Join(reasons, "; ")
-	return wait, nil
+	return healthContractResult{wait: wait}, nil
 }
 
 func (s *Service) healthReleaseContractCurrent(ctx context.Context, scope nativeScope, project projectstore.Record, descriptor policy.Descriptor, issue tracker.NativeIssue, contract config.IssueContract) (bool, error) {

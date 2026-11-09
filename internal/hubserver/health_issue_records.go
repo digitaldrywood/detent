@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -86,8 +87,12 @@ func (s *Service) maintainHealthIssue(ctx context.Context, organization tracker.
 		reports = reports[:healthEvidenceLimit]
 	}
 	if err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		owner, ok := w.(healthstore.IssueWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
 		var err error
-		work, err = w.(healthstore.IssueWriter).AdvanceHealthIssueWork(ctx, work, now)
+		work, err = owner.AdvanceHealthIssueWork(ctx, work, now)
 		return err
 	}); err != nil {
 		return false, err
@@ -133,7 +138,11 @@ func (s *Service) maintainHealthIssue(ctx context.Context, organization tracker.
 		work.AfterFingerprint = reports[len(reports)-1].IntakeFingerprint
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		return w.(healthstore.IssueWriter).FinishHealthIssueWork(ctx, work, pending, next)
+		owner, ok := w.(healthstore.IssueWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		return owner.FinishHealthIssueWork(ctx, work, pending, next)
 	})
 	return err == nil, err
 }
@@ -149,10 +158,14 @@ func (s *Service) publishHealthIssueOccurrence(ctx context.Context, scope native
 	publicationDigest := digest
 	var previous healthstore.IssueReport
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Background, func(r tenantstore.Reader) error {
+		owner, ok := r.(healthstore.IssueReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
 		var err error
-		previous, err = r.(healthstore.IssueReader).HealthIssueReport(ctx, finding.ID, scope.project, finding.Fingerprint)
+		previous, err = owner.HealthIssueReport(ctx, finding.ID, scope.project, finding.Fingerprint)
 		if errors.Is(err, corestore.ErrNotFound) {
-			previous, err = r.(healthstore.IssueReader).LatestHealthIssueReport(ctx, scope.project, finding.Fingerprint)
+			previous, err = owner.LatestHealthIssueReport(ctx, scope.project, finding.Fingerprint)
 		}
 		return err
 	})
@@ -179,7 +192,11 @@ func (s *Service) publishHealthIssueOccurrence(ctx context.Context, scope native
 		}
 		publicationDigest += "\x00renew:" + string(issue.WorkItemID)
 		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Background, func(r tenantstore.Reader) error {
-			latest, err := r.(healthstore.IssueReader).LatestHealthIssueReport(ctx, scope.project, finding.Fingerprint)
+			owner, ok := r.(healthstore.IssueReader)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			latest, err := owner.LatestHealthIssueReport(ctx, scope.project, finding.Fingerprint)
 			if err == nil {
 				scope.healthPublication.linked = latest.WorkItemID
 			}
@@ -200,7 +217,7 @@ func (s *Service) publishHealthIssueOccurrence(ctx context.Context, scope native
 }
 
 func healthPublicationKey(scope nativeScope, fingerprint, digest string) string {
-	sum := sha256.Sum256([]byte(fmt.Sprint(scope.healthPublication.work.SourceRevision) + "\x00" + scope.healthPublication.work.FindingID + "\x00" + string(scope.project) + "\x00" + fingerprint + "\x00" + digest))
+	sum := sha256.Sum256([]byte(strconv.FormatInt(scope.healthPublication.work.SourceRevision, 10) + "\x00" + scope.healthPublication.work.FindingID + "\x00" + string(scope.project) + "\x00" + fingerprint + "\x00" + digest))
 	return "health_" + hex.EncodeToString(sum[:])
 }
 
@@ -225,8 +242,12 @@ func (s *Service) resolveHealthIssueReport(ctx context.Context, scope nativeScop
 	}
 	allowed := false
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Background, func(r tenantstore.Reader) error {
+		owner, ok := r.(healthstore.IssueReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
 		var err error
-		allowed, err = r.(healthstore.IssueReader).CanResolveHealthIssue(ctx, scope.project, issue.WorkItemID, now.Add(-healthReopenWindow))
+		allowed, err = owner.CanResolveHealthIssue(ctx, scope.project, issue.WorkItemID, now.Add(-healthReopenWindow))
 		return err
 	})
 	if err != nil || !allowed {

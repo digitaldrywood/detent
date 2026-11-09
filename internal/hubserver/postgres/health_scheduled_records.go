@@ -13,7 +13,7 @@ func (s *session) RecordHealthScheduledReport(ctx context.Context, report health
 	if err := s.checkOrganization(report.OrganizationID); err != nil {
 		return healthstore.ScheduledReport{}, err
 	}
-	if !report.ScheduledValidationReport.Valid() || report.RecordedAt.IsZero() || report.ProjectID == "" {
+	if !report.Valid() || report.RecordedAt.IsZero() || report.ProjectID == "" {
 		return healthstore.ScheduledReport{}, corestore.ErrInvalidRelationship
 	}
 	_, err := s.db.Exec(ctx, `INSERT INTO health_scheduled_reports(organization_id,project_id,repository,run_id,run_attempt,run_url,head_sha,conclusion,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, s.organization, report.ProjectID, report.Repository, report.RunID, report.RunAttempt, report.RunURL, report.HeadSHA, report.Conclusion, report.RecordedAt)
