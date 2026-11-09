@@ -1467,9 +1467,6 @@
     "internal/hubserver/project_sprite_allocation.go": {
       "sql_julianday": 2
     },
-    "internal/hubserver/project_sprites.go": {
-      "sql_julianday": 2
-    },
     "internal/hubserver/provider_capacity_test.go": {
       "database_path": 6
     },
