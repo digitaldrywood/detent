@@ -297,6 +297,9 @@ type spritePoolProvider struct {
 	runners          []runnerauth.Redemption
 	manual           []runnerFixture
 	checkpoint       int
+	checkpoints      map[string]string
+	execStarts       int
+	execAttachments  int
 	started          chan struct{}
 	deleteStarted    chan struct{}
 	releaseDelete    chan struct{}
@@ -377,12 +380,40 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/checkpoints") {
+			name := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/sprites/"), "/")[0]
+			provider.mu.Lock()
+			comment := provider.checkpoints[name]
+			provider.mu.Unlock()
+			checkpoints := []map[string]string{}
+			if comment != "" {
+				checkpoints = append(checkpoints, map[string]string{"id": "fixture-baseline", "comment": comment})
+			}
+			_ = json.NewEncoder(w).Encode(checkpoints)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/checkpoint") {
+			var checkpoint struct {
+				Comment string `json:"comment"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&checkpoint); err != nil {
+				t.Error(err)
+				return
+			}
+			name := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/sprites/"), "/")[0]
+			provider.mu.Lock()
+			if provider.checkpoints == nil {
+				provider.checkpoints = map[string]string{}
+			}
+			provider.checkpoints[name] = checkpoint.Comment
+			provider.checkpoint++
+			provider.mu.Unlock()
 			if provider.stage != nil {
 				provider.stage("checkpoint")
 			}
-			provider.checkpoint++
-			if provider.fail == "checkpoint" {
+			if provider.fail == "checkpoint lost" {
+				_, _ = io.WriteString(w, `{"type":"progress"}`)
+			} else if provider.fail == "checkpoint" {
 				_, _ = io.WriteString(w, `{"type":"error"}`)
 			} else {
 				_, _ = io.WriteString(w, `{"type":"complete","id":"fixture-baseline"}`)
@@ -400,6 +431,19 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 		}
 		defer conn.CloseNow()
 		conn.SetReadLimit(1 << 20)
+		provider.mu.Lock()
+		attached := strings.HasSuffix(r.URL.Path, "/exec/fixture-session")
+		if attached {
+			provider.execAttachments++
+		} else {
+			provider.execStarts++
+		}
+		provider.mu.Unlock()
+		if attached {
+			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte("Runner bootstrap completed\n")...))
+			_ = conn.Write(r.Context(), websocket.MessageBinary, []byte{3, 0})
+			return
+		}
 		if err := conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"session_info","session_id":"fixture-session"}`)); err != nil {
 			t.Error(err)
 			return
@@ -499,6 +543,9 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			provider.stage("registered")
 		}
 		_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte("Customer setup completed\nRunner bootstrap completed\n")...))
+		if provider.fail == "bootstrap lost" {
+			return
+		}
 		_ = conn.Write(r.Context(), websocket.MessageBinary, []byte{3, 0})
 	})
 	client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
@@ -1027,6 +1074,72 @@ func TestSpritePoolFreshAuthority(t *testing.T) {
 			}
 			if len(provider.created) != 0 || len(provider.deleted) != 0 {
 				t.Fatal("provider called without current project authority")
+			}
+		})
+	}
+}
+
+func TestSpritePoolPhaseReceiptsSurviveRepositoryReopen(t *testing.T) {
+	for _, phase := range []string{"bootstrap", "checkpoint"} {
+		t.Run(phase, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, phase+" lost")
+			now := f.service.config.now()
+			var clock atomic.Pointer[time.Time]
+			clock.Store(&now)
+			readClock := func() time.Time { return *clock.Load() }
+			f.service.config.now = readClock
+			setSpriteAllocationFixture(t, f, 2, 0)
+			for range 2 {
+				if err := f.service.scaleSpritePool(t.Context(), scope, false); err == nil {
+					t.Fatal("lost phase completion was reported as successful")
+				}
+			}
+			if len(provider.created) != 2 || len(provider.runners) != 2 {
+				t.Fatalf("reservations=%v enrolled=%d", provider.created, len(provider.runners))
+			}
+			configuration := Config{DatabaseBackend: DatabasePostgres, Postgres: f.service.config.Postgres, Hosted: &HostedConfig{OrganizationID: string(scope.organization), WorkOSOrganizationID: "provider_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}, SecretKeys: f.service.config.SecretKeys, RunDetails: f.service.config.RunDetails, SpritesHTTPClient: f.service.config.SpritesHTTPClient, Version: f.service.config.Version, now: readClock}
+			if err := f.service.Close(); err != nil {
+				t.Fatal(err)
+			}
+			resumed := openTestService(t, configuration)
+			resumed.workerCancel()
+			<-resumed.workerDone
+			<-resumed.secretRewrapDone
+			resumed.spriteWakeWork.Wait()
+			resumed.startSpriteLifecycle = func(scope nativeScope, state string) { resumed.scheduleSpriteLifecycle(t.Context(), scope, state) }
+			f.service, provider.f.service = resumed, resumed
+			advanced := now.Add(time.Minute)
+			clock.Store(&advanced)
+			var pending []postgres.SpriteOperation
+			if err := resumed.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				pending, err = r.(postgres.SpriteReader).PendingSpriteOperations(t.Context(), advanced, 20)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(pending) != 2 {
+				t.Fatalf("pending phase receipts=%d, want 2", len(pending))
+			}
+			for _, operation := range pending {
+				if operation.Operation != phase || operation.Outcome != "uncertain" || operation.ProviderResourceID == "" || operation.RequestObjectKey == nil || phase == "bootstrap" && (operation.ExecSessionID == nil || *operation.ExecSessionID != "fixture-session") {
+					t.Fatalf("incomplete durable phase receipt: %+v", operation)
+				}
+			}
+			for range 2 {
+				resumed.maintainSpritePools(t.Context())
+				resumed.spriteWakeWork.Wait()
+			}
+			members := projectSpriteMembers(t, f, scope)
+			if len(members) != 2 || members[0].State != "enrolled" || members[1].State != "enrolled" {
+				t.Fatalf("reconciled members=%+v", members)
+			}
+			wantAttachments := 0
+			if phase == "bootstrap" {
+				wantAttachments = 2
+			}
+			if provider.execStarts != 2 || provider.execAttachments != wantAttachments || provider.checkpoint != 2 || len(provider.created) != 2 || len(provider.runners) != 2 || len(provider.deleted) != 0 {
+				t.Fatalf("replayed external work: execs=%d attaches=%d checkpoints=%d creates=%d enrollments=%d deletes=%v", provider.execStarts, provider.execAttachments, provider.checkpoint, len(provider.created), len(provider.runners), provider.deleted)
 			}
 		})
 	}
