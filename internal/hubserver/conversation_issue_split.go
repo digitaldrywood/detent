@@ -2,12 +2,10 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -95,36 +93,6 @@ func validateCoordinatorIssueSplit(split chat.IssueSplit) error {
 	return nil
 }
 
-func validateCoordinatorSplitDrafts(ctx context.Context, tx *sql.Tx, scope nativeScope, split chat.IssueSplit) (tracker.NativeIssue, error) {
-	if err := validateCoordinatorIssueSplit(split); err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	parent, _, err := readNativeIssue(ctx, tx, scope, split.ParentID)
-	if err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	if err := requireNativeEdit(parent, tracker.Revision(split.Revision)); err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	for _, child := range split.Children {
-		project, err := validateNativeIssueDraft(ctx, tx, scope, tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority})
-		if err != nil {
-			return tracker.NativeIssue{}, err
-		}
-		found := false
-		for _, state := range project.States {
-			if state.Name == child.State {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return tracker.NativeIssue{}, nativePublicInvalid("Workflow state does not exist")
-		}
-	}
-	return parent, nil
-}
-
 func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
@@ -173,7 +141,7 @@ func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conve
 		return nil, err
 	}
 	for _, child := range split.Children {
-		if err := validateWorkItemRecordCreateInput(readCtx, scope, project, tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority}); err != nil {
+		if err := validateWorkItemRecordCreateInput(readCtx, scope, project, tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority, State: child.State}); err != nil {
 			return nil, err
 		}
 		if !slices.ContainsFunc(project.States, func(state tracker.NativeState) bool { return state.Name == child.State }) {
@@ -213,46 +181,7 @@ func (s *Service) executeCoordinatorIssueSplit(ctx context.Context, action chat.
 		return chat.ActionExecution{}, err
 	}
 	scope.project = tracker.ProjectID(action.ProjectID)
-	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+split.ParentID+"/split"), Item: split.ParentID, RequireLease: true, Feature: "collaboration"}
-	raw, err := s.executeNativeMutation(ctx, scope, options, tracker.MutationForContext(ctx, action.RequestID), split, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		parent, err := validateCoordinatorSplitDrafts(ctx, tx, scope, split)
-		if err != nil {
-			return nil, err
-		}
-		children := make([]tracker.NativeIssue, 0, len(split.Children))
-		for _, child := range split.Children {
-			issue, err := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority, State: child.State}, now)
-			if err != nil {
-				return nil, err
-			}
-			children = append(children, issue)
-		}
-		nodes := append([]tracker.NativeIssue{parent}, children...)
-		for _, edge := range split.Edges {
-			dependent, blocker := nodes[edge.Dependent], nodes[edge.Blocker]
-			issue, err := changeNativeDependencyTx(ctx, tx, scope, string(dependent.WorkItemID), tracker.DependencyMutation{ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}, now)
-			if err != nil {
-				return nil, err
-			}
-			nodes[edge.Dependent] = issue
-		}
-		var body strings.Builder
-		body.WriteString("Approved issue split:\n")
-		for _, child := range nodes[1:] {
-			fmt.Fprintf(&body, "\n- #%d (%s): %s", child.Number, child.WorkItemID, child.Title)
-		}
-		if len(split.Edges) > 0 {
-			body.WriteString("\n\nDependencies:\n")
-			for _, edge := range split.Edges {
-				fmt.Fprintf(&body, "\n- #%d is blocked by #%d", nodes[edge.Dependent].Number, nodes[edge.Blocker].Number)
-			}
-		}
-		comment, err := insertNativeComment(ctx, tx, scope, parent, body.String(), nil, now)
-		if err != nil {
-			return nil, err
-		}
-		return coordinatorSplitResult{Children: nodes[1:], Comment: comment}, nil
-	})
+	raw, err := s.executeCoordinatorSplitTenant(ctx, scope, action, split)
 	if err != nil {
 		return chat.ActionExecution{}, coordinatorActionError(err)
 	}

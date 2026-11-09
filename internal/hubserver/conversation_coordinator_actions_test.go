@@ -49,7 +49,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 			outcomes = append(outcomes, "transport unavailable", "execute with manual import")
 		}
 		if tool == string(chat.ActionIssueSplit) {
-			outcomes = append(outcomes, "child failure", "edge failure", "comment failure", "invalid state", "cycle", "validation then valid")
+			outcomes = append(outcomes, "child failure", "edge failure", "comment failure", "invalid state", "cycle", "validation then valid", "reserved intake")
 		}
 		if tool == string(chat.ActionArchiveItems) {
 			outcomes = append(outcomes, "running", "merging", "became running", "became merging", "archive failure", "history failure", "already archived", "duplicate", "empty", "outside project", "number resolution", "concurrent replay", "completion without entitlement")
@@ -97,6 +97,19 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					t.Fatal(err)
 				}
 				f.service.tokenUseWork.Wait()
+				var splitWakes []tracker.NativeIssue
+				if tool == string(chat.ActionIssueSplit) {
+					f.service.wakeSpriteRunnersAfter = func(scope nativeScope, raw json.RawMessage) {
+						if scope.organization != "org_security" || scope.project != f.project {
+							t.Fatalf("split wake escaped scope: %s/%s", scope.organization, scope.project)
+						}
+						var issue tracker.NativeIssue
+						if err := json.Unmarshal(raw, &issue); err != nil {
+							t.Fatal(err)
+						}
+						splitWakes = append(splitWakes, issue)
+					}
+				}
 				role := "owner"
 				if outcome == "wrong role" {
 					role = "member"
@@ -472,7 +485,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						{Title: "Split storage", Description: "Create storage" + issueContractTestSections, Priority: &priority, State: "Todo"},
 						{Title: "Split API", Description: "Use storage" + issueContractTestSections, Priority: &priority, State: "Todo"},
 						{Title: "Split UI", Description: "Build UI" + issueContractTestSections, Priority: &priority, State: "Todo"},
-					}, "edges": []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}}}
+					}, "edges": []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}, {Dependent: 0, Blocker: 1}, {Dependent: 0, Blocker: 2}, {Dependent: 0, Blocker: 3}}}
 				case "set_sprite_pool":
 					arguments = map[string]any{"min_runners": 0, "max_runners": 0}
 					if outcome == "sandbox access" {
@@ -493,6 +506,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					arguments = map[string]any{}
 				}
 				if tool == string(chat.ActionIssueSplit) {
+					if outcome == "reserved intake" {
+						coordinatorActionState(t, f, "Triage", nil)
+						children := arguments["children"].([]chat.IssueSplitChild)
+						children[0].State = "Triage"
+					}
 					if outcome == "invalid state" {
 						children := arguments["children"].([]chat.IssueSplitChild)
 						children[0].State = "Missing"
@@ -545,6 +563,16 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: raw})
 				if err != nil {
 					t.Fatal(err)
+				}
+				if outcome == "reserved intake" {
+					if result.Success || !strings.Contains(result.Content, "Triage is reserved for linked GitHub issue intake") {
+						t.Fatalf("reserved intake refusal=%+v", result)
+					}
+					assertCoordinatorEffect(t, f, id, tool, false)
+					if len(splitWakes) != 0 {
+						t.Fatal("refused split emitted child wake notifications")
+					}
+					return
 				}
 				if outcome == "sandbox access" {
 					if result.Success || !strings.Contains(result.Content, "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.") {
@@ -899,6 +927,20 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						t.Fatalf("unsafe or missing bootstrap failure/retry: %+v, %v", result, err)
 					}
 				}
+				if tool == string(chat.ActionIssueSplit) {
+					wantWakes := 0
+					if changed {
+						wantWakes = 3
+					}
+					if len(splitWakes) != wantWakes {
+						t.Fatalf("split emitted %d wake notifications, want %d", len(splitWakes), wantWakes)
+					}
+					for _, child := range splitWakes {
+						if child.WorkItemID == "" || child.ProjectID != f.project || !strings.HasPrefix(child.Title, "Split ") {
+							t.Fatalf("split wake lost child identity: %+v", child)
+						}
+					}
+				}
 				if changed && tool == string(chat.ActionIssueSplit) {
 					requireNativeStatus(t, f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
 					var count int
@@ -1189,7 +1231,7 @@ func assertCoordinatorSplitEffect(t *testing.T, f coordinatorActionFixture, pare
 		}
 		return
 	}
-	if children != 3 || edges != 1 || comments != 1 {
+	if children != 3 || edges != 4 || comments != 1 {
 		t.Fatalf("split: children=%d edges=%d comments=%d", children, edges, comments)
 	}
 	if correctlyFiled != 3 {

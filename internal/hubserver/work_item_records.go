@@ -306,6 +306,14 @@ func validateWorkItemRecordCreateInput(ctx context.Context, scope nativeScope, p
 	if request.ScheduledFailure != nil || request.ScheduledValidation != nil {
 		return workItemStorageUnavailable()
 	}
+	if request.State == "Triage" && request.GitHubIssueURL == "" && scope.credential.HostedRole != "reporter" {
+		for _, state := range project.States {
+			if state.Name == "Backlog" && (!state.OperatorOnly || scope.credential.Scope != apiScopeWorker) {
+				return nativePublicInvalid("Triage is reserved for linked GitHub issue intake; use Backlog for drafts")
+			}
+		}
+		return nativePublicInvalid("Triage is reserved for linked GitHub issue intake")
+	}
 	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) > 5 || (request.ChallengeToken == "") != (len(request.NotDuplicateOf) == 0) {
 		return nativePublicInvalid("Supply a duplicate challenge token and one to five issue numbers together")
 	}

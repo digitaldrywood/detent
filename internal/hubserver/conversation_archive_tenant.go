@@ -117,7 +117,7 @@ func (s *Service) executeCoordinatorArchiveTenant(ctx context.Context, scope nat
 				}
 			}
 			for _, record := range records {
-				if err := record.write(ctx, w); err != nil {
+				if err := record.write(ctx, w, s); err != nil {
 					return err
 				}
 			}
