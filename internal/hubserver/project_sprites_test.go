@@ -211,61 +211,98 @@ func TestSpriteWakeLostResponseReconcilesAfterServiceReopen(t *testing.T) {
 }
 
 func TestSpriteWakeFailuresRespectAttemptBudget(t *testing.T) {
-	var calls atomic.Int32
-	client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
-		if calls.Add(1) == 1 {
-			return spritesTestResponse(`{"type":"complete"}`, http.StatusOK), nil
-		}
-		return nil, errors.New("service start response was lost")
-	})}
-	names := make([]string, 21)
-	for i := range names {
-		names[i] = fmt.Sprintf("example-host-%02d", i)
-	}
-	f, scope, runners := newSpriteWakeFixture(t, client, true, time.Minute, names...)
-	now := f.service.config.now()
-	f.service.config.now = func() time.Time { return now }
-	woken, err := f.service.wakeSpriteRunners(t.Context(), scope, "Todo")
-	if err != nil || woken != 1 || calls.Load() != 20 {
-		t.Fatalf("first pass: woken=%d starts=%d error=%v; want one success and 20 starts", woken, calls.Load(), err)
-	}
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		owner := r.(postgres.SpriteReader)
-		for i, runner := range runners {
-			operation, err := owner.SpriteEnrollmentWake(t.Context(), runner.enrollment.ID)
-			if i == 20 {
-				if !errors.Is(err, corestore.ErrNotFound) {
-					t.Fatalf("deferred target acquired a wake intent: %v", err)
+	for _, mode := range []string{"project", "organization states", "organization projects"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls atomic.Int32
+			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
+				if calls.Add(1) == 1 {
+					return spritesTestResponse(`{"type":"complete"}`, http.StatusOK), nil
 				}
-				continue
+				return nil, errors.New("service start response was lost")
+			})}
+			names := make([]string, 21)
+			for i := range names {
+				names[i] = fmt.Sprintf("example-host-%02d", i)
 			}
-			if err != nil {
+			initial := names
+			if mode == "organization projects" {
+				initial = names[:10]
+			}
+			f, scope, runners := newSpriteWakeFixture(t, client, true, time.Minute, initial...)
+			if mode == "organization projects" {
+				later := newNativeFixture(t, f.service, scope.organization, "Later example project")
+				storeSpriteWakeSecret(t, later, spritesSecretSentinel)
+				additional := enrollSpriteWakeRunners(t, later, time.Minute, names[10:]...)
+				if later.project.ID < f.project.ID {
+					runners = append(additional, runners...)
+				} else {
+					runners = append(runners, additional...)
+				}
+				scope.project = ""
+			}
+			if mode == "organization states" {
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), f.project.ID)
+					if err != nil {
+						return err
+					}
+					project.States = append(project.States, tracker.NativeState{Name: "Working", Dispatchable: true})
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				})
+			}
+			wake := func() (int, error) {
+				if mode == "project" {
+					return f.service.wakeSpriteRunners(t.Context(), scope, "Todo")
+				}
+				return f.service.wakeOrganizationSpriteRunners(t.Context(), scope)
+			}
+			now := f.service.config.now()
+			f.service.config.now = func() time.Time { return now }
+			woken, err := wake()
+			if err != nil || woken != 1 || calls.Load() != 20 {
+				t.Fatalf("first pass: woken=%d starts=%d error=%v; want one success and 20 starts", woken, calls.Load(), err)
+			}
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				owner := r.(postgres.SpriteReader)
+				for i, runner := range runners {
+					operation, err := owner.SpriteEnrollmentWake(t.Context(), runner.enrollment.ID)
+					if i == 20 {
+						if !errors.Is(err, corestore.ErrNotFound) {
+							t.Fatalf("deferred target acquired a wake intent: %v", err)
+						}
+						continue
+					}
+					if err != nil {
+						return err
+					}
+					outcome, attempts := "uncertain", int64(1)
+					if i == 0 {
+						outcome, attempts = "committed", 2
+					}
+					if operation.Outcome != outcome || operation.Attempts != attempts {
+						t.Fatalf("target %d outcome=%s attempts=%d", i, operation.Outcome, operation.Attempts)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			woken, err = wake()
+			if err != nil || woken != 0 || calls.Load() != 21 {
+				t.Fatalf("next pass: woken=%d starts=%d error=%v; want the deferred target only", woken, calls.Load(), err)
+			}
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				operation, err := r.(postgres.SpriteReader).SpriteEnrollmentWake(t.Context(), runners[20].enrollment.ID)
+				if err == nil && (operation.Outcome != "uncertain" || operation.Attempts != 1) {
+					t.Fatalf("deferred target did not advance once: %+v", operation)
+				}
 				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
-			outcome, attempts := "uncertain", int64(1)
-			if i == 0 {
-				outcome, attempts = "committed", 2
-			}
-			if operation.Outcome != outcome || operation.Attempts != attempts {
-				t.Fatalf("target %d outcome=%s attempts=%d", i, operation.Outcome, operation.Attempts)
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	woken, err = f.service.wakeSpriteRunners(t.Context(), scope, "Todo")
-	if err != nil || woken != 0 || calls.Load() != 21 {
-		t.Fatalf("next pass: woken=%d starts=%d error=%v; want the deferred target only", woken, calls.Load(), err)
-	}
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		operation, err := r.(postgres.SpriteReader).SpriteEnrollmentWake(t.Context(), runners[20].enrollment.ID)
-		if err == nil && (operation.Outcome != "uncertain" || operation.Attempts != 1) {
-			t.Fatalf("deferred target did not advance once: %+v", operation)
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
+
+		})
 	}
 }
 

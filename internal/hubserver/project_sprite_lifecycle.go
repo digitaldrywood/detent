@@ -1598,6 +1598,14 @@ func (s *Service) scaleSpritePoolRecord(ctx context.Context, scope nativeScope, 
 }
 
 func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope, state string) (int, error) {
+	remaining := 20
+	return s.wakeSpriteRunnersBudgetRecord(ctx, scope, state, &remaining)
+}
+
+func (s *Service) wakeSpriteRunnersBudgetRecord(ctx context.Context, scope nativeScope, state string, remaining *int) (int, error) {
+	if *remaining <= 0 {
+		return 0, nil
+	}
 	allowed, err := s.monthlySpriteAllowedRecord(ctx, scope)
 	if err != nil || !allowed {
 		return 0, err
@@ -1625,7 +1633,7 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 	if placement.poolConfigured && placement.Provisionable == 0 {
 		return 0, nil
 	}
-	total, attempted := 0, 0
+	total := 0
 	slices.SortFunc(placement.Runners, func(a, b placementRunner) int {
 		if order := strings.Compare(a.Hostname, b.Hostname); order != 0 {
 			return order
@@ -1634,7 +1642,7 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 	})
 	seen := map[string]bool{}
 	for _, candidate := range placement.Runners {
-		if attempted >= 20 {
+		if *remaining <= 0 {
 			break
 		}
 		if !candidate.Sprite || !candidate.Paused || candidate.State != "active" || !validSpritesSlug(candidate.Hostname) || seen[candidate.Hostname] {
@@ -1705,7 +1713,7 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 		if op.Outcome == "committed" || op.NextAttemptAt.After(s.config.now()) {
 			continue
 		}
-		attempted++
+		*remaining--
 		if err := s.runSpriteOperation(ctx, op); err != nil {
 			return total, err
 		}
@@ -1752,7 +1760,7 @@ func (s *Service) wakeOrganizationSpriteRunnersRecord(ctx context.Context, scope
 			return 0, err
 		}
 	}
-	total := 0
+	total, remaining := 0, 20
 	for _, project := range projects {
 		if project.DeletedAt != nil || project.Profile != "native" {
 			continue
@@ -1766,12 +1774,12 @@ func (s *Service) wakeOrganizationSpriteRunnersRecord(ctx context.Context, scope
 			if !state.Dispatchable || state.Terminal {
 				continue
 			}
-			count, err := s.wakeSpriteRunnersRecord(ctx, scope, state.Name)
+			count, err := s.wakeSpriteRunnersBudgetRecord(ctx, scope, state.Name, &remaining)
 			if err != nil {
 				return total, err
 			}
 			total += count
-			if total >= 20 {
+			if remaining == 0 {
 				return total, nil
 			}
 		}
