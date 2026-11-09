@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -30,6 +31,7 @@ func TestHealthScheduledNeutralImportPreservesHistory(t *testing.T) {
 	persistedBase := base.Truncate(time.Microsecond)
 	const repository = "example-org/example-project"
 	var sources []HealthScheduledImportSource
+	var nativeFixtures []nativeFixture
 	fixtures := map[tracker.OrganizationID]*coreNeutralFixture{}
 	expected := map[tracker.OrganizationID]map[tracker.ProjectID][]healthstore.ScheduledReport{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
@@ -40,6 +42,7 @@ func TestHealthScheduledNeutralImportPreservesHistory(t *testing.T) {
 		var projects []tracker.ProjectID
 		for projectIndex, name := range []string{"First scheduled history", "Second scheduled history"} {
 			f := newNativeFixture(t, service, org, name)
+			nativeFixtures = append(nativeFixtures, f)
 			projects = append(projects, f.project.ID)
 			sourceProject := map[string]any{"id": f.project.ID, "checkout_repository": repository}
 			if projectIndex == 1 {
@@ -205,25 +208,28 @@ func TestHealthScheduledNeutralImportPreservesHistory(t *testing.T) {
 	if count, err := ImportHealthScheduledReports(t.Context(), service.database.postgres, foreign); err == nil || count != 0 {
 		t.Fatalf("foreign project count=%d error=%v", count, err)
 	}
+	reopen := func() {
+		cfg := service.config
+		cfg.Hosted = &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}
+		if err := service.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := Open(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		service = reopened
+		t.Cleanup(func() { _ = reopened.Close() })
+		service.config.Hosted = nil
+		service.echo = echo.New()
+		service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
+		service.registerNativeRoutes(service.echo)
+		service.registerRunnerRoutes(service.echo)
+		service.registerOperatorTools(service.echo)
+	}
 	for _, stage := range []string{"import", "replay", "reopen"} {
 		if stage == "reopen" {
-			cfg := service.config
-			cfg.Hosted = &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}
-			if err := service.Close(); err != nil {
-				t.Fatal(err)
-			}
-			reopened, err := Open(t.Context(), cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			service = reopened
-			t.Cleanup(func() { _ = reopened.Close() })
-			service.config.Hosted = nil
-			service.echo = echo.New()
-			service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
-			service.registerNativeRoutes(service.echo)
-			service.registerRunnerRoutes(service.echo)
-			service.registerOperatorTools(service.echo)
+			reopen()
 		}
 		if stage == "replay" {
 			original := fixtures["org_first"]
@@ -259,6 +265,67 @@ func TestHealthScheduledNeutralImportPreservesHistory(t *testing.T) {
 					t.Fatalf("stage=%s evaluator history=%+v error=%v", stage, scheduled, err)
 				}
 			}
+		}
+	}
+	for index, fixture := range nativeFixtures {
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base, "", nil), http.StatusUnauthorized)
+		foreign := nativeFixtures[(index+2)%len(nativeFixtures)]
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base, foreign.token, nil), http.StatusUnauthorized)
+		for _, selected := range nativeFixtures {
+			if selected.project.OrganizationID == fixture.project.OrganizationID && selected.project.ID != fixture.project.ID {
+				response := performHubAPIRequest(t, service, http.MethodGet, fixture.base, selected.token, nil)
+				requireNativeStatus(t, response, http.StatusForbidden)
+				var denied apiErrorResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &denied); err != nil {
+					t.Fatal(err)
+				}
+				if denied.Code != "access_denied" || strings.Contains(response.Body.String(), string(fixture.project.ID)) || strings.Contains(response.Body.String(), fixture.project.Name) {
+					t.Fatalf("project denial exposed data: %s", response.Body.String())
+				}
+			}
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base, fixture.token, nil), http.StatusOK)
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.RequireProjectIdle(t.Context(), fixture.project.ID, service.config.now()); err != nil {
+				return err
+			}
+			record, err := w.ProjectRecord(t.Context(), fixture.project.ID)
+			if err != nil {
+				return err
+			}
+			return w.RetireProject(t.Context(), fixture.project.ID, record.Settings.Revision, service.config.now())
+		}); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base, fixture.token, nil), http.StatusNotFound)
+		if index%2 == 0 {
+			other := nativeFixtures[index+1]
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, other.base, other.token, nil), http.StatusOK)
+		}
+		if count, err := ImportHealthScheduledReports(t.Context(), service.database.postgres, sources[index]); !errors.Is(err, corestore.ErrNotFound) || count != 0 {
+			t.Fatalf("retired project import count=%d error=%v", count, err)
+		}
+	}
+	reopen()
+	for _, fixture := range nativeFixtures {
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base, fixture.token, nil), http.StatusNotFound)
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), fixture.project.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
+			record, err := r.Project(t.Context(), fixture.project.ID)
+			if err != nil {
+				return err
+			}
+			if record.DeletedAt == nil {
+				t.Fatal("retirement did not survive reopen")
+			}
+			history, err := r.(healthstore.ScheduledReader).HealthScheduledHistory(t.Context(), fixture.project.ID, base.Add(11*time.Hour))
+			want := slices.Clone(expected[fixture.project.OrganizationID][fixture.project.ID])
+			slices.SortFunc(want, func(a, b healthstore.ScheduledReport) int { return b.RecordedAt.Compare(a.RecordedAt) })
+			if !reflect.DeepEqual(history.Reports, want) || !history.FirstReport.Equal(persistedBase) || !history.LastGreen.Equal(persistedBase.Add(3*time.Hour)) {
+				t.Fatalf("retirement changed retained history: %+v error=%v", history, err)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
