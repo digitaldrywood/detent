@@ -51,11 +51,12 @@ type placementRunner struct {
 
 type placementSnapshot struct {
 	placementDecision
-	Runners      []placementRunner
-	Requirements policy.Requirements
-	Items        map[tracker.WorkItemID]providercapacity.Requirement
-	Local        map[tracker.WorkItemID]int
-	resolver     *runner.BoardIdentityResolver
+	Runners        []placementRunner
+	Requirements   policy.Requirements
+	Items          map[tracker.WorkItemID]providercapacity.Requirement
+	Local          map[tracker.WorkItemID]int
+	resolver       *runner.BoardIdentityResolver
+	poolConfigured bool
 }
 
 func readPlacementPolicy(ctx context.Context, q nativeQueryer, scope nativeScope) (policy.Placement, int, error) {
@@ -686,6 +687,17 @@ func readProjectIdentityResolver(ctx context.Context, q nativeQueryer, scope nat
 }
 
 func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) (placementSnapshot, error) {
+	return s.spritePlacementScopeRecord(ctx, scope, "")
+}
+
+func (s *Service) spriteProjectPlacementRecord(ctx context.Context, scope nativeScope) (placementSnapshot, error) {
+	if scope.project == "" {
+		return placementSnapshot{}, corestore.ErrNotFound
+	}
+	return s.spritePlacementScopeRecord(ctx, scope, scope.project)
+}
+
+func (s *Service) spritePlacementScopeRecord(ctx context.Context, scope nativeScope, projectID tracker.ProjectID) (placementSnapshot, error) {
 	result := placementSnapshot{Items: map[tracker.WorkItemID]providercapacity.Requirement{}, Local: map[tracker.WorkItemID]int{}}
 	now := s.config.now()
 	var pool postgres.SpritePool
@@ -700,18 +712,27 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 			return accessstore.ErrTransactionRequired
 		}
 		pool, err = owner.SpritePool(ctx)
+		result.poolConfigured = err == nil
 		if errors.Is(err, corestore.ErrNotFound) {
 			pool.PlacementMode = "blended"
 		} else if err != nil {
 			return err
 		}
-		projects, err = r.Projects(ctx, "", 100)
-		if err != nil {
-			return err
-		}
-		allocations, err = owner.SpriteAllocations(ctx, "", 100)
-		if err != nil {
-			return err
+		if projectID != "" {
+			project, err := r.ProjectRecord(ctx, projectID)
+			if err != nil {
+				return err
+			}
+			projects = []corestore.Project{project.Core}
+		} else {
+			projects, err = r.Projects(ctx, "", 100)
+			if err != nil {
+				return err
+			}
+			allocations, err = owner.SpriteAllocations(ctx, "", 100)
+			if err != nil {
+				return err
+			}
 		}
 		routing, ok := r.(runnerstore.RoutingPageReader)
 		if !ok {
@@ -973,7 +994,7 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 		if limit := result.Policy.SpriteLimit(); limit > 0 {
 			target = min(target, max(limit-result.SpriteUsed, 0))
 		}
-		if !allocation.Managed {
+		if projectID != "" || !allocation.Managed {
 			result.ReadyTodo += depth
 			result.LocalFree += localFree
 			result.SpriteFree += spriteFree

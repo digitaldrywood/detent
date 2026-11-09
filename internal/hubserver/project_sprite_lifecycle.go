@@ -1480,9 +1480,12 @@ func (s *Service) wakeSpriteRunnersRecord(ctx context.Context, scope nativeScope
 	if !dispatchable {
 		return 0, nil
 	}
-	placement, err := s.spritePlacementRecord(ctx, scope)
+	placement, err := s.spriteProjectPlacementRecord(ctx, scope)
 	if err != nil {
 		return 0, err
+	}
+	if placement.poolConfigured && placement.Provisionable == 0 {
+		return 0, nil
 	}
 	total := 0
 	slices.SortFunc(placement.Runners, func(a, b placementRunner) int {
