@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -106,11 +108,19 @@ func (s *Service) readHealthSnapshotRecords(ctx context.Context, organization tr
 
 func (s *Service) readHealthRunnerRecords(ctx context.Context, organization tracker.OrganizationID, now time.Time) ([]healthRunnerState, error) {
 	var result []healthRunnerState
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, workItemStorageUnavailable()
+	}
 	after := ""
 	for {
 		var page []healthstore.RunnerObservation
-		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+		err := repository.ReadTenantSnapshot(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 			owner, ok := r.(healthstore.ObservationReader)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			admissions, ok := r.(runnerstore.AdmissionReader)
 			if !ok {
 				return workItemStorageUnavailable()
 			}
@@ -119,6 +129,8 @@ func (s *Service) readHealthRunnerRecords(ctx context.Context, organization trac
 			if err != nil {
 				return err
 			}
+			projectRunners := map[tracker.ProjectID][]string{}
+			positions := map[string]int{}
 			for _, row := range page {
 				runner := healthRunnerState{healthRunner: healthRunner{ID: row.ID, Heartbeat: row.Heartbeat, CreatedAt: row.CreatedAt, Leases: row.Leases, FreeSlots: row.FreeSlots}, MachineID: row.MachineID, Routing: runnerauth.Routing{State: row.State}, Admissions: map[string]tracker.NativeAdmissionObservation{}}
 				projects, err := r.RunnerProjects(ctx, row.ID, healthProjectLimit+1)
@@ -136,17 +148,30 @@ func (s *Service) readHealthRunnerRecords(ctx context.Context, organization trac
 				slices.Sort(projects)
 				for _, project := range slices.Compact(projects) {
 					runner.Projects = append(runner.Projects, string(project))
-					observation, err := r.RunnerAdmissionObservation(ctx, row.ID, project)
-					if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-						return err
-					}
-					if err == nil {
-						runner.Admissions[string(project)] = observation
-					}
+					projectRunners[project] = append(projectRunners[project], row.ID)
 				}
+				positions[row.ID] = len(result)
 				result = append(result, runner)
 				if len(result) > healthRunnerLimit {
 					return errHealthReadLimit
+				}
+			}
+			for _, project := range slices.Sorted(maps.Keys(projectRunners)) {
+				ids := projectRunners[project]
+				for len(ids) > 0 {
+					count := min(len(ids), 100)
+					observations, err := admissions.RunnerAdmissionObservations(ctx, project, ids[:count])
+					if err != nil {
+						return err
+					}
+					for id, observation := range observations {
+						position, ok := positions[id]
+						if !ok {
+							return corestore.ErrInvalidRelationship
+						}
+						result[position].Admissions[string(project)] = observation
+					}
+					ids = ids[count:]
 				}
 			}
 			return nil
