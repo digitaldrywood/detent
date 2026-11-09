@@ -350,6 +350,11 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		if err := w.LockRelationshipGraph(ctx); err != nil {
 			return err
 		}
+		if plan.replay == nil {
+			if err := checkSpriteClaimRecord(ctx, w, identity.RunnerID, scope.project, authoritativeNow); err != nil {
+				return err
+			}
+		}
 		if request.LandingCapacity > 0 || plan.landingRequired {
 			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 				return err

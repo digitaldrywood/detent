@@ -923,6 +923,14 @@ func (s *Service) completeSpriteOperation(ctx context.Context, op postgres.Sprit
 		if !ok {
 			return accessstore.ErrTransactionRequired
 		}
+		var lockedRunner string
+		if op.Operation == "delete" {
+			var err error
+			lockedRunner, err = lockSpriteMemberRunner(ctx, w, owner, op.Name)
+			if err != nil {
+				return err
+			}
+		}
 		op.Outcome = "committed"
 		op.ReceiptObjectKey = &key
 		if receipt.ResourceID != "" {
@@ -961,6 +969,9 @@ func (s *Service) completeSpriteOperation(ctx context.Context, op postgres.Sprit
 			row.State = "deleted"
 			id, err := owner.SpriteMemberRunner(ctx, op.Name)
 			if err == nil {
+				if id != lockedRunner {
+					return corestore.ErrRevisionConflict
+				}
 				identity, err := w.RunnerIdentity(ctx, id)
 				if err != nil {
 					return err
@@ -1351,12 +1362,34 @@ func (s *Service) deletePoolSpriteRecord(ctx context.Context, scope nativeScope,
 	return s.retirePoolSpriteRecord(ctx, scope, member, true)
 }
 
+func lockSpriteMemberRunner(ctx context.Context, writer tenantstore.Writer, owner postgres.SpriteReader, name string) (string, error) {
+	id, err := owner.SpriteMemberRunner(ctx, name)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	locker, ok := writer.(runnerstore.UpdateLocker)
+	if !ok {
+		return "", accessstore.ErrTransactionRequired
+	}
+	if err := locker.LockRunnerUpdate(ctx, id); err != nil {
+		return "", fmt.Errorf("lock Sprite member runner: %w", err)
+	}
+	return id, nil
+}
+
 func (s *Service) retirePoolSpriteRecord(ctx context.Context, scope nativeScope, member spritePoolMember, execute bool) error {
 	var operation postgres.SpriteOperation
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(postgres.SpriteWriter)
 		if !ok {
 			return accessstore.ErrTransactionRequired
+		}
+		lockedRunner, err := lockSpriteMemberRunner(ctx, w, owner, member.Name)
+		if err != nil {
+			return err
 		}
 		pool, err := owner.LockSpritePool(ctx)
 		if err != nil {
@@ -1440,6 +1473,9 @@ func (s *Service) retirePoolSpriteRecord(ctx context.Context, scope nativeScope,
 		}
 		id, err := owner.SpriteMemberRunner(ctx, member.Name)
 		if err == nil {
+			if id != lockedRunner {
+				return corestore.ErrRevisionConflict
+			}
 			identity, err := w.RunnerIdentity(ctx, id)
 			if err != nil {
 				return err

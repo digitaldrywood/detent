@@ -1376,6 +1376,7 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 		managed      bool
 	}{
 		{"active host lease survives", "busy", 1, false, false},
+		{"runner locking precedes pool retirement", "runner lock", 1, false, true},
 		{"updated floor is preserved", "floor", 1, false, false},
 		{"idle threshold is respected", "recent", 0, false, false},
 		{"expired interrupted bootstrap is deleted by the existing lifecycle", "expired", 2, false, false},
@@ -1399,7 +1400,11 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 				setSpriteAllocationFixture(t, f, 0, 1)
 			}
 			var err error
+			retired := false
 			switch test.change {
+			case "runner lock":
+				err = deleteSpritePoolMemberWithHeldRunner(t, f, scope)
+				retired = true
 			case "busy", "busy ceiling":
 				if test.change == "busy ceiling" {
 					updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.MaxRunners = 0 })
@@ -1456,7 +1461,9 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = f.service.scaleSpritePool(t.Context(), scope, false)
+			if !retired {
+				err = f.service.scaleSpritePool(t.Context(), scope, false)
+			}
 			if (err != nil) != test.wantError {
 				t.Fatalf("deletion error=%v", err)
 			}
@@ -1465,6 +1472,67 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 			}
 		})
 	}
+}
+
+func deleteSpritePoolMemberWithHeldRunner(t *testing.T, f nativeFixture, scope nativeScope) error {
+	t.Helper()
+	view, err := f.service.readSpritePool(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Members) < 2 || view.Members[0].RunnerID == "" {
+		t.Fatal("retirement fixture needs two enrolled members")
+	}
+	stored, ok := projectRecordDatabases.Load(f.service.database.postgres)
+	if !ok {
+		t.Fatal("retirement fixture has no PostgreSQL administrator")
+	}
+	admin := stored.(*sql.DB)
+	serving, background := f.service.database.postgres.WorkloadCapacities()
+	t.Logf("fixture serving_slots=%d background_slots=%d", serving, background)
+	held, err := admin.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var work sync.WaitGroup
+	t.Cleanup(func() { _ = held.Rollback(); work.Wait() })
+	var runnerID string
+	if err := held.QueryRowContext(t.Context(), `SELECT runner_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2 FOR UPDATE`, scope.organization, view.Members[0].RunnerID).Scan(&runnerID); err != nil {
+		t.Fatal(err)
+	}
+	var organization string
+	if err := held.QueryRowContext(t.Context(), `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR NO KEY UPDATE`, scope.organization).Scan(&organization); err != nil {
+		t.Fatal(err)
+	}
+	retired := make(chan error, 1)
+	ownerScope := scope
+	ownerScope.project = view.Members[0].AllocationProjectID
+	work.Go(func() { retired <- f.service.deletePoolSpriteRecord(t.Context(), ownerScope, view.Members[0]) })
+	testenv.WaitUntil(t, t.Context(), func() error {
+		if _, err := held.ExecContext(t.Context(), `SELECT pg_stat_clear_snapshot()`); err != nil {
+			return err
+		}
+		select {
+		case err := <-retired:
+			t.Fatalf("retirement finished before runner contention: %v", err)
+		default:
+		}
+		var waiting int
+		if err := held.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock'`).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting == 0 {
+			return errors.New("retirement has not reached runner contention")
+		}
+		return nil
+	})
+	if err := held.QueryRowContext(t.Context(), `SELECT organization_id FROM organization_sprite_pools WHERE organization_id=$1 FOR UPDATE NOWAIT`, scope.organization).Scan(&organization); err != nil {
+		t.Errorf("retirement held the pool while waiting for the runner: %v", err)
+	}
+	if err := held.Rollback(); err != nil {
+		t.Error(err)
+	}
+	return <-retired
 }
 
 func TestSpritePoolMutationDuringDeletion(t *testing.T) {

@@ -592,11 +592,15 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 			}
 			start := make(chan struct{})
 			statuses := make(chan int, len(items))
+			var first tracker.NativeLease
 			var workers sync.WaitGroup
 			for i, issue := range items {
 				workers.Go(func() {
 					<-start
 					response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(issue.OrganizationID)+"/projects/"+string(issue.ProjectID)+"/claims", sprite.redemption.Credential, providerClaim(sprite, issue, fmt.Sprintf("concurrent-%d", i)))
+					if i == 0 && response.Code == http.StatusOK {
+						decodeHubResponse(t, response, &first)
+					}
 					statuses <- response.Code
 				})
 			}
@@ -644,6 +648,19 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 			}
 			if running != claimed || promoted != 0 {
 				t.Fatalf("running=%d claimed=%d promoted=%d", running, claimed, promoted)
+			}
+			if test.allocation == "owned" {
+				if first.ID == "" || first.FencingToken <= 0 {
+					t.Fatal("owned claim did not return a fenced lease")
+				}
+				setSpriteAllocationFixture(t, f, 0, 1)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", sprite.redemption.Credential, providerClaim(sprite, items[0], "concurrent-0"))
+				requireNativeStatus(t, response, http.StatusOK)
+				var replay tracker.NativeLease
+				decodeHubResponse(t, response, &replay)
+				if replay.ID != first.ID || replay.FencingToken != first.FencingToken {
+					t.Fatal("withdrawn allocation changed an existing claim replay")
+				}
 			}
 			if placement.SpriteLimit() > 0 {
 				decision, err := f.service.spritePlacementRecord(t.Context(), scope)
