@@ -2,154 +2,222 @@ package hubserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type healthActorImportExpectation struct {
+	fixture  nativeFixture
+	issue    tracker.NativeIssue
+	comment  tracker.NativeComment
+	history  []tracker.CollaborationEvent
+	versions map[eventstore.CollaborationVersionKey]json.RawMessage
+}
+
 func TestHealthDetectorActorMigration(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name, kind, principal, state string
-	}{
-		{"active health finding", "system", "health_detector", "Todo"},
-		{"terminal health finding", "system", "health_detector", "Done"},
-		{"human unchanged", "human", "health_detector", "Todo"},
-		{"runner unchanged", "runner", "health_detector", "Todo"},
-		{"integration unchanged", "integration", "health_detector", "Todo"},
-		{"other principal unchanged", "system", "another-system", "Todo"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newDefaultNativeFixture(t, Config{})
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+	objects := &memoryRunDetails{}
+	service := newPostgresNativeService(t, Config{RunDetails: objects})
+	repository := service.database.postgres
+	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct{ name, kind, principal, state, want string }{
+		{"active health finding", "system", "health_detector", "Todo", "integration"},
+		{"terminal health finding", "system", "health_detector", "Done", "integration"},
+		{"human unchanged", "human", "health_detector", "Todo", "human"},
+		{"runner unchanged", "runner", "health_detector", "Todo", "runner"},
+		{"integration unchanged", "integration", "health_detector", "Todo", "integration"},
+		{"other principal unchanged", "system", "another-system", "Todo", "system"},
+	}
+	var expected []healthActorImportExpectation
+	var sources []CoreWorkItemImportSource
+	encode := func(value any) json.RawMessage {
+		t.Helper()
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		fixture := newCoreNeutralFixture(t, org, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
+		fixture.add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
+		var projects []tracker.ProjectID
+		for projectIndex, name := range []string{"First actor history", "Second actor history"} {
+			f := newNativeFixture(t, service, org, name)
+			projects = append(projects, f.project.ID)
+			for stateIndex, state := range []string{"Todo", "Done"} {
+				fixture.add("workflow_states", map[string]any{"id": projectIndex*100 + stateIndex + 1, "project_id": f.project.ID, "detent_state": state})
+			}
+			for index, test := range cases {
+				id := projectIndex*100 + index + 1
+				item := tracker.NativeWorkItemID(fmt.Sprintf("wi_health_%d_%d", projectIndex, index))
+				actor := tracker.Actor{Kind: test.kind, PrincipalID: test.principal}
+				wantActor := actor
+				wantActor.Kind = test.want
+				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: f.project.ID, WorkItemID: item, Number: index + 1, Revision: 1, Profile: "native"}, Title: test.name, Body: "Retained evidence" + issueContractTestSections, State: test.state, Actor: actor, CreatedAt: at, UpdatedAt: at, LastActivityAt: at}
+				comment := tracker.NativeComment{ID: fmt.Sprintf("comment_health_%d_%d", projectIndex, index), OrganizationID: org, ProjectID: f.project.ID, WorkItemID: item, Revision: 1, Sequence: 1, Body: "Retained occurrence", Actor: actor, CreatedAt: at, UpdatedAt: at}
+				edited := comment
+				edited.Revision = 2
+				edited.EditedBy = &actor
+				wantIssue, wantComment, wantEdited := issue, comment, edited
+				wantIssue.Actor, wantComment.Actor, wantEdited.Actor = wantActor, wantActor, wantActor
+				wantEdited.EditedBy = &wantActor
+				want := healthActorImportExpectation{fixture: f, issue: wantIssue, comment: wantEdited, versions: map[eventstore.CollaborationVersionKey]json.RawMessage{}}
+				for _, version := range []struct {
+					key              eventstore.CollaborationVersionKey
+					source, expected any
+				}{
+					{eventstore.CollaborationVersionKey{RecordID: string(item), Revision: 1}, issue, wantIssue},
+					{eventstore.CollaborationVersionKey{RecordID: comment.ID, Revision: 1}, comment, wantComment},
+					{eventstore.CollaborationVersionKey{RecordID: comment.ID, Revision: 2}, edited, wantEdited},
+				} {
+					fixture.add("collaboration_versions", map[string]any{"project_id": f.project.ID, "work_item_id": item, "record_id": version.key.RecordID, "revision": version.key.Revision, "encoding": "snapshot", "record_json": string(encode(version.source))})
+					want.versions[version.key] = encode(version.expected)
+				}
+				fixture.add("native_comments", map[string]any{"id": comment.ID, "project_id": f.project.ID, "work_item_id": item, "revision": 2, "sequence": 1, "body": comment.Body, "actor_json": string(encode(actor)), "edited_by_json": string(encode(actor)), "provenance_json": nil, "source_key": nil, "deleted": 0, "created_at": at.Format(time.RFC3339Nano), "updated_at": at.Format(time.RFC3339Nano)})
+				stateID := projectIndex*100 + 1
+				if test.state == "Done" {
+					stateID++
+				}
+				fixture.add("issues", map[string]any{"id": id, "native_id": item, "project_id": f.project.ID, "number": index + 1, "revision": 1, "event_sequence": 3, "native_source_key": nil, "title": issue.Title, "body": issue.Body, "issue_contract_json": nil, "report_context_json": nil, "actor_json": string(encode(actor)), "provenance_json": nil, "archived": 0, "created_at": at.Format(time.RFC3339Nano), "updated_at": at.Format(time.RFC3339Nano), "native_created_at": at.Format(time.RFC3339Nano), "native_updated_at": at.Format(time.RFC3339Nano), "last_activity_at": at.Format(time.RFC3339Nano), "workflow_state_id": stateID, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-author", "repository_id": 1, "dispatch_wait_since": nil})
+				for sequence, kind := range []string{"issue.created", "comment.created", "comment.edited"} {
+					data := tracker.CollaborationData{Revision: 1}
+					if sequence > 0 {
+						data.CommentID = comment.ID
+					}
+					if sequence == 2 {
+						data.Revision = 2
+					}
+					event := tracker.CollaborationEvent{ID: fmt.Sprintf("event_health_%d_%d_%d", projectIndex, index, sequence), OrganizationID: org, ProjectID: f.project.ID, AggregateType: "work_item", AggregateID: item, AggregateSequence: int64(sequence + 1), Type: kind, SchemaVersion: 1, Actor: wantActor, RecordedAt: at, Data: data}
+					fixture.add("collaboration_events", map[string]any{"id": event.ID, "project_id": f.project.ID, "work_item_id": item, "sequence": sequence + 1, "type": kind, "schema_version": 1, "actor_json": string(encode(actor)), "data_json": string(encode(data)), "event_revision": data.Revision, "recorded_at": at.Format(time.RFC3339Nano)})
+					want.history = append(want.history, event)
+				}
+				expected = append(expected, want)
+			}
+		}
+		path := fixture.write()
+		for _, project := range projects {
+			sources = append(sources, CoreWorkItemImportSource{BundlePath: path, OrganizationID: org, ProjectID: project, Objects: objects})
+		}
+	}
+	baselineIssues := map[tracker.NativeWorkItemID]map[tracker.OrganizationID]tracker.NativeIssue{}
+	for _, stage := range []string{"import", "replay", "reopen"} {
+		if stage == "reopen" {
+			cfg := service.config
+			cfg.Hosted = &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}
+			cfg.runMaintenance = waitForMaintenanceFixtureShutdown
+			if err := service.Close(); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID,
-				sourceActor: &tracker.Actor{Kind: test.kind, PrincipalID: test.principal}}
-			now := f.service.config.now()
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			reopened, err := Open(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback()
-			issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: test.name, Body: "Retained evidence" + issueContractTestSections, State: test.state}, now)
-			if err != nil {
-				t.Fatal(err)
+			service = reopened
+			t.Cleanup(func() { _ = reopened.Close() })
+			service.config.Hosted = nil
+			service.echo = echo.New()
+			service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
+			service.registerNativeRoutes(service.echo)
+			service.registerRunnerRoutes(service.echo)
+			service.registerOperatorTools(service.echo)
+			repository = service.database.postgres
+		}
+		for _, source := range sources {
+			count, err := ImportCoreWorkItems(t.Context(), repository, source)
+			if err != nil || count != int64(len(cases)) {
+				t.Fatalf("stage=%s org=%s count=%d error=%v", stage, source.OrganizationID, count, err)
 			}
-			comment, err := insertNativeComment(t.Context(), tx, scope, issue, "Retained occurrence", nil, now)
-			if err != nil {
-				t.Fatal(err)
+		}
+		for _, want := range expected {
+			f := want.fixture
+			f.service = service
+			got := readWorkItem(t, f, want.issue.WorkItemID, "")
+			if got.Actor != want.issue.Actor || got.Title != want.issue.Title || got.Body != want.issue.Body || got.State != want.issue.State {
+				t.Fatalf("stage=%s issue changed beyond actor normalization: %+v", stage, got)
 			}
-			comment.EditedBy = scope.sourceActor
-			comment.Revision++
-			editor, err := marshalNative(comment.EditedBy)
-			if err != nil {
-				t.Fatal(err)
+			if stage == "import" {
+				if baselineIssues[got.WorkItemID] == nil {
+					baselineIssues[got.WorkItemID] = map[tracker.OrganizationID]tracker.NativeIssue{}
+				}
+				baselineIssues[got.WorkItemID][got.OrganizationID] = got
+			} else if !reflect.DeepEqual(baselineIssues[got.WorkItemID][got.OrganizationID], got) {
+				t.Fatal("import replay or reopen changed the public issue")
 			}
-			if _, err := tx.ExecContext(t.Context(), "UPDATE native_comments SET edited_by_json=?, revision=? WHERE id=?", editor, comment.Revision, comment.ID); err != nil {
-				t.Fatal(err)
-			}
-			if err := recordNativeChange(t.Context(), tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			before := readWorkItem(t, f, issue.WorkItemID, "")
-			comment, err = readNativeComment(t.Context(), f.service.database.db, scope, string(issue.WorkItemID), comment.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/history"
 			var history tracker.Page[tracker.CollaborationEvent]
-			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil), &history)
-			readVersions := func() []map[string]any {
-				t.Helper()
-				rows, err := f.service.database.db.QueryContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE work_item_id=? ORDER BY record_id,revision", issue.WorkItemID)
+			decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items/"+string(want.issue.WorkItemID)+"/history", f.token, nil), &history)
+			if !reflect.DeepEqual(history.Items, want.history) {
+				t.Fatalf("stage=%s history changed beyond actor normalization: got=%+v want=%+v", stage, history.Items, want.history)
+			}
+			var versions []eventstore.CollaborationVersion
+			if err := repository.ReadTenant(t.Context(), want.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				comment, err := r.Comment(t.Context(), want.issue.ProjectID, want.issue.WorkItemID, want.comment.ID)
+				if err != nil {
+					return err
+				}
+				if comment.Revision != int64(want.comment.Revision) || comment.ActorKind != want.comment.Actor.Kind || comment.ActorPrincipalID != want.comment.Actor.PrincipalID || comment.EditedByKind == nil || *comment.EditedByKind != want.comment.EditedBy.Kind || comment.EditedByPrincipalID == nil || *comment.EditedByPrincipalID != want.comment.EditedBy.PrincipalID {
+					t.Fatal("current comment or editor changed beyond actor normalization")
+				}
+				for key := range want.versions {
+					row, err := r.CollaborationVersion(t.Context(), key.RecordID, key.Revision)
+					if err != nil {
+						return err
+					}
+					versions = append(versions, row)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range versions {
+				raw, err := eventstore.NewContent(service.runDetailStore()).CollaborationVersion(t.Context(), row)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer rows.Close()
-				var records []map[string]any
-				for rows.Next() {
-					var raw string
-					if err := rows.Scan(&raw); err != nil {
-						t.Fatal(err)
-					}
-					var record map[string]any
-					if err := json.Unmarshal([]byte(raw), &record); err != nil {
-						t.Fatal(err)
-					}
-					records = append(records, record)
-				}
-				if err := rows.Err(); err != nil {
+				key := eventstore.CollaborationVersionKey{RecordID: row.RecordID, Revision: row.Revision}
+				expected := want.versions[key]
+				var gotMap, wantMap map[string]any
+				if err := json.Unmarshal(raw, &gotMap); err != nil {
 					t.Fatal(err)
 				}
-				return records
-			}
-			versions := readVersions()
-			if len(versions) != 3 || len(history.Items) != 3 {
-				t.Fatalf("versions/history = %d/%d, want 3/3", len(versions), len(history.Items))
-			}
-			wantActor := *scope.sourceActor
-			if test.kind == "system" && test.principal == "health_detector" {
-				wantActor.Kind = "integration"
-			}
-			before.Actor, comment.Actor, comment.EditedBy = wantActor, wantActor, &wantActor
-			for i := range history.Items {
-				history.Items[i].Actor = wantActor
-			}
-			for _, record := range versions {
-				for _, key := range []string{"actor", "edited_by"} {
-					if actor, ok := record[key].(map[string]any); ok {
-						actor["kind"] = wantActor.Kind
-					}
+				if err := json.Unmarshal(expected, &wantMap); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(gotMap, wantMap) {
+					t.Fatalf("stage=%s retained version %+v changed beyond actor normalization: got=%s want=%s", stage, key, raw, expected)
 				}
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE native_id=?", issue.WorkItemID); err != nil {
+			if err := service.refreshBoardRecord(t.Context(), want.issue.OrganizationID, viewstore.BoardCandidate{ProjectID: want.issue.ProjectID, WorkItemID: want.issue.WorkItemID}, at); err != nil {
 				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=20261006192328"); err != nil {
-				t.Fatal(err)
-			}
-			for _, step := range []string{"repair", "restart"} {
-				t.Run(step, func(t *testing.T) {
-					if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
-						t.Fatal(err)
-					}
-					after := readWorkItem(t, f, issue.WorkItemID, "")
-					if !reflect.DeepEqual(before, after) {
-						t.Fatalf("issue changed beyond actor kind: before=%+v after=%+v", before, after)
-					}
-					gotComment, err := readNativeComment(t.Context(), f.service.database.db, scope, string(issue.WorkItemID), comment.ID)
-					if err != nil || !reflect.DeepEqual(comment, gotComment) {
-						t.Fatalf("comment changed beyond actor kind: got=%+v want=%+v error=%v", gotComment, comment, err)
-					}
-					var gotHistory tracker.Page[tracker.CollaborationEvent]
-					decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil), &gotHistory)
-					if !reflect.DeepEqual(history, gotHistory) || !reflect.DeepEqual(versions, readVersions()) {
-						t.Fatal("migration changed history or saved revisions beyond actor kind")
-					}
-				})
-			}
-			for _, table := range []string{"collaboration_events", "collaboration_versions"} {
-				for _, statement := range []string{"UPDATE " + table + " SET work_item_id=work_item_id WHERE work_item_id=?", "DELETE FROM " + table + " WHERE work_item_id=?"} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), statement, issue.WorkItemID); err == nil {
-						t.Fatalf("history immutability lost: %s", statement)
-					}
-				}
 			}
 			var page tracker.NativeIssuePage
-			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?archived=all", f.token, nil), &page)
+			decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items?archived=all", f.token, nil), &page)
 			if !slices.ContainsFunc(page.Items, func(item tracker.NativeIssue) bool {
-				return item.WorkItemID == issue.WorkItemID && item.Actor == wantActor
+				return item.WorkItemID == want.issue.WorkItemID && item.Actor == want.issue.Actor
 			}) {
-				t.Fatal("repaired actor missing from Work list")
+				t.Fatalf("stage=%s org=%s item=%s normalized actor missing from Work list: pending=%v items=%+v", stage, want.issue.OrganizationID, want.issue.WorkItemID, page.ProjectionPending, page.Items)
 			}
-		})
+		}
+	}
+	admin := healthFixtureDatabase(t, expected[0].fixture)
+	for _, want := range expected {
+		for _, table := range []string{"collaboration_events", "collaboration_versions"} {
+			for _, statement := range []string{"UPDATE " + table + " SET work_item_id=work_item_id WHERE organization_id=$1 AND work_item_id=$2", "DELETE FROM " + table + " WHERE organization_id=$1 AND work_item_id=$2"} {
+				if _, err := admin.ExecContext(t.Context(), statement, want.issue.OrganizationID, want.issue.WorkItemID); err == nil {
+					t.Fatalf("history immutability lost for %s", table)
+				}
+			}
+		}
 	}
 }

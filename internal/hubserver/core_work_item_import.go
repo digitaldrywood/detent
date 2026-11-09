@@ -463,10 +463,19 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *coreNeutralImport, objec
 			return postgres.CoreWorkItemImport{}, errors.New("current comment row does not match immutable history")
 		}
 	}
+	normalized, err := normalizeImportedHealthActors(ctx, source.Objects, &record)
+	if err != nil {
+		return postgres.CoreWorkItemImport{}, err
+	}
+	healthActorVersion := 0
+	if normalized {
+		healthActorVersion = 1
+	}
 	requestBytes, err := json.Marshal(struct {
-		CopyHash string `json:"copy_hash"`
-		ID       int64  `json:"id"`
-	}{copyHash, item.ID})
+		CopyHash           string `json:"copy_hash"`
+		ID                 int64  `json:"id"`
+		HealthActorVersion int    `json:"health_actor_normalization,omitempty"`
+	}{copyHash, item.ID, healthActorVersion})
 	if err != nil {
 		return postgres.CoreWorkItemImport{}, err
 	}
