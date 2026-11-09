@@ -628,7 +628,7 @@ func (s *Service) dashboardChangeFrame(ctx context.Context, q nativeQueryer, sco
 			return frame, false, err
 		}
 		frame.event = workspacesession.EventType(change.Status)
-		resource := s.workspaces.presentWorkspace(ctx, q, scope, record)
+		resource := s.workspaces.presentWorkspace(ctx, scope, record)
 		resource.State, resource.Revision = change.Status, change.EntityRevision
 		raw, err := json.Marshal(struct {
 			workspacesession.Session

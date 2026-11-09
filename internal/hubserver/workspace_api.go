@@ -150,7 +150,7 @@ func (s *Service) deleteWorkspace(c echo.Context) error {
 // presentWorkspace projects a record for one reader, attaching the relay
 // session rows only for an owner or an admin. A reader who is
 // neither sees the workspace and not who has been inside it.
-func (w *workspaceService) presentWorkspace(ctx context.Context, q nativeQueryer, scope nativeScope, record workspaceRecord) workspacesession.Session {
+func (w *workspaceService) presentWorkspace(ctx context.Context, scope nativeScope, record workspaceRecord) workspacesession.Session {
 	resource := record.resource()
 	if !workspaceAuditReadable(scope, record) {
 		return resource
