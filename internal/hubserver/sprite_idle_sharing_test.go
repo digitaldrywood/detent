@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -182,12 +182,21 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 		{"monthly exhaustion", true, false, true, true, false, "monthly", http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
+			f := newSpriteNativeFixture(t, Config{RunDetails: &verifiedAttemptDetails{}})
 			var other nativeFixture
 			var landing landingCapacityFixture
 			if test.name == "shared merging beats own todo" {
-				landing = newLandingCapacityFixture(t, f.service, "other-landings", false)
-				other = landing.nativeFixture
+				other = newNativeFixture(t, f.service, f.project.OrganizationID, "other-landings")
+				writeSpriteFixture(t, other, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), other.project.ID)
+					if err != nil {
+						return err
+					}
+					project.States = HostedProjectStates()
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				})
+				landing = landingCapacityFixture{nativeFixture: other, descriptor: hubTestPolicy()}
 			} else {
 				other = newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
 			}
@@ -199,7 +208,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 				ranked = newNativeFixture(t, f.service, f.project.OrganizationID, "ranked-project")
 				approveHubTestPolicy(t, f.service, ranked.base+"/policy", hubTestPolicy())
 			}
-			setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 4)
+			scope := setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 4)
 			setSpriteAllocationFixture(t, f, 1, 0)
 			if test.managed {
 				setSpriteAllocationFixture(t, other, 1, 0)
@@ -212,26 +221,39 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
 			}
-			now := formatHubTime(f.service.config.now())
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, r.redemption.Hostname, r.enrollment.ID, now, now); err != nil {
-				t.Fatal(err)
-			}
+			now := f.service.config.now()
+			writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+				allocation, err := w.(postgres.SpriteReader).SpriteAllocation(t.Context(), f.project.ID)
+				if err != nil {
+					return err
+				}
+				return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: f.project.OrganizationID, AllocationProjectID: f.project.ID, AllocationRevision: allocation.Revision, Name: r.redemption.Hostname, ProviderOrganization: "detent-test", EnrollmentID: r.enrollment.ID, State: "enrolled", IdleSince: now, CreatedAt: now})
+			})
 			setSpriteMemberChecks(t, f, spriteMemberReady)
 			if test.ready {
-				raw, err := json.Marshal(spriteMemberReady)
-				if err != nil {
-					t.Fatal(err)
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					checks := spriteMemberReady
+					checks.ObservedAt = now
+					return w.ReplaceRunnerLocalChecks(t.Context(), r.binding.RunnerID, other.project.ID, checks)
+				})
+			}
+			updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.ShareIdleCapacity = test.sharing })
+			writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+				for _, id := range []tracker.ProjectID{f.project.ID, other.project.ID} {
+					project, err := w.ProjectRecord(t.Context(), id)
+					if err != nil {
+						return err
+					}
+					project.Core.SchedulingRank = 10
+					if id == other.project.ID {
+						project.Core.SchedulingRank = 1
+					}
+					if _, err := w.UpdateProjectRecord(t.Context(), project); err != nil {
+						return err
+					}
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET local_checks_json=json_set(local_checks_json,?,json(?)) WHERE id=?`, "$."+jsonPathKey(string(other.project.ID)), string(raw), r.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_pools SET share_idle_capacity=? WHERE organization_id=?`, test.sharing, f.project.OrganizationID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE projects SET scheduling_rank=CASE WHEN id=? THEN 1 ELSE 10 END WHERE organization_id=?`, other.project.ID, f.project.OrganizationID); err != nil {
-				t.Fatal(err)
-			}
+				return nil
+			})
 			var own tracker.NativeIssue
 			if test.ownReady {
 				own = f.create(t, "own ready work")
@@ -245,16 +267,20 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			var rankedIssue tracker.NativeIssue
 			if ranked.service != nil {
 				rankedIssue = ranked.create(t, "highest ranked fallback")
-				raw, err := json.Marshal(spriteMemberReady)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET local_checks_json=json_set(local_checks_json,?,json(?)) WHERE id=?`, "$."+jsonPathKey(string(ranked.project.ID)), string(raw), r.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE projects SET scheduling_rank=0 WHERE id=?`, ranked.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					checks := spriteMemberReady
+					checks.ObservedAt = now
+					if err := w.ReplaceRunnerLocalChecks(t.Context(), r.binding.RunnerID, ranked.project.ID, checks); err != nil {
+						return err
+					}
+					project, err := w.ProjectRecord(t.Context(), ranked.project.ID)
+					if err != nil {
+						return err
+					}
+					project.Core.SchedulingRank = 0
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				})
 			}
 			if test.budget == "provider" {
 				report := capacityReport(f.service.config.now())
@@ -277,10 +303,10 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 				claim.WorkItemID = ""
 				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, rankedIssue, "").ProviderCandidates[0])
 			}
+			var lease tracker.NativeLease
 			response := performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, test.status)
 			if test.status == http.StatusOK {
-				var lease tracker.NativeLease
 				decodeHubResponse(t, response, &lease)
 				if lease.WorkItemID != foreign.WorkItemID {
 					t.Fatalf("claimed %s", lease.WorkItemID)
@@ -292,15 +318,14 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			if test.ownReady && test.budget != "own monthly" && landing.service == nil {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, own, "own")), http.StatusOK)
 			}
-			allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			allocation, err := f.service.projectSpriteAllocation(t.Context(), scope)
 			if err != nil || allocation.DesiredCount != 1 || allocation.AllocatedCount != 1 {
 				t.Fatalf("allocation changed: %+v %v", allocation, err)
 			}
 			if test.status == http.StatusOK && !test.managed && landing.service == nil {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE leases SET released_at=? WHERE machine_id=?`, now, r.binding.MachineID); err != nil {
-					t.Fatal(err)
-				}
-				placement, err := readOrganizationPlacementSnapshot(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID}, f.service.config.now())
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+				f.service.spriteWakeWork.Wait()
+				placement, err := f.service.spritePlacementRecord(t.Context(), scope)
 				if err != nil || placement.SpriteFree != 1 || placement.Provisionable != 0 {
 					t.Fatalf("idle sharing provisioned extra capacity: %+v %v", placement, err)
 				}
