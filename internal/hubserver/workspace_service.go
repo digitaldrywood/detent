@@ -154,7 +154,7 @@ func (w *workspaceService) maintain(ctx context.Context) {
 // drive every deadline.
 func (w *workspaceService) now() time.Time { return w.server.config.now().UTC() }
 
-func (w *workspaceService) transition(ctx context.Context, _ *sql.Tx, record workspaceRecord, to, reason string, now time.Time) (workspaceRecord, error) {
+func (w *workspaceService) transition(ctx context.Context, record workspaceRecord, to, reason string, now time.Time) (workspaceRecord, error) {
 	scope := nativeScope{organization: record.OrganizationID, project: record.ProjectID}
 	var finish workspaceDispatchClose
 	var err error

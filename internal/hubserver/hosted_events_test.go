@@ -46,7 +46,7 @@ func TestHostedEventsWorkspace(t *testing.T) {
 					}
 					record.Capabilities = &workspacesession.Capabilities{Files: true}
 					record.ReadOnly = true
-					_, err = f.service.workspaces.transition(t.Context(), tx, record, state, "", now)
+					_, err = f.service.workspaces.transition(t.Context(), record, state, "", now)
 					return err
 				})
 				if err != nil {
