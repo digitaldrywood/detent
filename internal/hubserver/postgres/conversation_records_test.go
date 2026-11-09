@@ -2,10 +2,16 @@ package postgres_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -13,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -378,5 +385,141 @@ func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
 		if err := admin.QueryRowContext(t.Context(), `SELECT message_count FROM conversations WHERE organization_id=$1 AND id='count_conversation'`, organization).Scan(&count); err != nil || count != index+1 {
 			t.Errorf("organization=%s migrated count=%d want=%d error=%v", organization, count, index+1, err)
 		}
+	}
+}
+
+type pendingConversationQueryTrace struct {
+	statement string
+	args      []any
+}
+
+func (trace *pendingConversationQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "conversation_messages") && strings.Contains(data.SQL, "conversation_commands") {
+		trace.statement, trace.args = data.SQL, append([]any(nil), data.Args...)
+	}
+	return ctx
+}
+
+func (*pendingConversationQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {
+}
+
+func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
+	admin := template.Database(t)
+	seedCore(t, admin)
+	base := rolePool(t, admin, "detent_runtime_v2", "")
+	config := base.Config()
+	base.Close()
+	trace := &pendingConversationQueryTrace{}
+	config.ConnConfig.Tracer = trace
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	const history, limit = 4096, 32
+	id := func(number int) string { return fmt.Sprintf("conv_%032x", number) }
+	organizations := []tracker.OrganizationID{"org_first", "org_second"}
+	for index, organization := range organizations {
+		seedTenantAccess(t, repository, organization)
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversations (organization_id,id,project_id,owner_principal_id,origin,visibility,status,execution_status,execution_settled,deleted_at) SELECT $1,'conv_'||lpad(to_hex(n),32,'0'),'prj_shared','first','user','private','active','idle',true,CASE WHEN n%3=0 AND n<=$2 THEN CURRENT_TIMESTAMP END FROM generate_series(1,$2+2) n`, organization, history); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversation_messages (organization_id,id,conversation_id,seq,role,kind,delivery,actor_kind,actor_principal_id) SELECT $1,'msg_'||n,'conv_'||lpad(to_hex(n),32,'0'),1,'user','text','completed','human','first' FROM generate_series(1,$2) n`, organization, history); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversation_messages (organization_id,id,conversation_id,seq,role,kind,delivery,actor_kind,actor_principal_id) SELECT $1,'dense_completed_'||n,$3,n+1,'user','text','completed','human','first' FROM generate_series(1,$2) n`, organization, history, id(1)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversation_messages (organization_id,id,conversation_id,seq,role,kind,delivery,actor_kind,actor_principal_id) SELECT $1,'dense_irrelevant_'||n,$3,$2+n+1,CASE WHEN n%3=0 THEN 'user' ELSE 'assistant' END,'text',CASE n%3 WHEN 0 THEN 'sending' WHEN 1 THEN 'queued' ELSE 'responding' END,'human','first' FROM generate_series(1,$2) n`, organization, history, id(1)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversation_commands (organization_id,conversation_id,key,kind,request_hash,receipt_json,receipt_status,target_turn_id) SELECT $1,'conv_'||lpad(to_hex(n),32,'0'),'completed','cancel','completed_'||n,$3,'delivered','turn_'||n FROM generate_series(1,$2) n`, organization, history, "{}"); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			now := historyAt()
+			_, _, err := w.ReserveCommand(t.Context(), conversationstore.Command{OrganizationID: organization, ConversationID: id(history + index + 1), Key: "cancel", Kind: conversation.CommandCancel, TargetTurnID: "turn_" + string(organization), RequestHash: "cancel_" + string(organization), Receipt: conversation.Receipt{Key: "cancel", Kind: conversation.CommandCancel, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, table := range []string{"conversations", "conversation_messages", "conversation_commands"} {
+		if _, err := admin.ExecContext(t.Context(), "ANALYZE "+pgx.Identifier{table}.Sanitize()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, organization := range organizations {
+		t.Run(string(organization), func(t *testing.T) {
+			var first, second, last conversationstore.PendingConversationPage
+			if err := repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
+				var err error
+				first, err = r.PendingConversations(t.Context(), "", limit)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(first.Items) != 0 || first.Next != id(limit) {
+				t.Errorf("sparse first examined page=%+v, want empty items and boundary %s", first, id(limit))
+			}
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(t.Context())
+			if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, organization); err != nil {
+				t.Fatal(err)
+			}
+			var raw []byte
+			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+trace.statement, trace.args...).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var plans []struct{ Plan searchPlanNode }
+			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+				t.Fatalf("decode pending scan plan: %v", err)
+			}
+			work := make(map[string]float64)
+			var visit func(searchPlanNode)
+			visit = func(node searchPlanNode) {
+				work[node.Relation] += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+				for _, child := range node.Plans {
+					visit(child)
+				}
+			}
+			visit(plans[0].Plan)
+			t.Logf("history=%d dense_completed=%d irrelevant_active=%d limit=%d natural row work=%v plan=%s", history, history, history, limit, work, raw)
+			if work["conversations"] > limit+1 || work["conversation_messages"]+work["conversation_commands"] > 2*(limit+1) {
+				t.Errorf("pending scan exceeded examined-row budget: %v", work)
+			}
+			if err := tx.Rollback(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
+				var err error
+				second, err = r.PendingConversations(t.Context(), id(limit), limit)
+				if err != nil {
+					return err
+				}
+				last, err = r.PendingConversations(t.Context(), id(history), limit)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(second.Items) != 0 || second.Next != id(2*limit) {
+				t.Errorf("sparse second examined page=%+v, want boundary %s", second, id(2*limit))
+			}
+			if len(last.Items) != 1 || last.Items[0].ID != id(history+index+1) || last.Next != "" {
+				t.Errorf("tenant pending tail=%+v", last)
+			}
+		})
 	}
 }

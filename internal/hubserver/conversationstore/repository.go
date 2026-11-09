@@ -88,6 +88,7 @@ type QuestionPage struct {
 }
 
 type Command struct {
+	TargetTurnID     string
 	OrganizationID   tracker.OrganizationID
 	ConversationID   string
 	Key              string
@@ -155,6 +156,7 @@ type Attachment struct {
 }
 
 type ConversationQuery struct {
+	GrantCredentialID string
 	ProjectID         tracker.ProjectID
 	ProjectIDs        []tracker.ProjectID
 	PrincipalID       string
@@ -245,6 +247,7 @@ type Reader interface {
 	OutstandingQuestions(context.Context, string, string, string, string, int) (QuestionPage, error)
 	RestartQuestions(context.Context, string, string, int) (QuestionPage, error)
 	PendingCommands(context.Context, string, string, int) (CommandPage, error)
+	PendingCoordinatorCommands(context.Context, string, string, int) (CommandPage, error)
 	Command(context.Context, string, string) (Command, bool, error)
 	TurnBatch(context.Context, string, string) (int64, bool, error)
 	HasConversationStart(context.Context, string) (bool, error)

@@ -306,7 +306,7 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if firstPending.Next == "" || len(firstPending.Items) != conversationLifecycleBatchSize || len(secondPending.Items) == 0 {
+	if firstPending.Next == "" || len(firstPending.Items) == 0 || len(firstPending.Items) > conversationLifecycleBatchSize || len(secondPending.Items) == 0 || secondPending.Next != "" || len(firstPending.Items)+len(secondPending.Items) != conversationLifecycleBatchSize+1 {
 		t.Fatalf("pending pages did not cross the lifecycle batch: first=%d next=%q second=%d", len(firstPending.Items), firstPending.Next, len(secondPending.Items))
 	}
 	wakeSignals := make(chan string, conversationLifecycleBatchSize*2)
@@ -334,10 +334,10 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	}
 	t.Cleanup(stopLoop)
 	settleTicks <- now
-	for range len(firstPending.Items) {
+	for _, pending := range firstPending.Items {
 		id := <-wakeSignals
-		if id == secondPending.Items[0].ID {
-			t.Fatal("first settle tick advanced beyond its pending page")
+		if id != pending.ID {
+			t.Fatalf("first settle tick woke %s, want %s", id, pending.ID)
 		}
 	}
 	select {
@@ -346,10 +346,10 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	default:
 	}
 	settleTicks <- now
-	for range len(secondPending.Items) {
+	for _, pending := range secondPending.Items {
 		id := <-wakeSignals
-		if id != secondPending.Items[0].ID {
-			t.Fatalf("second settle tick woke %s, want %s", id, secondPending.Items[0].ID)
+		if id != pending.ID {
+			t.Fatalf("second settle tick woke %s, want %s", id, pending.ID)
 		}
 	}
 	stopLoop()

@@ -441,3 +441,91 @@ func coordinatorPublicationPlan(ctx context.Context) (*conversationPublicationPl
 	}
 	return plan, nil
 }
+
+func (c *conversationTurnCoordinator) deliverCoordinatorCommands(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	organization, err := c.service.lifecycleOrganization()
+	if err != nil {
+		return err
+	}
+	var record conversationstore.Conversation
+	var page conversationstore.CommandPage
+	if err := c.service.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		record, err = r.ConversationByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		page, err = r.PendingCoordinatorCommands(ctx, id, "", conversationLifecycleBatchSize)
+		return err
+	}); err != nil {
+		return err
+	}
+	for _, command := range page.Items {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		delivered := c.cancelRecordedTurn(id, command.TargetTurnID)
+		if !delivered && command.TargetTurnID != "" {
+			if err := c.service.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+				target, err := r.Message(ctx, id, command.TargetTurnID)
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				delivered = target.Role == conversation.RoleAssistant && target.Delivery == conversation.DeliveryInterrupted
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		receipt := command.Receipt
+		receipt.Status = conversation.DeliveryDelivered
+		receipt.Error = nil
+		if !delivered {
+			receipt.Status = conversation.DeliveryRejected
+			receipt.Error = &conversation.ReceiptError{Code: "no_active_turn", Message: "The intended coordinator turn is no longer running"}
+		}
+		now := c.service.server.config.now()
+		receipt.UpdatedAt = now
+		plan := conversationPublicationPlan{service: c.service, record: conversationRecordFromStore(record), now: now, coordinator: true}
+		if err := plan.recordReceipt(ctx, receipt); err != nil {
+			return err
+		}
+		prepared := plan.context(ctx)
+		if err := c.service.server.config.TenantRepository.WriteTenant(prepared, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.LockConversation(prepared, record.ProjectID, id); err != nil {
+				return err
+			}
+			stored, found, err := w.Command(prepared, id, command.Key)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return corestore.ErrNotFound
+			}
+			if stored.Kind != conversation.CommandCancel || stored.TargetTurnID != command.TargetTurnID || stored.RequestHash != command.RequestHash {
+				return corestore.ErrRevisionConflict
+			}
+			if stored.Receipt.Status != conversation.DeliverySaved {
+				return nil
+			}
+			if err := registerPreparedConversationObjects(prepared, w, organization, plan.prepared, now); err != nil {
+				return err
+			}
+			stored.Receipt, stored.UpdatedAt = receipt, now
+			if err := w.UpdateCommand(prepared, stored); err != nil {
+				return err
+			}
+			return appendCoordinatorEvent(prepared, w, organization, id, conversation.EventCommandReceipt, receipt, now)
+		}); err != nil {
+			return err
+		}
+		c.service.broker.notify(id)
+	}
+	return nil
+}

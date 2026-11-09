@@ -114,6 +114,16 @@ func (s *session) Conversations(ctx context.Context, filter conversationstore.Co
 	where := ` WHERE c.deleted_at IS NULL AND c.organization_id=$1 AND c.origin='user' AND c.archived=false AND (c.visibility='shared' OR c.owner_principal_id=$2) AND (c.read_audience='' OR c.read_audience=$3)`
 	args = append(args, filter.PrincipalID, filter.ReadAudience)
 	add := func(expression string, values ...any) { where += expression; args = append(args, values...) }
+	if filter.GrantCredentialID != "" {
+		add(fmt.Sprintf(` AND EXISTS (
+ SELECT 1 FROM api_tokens credential
+ JOIN projects project ON project.organization_id=credential.organization_id AND project.id=c.project_id AND project.deleted_at IS NULL
+ WHERE credential.organization_id=c.organization_id AND credential.id=$%d AND credential.revoked_at IS NULL AND credential.scope IN ('operator','admin')
+ AND ((credential.scope='admin' AND NOT credential.native_only) OR EXISTS (
+  SELECT 1 FROM token_grants allowed WHERE allowed.organization_id=credential.organization_id AND allowed.token_id=credential.id AND allowed.project_id=c.project_id
+ )))`, len(args)+1), filter.GrantCredentialID)
+	}
+
 	if filter.ProjectID != "" {
 		add(fmt.Sprintf(" AND c.project_id=$%d", len(args)+1), filter.ProjectID)
 	}
@@ -236,25 +246,49 @@ func (s *session) PendingConversations(ctx context.Context, afterID string, limi
 	if err := checkPage(limit); err != nil {
 		return conversationstore.PendingConversationPage{}, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT c.id,c.work_item_id IS NOT NULL FROM conversations c WHERE c.deleted_at IS NULL AND c.organization_id=$1 AND c.id>$2 AND EXISTS (SELECT 1 FROM conversation_messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.role='user' AND m.delivery IN ('saved','queued')) ORDER BY c.id LIMIT $3`, s.organization, afterID, limit+1)
+	rows, err := s.db.Query(ctx, `WITH candidates AS MATERIALIZED (
+SELECT organization_id,id,work_item_id,deleted_at FROM conversations
+WHERE organization_id=$1 AND id>$2 ORDER BY id LIMIT $3
+)
+SELECT c.id,c.work_item_id IS NOT NULL,
+c.deleted_at IS NULL AND (COALESCE(message.pending,false) OR COALESCE(command.pending,false))
+FROM candidates c
+LEFT JOIN LATERAL (
+SELECT true AS pending FROM conversation_messages m
+WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id
+AND m.role='user' AND m.delivery IN ('saved','queued') LIMIT 1
+) message ON c.deleted_at IS NULL
+LEFT JOIN LATERAL (
+SELECT true AS pending FROM conversation_commands command
+WHERE command.organization_id=c.organization_id AND command.conversation_id=c.id
+AND command.kind='cancel' AND command.receipt_status='saved' LIMIT 1
+) command ON c.deleted_at IS NULL
+ORDER BY c.id`, s.organization, afterID, limit+1)
 	if err != nil {
 		return conversationstore.PendingConversationPage{}, mapError(ctx, err)
 	}
 	defer rows.Close()
 	page := conversationstore.PendingConversationPage{Items: make([]conversationstore.PendingConversation, 0, limit)}
+	examined := 0
+	boundary := ""
 	for rows.Next() {
 		var item conversationstore.PendingConversation
-		if err := rows.Scan(&item.ID, &item.Linked); err != nil {
+		var pending bool
+		if err := rows.Scan(&item.ID, &item.Linked, &pending); err != nil {
 			return page, mapError(ctx, err)
 		}
-		page.Items = append(page.Items, item)
+		if examined == limit {
+			page.Next = boundary
+			break
+		}
+		examined++
+		boundary = item.ID
+		if pending {
+			page.Items = append(page.Items, item)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return page, mapError(ctx, err)
-	}
-	if len(page.Items) > limit {
-		page.Items = page.Items[:limit]
-		page.Next = page.Items[len(page.Items)-1].ID
 	}
 	return page, nil
 }
@@ -569,7 +603,7 @@ func scanPGQuestion(ctx context.Context, row interface{ Scan(...any) error }) (c
 func (s *session) Command(ctx context.Context, conversationID, key string) (conversationstore.Command, bool, error) {
 	var c conversationstore.Command
 	var receipt []byte
-	err := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key=$3`, s.organization, conversationID, key).Scan(&c.OrganizationID, &c.ConversationID, &c.Key, &c.Kind, &c.RequestHash, &receipt, &c.CreatedAt, &c.UpdatedAt, &c.ContentReference)
+	err := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,target_turn_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key=$3`, s.organization, conversationID, key).Scan(&c.OrganizationID, &c.ConversationID, &c.Key, &c.Kind, &c.RequestHash, &receipt, &c.CreatedAt, &c.UpdatedAt, &c.ContentReference, &c.TargetTurnID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, false, nil
 	}
@@ -583,10 +617,24 @@ func (s *session) Command(ctx context.Context, conversationID, key string) (conv
 }
 
 func (s *session) PendingCommands(ctx context.Context, conversationID, afterKey string, limit int) (conversationstore.CommandPage, error) {
+	return s.pendingConversationCommands(ctx, conversationID, afterKey, limit, false)
+}
+
+func (s *session) PendingCoordinatorCommands(ctx context.Context, conversationID, afterKey string, limit int) (conversationstore.CommandPage, error) {
+	return s.pendingConversationCommands(ctx, conversationID, afterKey, limit, true)
+}
+
+func (s *session) pendingConversationCommands(ctx context.Context, conversationID, afterKey string, limit int, coordinator bool) (conversationstore.CommandPage, error) {
 	if err := checkPage(limit); err != nil {
 		return conversationstore.CommandPage{}, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key>$3 AND receipt_status=ANY($4) ORDER BY key LIMIT $5`, s.organization, conversationID, afterKey, []string{"sending", "sent", "responding"}, limit+1)
+	predicate := "receipt_status=ANY($4) ORDER BY key LIMIT $5"
+	args := []any{s.organization, conversationID, afterKey, []string{"sending", "sent", "responding"}, limit + 1}
+	if coordinator {
+		predicate = "kind='cancel' AND receipt_status='saved' ORDER BY key LIMIT $4"
+		args = []any{s.organization, conversationID, afterKey, limit + 1}
+	}
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,target_turn_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key>$3 AND `+predicate, args...)
 	if err != nil {
 		return conversationstore.CommandPage{}, mapError(ctx, err)
 	}
@@ -595,7 +643,7 @@ func (s *session) PendingCommands(ctx context.Context, conversationID, afterKey 
 	for rows.Next() {
 		var command conversationstore.Command
 		var receipt []byte
-		if err := rows.Scan(&command.OrganizationID, &command.ConversationID, &command.Key, &command.Kind, &command.RequestHash, &receipt, &command.CreatedAt, &command.UpdatedAt, &command.ContentReference); err != nil {
+		if err := rows.Scan(&command.OrganizationID, &command.ConversationID, &command.Key, &command.Kind, &command.RequestHash, &receipt, &command.CreatedAt, &command.UpdatedAt, &command.ContentReference, &command.TargetTurnID); err != nil {
 			return page, mapError(ctx, err)
 		}
 		if err := json.Unmarshal(receipt, &command.Receipt); err != nil {
@@ -852,7 +900,7 @@ func (s *session) ReserveCommand(ctx context.Context, c conversationstore.Comman
 	if err != nil {
 		return c, false, err
 	}
-	result, err := s.db.Exec(ctx, `INSERT INTO conversation_commands (organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,receipt_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (organization_id,conversation_id,key) DO NOTHING`, c.OrganizationID, c.ConversationID, c.Key, c.Kind, c.RequestHash, string(receipt), c.CreatedAt, c.UpdatedAt, c.ContentReference, c.Receipt.Status)
+	result, err := s.db.Exec(ctx, `INSERT INTO conversation_commands (organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,receipt_status,target_turn_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (organization_id,conversation_id,key) DO NOTHING`, c.OrganizationID, c.ConversationID, c.Key, c.Kind, c.RequestHash, string(receipt), c.CreatedAt, c.UpdatedAt, c.ContentReference, c.Receipt.Status, c.TargetTurnID)
 	if err != nil {
 		return c, false, mapError(ctx, err)
 	}

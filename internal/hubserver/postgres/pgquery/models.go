@@ -742,6 +742,7 @@ type ConversationCommand struct {
 	ConversionState      int16
 	QueryMetadataVersion int32
 	ReceiptStatus        *string
+	TargetTurnID         string
 }
 
 type ConversationContentObject struct {

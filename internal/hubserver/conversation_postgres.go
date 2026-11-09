@@ -153,6 +153,7 @@ type conversationLinkMutation struct {
 	request     conversationLinkRequest
 	now         time.Time
 	publication *conversationPublicationPlan
+	message     conversationMessageRecord
 	issue       tracker.NativeIssue
 }
 
@@ -171,6 +172,21 @@ func (m *conversationLinkMutation) prepare(ctx context.Context, workItem workIte
 		service: m.service.conversations, record: record, original: m.original, now: m.now,
 		prepared: make(preparedConversationContents), reads: &conversationArchiveReads{content: map[string][]byte{}},
 	}
+	result, err := marshalNative(map[string]any{"issue": conversationIssueResult(record)})
+	if err != nil {
+		return err
+	}
+	message := conversationMessageRecord{
+		ID: conversation.NewMessageID(), ConversationID: record.ID, Role: conversation.RoleSystem,
+		Kind: conversation.MessageStatus, Text: fmt.Sprintf("Linked to issue #%d: %s", workItem.issue.Number, workItem.issue.Title),
+		Data: json.RawMessage(result), Delivery: conversation.DeliverySaved, Actor: conversationActorFor(m.scope),
+		CommandKey: m.request.Key, CreatedAt: m.now, UpdatedAt: m.now, TextBytes: int64(len(fmt.Sprintf("Linked to issue #%d: %s", workItem.issue.Number, workItem.issue.Title))),
+	}
+	if err := preparePGConversationMessage(ctx, publication, &message); err != nil {
+		return err
+	}
+	m.message = message
+	record = publication.record
 	if err := publication.prepareRecord(ctx, record); err != nil {
 		return err
 	}
@@ -249,21 +265,13 @@ func (m *conversationLinkMutation) write(ctx context.Context, writer tenantstore
 	if err := m.queueSavedMessages(ctx, writer, record.ID); err != nil {
 		return err
 	}
-	result, err := marshalNative(map[string]any{"issue": conversationIssueResult(updatedRecord)})
-	if err != nil {
-		return err
-	}
-	message := conversationMessageRecord{
-		ID: conversation.NewMessageID(), ConversationID: record.ID, Role: conversation.RoleSystem,
-		Kind: conversation.MessageStatus, Text: fmt.Sprintf("Linked to issue #%d: %s", m.issue.Number, m.issue.Title),
-		Data: json.RawMessage(result), Delivery: conversation.DeliverySaved, Actor: conversationActorFor(m.scope),
-		CommandKey: m.request.Key, CreatedAt: m.now, UpdatedAt: m.now, TextBytes: int64(len(fmt.Sprintf("Linked to issue #%d: %s", m.issue.Number, m.issue.Title))),
-	}
+	message := m.message
+
 	created, err := writer.CreateMessage(ctx, conversationMessageToStore(m.scope.organization, message))
 	if err != nil {
 		return err
 	}
-	message = conversationMessageFromStore(created)
+	message.Seq, message.Revision = created.Sequence, created.Revision
 	return appendPGConversationEvent(ctx, writer, m.scope.organization, record.ID, conversation.EventMessageAccepted, projectMessage(message), m.now)
 }
 
@@ -511,6 +519,21 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 		if err := authorizeConversationLinkedItemPG(ctx, reader, scope, page.record); err != nil {
 			return err
 		}
+		if page.record.WorkItemID != "" {
+			item, err := reader.WorkItem(ctx, page.record.ProjectID, tracker.NativeWorkItemID(page.record.WorkItemID))
+			if err != nil {
+				return err
+			}
+			project, err := reader.Project(ctx, page.record.ProjectID)
+			if err != nil {
+				return err
+			}
+			page.record.WorkItem = &conversationWorkItem{ID: string(item.NativeID), Identifier: fmt.Sprintf("%s#%d", project.Name, item.Number), Title: item.Title}
+			if item.WorkflowStateName != nil {
+				page.record.WorkItem.Lane = *item.WorkflowStateName
+			}
+		}
+
 		messages, err := reader.Messages(ctx, id, before, limit)
 		if err != nil {
 			return err
@@ -749,6 +772,15 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		if prior.RequestHash != conversation.RequestHash(command) {
 			return nil, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: 409, publicMessage: true}
 		}
+		if command.Kind == conversation.CommandCancel && prior.Receipt.Status == conversation.DeliverySaved {
+			if err := service.wakeCoordinator(ctx, id); err != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				service.logger.Error("deliver coordinator commands", "conversation_id", id, "error", err)
+			}
+			return s.readPGConversationCommandReceipt(ctx, scope, id, command.Key)
+		}
 		return json.Marshal(prior.Receipt)
 	}
 	if !s.ready.Load() {
@@ -769,6 +801,9 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		})
 		if err != nil {
 			return nil, translateConversationError(err)
+		}
+		if question.Status == conversation.QuestionSending || question.Status == conversation.QuestionAnswered {
+			return nil, conversationQuestionAnswered()
 		}
 		if question.Status != conversation.QuestionPending || (question.ExpiresAt != nil && !s.config.now().Before(*question.ExpiresAt)) {
 			return nil, conversationStale("The question is no longer open")
@@ -851,6 +886,10 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			original, err = reader.Message(ctx, id, command.MessageID)
 			return err
 		})
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil, nativePublicInvalid("The message to retry is not part of this conversation")
+		}
+
 		if err != nil {
 			return nil, translateConversationError(err)
 		}
@@ -887,6 +926,15 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		}
 		message.AttemptID, message.ThreadID, message.TurnID = "", "", ""
 		message.UpdatedAt = plan.now
+
+	case conversation.CommandCancel:
+		if current.WorkItemID != "" {
+			return nil, conversationUnsupported("Cancel applies to coordinator turns; interrupt the linked attempt instead")
+		}
+		if err := conversationRequireOwner(current.Execution.Owner, command.Expected); err != nil {
+			return nil, err
+		}
+
 	default:
 		return nil, conversationUnsupported("This conversation command requires the worker control migration")
 	}
@@ -935,6 +983,10 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 	if command.Kind == conversation.CommandContinue {
 		current.Execution = conversation.Execution{Status: conversation.ExecutionWaitingForRunner, Owner: conversation.Owner{ThreadID: current.Execution.Owner.ThreadID}, UpdatedAt: plan.now}
 	}
+	targetTurnID := ""
+	if command.Kind == conversation.CommandCancel && conversationExecutionLive(current.Execution.Status) {
+		targetTurnID = current.Execution.Owner.TurnID
+	}
 	var stored conversationRecord
 	var receipt conversation.Receipt
 	var replay bool
@@ -974,6 +1026,9 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			if err != nil {
 				return translateConversationError(err)
 			}
+			if lockedQuestion.Status == conversation.QuestionSending || lockedQuestion.Status == conversation.QuestionAnswered {
+				return conversationQuestionAnswered()
+			}
 			if lockedQuestion.Status != conversation.QuestionPending || (lockedQuestion.ExpiresAt != nil && !plan.now.Before(*lockedQuestion.ExpiresAt)) {
 				return conversationStale("The question is no longer open")
 			}
@@ -983,7 +1038,7 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			question = lockedQuestion
 			question.Status, question.Answers, question.AnsweredBy, question.UpdatedAt = conversation.QuestionSending, command.Answers, scope.credential.ID, plan.now
 		}
-		reservation := conversationstore.Command{OrganizationID: scope.organization, ConversationID: id, Key: command.Key, Kind: command.Kind, RequestHash: conversation.RequestHash(command), Receipt: conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliverySaved, UpdatedAt: plan.now}, CreatedAt: plan.now, UpdatedAt: plan.now}
+		reservation := conversationstore.Command{TargetTurnID: targetTurnID, OrganizationID: scope.organization, ConversationID: id, Key: command.Key, Kind: command.Kind, RequestHash: conversation.RequestHash(command), Receipt: conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliverySaved, UpdatedAt: plan.now}, CreatedAt: plan.now, UpdatedAt: plan.now}
 		existing, created, err := writer.ReserveCommand(ctx, reservation)
 		if err != nil {
 			if errors.Is(err, corestore.ErrUniqueViolation) {
@@ -994,6 +1049,21 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		if !created {
 			receipt, replay = existing.Receipt, true
 			return nil
+		}
+
+		if command.Kind == conversation.CommandCancel {
+			result.Status = conversation.DeliverySaved
+			result.MessageID = ""
+			if targetTurnID == "" {
+				result.Status = conversation.DeliveryRejected
+				result.Error = &conversation.ReceiptError{Code: "no_active_turn", Message: "No coordinator turn is running"}
+			} else if storedConversation.Execution.Owner.TurnID != targetTurnID || !conversationExecutionLive(storedConversation.Execution.Status) {
+				return conversationStale("The coordinator turn changed; retry the command")
+			}
+			if err := writer.UpdateCommand(ctx, conversationstore.Command{OrganizationID: scope.organization, ConversationID: id, Key: command.Key, Kind: command.Kind, RequestHash: reservation.RequestHash, Receipt: result, UpdatedAt: plan.now}); err != nil {
+				return err
+			}
+			return appendPGConversationEvent(ctx, writer, scope.organization, id, conversation.EventCommandReceipt, result, plan.now)
 		}
 
 		var owner conversationstore.AttachmentWriter
@@ -1012,12 +1082,14 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 				return err
 			}
 		}
-		pending, err := writer.PendingUserMessages(ctx, id)
-		if err != nil {
-			return err
-		}
-		if pending >= service.config.ControlQueueSize {
-			return conversationQueueFull()
+		if command.Kind != conversation.CommandContinue {
+			pending, err := writer.PendingUserMessages(ctx, id)
+			if err != nil {
+				return err
+			}
+			if pending >= service.config.ControlQueueSize {
+				return conversationQueueFull()
+			}
 		}
 		var createdMessage conversationstore.Message
 		if command.Kind == conversation.CommandRetry {
@@ -1163,7 +1235,18 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 	}); err != nil {
 		return nil, err
 	}
+	if command.Kind == conversation.CommandCancel {
+		service.broker.notify(stored.ID)
+		if err := service.wakeCoordinator(ctx, id); err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			service.logger.Error("deliver coordinator commands", "conversation_id", id, "error", err)
+		}
+		return s.readPGConversationCommandReceipt(ctx, scope, id, command.Key)
+	}
 	service.committed(stored)
+
 	return json.Marshal(result)
 }
 
@@ -1432,4 +1515,23 @@ func readConversationRecordFromTenant(ctx context.Context, reader tenantstore.Re
 		return conversationRecord{}, err
 	}
 	return conversationRecordFromStore(stored), nil
+}
+
+func (s *Service) readPGConversationCommandReceipt(ctx context.Context, scope nativeScope, id, key string) (json.RawMessage, error) {
+	var command conversationstore.Command
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		stored, found, err := r.Command(ctx, id, key)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return corestore.ErrNotFound
+		}
+		command = stored
+		return nil
+	})
+	if err != nil {
+		return nil, translateConversationError(err)
+	}
+	return json.Marshal(command.Receipt)
 }

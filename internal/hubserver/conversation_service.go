@@ -116,15 +116,14 @@ type conversationService struct {
 	// conversation. It is woken after a control committed.
 	controls conversationControlRouter
 	// settle stops the settle sweep; settled waits for it to exit.
-	settle              chan struct{}
-	settled             chan struct{}
-	settleCancel        context.CancelFunc
-	settleTicks         <-chan time.Time
-	stopSettleTicker    func()
-	monthlyBudgetPeriod string
-	lifecycleMu         sync.Mutex
-	lifecycleCursors    map[string]string
-	once                sync.Once
+	settle           chan struct{}
+	settled          chan struct{}
+	settleCancel     context.CancelFunc
+	settleTicks      <-chan time.Time
+	stopSettleTicker func()
+	lifecycleMu      sync.Mutex
+	lifecycleCursors map[string]string
+	once             sync.Once
 }
 
 // conversationCoordinator runs model turns for unlinked conversations. The
@@ -196,6 +195,22 @@ func (c *conversationService) committed(record conversationRecord) {
 		return
 	}
 	c.controls.Wake(record.ID)
+}
+
+func (c *conversationService) wakeCoordinator(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if coordinator, ok := c.coordinator.(*conversationTurnCoordinator); ok {
+		if err := coordinator.deliverCoordinatorCommands(ctx, id); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.coordinator.Wake(id)
+	return nil
 }
 
 func (c *conversationService) start(ctx context.Context) error {
@@ -490,24 +505,6 @@ func (c *conversationService) authorizeRead(ctx context.Context, query nativeQue
 	}
 	if record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.credential.ID {
 		return nativeNotFound()
-	}
-	return nil
-}
-
-// authorizeWrite requires read access, an active conversation and project
-// write capability. Viewers and read-only grants cannot send commands.
-func (c *conversationService) authorizeWrite(ctx context.Context, query nativeQueryer, scope nativeScope, record conversationRecord) error {
-	if err := c.authorizeRead(ctx, query, scope, record); err != nil {
-		return err
-	}
-	if scope.credential.Hosted != nil {
-		if err := c.server.requireHostedProject(ctx, query, scope, true); err != nil {
-			return conversationForbidden("Write access to the project is required")
-		}
-		return nil
-	}
-	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin && scope.credential.Scope != apiScopeWorker {
-		return conversationForbidden("Write access to the project is required")
 	}
 	return nil
 }
@@ -1088,20 +1085,6 @@ func (c *conversationService) saveConversation(ctx context.Context, tx *sql.Tx, 
 		return translateConversationError(err)
 	}
 	if _, err := c.store.appendEvent(ctx, tx, record.ID, conversation.EventConversationUpdated, projectConversation(*record), now); err != nil {
-		return err
-	}
-	return nil
-}
-
-// updateExecution replaces the execution state and emits execution.updated
-// in addition to conversation.updated.
-func (c *conversationService) updateExecution(ctx context.Context, tx *sql.Tx, record *conversationRecord, execution conversation.Execution, now time.Time) error {
-	execution.UpdatedAt = now
-	record.Execution = execution
-	if err := c.saveConversation(ctx, tx, record, now); err != nil {
-		return err
-	}
-	if _, err := c.store.appendEvent(ctx, tx, record.ID, conversation.EventExecutionUpdated, projectExecution(execution), now); err != nil {
 		return err
 	}
 	return nil

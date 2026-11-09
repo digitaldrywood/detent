@@ -158,6 +158,7 @@ func (c *conversationService) wakePendingPG(ctx context.Context, organization tr
 	after := c.lifecycleCursor(cursor)
 	coordinator, controls := 0, 0
 	var page conversationstore.PendingConversationPage
+	var errs []error
 	if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var err error
 		page, err = reader.PendingConversations(ctx, after, conversationLifecycleBatchSize)
@@ -167,18 +168,30 @@ func (c *conversationService) wakePendingPG(ctx context.Context, organization tr
 	}
 	c.advanceLifecycleCursor(cursor, page.Next)
 	for _, pending := range page.Items {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
 		if pending.Linked {
 			c.controls.Wake(pending.ID)
 			controls++
 			continue
 		}
 		if c.coordinator.Available() {
-			c.coordinator.Wake(pending.ID)
+			if err := c.wakeCoordinator(ctx, pending.ID); err != nil {
+				if ctx.Err() != nil {
+					return errors.Join(append(errs, ctx.Err())...)
+				}
+				errs = append(errs, fmt.Errorf("wake PostgreSQL coordinator %s: %w", pending.ID, err))
+				continue
+			}
 			coordinator++
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(append(errs, err)...)
+	}
 	c.logger.Info("conversation.wake_pending", "coordinator", coordinator, "controls", controls)
-	return nil
+	return errors.Join(errs...)
 }
 
 func (c *conversationService) reconcileExecutionsPG(ctx context.Context, organization tracker.OrganizationID) error {

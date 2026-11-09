@@ -2,23 +2,27 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -272,21 +276,18 @@ func TestConversationAPIListVisibility(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
 	private := f.create(t, f.token, map[string]any{"title": "Private plan"}).Conversation
 	shared := f.create(t, f.token, map[string]any{"title": "Shared release"}).Conversation
-	requireNativeStatus(t, f.link(t, f.token, shared.ID, "link-shared", true, "Release checklist"), http.StatusOK)
+	linkedResponse := f.link(t, f.token, shared.ID, "link-shared", true, "Release checklist")
+	requireNativeStatus(t, linkedResponse, http.StatusOK)
+	var linked conversationLinkResponse
+	decodeHubResponse(t, linkedResponse, &linked)
 	shared = f.snapshot(t, f.token, shared.ID).Conversation
 	issue := f.nativeFixture.create(t, "Runner session")
 	now := f.service.config.now()
-	ctx := prepareTestConversationRecord(t, f.service.conversations.store, conversationRecord{OrganizationID: f.project.OrganizationID, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now}})
-	tx, err := f.service.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = tx.Rollback() })
-	worker, err := f.service.conversations.ensureWorkerConversation(ctx, tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: f.ownerID}}, string(issue.WorkItemID), now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	worker := conversationRecord{ID: conversation.NewConversationID(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, OwnerPrincipalID: f.ownerID, Origin: conversationOriginWorker, Title: "Runner session", Visibility: conversation.VisibilityShared, Status: conversation.StatusActive, WorkItemID: string(issue.WorkItemID), LinkedAt: &now, Revision: 1, Preferences: conversation.DefaultPreferences(), Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateConversation(t.Context(), conversationRecordToStore(worker))
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	list := func(token, path string) conversationListResponse {
@@ -326,7 +327,7 @@ func TestConversationAPIListVisibility(t *testing.T) {
 		origin string
 	}{
 		{"worker", worker.ID, worker.WorkItemID, conversationOriginWorker},
-		{"linked user", shared.ID, shared.WorkItem.ID, conversationOriginUser},
+		{"linked user", shared.ID, linked.Issue.ID, conversationOriginUser},
 	} {
 		t.Run(record.name+" issue conversation remains accessible", func(t *testing.T) {
 			for _, token := range []string{f.token, f.other} {
@@ -407,7 +408,8 @@ func TestConversationAPIListVisibility(t *testing.T) {
 
 func TestConversationAPIMessagesPagination(t *testing.T) {
 	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
+	objects := &conversationContentFixture{}
+	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
 	record := f.create(t, f.token, map[string]any{"title": "Paging"}).Conversation
 	for index := range 5 {
 		response := f.command(t, f.token, record.ID, conversation.Command{Key: "m" + string(rune('a'+index)), Kind: conversation.CommandMessage, Text: "message " + string(rune('a'+index))})
@@ -436,8 +438,6 @@ func TestConversationAPIMessagesPagination(t *testing.T) {
 	f.settle(t, record.ID)
 	linked := f.link(t, f.token, record.ID, "archive-shared", true, "Archived chat")
 	requireNativeStatus(t, linked, http.StatusOK)
-	var link conversationLinkResponse
-	decodeHubResponse(t, linked, &link)
 	paths := []string{"", "/messages?before=4&limit=2", "/messages?before=2", "/messages?limit=2"}
 	hot := make([][]byte, len(paths))
 	for i, path := range paths {
@@ -445,59 +445,68 @@ func TestConversationAPIMessagesPagination(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		hot[i] = append([]byte(nil), response.Body.Bytes()...)
 	}
-	table := archiveTestTable(t, f.service, "conversation_messages", "conversation_id=?", record.ID)
-	messageCount := len(table.Rows)
-	ref, data := publishTestSection(t, f.nativeFixture, link.Issue.ID, "conversation", record.ID, 1, int64(messageCount), table)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_messages SET text='' WHERE conversation_id=?", record.ID); err != nil {
+
+	var stored []conversationstore.Message
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		messages, err := r.Messages(t.Context(), record.ID, 0, corestore.MaxPageSize)
+		if err != nil {
+			return err
+		}
+		stored = messages.Items
+		for _, message := range stored {
+			if message.Text != "" || message.ContentReference == "" {
+				t.Fatalf("message payload has no object owner: %+v", message)
+			}
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
+	messageCount := len(stored)
 	fetches := 0
-	f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
-		fetches++
-		if got != ref {
-			t.Fatal("wrong conversation section")
-		}
-		return entryauthority.ArchiveResponse{Data: data}, nil
-	}
+	objects.onIO = func() error { fetches++; return nil }
 	for i, path := range paths {
 		fetches = 0
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+path, f.other, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		assertArchiveGolden(t, hot[i], response.Body.Bytes())
-		if fetches != 1 {
-			t.Fatalf("conversation fetches=%d", fetches)
+		want := []int{messageCount, 2, 1, 2}[i]
+		if fetches != want {
+			t.Fatalf("page %s object reads=%d want=%d", path, fetches, want)
 		}
 	}
-	full, err := attachment.DecodeArchiveSection(string(f.project.OrganizationID), ref, data)
-	if err != nil {
+	allObjects := objects.content
+	keys := map[int64]string{}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		for _, message := range stored {
+			content, err := r.ConversationContent(t.Context(), message.ContentReference)
+			if err != nil {
+				return err
+			}
+			keys[message.Sequence] = content.Reference.Key
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_archive_sections WHERE subject_id=?", record.ID); err != nil {
-		t.Fatal(err)
-	}
-	objects := map[string][]byte{}
 	for _, part := range []struct {
+		before      string
 		first, last int64
-		start, end  int
-	}{{1, 3, 0, 3}, {4, int64(messageCount), 3, messageCount}} {
-		table := full.Tables[0]
-		table.Rows = table.Rows[part.start:part.end]
-		ref, bytes := publishTestSection(t, f.nativeFixture, link.Issue.ID, "conversation", record.ID, part.first, part.last, table)
-		objects[ref.Key] = bytes
-	}
-	f.service.config.ArchiveReader = func(_ context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
-		fetches++
-		return entryauthority.ArchiveResponse{Data: objects[ref.Key]}, nil
-	}
-	for _, part := range []struct {
-		before string
-		want   int
-		next   string
-	}{{"", messageCount - 3, "4"}, {"4", 3, ""}, {"1", 0, ""}} {
+		want        int
+		next        string
+	}{
+		{"", 4, int64(messageCount), messageCount - 3, "4"}, {"4", 1, 3, 3, ""}, {"1", 0, 0, 0, ""},
+	} {
+		objects.content = map[string][]byte{}
+		for seq, key := range keys {
+			if seq >= part.first && seq <= part.last && part.want > 0 {
+				objects.content[key] = allObjects[key]
+			}
+		}
 		fetches = 0
-		query := ""
+		query := "?limit=3"
 		if part.before != "" {
-			query = "?before=" + part.before
+			query += "&before=" + part.before
 		}
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+"/messages"+query, f.other, nil)
 		requireNativeStatus(t, response, http.StatusOK)
@@ -510,19 +519,32 @@ func TestConversationAPIMessagesPagination(t *testing.T) {
 		}
 		for _, message := range page.Messages {
 			if message.Role == "user" && message.Text == "" {
-				t.Fatal("retired message stub escaped the section reader")
+				t.Fatal("message stub escaped the object reader")
 			}
 		}
-		wantFetches := 1
-		if part.before == "1" {
-			wantFetches = 0
-		}
-		if fetches != wantFetches {
-			t.Fatalf("range fetches=%d want %d", fetches, wantFetches)
+		if fetches != part.want {
+			t.Fatalf("range object reads=%d want %d", fetches, part.want)
 		}
 	}
+	objects.content = allObjects
+	missingKey := keys[1]
+	missing := objects.content[missingKey]
+	delete(objects.content, missingKey)
+	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+"/messages?before=2", f.other, nil)
+	requireNativeStatus(t, response, http.StatusInternalServerError)
+	objects.content[missingKey] = missing
+	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+"/messages?before=2", f.other, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &page)
+	if len(page.Messages) != 1 || page.Messages[0].Text != "message a" {
+		t.Fatalf("restored object page=%+v", page.Messages)
+	}
+	fetches = 0
 	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+"/messages?before=x", f.token, nil)
 	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+	if fetches != 0 {
+		t.Fatalf("invalid cursor read %d objects", fetches)
+	}
 }
 
 func TestConversationAPICommands(t *testing.T) {
@@ -540,6 +562,51 @@ func TestConversationAPICommands(t *testing.T) {
 		} {
 			response := f.command(t, f.token, record.ID, command)
 			requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+		}
+	})
+	t.Run("sparse recovery advances empty examined pages", func(t *testing.T) {
+		fixture := newCoordinatorFixture(t, "sparse_pending_scan")
+		id := func(number int) string { return fmt.Sprintf("conv_%032x", number) }
+		record := fixture.seed(t, "Pending cancellation", func(record *conversationRecord) {
+			record.ID = id(2*conversationLifecycleBatchSize + 1)
+		})
+		fixture.history(t, &record, conversation.RoleAssistant, "Interrupted earlier turn", conversation.DeliveryInterrupted)
+		target, ok := lastReply(fixture.messages(t, record.ID))
+		if !ok {
+			t.Fatal("pending cancellation target is missing")
+		}
+		now := fixture.service.config.now()
+		if err := fixture.service.config.TenantRepository.WriteTenant(t.Context(), fixture.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			for number := 1; number <= 2*conversationLifecycleBatchSize; number++ {
+				if _, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: fixture.organization, ProjectID: fixture.project.ID, ID: id(number), OwnerPrincipalID: fixture.owner, Origin: conversationOriginUser, Title: "Inactive conversation", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now}, Preferences: conversation.DefaultPreferences(), CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+			}
+			_, _, err := w.ReserveCommand(t.Context(), conversationstore.Command{OrganizationID: fixture.organization, ConversationID: record.ID, Key: "sparse_cancel", Kind: conversation.CommandCancel, TargetTurnID: target.ID, RequestHash: "sparse_cancel", Receipt: conversation.Receipt{Key: "sparse_cancel", Kind: conversation.CommandCancel, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for page := 1; page <= 3; page++ {
+			if err := fixture.conversations.wakePendingPG(t.Context(), fixture.organization); err != nil {
+				t.Fatal(err)
+			}
+			wantBoundary, wantStatus := "", conversation.DeliveryDelivered
+			if page < 3 {
+				wantBoundary, wantStatus = id(page*conversationLifecycleBatchSize), conversation.DeliverySaved
+			}
+			if got := fixture.conversations.lifecycleCursor("pending"); got != wantBoundary {
+				t.Fatalf("page %d examined boundary=%q want=%q", page, got, wantBoundary)
+			}
+			if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				command, found, err := r.Command(t.Context(), record.ID, "sparse_cancel")
+				if err == nil && (!found || command.Receipt.Status != wantStatus || command.TargetTurnID != target.ID) {
+					t.Fatalf("page %d cancellation=%+v want=%s target=%s", page, command, wantStatus, target.ID)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
 	})
 	t.Run("message replay and conflict", func(t *testing.T) {
@@ -587,6 +654,432 @@ func TestConversationAPICommands(t *testing.T) {
 			t.Fatalf("cancel receipt = %#v", receipt)
 		}
 	})
+	for _, stage := range []string{"intent", "completion"} {
+		t.Run("cancel "+stage+" persistence and successor replay", func(t *testing.T) {
+			fixture := newCoordinatorFixture(t, "api_cancel_"+stage)
+			api := conversationAPIFixture{nativeFixture: fixture.nativeFixture, ownerID: fixture.owner}
+			contexts := make(chan context.Context, 2)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+			fixture.backend.setRun(func(ctx context.Context, _ int, _ runner.AgentToolHandler, _ runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+				contexts <- ctx
+				select {
+				case <-ctx.Done():
+					return runner.AgentTurnResult{}, ctx.Err()
+				case <-release:
+					return runner.AgentTurnResult{}, nil
+				}
+			})
+			record := fixture.seed(t, "Cancellation persistence", nil)
+			fixture.say(t, &record, "First turn")
+			nextContext := func() context.Context {
+				select {
+				case ctx := <-contexts:
+					return ctx
+				case <-testenv.WaitContext(t, t.Context()).Done():
+					t.Fatal("coordinator turn did not start")
+					return nil
+				}
+			}
+			first := nextContext()
+			coordinator := fixture.coordinator().(*conversationTurnCoordinator)
+			coordinator.mu.Lock()
+			originalTurn := coordinator.turns[record.ID]
+			coordinator.mu.Unlock()
+			if originalTurn == nil {
+				t.Fatal("active coordinator turn is missing")
+			}
+			assistant, ok := lastReply(fixture.messages(t, record.ID))
+			if !ok {
+				t.Fatal("active coordinator assistant is missing")
+			}
+			original := fixture.service.config.TenantRepository
+			repository := &conversationCancelFailureRepository{Repository: original}
+			repository.intent.Store(stage == "intent")
+			repository.completion.Store(stage == "completion")
+			fixture.service.config.TenantRepository = repository
+			t.Cleanup(func() { fixture.service.config.TenantRepository = original })
+			stale := conversation.Command{Key: "cancel_wrong_turn", Kind: conversation.CommandCancel, Expected: conversation.Expected{TurnID: "turn_other"}}
+			requireNativeError(t, api.command(t, api.token, record.ID, stale), http.StatusConflict, "stale_execution")
+			select {
+			case <-first.Done():
+				t.Fatal("stale expected turn cancelled the active turn")
+			default:
+			}
+			if err := original.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				_, found, err := r.Command(t.Context(), record.ID, stale.Key)
+				if found {
+					t.Fatal("stale expected turn persisted a cancellation")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			command := conversation.Command{Key: "cancel_original", Kind: conversation.CommandCancel, Expected: conversation.Expected{TurnID: assistant.ID}}
+			response := api.command(t, api.token, record.ID, command)
+			if stage == "intent" {
+				requireNativeStatus(t, response, http.StatusInternalServerError)
+				if repository.intentFailures.Load() == 0 {
+					t.Fatal("intent persistence failure was not injected")
+				}
+				select {
+				case <-first.Done():
+					t.Fatal("rolled-back cancel stopped the active turn without a receipt")
+				default:
+				}
+				if err := original.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					_, found, err := r.Command(t.Context(), record.ID, command.Key)
+					if found {
+						t.Fatal("rolled-back cancel retained a receipt")
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				repository.intent.Store(false)
+				response = api.command(t, api.token, record.ID, command)
+			}
+			requireNativeStatus(t, response, http.StatusOK)
+			var accepted conversation.Receipt
+			decodeHubResponse(t, response, &accepted)
+			if accepted.Status != conversation.DeliverySaved && accepted.Status != conversation.DeliveryDelivered {
+				t.Fatalf("cancel has no durable delivery state: %+v", accepted)
+			}
+			if err := original.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				stored, found, err := r.Command(t.Context(), record.ID, command.Key)
+				if err == nil && (!found || stored.TargetTurnID != assistant.ID || !stored.Receipt.Status.Valid()) {
+					t.Fatalf("committed cancellation intent is invalid: %+v", stored)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			select {
+			case <-first.Done():
+			case <-testenv.WaitContext(t, t.Context()).Done():
+				t.Fatal("committed cancel did not stop its intended turn")
+			}
+			fixture.waitAssistant(t, record.ID, conversation.DeliveryInterrupted)
+			waitUntil(t, "cancelled coordinator turn settled", func() bool { return fixture.conversation(t, record.ID).Execution.Status == conversation.ExecutionIdle })
+			if stage == "completion" {
+				if repository.completionFailures.Load() == 0 {
+					t.Fatal("completion persistence failure was not injected")
+				}
+				if err := original.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					stored, found, err := r.Command(t.Context(), record.ID, command.Key)
+					if err == nil && (!found || stored.Receipt.Status != conversation.DeliverySaved) {
+						t.Fatalf("committed cancel intent was lost: found=%t receipt=%+v", found, stored.Receipt)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := original.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				stored, found, err := r.Command(t.Context(), record.ID, command.Key)
+				if err != nil {
+					return err
+				}
+				if !found || stored.TargetTurnID != assistant.ID {
+					t.Fatalf("cancel target was not retained: %+v", stored)
+				}
+				if stage == "completion" {
+					commands, err := r.PendingCoordinatorCommands(t.Context(), record.ID, "", corestore.MaxPageSize)
+					if err != nil {
+						return err
+					}
+					if len(commands.Items) != 1 || commands.Items[0].Key != command.Key {
+						t.Fatalf("pending coordinator command=%+v", commands)
+					}
+					pending, err := r.PendingConversations(t.Context(), "", corestore.MaxPageSize)
+					if err != nil {
+						return err
+					}
+					found := false
+					for _, entry := range pending.Items {
+						if entry.ID == record.ID && !entry.Linked {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatal("pending cancellation is absent from existing recovery wake scan")
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-originalTurn.done:
+			case <-testenv.WaitContext(t, t.Context()).Done():
+				t.Fatal("original coordinator turn did not release its ownership")
+			}
+
+			fixture.say(t, &record, "Successor turn")
+			var successor context.Context
+			waitUntil(t, "successor coordinator turn started", func() bool {
+				select {
+				case successor = <-contexts:
+					return true
+				default:
+				}
+				if reply, ok := lastReply(fixture.messages(t, record.ID)); ok && reply.ID != assistant.ID && (reply.Delivery == conversation.DeliveryInterrupted || reply.Delivery == conversation.DeliveryFailed || reply.Delivery == conversation.DeliveryCompleted) {
+					t.Fatalf("pending cancellation stopped successor before provider start: %+v", reply)
+				}
+				return false
+			})
+			repository.completion.Store(false)
+			replay := api.command(t, api.token, record.ID, command)
+			requireNativeStatus(t, replay, http.StatusOK)
+			var receipt conversation.Receipt
+			decodeHubResponse(t, replay, &receipt)
+			if receipt.Status != conversation.DeliveryDelivered {
+				t.Fatalf("cancel completion is not replayable: %+v", receipt)
+			}
+			select {
+			case <-successor.Done():
+				t.Fatal("replayed cancel stopped the successor turn")
+			default:
+			}
+			repeated := api.command(t, api.token, record.ID, command)
+			requireNativeStatus(t, repeated, http.StatusOK)
+			if repeated.Body.String() != replay.Body.String() {
+				t.Fatalf("completed replay changed: %s != %s", repeated.Body.String(), replay.Body.String())
+			}
+			select {
+			case <-successor.Done():
+				t.Fatal("completed cancel replay stopped the successor turn")
+			default:
+			}
+		})
+	}
+
+	t.Run("cancel recovery scan context budget", func(t *testing.T) {
+		objects := &conversationCancelBlockingContents{conversationContentFixture: &conversationContentFixture{}, entered: make(chan context.Context, 2), release: make(chan struct{})}
+		fixture := newConfiguredCoordinatorFixture(t, "cancel_scan_budget", func(cfg *Config) { cfg.Conversation.ArchiveContents = objects })
+		ids := []string{}
+		for _, title := range []string{"First pending cancel", "Second pending cancel"} {
+			record := fixture.seed(t, title, nil)
+			fixture.history(t, &record, conversation.RoleAssistant, "Interrupted earlier turn", conversation.DeliveryInterrupted)
+			target, ok := lastReply(fixture.messages(t, record.ID))
+			if !ok {
+				t.Fatal("scan fixture target assistant is missing")
+			}
+
+			ids = append(ids, record.ID)
+			now := fixture.service.config.now()
+			if err := fixture.service.config.TenantRepository.WriteTenant(t.Context(), fixture.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				_, _, err := w.ReserveCommand(t.Context(), conversationstore.Command{OrganizationID: fixture.organization, ConversationID: record.ID, Key: "scan_cancel", Kind: conversation.CommandCancel, TargetTurnID: target.ID, RequestHash: "scan_" + record.ID, Receipt: conversation.Receipt{Key: "scan_cancel", Kind: conversation.CommandCancel, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		organization, err := fixture.conversations.lifecycleOrganization()
+		if err != nil || organization != fixture.organization {
+			t.Fatalf("lifecycle organization=%s expected=%s error=%v", organization, fixture.organization, err)
+		}
+
+		if !fixture.coordinator().Available() {
+			t.Fatal("coordinator delivery is unavailable in scan fixture")
+		}
+		if fixture.conversations.store.contents != objects {
+			t.Fatal("scan fixture storage is not installed")
+		}
+		if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			page, err := r.PendingConversations(t.Context(), "", corestore.MaxPageSize)
+			if err == nil && len(page.Items) != len(ids) {
+				t.Fatalf("scan fixture pending rows=%+v", page)
+			}
+			for _, entry := range page.Items {
+				if entry.Linked {
+					t.Fatalf("pending cancellation classified as linked: %+v", entry)
+				}
+			}
+			for _, id := range ids {
+				commands, readErr := r.PendingCoordinatorCommands(t.Context(), id, "", corestore.MaxPageSize)
+				if readErr != nil {
+					return readErr
+				}
+				if len(commands.Items) != 1 || commands.Items[0].Receipt.Status != conversation.DeliverySaved {
+					t.Fatalf("pending commands for %s: %+v", id, commands)
+				}
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		original := fixture.service.config.TenantRepository
+		repository := &conversationCancelFailureRepository{Repository: original, scanContexts: make(chan context.Context, 1)}
+		fixture.service.config.TenantRepository = repository
+		objects.block.Store(true)
+		parent, cancel := context.WithCancel(context.WithValue(t.Context(), conversationCancelScanContextKey{}, true))
+		done := make(chan struct{})
+		var scanErr error
+		go func() { scanErr = fixture.conversations.wakePendingPG(parent, fixture.organization); close(done) }()
+		t.Cleanup(func() { cancel(); close(objects.release); <-done; fixture.service.config.TenantRepository = original })
+		var storage, scan context.Context
+		select {
+		case storage = <-objects.entered:
+		case <-done:
+			t.Fatalf("scan exited before reaching storage: %v", scanErr)
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("pending cancellation did not reach storage")
+		}
+		select {
+		case scan = <-repository.scanContexts:
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("lifecycle scan context was not captured")
+		}
+		cancel()
+		select {
+		case <-storage.Done():
+		default:
+			t.Fatal("blocked delivery detached from lifecycle cancellation")
+		}
+		scanDeadline, scanBound := scan.Deadline()
+		storageDeadline, storageBound := storage.Deadline()
+		if !scanBound || !storageBound || !storageDeadline.Equal(scanDeadline) {
+			t.Fatalf("storage budget=%s scan budget=%s", storageDeadline, scanDeadline)
+		}
+		select {
+		case <-done:
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("cancelled lifecycle scan did not terminate")
+		}
+		if !errors.Is(scanErr, context.Canceled) {
+			t.Fatalf("scan cancellation error=%v", scanErr)
+		}
+		if objects.calls.Load() != 1 {
+			t.Fatalf("cancelled scan visited %d storage operations, want 1", objects.calls.Load())
+		}
+		if err := original.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			for _, id := range ids {
+				command, found, err := r.Command(t.Context(), id, "scan_cancel")
+				if err != nil {
+					return err
+				}
+				if !found || command.Receipt.Status != conversation.DeliverySaved {
+					t.Fatalf("cancelled scan consumed intent: id=%s command=%+v", id, command)
+				}
+			}
+			pending, err := r.PendingConversations(t.Context(), "", corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			if len(pending.Items) != len(ids) {
+				t.Fatalf("recoverable pending conversations=%+v", pending)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	for _, kind := range []string{"ordinary", "child deadline"} {
+		t.Run("cancel recovery scan continues after "+kind, func(t *testing.T) {
+			fixture := newCoordinatorFixture(t, "scan_continuation")
+			issue := fixture.create(t, "Linked controls")
+			ids := []string{}
+			for index := 1; index <= 4; index++ {
+				record := fixture.seed(t, "Pending scan work", func(record *conversationRecord) {
+					record.ID = fmt.Sprintf("conv_%032x", index)
+					if index == 3 {
+						record.WorkItemID = string(issue.WorkItemID)
+						linkedAt := fixture.service.config.now()
+						record.LinkedAt = &linkedAt
+						record.Visibility = conversation.VisibilityShared
+					}
+				})
+				ids = append(ids, record.ID)
+				if index == 3 {
+					fixture.history(t, &record, conversation.RoleUser, "Queued linked work", conversation.DeliverySaved)
+					continue
+				}
+				fixture.history(t, &record, conversation.RoleAssistant, "Interrupted earlier turn", conversation.DeliveryInterrupted)
+				target, ok := lastReply(fixture.messages(t, record.ID))
+				if !ok {
+					t.Fatal("pending cancellation target is missing")
+				}
+				now := fixture.service.config.now()
+				if err := fixture.service.config.TenantRepository.WriteTenant(t.Context(), fixture.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					_, _, err := w.ReserveCommand(t.Context(), conversationstore.Command{OrganizationID: fixture.organization, ConversationID: record.ID, Key: "scan_continue", Kind: conversation.CommandCancel, TargetTurnID: target.ID, RequestHash: "scan_" + record.ID, Receipt: conversation.Receipt{Key: "scan_continue", Kind: conversation.CommandCancel, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			original := fixture.service.config.TenantRepository
+			var firstPage conversationstore.PendingConversationPage
+			if err := original.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				firstPage, err = r.PendingConversations(t.Context(), "", 3)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(firstPage.Items) != 3 || firstPage.Items[0].ID != ids[0] || firstPage.Items[2].ID != ids[2] || !firstPage.Items[2].Linked || firstPage.Next != ids[2] {
+				t.Fatalf("scan prerequisites=%+v", firstPage)
+			}
+			failure := errors.New("injected per-conversation delivery failure")
+			if kind == "child deadline" {
+				failure = fmt.Errorf("storage child deadline: %w", context.DeadlineExceeded)
+			}
+			repository := &conversationCancelFailureRepository{Repository: original, pendingLimit: 3, completionConversation: ids[0], completionError: failure}
+			repository.completion.Store(true)
+			fixture.service.config.TenantRepository = repository
+			controls := &conversationScanControlSignals{conversationControlRouter: fixture.conversations.controls, wakes: make(chan string, 4)}
+			fixture.conversations.controls = controls
+			t.Cleanup(func() { fixture.service.config.TenantRepository = original })
+			ctx := context.WithValue(t.Context(), conversationCancelScanContextKey{}, true)
+			err := fixture.conversations.wakePendingPG(ctx, fixture.organization)
+			if !errors.Is(err, failure) || ctx.Err() != nil {
+				t.Fatalf("independent delivery error=%v scan context=%v", err, ctx.Err())
+			}
+			requireReceipt := func(id string, status conversation.Delivery) {
+				if err := original.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					command, found, err := r.Command(t.Context(), id, "scan_continue")
+					if err == nil && (!found || command.Receipt.Status != status) {
+						t.Fatalf("conversation %s receipt=%+v want=%s", id, command, status)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requireReceipt(ids[0], conversation.DeliverySaved)
+			requireReceipt(ids[1], conversation.DeliveryDelivered)
+			select {
+			case id := <-controls.wakes:
+				if id != ids[2] {
+					t.Fatalf("linked control wake=%s", id)
+				}
+			default:
+				t.Fatal("earlier failure starved later linked control work")
+			}
+			if got := fixture.conversations.lifecycleCursor("pending"); got != firstPage.Next {
+				t.Fatalf("traversed-page cursor=%q want=%q", got, firstPage.Next)
+			}
+			if err := fixture.conversations.wakePendingPG(ctx, fixture.organization); err != nil {
+				t.Fatalf("later page did not progress: %v", err)
+			}
+			requireReceipt(ids[3], conversation.DeliveryDelivered)
+			if got := fixture.conversations.lifecycleCursor("pending"); got != "" {
+				t.Fatalf("cursor did not wrap: %q", got)
+			}
+			if err := fixture.conversations.wakePendingPG(ctx, fixture.organization); !errors.Is(err, failure) {
+				t.Fatalf("wrapped failed intent=%v", err)
+			}
+			requireReceipt(ids[0], conversation.DeliverySaved)
+			if repository.completionFailures.Load() != 2 {
+				t.Fatalf("failed intent attempts=%d want=2 across wrap", repository.completionFailures.Load())
+			}
+		})
+	}
+
 	t.Run("other principal cannot see private", func(t *testing.T) {
 		response := f.command(t, f.other, record.ID, message)
 		requireNativeError(t, response, http.StatusNotFound, "not_found")
@@ -612,7 +1105,6 @@ func TestConversationAPIAnswer(t *testing.T) {
 	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
 	record := f.create(t, f.token, map[string]any{"title": "Questions"}).Conversation
 	requireNativeStatus(t, f.link(t, f.token, record.ID, "link", true, "Ask me"), http.StatusOK)
-	store := f.service.conversations.store
 	plan, err := f.service.conversations.newPublicationPlan(t.Context(), record.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -630,23 +1122,20 @@ func TestConversationAPIAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := plan.context(t.Context())
-	tx, err := f.service.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := plan.now
-	linked, err := store.readConversation(ctx, tx, f.project.OrganizationID, f.project.ID, record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.conversations.updateExecution(ctx, tx, &linked, execution, now); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := store.upsertQuestion(ctx, tx, question); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.project.OrganizationID, plan.prepared, plan.now); err != nil {
+			return err
+		}
+		linked, err := w.Conversation(ctx, f.project.ID, record.ID)
+		if err != nil {
+			return err
+		}
+		linked.Execution, linked.UpdatedAt = execution, plan.now
+		if _, err := w.UpdateConversation(ctx, linked, linked.Revision); err != nil {
+			return err
+		}
+		return w.UpsertQuestion(ctx, conversationstore.Question{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, Question: question.Question})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := f.snapshot(t, f.token, record.ID)
@@ -704,6 +1193,15 @@ func TestConversationAPILink(t *testing.T) {
 	// queue holds one control already.
 	objects := &conversationContentFixture{}
 	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ControlQueueSize: 3, ArchiveContents: objects})
+	dispatches := 0
+	f.service.config.ConversationDispatch = conversationDispatchRequestFunc(func(_ context.Context, _ tenantstore.Writer, project tracker.ProjectID, item string, _ leasestore.Fence, _ time.Time) error {
+		if project != f.project.ID || item == "" {
+			t.Fatalf("dispatch scope: project=%s item=%s", project, item)
+		}
+		dispatches++
+		return nil
+	})
+
 	record := f.create(t, f.token, map[string]any{"title": "Ship it", "first_message": map[string]any{"key": "first", "text": "Please ship the release"}}).Conversation
 	t.Run("requires share_history", func(t *testing.T) {
 		response := f.link(t, f.token, record.ID, "no-share", false, "Ship the release")
@@ -733,7 +1231,7 @@ func TestConversationAPILink(t *testing.T) {
 			t.Fatalf("issue identity = %q %q", linked.Issue.ID, linked.Issue.Identifier)
 		}
 		var audience int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_audience_events WHERE conversation_id = ? AND from_visibility = 'private' AND to_visibility = 'shared' AND actor_principal_id = ?", record.ID, f.ownerID).Scan(&audience); err != nil {
+		if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_audience_events WHERE organization_id=$1 AND conversation_id=$2 AND from_visibility='private' AND to_visibility='shared' AND actor_principal_id=$3", f.project.OrganizationID, record.ID, f.ownerID).Scan(&audience); err != nil {
 			t.Fatal(err)
 		}
 		if audience != 1 {
@@ -757,7 +1255,7 @@ func TestConversationAPILink(t *testing.T) {
 			t.Fatalf("details = %#v", failure.Details)
 		}
 		var issues int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues i WHERE i.organization_id = ? AND i.project_id = ?",
+		if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues i WHERE i.organization_id=$1 AND i.project_id=$2",
 			f.project.OrganizationID, f.project.ID).Scan(&issues); err != nil {
 			t.Fatal(err)
 		}
@@ -779,13 +1277,16 @@ func TestConversationAPILink(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		response = f.command(t, f.token, record.ID, conversation.Command{Key: "q3", Kind: conversation.CommandMessage, Text: "Too many"})
 		requireNativeError(t, response, http.StatusServiceUnavailable, "queue_full")
-		var commands int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_commands WHERE conversation_id = ? AND key = 'q3'", record.ID).Scan(&commands); err != nil {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			_, found, err := r.Command(t.Context(), record.ID, "q3")
+			if err == nil && found {
+				t.Fatal("queue_full must not persist the command")
+			}
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
-		if commands != 0 {
-			t.Fatal("queue_full must not persist the command")
-		}
+
 		response = f.command(t, f.other, record.ID, conversation.Command{Key: "cancel", Kind: conversation.CommandCancel})
 		requireNativeError(t, response, http.StatusUnprocessableEntity, "unsupported_control")
 	})
@@ -797,6 +1298,12 @@ func TestConversationAPILink(t *testing.T) {
 		if receipt.Status != conversation.DeliverySaved || receipt.MessageID == "" {
 			t.Fatalf("receipt = %#v", receipt)
 		}
+		replay := f.command(t, f.token, record.ID, conversation.Command{Key: "cont", Kind: conversation.CommandContinue})
+		requireNativeStatus(t, replay, http.StatusOK)
+		if replay.Body.String() != response.Body.String() || dispatches != 1 {
+			t.Fatalf("continue replay=%s dispatches=%d", replay.Body.String(), dispatches)
+		}
+
 		snapshot := f.snapshot(t, f.token, record.ID)
 		if snapshot.Conversation.Execution.Status != conversation.ExecutionWaitingForRunner {
 			t.Fatalf("execution = %#v", snapshot.Conversation.Execution)
@@ -1368,15 +1875,11 @@ func TestConversationListFiltersInSQL(t *testing.T) {
 			Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: testTime(t)},
 			CreatedAt: testTime(t), UpdatedAt: testTime(t),
 		}
-		ctx := prepareTestConversationRecord(t, f.service.conversations.store, record)
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := f.service.conversations.store.createConversation(ctx, tx, &record); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
+		record.Origin, record.Revision, record.Preferences = conversationOriginUser, 1, conversation.DefaultPreferences()
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateConversation(t.Context(), conversationRecordToStore(record))
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		response := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/conversations", f.token, nil)
@@ -1442,4 +1945,108 @@ func TestHostedConversationRemovalAuthorization(t *testing.T) {
 			}
 		})
 	}
+}
+
+type conversationCancelFailureRepository struct {
+	tenantstore.Repository
+	intent                 atomic.Bool
+	completion             atomic.Bool
+	intentFailures         atomic.Int32
+	completionFailures     atomic.Int32
+	scanContexts           chan context.Context
+	pendingLimit           int
+	completionConversation string
+	completionError        error
+}
+
+func (r *conversationCancelFailureRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	if r.scanContexts != nil && workload == corestore.Background && ctx.Value(conversationCancelScanContextKey{}) == true {
+		select {
+		case r.scanContexts <- ctx:
+		default:
+		}
+	}
+	if r.pendingLimit > 0 && workload == corestore.Background && ctx.Value(conversationCancelScanContextKey{}) == true {
+		return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+			return read(conversationCancelScanReader{Reader: reader, limit: r.pendingLimit})
+		})
+	}
+	return r.Repository.ReadTenant(ctx, organization, workload, read)
+}
+
+func (r *conversationCancelFailureRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error { return write(conversationCancelFailureWriter{Writer: w, owner: r}) })
+}
+
+type conversationCancelFailureWriter struct {
+	tenantstore.Writer
+	owner *conversationCancelFailureRepository
+}
+
+func (w conversationCancelFailureWriter) UpdateCommand(ctx context.Context, command conversationstore.Command) error {
+	if command.Kind == conversation.CommandCancel && command.Receipt.Status == conversation.DeliveryDelivered && w.owner.completion.Load() && (w.owner.completionConversation == "" || command.ConversationID == w.owner.completionConversation) {
+		w.owner.completionFailures.Add(1)
+		if w.owner.completionError != nil {
+			return w.owner.completionError
+		}
+		return errors.New("injected cancellation completion persistence failure")
+	}
+	return w.Writer.UpdateCommand(ctx, command)
+}
+
+func (w conversationCancelFailureWriter) AppendConversationEvent(ctx context.Context, event conversationstore.Event) (conversationstore.Event, error) {
+	if event.Type == conversation.EventCommandReceipt && w.owner.intent.Load() {
+		var receipt conversation.Receipt
+		if json.Unmarshal(event.Data, &receipt) == nil && receipt.Kind == conversation.CommandCancel {
+			w.owner.intentFailures.Add(1)
+			return conversationstore.Event{}, errors.New("injected cancellation intent persistence failure")
+		}
+	}
+	return w.Writer.AppendConversationEvent(ctx, event)
+}
+
+type conversationCancelScanContextKey struct{}
+
+type conversationCancelBlockingContents struct {
+	*conversationContentFixture
+	block   atomic.Bool
+	calls   atomic.Int32
+	entered chan context.Context
+	release chan struct{}
+}
+
+func (s *conversationCancelBlockingContents) PublishContent(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	if !s.block.Load() {
+		return s.conversationContentFixture.PublishContent(ctx, organization, content)
+	}
+	s.calls.Add(1)
+	select {
+	case s.entered <- ctx:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return attachment.ArchiveReference{}, ctx.Err()
+	case <-s.release:
+		return attachment.ArchiveReference{}, errors.New("released blocked cancellation storage")
+	}
+}
+
+type conversationCancelScanReader struct {
+	tenantstore.Reader
+	limit int
+}
+
+func (r conversationCancelScanReader) PendingConversations(ctx context.Context, after string, limit int) (conversationstore.PendingConversationPage, error) {
+	return r.Reader.PendingConversations(ctx, after, min(limit, r.limit))
+}
+
+type conversationScanControlSignals struct {
+	conversationControlRouter
+	wakes chan string
+}
+
+func (s *conversationScanControlSignals) Wake(id string) {
+	s.wakes <- id
+	s.conversationControlRouter.Wake(id)
 }

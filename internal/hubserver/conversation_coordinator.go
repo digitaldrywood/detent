@@ -158,6 +158,7 @@ type coordinatorPass struct {
 // cancel (interrupted) from a process stop (failed); done closes once the
 // turn's final writes are over.
 type coordinatorTurn struct {
+	id            string
 	cancel        context.CancelFunc
 	cancelled     bool
 	budgetStopped bool
@@ -213,6 +214,18 @@ func (c *conversationTurnCoordinator) Wake(conversationID string) {
 // was running.
 func (c *conversationTurnCoordinator) Cancel(conversationID string) bool {
 	return c.cancelTurn(conversationID, false)
+}
+
+func (c *conversationTurnCoordinator) cancelRecordedTurn(conversationID, targetTurnID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	turn, ok := c.turns[conversationID]
+	if !ok || targetTurnID == "" || turn.id != targetTurnID {
+		return false
+	}
+	turn.cancelled = true
+	turn.cancel()
+	return true
 }
 
 func (c *conversationTurnCoordinator) cancelTurn(conversationID string, budgetStop bool) bool {
@@ -616,7 +629,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		if err := c.appendMessage(ctx, tx, record, &state.assistant, now); err != nil {
 			return err
 		}
-		execution := conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{ThreadID: record.ProviderThreadID}}
+		execution := conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{ThreadID: record.ProviderThreadID, TurnID: state.assistant.ID}}
 		return c.updateExecution(ctx, tx, record, execution, now)
 	}, func(ctx context.Context, p *conversationPublicationPlan) error {
 		var err error
@@ -646,7 +659,10 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		if err := p.appendMessage(ctx, &state.assistant); err != nil {
 			return err
 		}
-		return p.updateExecution(ctx, conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{ThreadID: p.record.ProviderThreadID}})
+		c.mu.Lock()
+		turn.id = state.assistant.ID
+		c.mu.Unlock()
+		return p.updateExecution(ctx, conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{ThreadID: p.record.ProviderThreadID, TurnID: state.assistant.ID}})
 	})
 	if errors.Is(err, errCoordinatorNothingPending) || errors.Is(err, errCoordinatorLinked) {
 		return false, nil

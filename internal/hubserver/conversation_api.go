@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,12 +9,12 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -80,6 +79,12 @@ func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFun
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
 
 			if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
+				if c.Param("conversation") != "" {
+					var denied *nativeError
+					if errors.Is(err, accessstore.ErrDenied) || errors.As(err, &denied) && denied.status == http.StatusForbidden {
+						return s.nativeAPIError(c, nativeNotFound())
+					}
+				}
 				return s.nativeAPIError(c, err)
 			}
 			if _, err := s.readProjectRecord(ctx, scope); err != nil {
@@ -170,36 +175,6 @@ func (s *Service) authorizeConversationOrganization(ctx context.Context, scope n
 		}
 		return nil
 	})
-}
-
-// transact runs fn inside one transaction with the hub clock and commits
-// when fn succeeds. The hub pool holds a single connection, so fn must not
-// open another transaction.
-
-// requireActorAuthority re-validates the credential inside the mutation
-// transaction: live hosted membership and session for sessions, token
-// revocation and expiry for API tokens.
-func (c *conversationService) requireActorAuthority(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) error {
-	if scope.credential.Hosted != nil {
-		return c.server.recheckHostedMutation(ctx, tx, &scope)
-	}
-	now, err := c.server.database.currentTime()
-	if err != nil {
-		return err
-	}
-	return requireCredentialAuthority(ctx, tx, scope.credential, now)
-}
-
-// authorizeManage allows the owner, or any actor with write access, to
-// rename a conversation or change its preferences.
-func (c *conversationService) authorizeManage(ctx context.Context, query nativeQueryer, scope nativeScope, record conversationRecord) error {
-	if err := c.authorizeRead(ctx, query, scope, record); err != nil {
-		return err
-	}
-	if record.OwnerPrincipalID == scope.credential.ID {
-		return nil
-	}
-	return c.authorizeWrite(ctx, query, scope, record)
 }
 
 // Request and response shapes.
@@ -577,6 +552,10 @@ func (s *Service) listProjectConversations(c echo.Context) error {
 // the union of the projects the actor can read, most recent activity first.
 func (s *Service) listOrganizationConversations(c echo.Context) error {
 	scope := nativeRequestScope(c)
+	if scope.credential.Hosted == nil && scope.credential.EntryKey == nil {
+		return s.listConversationsPage(c, conversationListQuery{})
+	}
+
 	projects, every, err := s.readableConversationProjects(c.Request().Context(), scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -593,10 +572,7 @@ func (s *Service) listOrganizationConversations(c echo.Context) error {
 // readableConversationProjects returns the projects the actor can read in
 // the organization; every is true when all projects are readable (instance
 // administrators).
-func (s *Service) readableConversationProjects(ctx context.Context, scope nativeScope) (projects []tracker.ProjectID, every bool, err error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-
+func (s *Service) readableConversationProjects(_ context.Context, scope nativeScope) (projects []tracker.ProjectID, every bool, err error) {
 	if scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly {
 		return nil, true, nil
 	}
@@ -692,309 +668,6 @@ func conversationExecutionLive(status conversation.ExecutionStatus) bool {
 	}
 }
 
-func (c *conversationService) validateMessageCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, record conversationRecord, command conversation.Command, now time.Time) ([]conversationAttachmentRecord, error) {
-	if record.WorkItemID != "" {
-		if err := conversationRequireOwner(record.Execution.Owner, command.Expected); err != nil {
-			return nil, err
-		}
-		if conversationBetweenTurns(record.Execution) {
-			return nil, conversationStale("No provider turn is active; send the message after the next turn starts or this attempt finishes")
-		}
-	}
-	if err := c.requireQueueCapacity(ctx, tx, record.ID, command.Kind); err != nil {
-		return nil, err
-	}
-	return c.loadCommandAttachments(ctx, tx, scope, record, command.Attachments, now)
-}
-
-func (c *conversationService) validateCommandAcceptance(ctx context.Context, tx *sql.Tx, scope nativeScope, record conversationRecord, command conversation.Command, now time.Time) error {
-	if !c.server.ready.Load() {
-		return &nativeError{Code: "unavailable", Message: "The Hub is shutting down; try again", status: http.StatusServiceUnavailable}
-	}
-	switch command.Kind {
-	case conversation.CommandMessage:
-		_, err := c.validateMessageCommand(ctx, tx, scope, record, command, now)
-		return err
-	case conversation.CommandAnswer:
-		question, err := c.store.readQuestion(ctx, tx, record.ID, command.QuestionID)
-		if err != nil {
-			return translateConversationError(err)
-		}
-		switch question.Status {
-		case conversation.QuestionPending:
-		case conversation.QuestionSending, conversation.QuestionSent, conversation.QuestionAnswered:
-			return conversationQuestionAnswered()
-		default:
-			return conversationStale("The question is no longer open")
-		}
-		if question.ExpiresAt != nil && !now.Before(*question.ExpiresAt) {
-			return conversationStale("The question has expired")
-		}
-		if err := conversationRequireOwner(record.Execution.Owner, conversation.Expected{AttemptID: question.Owner.AttemptID}); err != nil {
-			return err
-		}
-		if err := conversationRequireOwner(record.Execution.Owner, command.Expected); err != nil {
-			return err
-		}
-		if err := conversation.ValidateAnswers(question.Question, command.Answers); err != nil {
-			return nativeInvalid(err.Error())
-		}
-		return c.requireQueueCapacity(ctx, tx, record.ID, command.Kind)
-	case conversation.CommandInterrupt:
-		if err := conversationRequireOwner(record.Execution.Owner, command.Expected); err != nil {
-			return err
-		}
-		switch record.Execution.Status {
-		case conversation.ExecutionStarting, conversation.ExecutionRunning, conversation.ExecutionWaitingInput:
-		default:
-			return conversationStale("No attempt is running")
-		}
-		return c.requireQueueCapacity(ctx, tx, record.ID, command.Kind)
-	case conversation.CommandContinue:
-		if record.WorkItemID == "" {
-			return conversationUnsupported("Continue requires a linked issue")
-		}
-		if err := c.requireContinueAttempt(ctx, tx, record, command); err != nil {
-			return err
-		}
-		if err := conversationRequireOwner(record.Execution.Owner, command.Expected); err != nil {
-			return err
-		}
-		switch record.Execution.Status {
-		case conversation.ExecutionStarting, conversation.ExecutionRunning, conversation.ExecutionWaitingInput, conversation.ExecutionInterrupting:
-			return conversationStale("An attempt is still running")
-		}
-	case conversation.CommandCancel:
-		if record.WorkItemID != "" {
-			return conversationUnsupported("Cancel applies to coordinator turns; interrupt the linked attempt instead")
-		}
-	case conversation.CommandRetry:
-		messages, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id=? AND id=?", record.ID, command.MessageID)
-		if err != nil {
-			return err
-		}
-		if len(messages) == 0 {
-			return nativePublicInvalid("The message to retry is not part of this conversation")
-		}
-		return c.validateRetryMessage(ctx, tx, record.ID, messages[0], command.Kind)
-	}
-	return nil
-}
-
-func (c *conversationService) validateRetryMessage(ctx context.Context, tx *sql.Tx, id string, message conversationMessageRecord, kind conversation.CommandKind) error {
-	if message.Role != conversation.RoleUser {
-		return nativePublicInvalid("Only a message you sent can be retried")
-	}
-	switch message.Delivery {
-	case conversation.DeliveryUnknown, conversation.DeliveryFailed, conversation.DeliveryRejected:
-	default:
-		return nativePublicInvalid(fmt.Sprintf("A message with delivery %s cannot be retried", message.Delivery))
-	}
-	return c.requireQueueCapacity(ctx, tx, id, kind)
-}
-
-// acceptCommand applies a validated, authorized, newly reserved command to
-// the conversation inside tx and returns the receipt to store. Errors roll
-// the whole command back, including its reservation.
-func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, command conversation.Command, now time.Time) (conversation.Receipt, error) {
-	if !c.server.ready.Load() {
-		return conversation.Receipt{}, &nativeError{Code: "unavailable", Message: "The Hub is shutting down; try again", status: http.StatusServiceUnavailable}
-	}
-	if command.Kind != conversation.CommandMessage && command.Kind != conversation.CommandRetry {
-		if err := c.validateCommandAcceptance(ctx, tx, scope, *record, command, now); err != nil {
-			return conversation.Receipt{}, err
-		}
-	}
-	receipt := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliverySaved}
-	// An accepted command is activity: a settled conversation wakes before
-	// the command is applied.
-	if err := c.unsettle(ctx, tx, record, now); err != nil {
-		return receipt, err
-	}
-	actor := conversationActorFor(scope)
-	linked := record.WorkItemID != ""
-	// Whether an attempt was live when the command arrived decides who
-	// carries it: a live attempt takes it through the controls poll, and
-	// anything else has to wait for the next attempt on the same item. The
-	// status is read before the command is applied, because applying it is
-	// what moves the execution to waiting_for_runner.
-	pending := linked && !conversationExecutionLive(record.Execution.Status)
-	switch command.Kind {
-	case conversation.CommandMessage:
-		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: command.Text, Actor: actor, CommandKey: command.Key, Data: coordinatorConnectionData(ctx)}
-		attachments, err := c.validateMessageCommand(ctx, tx, scope, *record, command, now)
-		if err != nil {
-			return receipt, err
-		}
-		message.Delivery = conversation.DeliverySaved
-		if linked {
-			message.Delivery = conversation.DeliveryQueued
-			message.AttemptID = record.Execution.Owner.AttemptID
-			message.TurnID = record.Execution.Owner.TurnID
-		}
-		if err := c.appendMessage(ctx, tx, record, &message, now); err != nil {
-			return receipt, err
-		}
-		if err := c.bindMessageAttachments(ctx, tx, *record, &message, attachments); err != nil {
-			return receipt, err
-		}
-		// A message queued on a linked conversation with no live attempt
-		// can only be delivered by the next attempt, so it is a request for
-		// one.
-		if pending {
-			if err := requestNativeDispatch(ctx, tx, scope, record.WorkItemID, now); err != nil {
-				return receipt, err
-			}
-		}
-		receipt.Status = message.Delivery
-		receipt.MessageID = message.ID
-	case conversation.CommandAnswer:
-		question, err := c.store.readQuestion(ctx, tx, record.ID, command.QuestionID)
-		if err != nil {
-			return receipt, translateConversationError(err)
-		}
-
-		data, err := marshalNative(command.Answers)
-		if err != nil {
-			return receipt, fmt.Errorf("encode answers: %w", err)
-		}
-		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageAnswer, Text: renderAnswer(question.Question, command.Answers), Data: []byte(data), Delivery: conversation.DeliveryQueued, AttemptID: question.Owner.AttemptID, ThreadID: question.Owner.ThreadID, TurnID: question.Owner.TurnID, Actor: actor, CommandKey: command.Key}
-		if err := c.appendMessage(ctx, tx, record, &message, now); err != nil {
-			return receipt, err
-		}
-		question.Status = conversation.QuestionSending
-		question.Answers = command.Answers
-		question.AnsweredBy = scope.credential.ID
-		question.UpdatedAt = now
-		if err := c.store.upsertQuestion(ctx, tx, question); err != nil {
-			return receipt, err
-		}
-		if _, err := c.store.appendEvent(ctx, tx, record.ID, conversation.EventQuestionUpdated, question.Question, now); err != nil {
-			return receipt, err
-		}
-		receipt.Status = conversation.DeliveryQueued
-		receipt.MessageID = message.ID
-		receipt.QuestionID = question.ID
-	case conversation.CommandInterrupt:
-		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageInterrupt, Delivery: conversation.DeliveryQueued, AttemptID: record.Execution.Owner.AttemptID, ThreadID: record.Execution.Owner.ThreadID, TurnID: record.Execution.Owner.TurnID, Actor: actor, CommandKey: command.Key}
-		if err := c.appendMessage(ctx, tx, record, &message, now); err != nil {
-			return receipt, err
-		}
-		execution := record.Execution
-		execution.Status = conversation.ExecutionInterrupting
-		if err := c.updateExecution(ctx, tx, record, execution, now); err != nil {
-			return receipt, err
-		}
-		receipt.Status = conversation.DeliveryQueued
-		receipt.MessageID = message.ID
-	case conversation.CommandContinue:
-		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageContinue, Text: command.Text, Delivery: conversation.DeliverySaved, Actor: actor, CommandKey: command.Key}
-		if err := c.appendMessage(ctx, tx, record, &message, now); err != nil {
-			return receipt, err
-		}
-		if err := requestNativeDispatch(ctx, tx, scope, record.WorkItemID, now); err != nil {
-			return receipt, err
-		}
-		execution := conversation.Execution{Status: conversation.ExecutionWaitingForRunner, Owner: conversation.Owner{ThreadID: record.Execution.Owner.ThreadID}}
-		if err := c.updateExecution(ctx, tx, record, execution, now); err != nil {
-			return receipt, err
-		}
-		receipt.Status = conversation.DeliverySaved
-		receipt.MessageID = message.ID
-	case conversation.CommandCancel:
-		if c.coordinator.Cancel(record.ID) {
-			receipt.Status = conversation.DeliveryDelivered
-			break
-		}
-		receipt.Status = conversation.DeliveryRejected
-		receipt.Error = &conversation.ReceiptError{Code: "no_active_turn", Message: "No coordinator turn is running"}
-	case conversation.CommandRetry:
-		retried, err := c.retryMessage(ctx, tx, scope, record, command, now)
-		if err != nil {
-			return receipt, err
-		}
-		// A retried message goes back on the ladder as queued; with no live
-		// attempt to hand it to, it is the next attempt's to carry.
-		if pending && retried.Delivery == conversation.DeliveryQueued {
-			if err := requestNativeDispatch(ctx, tx, scope, record.WorkItemID, now); err != nil {
-				return receipt, err
-			}
-		}
-		receipt.Status = retried.Delivery
-		receipt.MessageID = retried.ID
-	default:
-		return receipt, conversationUnsupported("Command kind is not supported")
-	}
-	return receipt, nil
-}
-
-// retryMessage re-queues one user message the hub could not establish.
-// Nothing is duplicated: the same message id goes back on the ladder and
-// the retry key gets its own receipt.
-func (c *conversationService) retryMessage(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, command conversation.Command, now time.Time) (conversationMessageRecord, error) {
-	message, prepared := ctx.Value(conversationPreparedRetryKey{}).(conversationMessageRecord)
-	if !prepared || message.ID != command.MessageID || message.ConversationID != record.ID {
-		return conversationMessageRecord{}, nativePublicInvalid("The message to retry was not prepared")
-	}
-	if err := c.validateRetryMessage(ctx, tx, record.ID, message, command.Kind); err != nil {
-		return conversationMessageRecord{}, err
-	}
-	delivery := conversation.DeliveryQueued
-	if record.WorkItemID == "" {
-		delivery = conversation.DeliverySaved
-	}
-	// The generation that could not serve the control is cleared, so the
-	// next attempt takes it as a fresh delivery.
-	message.Data = coordinatorConnectionData(ctx)
-	message.Delivery = delivery
-	message.AttemptID, message.ThreadID, message.TurnID = "", "", ""
-	if err := c.updateMessage(ctx, tx, message, now); err != nil {
-		return conversationMessageRecord{}, err
-	}
-	message.UpdatedAt = now
-	return message, nil
-}
-
-// requireContinueAttempt enforces that a continue names the attempt it
-// follows. A null attempt is only honest for a conversation that never had
-// one; otherwise the client is continuing a generation it did not observe.
-func (c *conversationService) requireContinueAttempt(ctx context.Context, tx *sql.Tx, record conversationRecord, command conversation.Command) error {
-	if strings.TrimSpace(command.Expected.AttemptID) != "" {
-		return nil
-	}
-	if record.Execution.Owner.AttemptID != "" {
-		return nativePublicInvalid("expected.attempt_id is required to continue a conversation that has an attempt")
-	}
-	var attempts int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM conversation_starts WHERE conversation_id = ?", record.ID).Scan(&attempts); err != nil {
-		return fmt.Errorf("count conversation attempts: %w", err)
-	}
-	if attempts > 0 {
-		return nativePublicInvalid("expected.attempt_id is required to continue a conversation that had an attempt")
-	}
-	return nil
-}
-
-// requireQueueCapacity enforces the bounded control queue before anything
-// is persisted for the control. A refusal is logged: a conversation whose
-// controls stopped draining is otherwise invisible in the log.
-func (c *conversationService) requireQueueCapacity(ctx context.Context, tx *sql.Tx, conversationID string, kind conversation.CommandKind) error {
-	var queued int
-	// Everything the hub still owes a worker or a coordinator counts: a
-	// control that was handed out but not acknowledged is as much pending
-	// work as one that is still waiting.
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM conversation_messages
-WHERE conversation_id = ? AND role = 'user' AND delivery IN (?, ?, ?)`, conversationID,
-		conversation.DeliverySaved, conversation.DeliveryQueued, conversation.DeliverySending).Scan(&queued); err != nil {
-		return fmt.Errorf("count queued controls: %w", err)
-	}
-	if queued >= c.config.ControlQueueSize {
-		c.logger.Warn("conversation.queue_full", "conversation_id", conversationID, "kind", kind, "queued", queued, "limit", c.config.ControlQueueSize)
-		return conversationQueueFull()
-	}
-	return nil
-}
-
 // renderAnswer produces the short transcript text of an answer message.
 func renderAnswer(question conversation.Question, answers map[string][]string) string {
 	for _, prompt := range question.Prompts {
@@ -1066,9 +739,7 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 		return nil, err
 	}
 
-	var now time.Time
-
-	now = s.config.now()
+	now := s.config.now()
 
 	if err := s.requireConversationFeaturePG(ctx, scope.organization, "collaboration", now); err != nil {
 		return nil, err
@@ -1103,9 +774,7 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 		}
 	}
 
-	var prepared context.Context
-
-	prepared = newConversationArchiveReads(ctx)
+	prepared := newConversationArchiveReads(ctx)
 
 	ctx = prepared
 	freshRecord := conversationRecord{ID: conversation.NewConversationID(), SubjectWorkItemID: request.SubjectWorkItemID, OrganizationID: scope.organization, ProjectID: scope.project, OwnerPrincipalID: scope.credential.ID, Origin: conversationOriginUser, Title: title, Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now, Revision: 1}
@@ -1342,12 +1011,19 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 			return err
 		}
 		var err error
+		grantCredential := ""
+		if scope.project == "" && scope.credential.Hosted == nil && scope.credential.EntryKey == nil {
+			grantCredential = scope.credential.ID
+		}
 		page, err = reader.Conversations(ctx, conversationstore.ConversationQuery{
-			ProjectID: filter.Project, ProjectIDs: filter.Projects, PrincipalID: filter.Principal,
+			ProjectID: filter.Project, ProjectIDs: filter.Projects, PrincipalID: filter.Principal, GrantCredentialID: grantCredential,
 			Cursor: filter.Cursor, Limit: limit, Settled: filter.Settled, Title: filter.Title,
 			SubjectWorkItemID: filter.SubjectWorkItemID,
 		})
 		if err != nil {
+			if errors.Is(err, corestore.ErrInvalidCursor) {
+				return nativePublicInvalid("Invalid conversation cursor")
+			}
 			return err
 		}
 		projectCache := map[tracker.ProjectID]corestore.Project{}
