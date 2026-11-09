@@ -977,6 +977,10 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					}
 					return recovery.Attempts[0], nil
 				}},
+				{"retained", func() (tracker.NativeAttempt, error) {
+					value, _, err := service.readRetainedAttemptTenant(readContext, scope, string(issue.WorkItemID), start.Data.AttemptID, nil)
+					return value, err
+				}},
 				{"selected_recovery", func() (tracker.NativeAttempt, error) {
 					snapshot, err := service.readNativeRecoveryAttemptSnapshot(readContext, scope, string(issue.WorkItemID), issueID, start.Data.AttemptID)
 					if err != nil {
@@ -1028,6 +1032,40 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 				})
 			}
 
+			first, retainedPin, err := service.readRetainedAttemptTenant(t.Context(), scope, string(issue.WorkItemID), start.Data.AttemptID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var renewed leasestore.Lease
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				var err error
+				renewed, err = w.Renew(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, time.Hour)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !renewed.RenewedAt.After(retainedPin.LeaseRenewedAt) {
+				t.Fatal("retained guard did not advance the authoritative lease renewal")
+			}
+			retained, _, err := service.readRetainedAttemptTenant(t.Context(), scope, string(issue.WorkItemID), start.Data.AttemptID, retainedPin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstRaw, err := json.Marshal(first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retainedRaw, err := json.Marshal(retained)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(firstRaw, retainedRaw) {
+				t.Fatal("retained attempt bytes changed after a valid lease renewal")
+			}
+			fresh, err := service.readNativeAttemptTenant(t.Context(), scope, string(issue.WorkItemID), start.Data.AttemptID)
+			if err != nil || !fresh.LeaseRenewedAt.Equal(renewed.RenewedAt) || !fresh.LeaseExpiresAt.Equal(renewed.ExpiresAt) {
+				t.Fatalf("current attempt read lost renewed lease facts: %v", err)
+			}
 			if otherAttempt != "" {
 				_, err := service.readNativeAttempt(readContext, scope, string(issue.WorkItemID), otherAttempt)
 				if !errors.Is(err, corestore.ErrNotFound) && !isNativeNotFound(err) {
@@ -1041,6 +1079,10 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			otherAttempt = start.Data.AttemptID
 			if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET sequence = sequence + 1 WHERE organization_id = $1 AND id = $2", organization.ID, start.Data.AttemptID); err != nil {
 				t.Fatal(err)
+			}
+			var sourceConflict *nativeError
+			if _, _, err := service.readRetainedAttemptTenant(t.Context(), scope, string(issue.WorkItemID), start.Data.AttemptID, retainedPin); !errors.As(err, &sourceConflict) || sourceConflict.Code != "revision_conflict" {
+				t.Fatalf("retained pin accepted changed attempt source: %v", err)
 			}
 			for _, reader := range readers {
 				t.Run("stable_mismatch_"+reader.name, func(t *testing.T) {
@@ -1058,6 +1100,10 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 				return err
 			}); err != nil {
 				t.Fatal(err)
+			}
+			var releaseConflict *nativeError
+			if _, _, err := service.readRetainedAttemptTenant(t.Context(), scope, string(issue.WorkItemID), start.Data.AttemptID, retainedPin); !errors.As(err, &releaseConflict) || releaseConflict.Code != "revision_conflict" {
+				t.Fatalf("retained pin accepted an explicitly released lease: %v", err)
 			}
 			for _, reader := range readers {
 				t.Run("lease_cancelled_"+reader.name, func(t *testing.T) {

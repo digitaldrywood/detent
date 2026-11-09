@@ -25,13 +25,14 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 }
 
 type recoveryEvidenceCursor struct {
-	Section       int              `json:"section"`
-	After         int64            `json:"after"`
-	Offset        int64            `json:"offset"`
-	Digest        string           `json:"digest,omitempty"`
-	Change        string           `json:"change,omitempty"`
-	Version       string           `json:"version,omitempty"`
-	IssueRevision tracker.Revision `json:"issue_revision,omitempty"`
+	Section       int                     `json:"section"`
+	After         int64                   `json:"after"`
+	Offset        int64                   `json:"offset"`
+	Digest        string                  `json:"digest,omitempty"`
+	Change        string                  `json:"change,omitempty"`
+	Version       string                  `json:"version,omitempty"`
+	IssueRevision tracker.Revision        `json:"issue_revision,omitempty"`
+	Attempt       *retainedAttemptReadPin `json:"attempt,omitempty"`
 }
 
 func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope, item, path string, params url.Values) (tracker.NativeRecovery, error) {

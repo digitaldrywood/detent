@@ -35,10 +35,18 @@ type tenantAttemptSnapshot struct {
 }
 
 func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
+	snapshot, err := s.readNativeAttemptSnapshotTenant(ctx, scope, item, id)
+	if err != nil {
+		return tracker.NativeAttempt{}, err
+	}
+	return s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.now())
+}
+
+func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope nativeScope, item, id string) (tenantAttemptSnapshot, error) {
 	var snapshot tenantAttemptSnapshot
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return tracker.NativeAttempt{}, nativeRunEventStorageUnavailable()
+		return tenantAttemptSnapshot{}, nativeRunEventStorageUnavailable()
 	}
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -88,10 +96,7 @@ func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope
 		}
 		return readTenantAttemptEvidence(ctx, r, &snapshot)
 	})
-	if err != nil {
-		return tracker.NativeAttempt{}, err
-	}
-	return s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.now())
+	return snapshot, err
 }
 
 func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
