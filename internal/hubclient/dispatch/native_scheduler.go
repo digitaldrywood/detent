@@ -721,6 +721,9 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 		if err != nil {
 			return nil, err
 		}
+		if recovery.ContinuationEligible == nil {
+			return nil, ErrUnavailable
+		}
 		for _, attempt := range recovery.Attempts {
 			if attempt.LeaseID == held.ID && attempt.Status != "running" && attempt.Status != "interrupted" {
 				adopted = true
@@ -729,20 +732,16 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 		if adopted {
 			continue
 		}
-		renewable, err := s.nativeClaimRenewable(ctx, nativeClaim{source: source, lease: tracker.NativeLease{ID: held.ID, WorkItemID: held.WorkItemID, FencingToken: held.FencingToken}, recovery: recovery})
-		if err != nil {
-			return nil, err
-		}
-		if !renewable {
-			if err := source.NativeClient().ReleaseAttempt(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, "cancelled", recovery.Issue.SchedulingEligible != nil); err != nil && !nativeLeaseLost(err) {
+		renewable := *recovery.ContinuationEligible
+		if renewable {
+			renewable, err = s.nativeClaimRenewable(ctx, nativeClaim{source: source, lease: tracker.NativeLease{ID: held.ID, WorkItemID: held.WorkItemID, FencingToken: held.FencingToken}, recovery: recovery})
+			if err != nil {
 				return nil, err
 			}
-			for _, attempt := range recovery.Attempts {
-				if recovery.Issue.SchedulingEligible == nil && attempt.LeaseID == held.ID && attempt.FencingToken == held.FencingToken && (attempt.Status == "running" || attempt.Status == "interrupted") && attempt.Identity != nil {
-					if err := cancelNativeReleasedAttempt(ctx, source.NativeClient(), held.WorkItemID, attempt); err != nil {
-						return nil, err
-					}
-				}
+		}
+		if !renewable {
+			if err := source.NativeClient().ReleaseAttempt(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, "cancelled", true); err != nil && !nativeLeaseLost(err) {
+				return nil, err
 			}
 			continue
 		}

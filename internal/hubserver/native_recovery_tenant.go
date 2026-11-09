@@ -91,6 +91,7 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	var events []eventstore.Event
 	var mergeHistoryTruncated bool
 	var projectSequence int64
+	var continuationEligible *bool
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return tracker.NativeRecovery{}, nativeRunEventStorageUnavailable()
@@ -112,6 +113,10 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 		}
 		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
+		}
+		continuationEligible, err = readRunnerRecoveryEligibility(ctx, r, scope, row.NativeID)
+		if err != nil {
+			return err
 		}
 		version, err = r.CollaborationVersion(ctx, item, row.Revision)
 		if err != nil {
@@ -368,6 +373,7 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	if err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &result.Issue); err != nil {
 		return result, fmt.Errorf("hydrate recovery work item relationships: %w", err)
 	}
+	result.ContinuationEligible = continuationEligible
 	result.Issue.OmittedFields = append(result.Issue.OmittedFields, "change_sequence")
 	if change.ID != "" {
 		var detail tracker.ChangeDetail
