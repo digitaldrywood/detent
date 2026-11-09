@@ -28,6 +28,7 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 	for _, test := range []struct {
 		name, mode  string
 		retryStatus int
+		withdrawn   bool
 	}{
 		{name: "matching creation identity", mode: "matching"},
 		{name: "foreign creation identity", mode: "foreign"},
@@ -35,6 +36,7 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 		{name: "original commits while retry collides", mode: "matching", retryStatus: http.StatusConflict},
 		{name: "original commits while retry reports name taken", mode: "matching", retryStatus: http.StatusBadRequest},
 		{name: "original commits while retry is refused billing", mode: "matching", retryStatus: http.StatusPaymentRequired},
+		{name: "withdrawn demand waits for the original creation before cleanup", mode: "matching", withdrawn: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var poolConfig *pgxpool.Config
@@ -49,10 +51,11 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 			resources := map[string]resourceRecord{}
 			pendingCreations := map[string]bool{}
 			var resourceKeys []string
-			creates := 0
+			creates, createRequests, deletes := 0, 0, 0
 			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
 				name := strings.TrimPrefix(request.URL.Path, "/v1/sprites/")
 				if request.Method == http.MethodPost {
+					createRequests++
 					var body struct {
 						Name   string   `json:"name"`
 						Labels []string `json:"labels"`
@@ -62,6 +65,9 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 					}
 					name = body.Name
 					key := request.Header.Get("Authorization") + name
+					if _, exists := resources[key]; exists && test.withdrawn {
+						return spritesTestResponse(`{"error":"Sprite name already exists"}`, http.StatusConflict), nil
+					}
 					if _, exists := resources[key]; exists && test.retryStatus != 0 {
 						pendingCreations[key] = false
 						raw := `{"error":"Sprite name already exists"}`
@@ -75,12 +81,17 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 						id = "foreign-" + name
 					}
 					resources[key] = resourceRecord{ID: id, Labels: append([]string(nil), body.Labels...)}
-					pendingCreations[key] = test.retryStatus != 0
+					pendingCreations[key] = test.retryStatus != 0 || test.withdrawn
 					resourceKeys = append(resourceKeys, key)
 					creates++
 					return nil, errors.New("provider response was lost")
 				}
 				key := request.Header.Get("Authorization") + name
+				if request.Method == http.MethodDelete {
+					delete(resources, key)
+					deletes++
+					return spritesTestResponse("", http.StatusNoContent), nil
+				}
 				resource, exists := resources[key]
 				exists = exists && !pendingCreations[key]
 				status := http.StatusNotFound
@@ -155,6 +166,25 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 			if creates != 4 {
 				t.Fatalf("provider creates=%d want 4", creates)
 			}
+			if test.withdrawn {
+				for organization := range services {
+					if err := repository.WriteSprite(t.Context(), organization, corestore.Serving, func(w postgres.SpriteWriter) error {
+						for _, project := range []tracker.ProjectID{"first", "second"} {
+							allocation, err := w.SpriteAllocation(t.Context(), project)
+							if err != nil {
+								return err
+							}
+							allocation.DesiredCount = 0
+							if _, err := w.PutSpriteAllocation(t.Context(), allocation, allocation.Revision); err != nil {
+								return err
+							}
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			if err := repository.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -197,6 +227,40 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 						t.Fatalf("incomplete uncertain reservation: %+v", op)
 					}
 					seen[op.ProjectID] = true
+					if test.withdrawn {
+						priorDeletes := deletes
+						if err := service.runSpriteOperation(t.Context(), op); err != nil {
+							t.Fatalf("withdrawn demand attempted a provider create: requests=%d, error=%v", createRequests, err)
+						}
+						if createRequests != 4 || deletes != priorDeletes {
+							t.Fatalf("unresolved withdrawal wrote to provider: creates=%d deletes=%d", createRequests, deletes)
+						}
+						if err := reopened.ReadSprite(t.Context(), organization, corestore.Serving, func(r postgres.SpriteReader) error {
+							current, err := r.SpriteOperation(t.Context(), op.IdempotencyKey)
+							if err != nil {
+								return err
+							}
+							if current.Outcome != "uncertain" || current.ProviderResourceID != "" || current.ReceiptObjectKey != nil || !current.NextAttemptAt.After(now) {
+								t.Fatalf("withdrawal discarded original uncertainty: %+v", current)
+							}
+							member, err := r.SpriteMember(t.Context(), op.Name)
+							if err != nil {
+								return err
+							}
+							if member.State != "bootstrapping" || member.EnrollmentID != op.TargetEnrollmentID {
+								t.Fatalf("withdrawal released the unknown reservation: %+v", member)
+							}
+							if _, err := r.SpriteOperation(t.Context(), "bootstrap:"+op.TargetEnrollmentID); !errors.Is(err, corestore.ErrNotFound) {
+								t.Fatalf("unknown withdrawn creation received bootstrap intent: %v", err)
+							}
+							op = current
+							return nil
+						}); err != nil {
+							t.Fatal(err)
+						}
+						now = op.NextAttemptAt
+						pendingCreations["Bearer "+string(organization)+op.Name] = false
+					}
 					if test.retryStatus != 0 {
 						if err := service.runSpriteOperation(t.Context(), op); err == nil {
 							t.Fatal("a rejected retry reported the earlier uncertain write committed")
@@ -261,6 +325,32 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 					}); err != nil {
 						t.Fatal(err)
 					}
+					if test.withdrawn {
+						var bootstrap postgres.SpriteOperation
+						if err := reopened.ReadSprite(t.Context(), organization, corestore.Serving, func(r postgres.SpriteReader) error {
+							var err error
+							bootstrap, err = r.SpriteOperation(t.Context(), "bootstrap:"+op.TargetEnrollmentID)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						if err := service.runSpriteOperation(t.Context(), bootstrap); err != nil {
+							t.Fatal(err)
+						}
+						if err := reopened.ReadSprite(t.Context(), organization, corestore.Serving, func(r postgres.SpriteReader) error {
+							member, err := r.SpriteMember(t.Context(), op.Name)
+							if err != nil {
+								return err
+							}
+							deletion, err := r.SpriteOperation(t.Context(), "delete:"+op.TargetEnrollmentID)
+							if err == nil && (member.State != "deleted" || deletion.Outcome != "committed" || deletion.ProviderResourceID != "resource-"+op.Name) {
+								t.Fatalf("resolved withdrawn creation was not retired by identity: member=%+v operation=%+v", member, deletion)
+							}
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
 				if !seen["first"] || !seen["second"] {
 					t.Fatalf("allocation fairness lost a project: %v", seen)
@@ -268,6 +358,9 @@ func TestSpriteProvisionLostResponseReconcilesAfterReopen(t *testing.T) {
 			}
 			if creates != 4 {
 				t.Fatalf("reconciliation repeated provider creation: %d", creates)
+			}
+			if test.withdrawn && (createRequests != 4 || deletes != 4 || len(resources) != 0) {
+				t.Fatalf("withdrawal cleanup: creates=%d deletes=%d resources=%d", createRequests, deletes, len(resources))
 			}
 			if firstOperationKey == "" {
 				t.Fatal("missing source tenant operation")

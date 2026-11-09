@@ -1073,8 +1073,9 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 	if op.Outcome != "pending" && op.Outcome != "uncertain" {
 		return nil
 	}
-	if op.Operation == "bootstrap" || op.Operation == "checkpoint" || op.Operation == "provision" && op.Outcome == "pending" {
-		wanted := false
+	wanted := true
+	if op.Operation == "bootstrap" || op.Operation == "checkpoint" || op.Operation == "provision" {
+		wanted = false
 		err := s.config.TenantRepository.ReadTenant(ctx, op.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			wanted, err = spriteReservationWanted(ctx, r, op, request, s.config.now())
@@ -1083,7 +1084,7 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 		if err != nil {
 			return err
 		}
-		if !wanted {
+		if !wanted && (op.Operation != "provision" || op.Outcome != "uncertain") {
 			return s.rejectSpriteOperation(ctx, op, "Sprite reservation is no longer current\n", op.Operation != "provision")
 		}
 	}
@@ -1215,6 +1216,9 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 				return errors.Join(errSpriteNameTaken, s.rejectSpriteOperationWithRetry(ctx, op, "Sprite name is already in use\n", false, false))
 			}
 		case http.StatusNotFound:
+			if !wanted {
+				return nil
+			}
 			if err := s.saveSpriteOperation(ctx, &op, "uncertain", nil); err != nil {
 				return err
 			}
