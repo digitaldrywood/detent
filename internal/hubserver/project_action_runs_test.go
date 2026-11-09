@@ -186,7 +186,7 @@ func TestProjectActionRunOutputEndpoint(t *testing.T) {
 	})
 
 	t.Run("the stored bytes come back as text and the receipt names this path", func(t *testing.T) {
-		if err := f.service.workspaces.finishActionRunRecord(t.Context(), &execRunState{runID: run, output: []byte("ok\nPASS\n")}, workspacesession.RunSucceeded, nil, ""); err != nil {
+		if err := f.service.workspaces.finishActionRunRecord(t.Context(), &execRunState{organization: f.project.OrganizationID, runID: run, output: []byte("ok\nPASS\n")}, workspacesession.RunSucceeded, nil, ""); err != nil {
 			t.Fatal(err)
 		}
 
@@ -610,7 +610,7 @@ func TestProjectActionRunSweepEndsRunsOfEndedWorkspaces(t *testing.T) {
 		run := f.queueRun(t, action.ID, workspace)
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		f.service.workspaces.finishExecRun(ctx, &execRunState{runID: run}, workspacesession.RunFailed, nil, workspacesession.RunReasonStreamClosed)
+		f.service.workspaces.finishExecRun(ctx, &execRunState{organization: f.project.OrganizationID, runID: run}, workspacesession.RunFailed, nil, workspacesession.RunReasonStreamClosed)
 		finished := f.readRun(t, action.ID, run)
 		if finished.Status != workspacesession.RunFailed || finished.Reason != workspacesession.RunReasonStreamClosed {
 			t.Fatalf("canceled cleanup left the accepted run unfinished: %+v", finished)

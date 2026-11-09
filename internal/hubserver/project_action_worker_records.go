@@ -252,7 +252,7 @@ func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 		return
 	}
 	for _, row := range ended {
-		if err = w.finishActionRunRecord(ctx, &execRunState{runID: row.ID}, workspacesession.RunFailed, nil, workspacesession.RunReasonWorkspaceEnd); err != nil {
+		if err = w.finishActionRunRecord(ctx, &execRunState{organization: row.OrganizationID, runID: row.ID}, workspacesession.RunFailed, nil, workspacesession.RunReasonWorkspaceEnd); err != nil {
 			w.logger.Warn("action_run.sweep_transition_failed", "run_id", row.ID, "error", err)
 		}
 	}

@@ -119,10 +119,11 @@ const hubStreamOwner = "relayhub"
 // that one bounds unacknowledged frames waiting for a person, and releasing it
 // on an ack says nothing about how much of the run the hub still has to store.
 type execRunState struct {
-	runID     string
-	actionID  string
-	output    []byte
-	truncated bool
+	organization tracker.OrganizationID
+	runID        string
+	actionID     string
+	output       []byte
+	truncated    bool
 }
 
 // append adds one span of output, stopping at the cap.
@@ -362,7 +363,7 @@ func (r *workspaceRelay) closeWorkspace(ctx context.Context, workspaceID, reason
 	}
 	r.mu.Unlock()
 	if len(orphaned) > 0 {
-		r.service.failExecRuns(ctx, orphaned, r.workspaceRunReason(ctx, workspaceID))
+		r.service.failExecRuns(ctx, orphaned, r.workspaceRunReason(ctx, orphaned[0].organization, workspaceID))
 	}
 	r.service.finishTerminalRecordings(ctx, recorded)
 	for _, connection := range connections {
@@ -990,7 +991,7 @@ func (r *workspaceRelay) beginExecRun(workspaceID, streamID, runID, actionID str
 	if room == nil || room.runner == nil || (runner != nil && room.runner != runner) || room.streams[streamID] == nil {
 		return false
 	}
-	room.execRuns[streamID] = &execRunState{runID: runID, actionID: actionID}
+	room.execRuns[streamID] = &execRunState{organization: room.runner.scope.organization, runID: runID, actionID: actionID}
 	return true
 }
 
@@ -1039,13 +1040,13 @@ func (r *workspaceRelay) failWorkspaceExecRuns(ctx context.Context, workspaceID,
 // failed. It reads the row because only the row separates a lease the hub gave
 // up on from a workspace somebody closed, and those are different stories for
 // the person reading the run afterwards.
-func (r *workspaceRelay) workspaceRunReason(ctx context.Context, workspaceID string) string {
+func (r *workspaceRelay) workspaceRunReason(ctx context.Context, organization tracker.OrganizationID, workspaceID string) string {
 	// The read outlives the cancellation of whatever ended the workspace, for
 	// the same reason the write does: the reason is only needed once that has
 	// already happened.
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
 	defer cancel()
-	record, err := r.service.readWorkspaceIDRecord(readCtx, workspaceID)
+	record, err := r.service.readWorkspaceIDRecord(readCtx, organization, workspaceID)
 	if err != nil {
 		return workspacesession.RunReasonWorkspaceEnd
 	}

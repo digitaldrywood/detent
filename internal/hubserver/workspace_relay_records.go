@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -64,9 +65,9 @@ func (s *Service) redeemRelayTicketRecord(ctx context.Context, scope nativeScope
 	})
 	return record, err
 }
-func (w *workspaceService) readWorkspaceIDRecord(ctx context.Context, id string) (workspaceRecord, error) {
+func (w *workspaceService) readWorkspaceIDRecord(ctx context.Context, organization tracker.OrganizationID, id string) (workspaceRecord, error) {
 	var record workspaceRecord
-	err := w.server.config.TenantRepository.ReadTenant(ctx, w.organization(), corestore.Serving, func(r tenantstore.Reader) error {
+	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		row, err := r.(workspaceReader).WorkspaceSessionByID(ctx, id)
 		record = workspaceFromRecord(row)
 		return err
@@ -125,13 +126,9 @@ func (w *workspaceService) revalidateRelayRecord(ctx context.Context, record wor
 	})
 }
 
-func (w *workspaceService) touchWorkspaceRecord(ctx context.Context, id string) error {
-	record, err := w.readWorkspaceIDRecord(ctx, id)
-	if err != nil {
-		return err
-	}
+func (w *workspaceService) touchWorkspaceRecord(ctx context.Context, record workspaceRecord) error {
 	return w.server.workspaceWrite(ctx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, func(writer workspaceWriter, now time.Time) error {
-		row, err := writer.WorkspaceSession(ctx, record.ProjectID, id)
+		row, err := writer.WorkspaceSession(ctx, record.ProjectID, record.ID)
 		if err != nil {
 			return err
 		}
@@ -185,7 +182,7 @@ func (w *workspaceService) startExecRunRecord(ctx context.Context, connection, r
 		return workspacesession.CodeStaleExecution
 	}
 	if !w.relay.beginExecRun(record.ID, stream.id, run.ID, run.ActionID, runner) {
-		w.failExecRuns(ctx, []*execRunState{{runID: run.ID, actionID: run.ActionID}}, workspacesession.RunReasonStreamClosed)
+		w.failExecRuns(ctx, []*execRunState{{organization: run.OrganizationID, runID: run.ID, actionID: run.ActionID}}, workspacesession.RunReasonStreamClosed)
 		w.relay.closeStream(ctx, record.ID, stream.id)
 		return workspacesession.CodeStaleExecution
 	}

@@ -265,7 +265,7 @@ func (s *Service) getActionRunRecord(ctx context.Context, scope nativeScope, act
 
 func (w *workspaceService) finishActionRunRecord(ctx context.Context, state *execRunState, status string, exit *int, reason string) error {
 	var row postgres.ActionRun
-	err := w.server.config.TenantRepository.ReadTenant(ctx, w.organization(), corestore.Serving, func(r tenantstore.Reader) error {
+	err := w.server.config.TenantRepository.ReadTenant(ctx, state.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner := r.(workspaceReader)
 		var err error
 		row, err = owner.ActionRunByID(ctx, state.runID)

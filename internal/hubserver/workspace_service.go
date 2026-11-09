@@ -226,7 +226,7 @@ func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connect
 	var record workspaceRecord
 	var err error
 
-	record, err = w.readWorkspaceIDRecord(ctx, connection.workspaceID)
+	record, err = w.readWorkspaceIDRecord(ctx, connection.scope.organization, connection.workspaceID)
 
 	if err != nil {
 		// The periodic authority re-check reads the same row and closes the

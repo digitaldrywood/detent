@@ -1955,7 +1955,8 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 			}
 			connection := &relayConnection{
 				id: newNativeID("relayconn"), workspaceID: f.workspace, runner: test.runner,
-				out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
+				scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID},
+				out:   make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
 			}
 			relay := f.service.workspaces.relay
 			if test.runner {

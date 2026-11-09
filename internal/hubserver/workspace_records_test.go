@@ -32,10 +32,16 @@ func TestPostgresWorkspaceRoutesPersistSessionsAndDispatch(t *testing.T) {
 		close(service.workspaces.stopped)
 		t.Fatal(err)
 	}
-	saved := []struct{ path, token, id string }{}
+	saved := []struct{ path, token, id, action, run string }{}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		fixture := newNativeFixture(t, service, organization, "Example workspace project")
 		foreign := newNativeFixture(t, service, organization, "Other project")
+		policy := hubTestPolicy()
+		approveHubTestPolicy(t, service, fixture.base+"/policy", policy)
+		runner := prepareRunner(t, fixture, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+		runner.redemption.Capacity = 8
+		runner.enroll(t)
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, fixture.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 8, "version": "test", "capacity_configuration": workspaceTestCapacity(8, service.config.now()), "workspace_capabilities": execCapabilities, "workspace_isolation": workspacesession.IsolationContainer}), http.StatusOK)
 		for index := range 2 {
 			t.Run(fmt.Sprintf("%s/%d", organization, index), func(t *testing.T) {
 				subject := fixture.create(t, "Example workspace subject")
@@ -66,6 +72,7 @@ func TestPostgresWorkspaceRoutesPersistSessionsAndDispatch(t *testing.T) {
 				if len(page.Workspaces) != index+1 || !found {
 					t.Fatalf("workspace page: %+v", page)
 				}
+				var dispatchID string
 				if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 					owner := r.(postgres.WorkspaceLifecycleReader)
 					item, err := owner.WorkspaceDispatchItem(t.Context(), fixture.project.ID, session.ID)
@@ -79,10 +86,35 @@ func TestPostgresWorkspaceRoutesPersistSessionsAndDispatch(t *testing.T) {
 					if stringValue(dispatch.WorkflowStateName) != "Todo" {
 						t.Fatalf("dispatch state: %+v", dispatch)
 					}
+					dispatchID = item
 					return nil
 				}); err != nil {
 					t.Fatal(err)
 				}
+				var action workspacesession.Action
+				var run projectActionRunReceipt
+				t.Run("action execution", func(t *testing.T) {
+					claim := performHubAPIRequest(t, service, http.MethodPost, fixture.base+"/claims", runner.redemption.Credential, tracker.NativeClaim{PolicyID: policy.ID, WorkItemID: tracker.NativeWorkItemID(dispatchID), MachineID: runner.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
+					requireNativeStatus(t, claim, http.StatusOK)
+					var lease tracker.NativeLease
+					decodeHubResponse(t, claim, &lease)
+					identity := workspaceIdentity(lease)
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/"+session.ID+"/worker/bind", runner.redemption.Credential, workspaceBindRequest{workspaceWorkerIdentity: identity, Capabilities: execCapabilities, Isolation: workspacesession.IsolationContainer}), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/"+session.ID+"/worker/heartbeat", runner.redemption.Credential, workspaceHeartbeatRequest{workspaceWorkerIdentity: identity, State: workspacesession.StateReady, Capabilities: execCapabilities}), http.StatusOK)
+					authored := performHubAPIRequest(t, service, http.MethodPost, fixture.base+"/actions", fixture.token, map[string]any{"idempotency_key": fmt.Sprintf("action-%d", index), "name": fmt.Sprintf("Example action %d", index), "command": "printf example"})
+					requireNativeStatus(t, authored, http.StatusCreated)
+					decodeHubResponse(t, authored, &action)
+					runsPath := fixture.base + "/actions/" + action.ID + "/runs"
+					runBody := projectActionRunRequest{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("run-%d", index)}, WorkspaceID: session.ID, ExpectedActionRevision: tracker.Revision(action.Revision)}
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, runsPath, "", runBody), http.StatusUnauthorized)
+					queued := performHubAPIRequest(t, service, http.MethodPost, runsPath, fixture.token, runBody)
+					requireNativeStatus(t, queued, http.StatusAccepted)
+					decodeHubResponse(t, queued, &run)
+					for sequence, status := range []string{workspacesession.RunRunning, workspacesession.RunSucceeded} {
+						report := performHubAPIRequest(t, service, http.MethodPost, path+"/"+session.ID+"/worker/action-runs", runner.redemption.Credential, workspaceActionRunReport{WorkspaceIdentity: identity, ActionID: action.ID, RunID: run.RunID, Status: status, OutputSequence: int64(sequence + 1), Output: "example output\n"})
+						requireNativeStatus(t, report, http.StatusOK)
+					}
+				})
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, foreign.base+"/workspaces/"+session.ID, foreign.token, nil), http.StatusNotFound)
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, path+"/"+session.ID, fixture.token, nil), http.StatusNoContent)
 				closed := performHubAPIRequest(t, service, http.MethodGet, path+"/"+session.ID, fixture.token, nil)
@@ -91,14 +123,29 @@ func TestPostgresWorkspaceRoutesPersistSessionsAndDispatch(t *testing.T) {
 				if session.State != "closed" {
 					t.Fatalf("workspace close not persisted: %+v", session)
 				}
-				saved = append(saved, struct{ path, token, id string }{path, fixture.token, session.ID})
+				t.Run("relay attach sees close", func(t *testing.T) {
+					connection := &relayConnection{id: newNativeID("relayconn"), workspaceID: session.ID, scope: nativeScope{organization: organization, project: fixture.project.ID}, out: make(chan relayOutbound, 1), done: make(chan struct{})}
+					if err := service.workspaces.relay.attachPerson(connection); err != nil {
+						t.Fatal(err)
+					}
+					service.workspaces.closeIfEndedSinceUpgrade(t.Context(), connection)
+					select {
+					case notice := <-connection.out:
+						if notice.final != workspacesession.CodeWorkspaceClosed {
+							t.Fatalf("relay close reason=%q", notice.final)
+						}
+					default:
+						t.Fatal("relay attached after close did not observe its tenant's closed workspace")
+					}
+				})
+				saved = append(saved, struct{ path, token, id, action, run string }{path, fixture.token, session.ID, action.ID, run.RunID})
 			})
 		}
 	}
 	if len(saved) != 4 {
 		t.Fatalf("saved workspaces=%d want 4", len(saved))
 	}
-	reopenWorkspaceRepository(t, service)
+	service = reopenWorkspaceHub(t, service)
 	for index, record := range saved {
 		response := performHubAPIRequest(t, service, http.MethodGet, record.path+"/"+record.id, record.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
@@ -108,8 +155,24 @@ func TestPostgresWorkspaceRoutesPersistSessionsAndDispatch(t *testing.T) {
 			t.Fatalf("workspace after reopen: %+v", session)
 		}
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, record.path+"/"+record.id, saved[(index+2)%4].token, nil), http.StatusUnauthorized)
+		if record.run == "" {
+			continue
+		}
+		runPath := strings.TrimSuffix(record.path, "/workspaces") + "/actions/" + record.action + "/runs/" + record.run
+		stored := performHubAPIRequest(t, service, http.MethodGet, runPath, record.token, nil)
+		requireNativeStatus(t, stored, http.StatusOK)
+		var run workspacesession.Run
+		decodeHubResponse(t, stored, &run)
+		if run.Status != workspacesession.RunSucceeded || run.Command != "printf example" || run.OutputBytes != int64(len("example output\n")) {
+			t.Fatalf("action after Hub reopen: %+v", run)
+		}
+		output := performHubAPIRequest(t, service, http.MethodGet, runPath+"/output", record.token, nil)
+		requireNativeStatus(t, output, http.StatusOK)
+		if output.Body.String() != "example output\n" {
+			t.Fatalf("output after Hub reopen: %q", output.Body.String())
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, runPath+"/output", saved[(index+2)%4].token, nil), http.StatusUnauthorized)
 	}
-
 }
 
 func workspaceTestDB(t *testing.T, service *Service) *sql.DB {
@@ -122,7 +185,7 @@ func workspaceTestDB(t *testing.T, service *Service) *sql.DB {
 }
 func workspaceTestRecord(t *testing.T, service *Service, id string) (workspaceRecord, error) {
 	t.Helper()
-	return service.workspaces.readWorkspaceIDRecord(t.Context(), id)
+	return service.workspaces.readWorkspaceIDRecord(t.Context(), service.workspaces.organization(), id)
 }
 func workspaceTestRun(t *testing.T, service *Service, id string) (actionRunRecord, error) {
 	t.Helper()
@@ -141,7 +204,7 @@ func workspaceTestRun(t *testing.T, service *Service, id string) (actionRunRecor
 func workspaceTestRecordings(t *testing.T, service *Service, id, relay string) ([]terminalRecordingRecord, error) {
 	t.Helper()
 	var records []terminalRecordingRecord
-	workspace, err := service.workspaces.readWorkspaceIDRecord(t.Context(), id)
+	workspace, err := service.workspaces.readWorkspaceIDRecord(t.Context(), service.workspaces.organization(), id)
 	if err != nil {
 		return nil, err
 	}
@@ -180,27 +243,38 @@ func workspaceTestRecordings(t *testing.T, service *Service, id, relay string) (
 	return records, nil
 }
 
-func reopenWorkspaceRepository(t *testing.T, service *Service) {
+func reopenWorkspaceHub(t *testing.T, service *Service) *Service {
 	t.Helper()
-	previous := service.database.postgres
 	admin := workspaceTestDB(t, service)
-	cfg := *service.config.Postgres
-	cfg.LeaseClock = service.config.now
-	if err := previous.Close(); err != nil {
+	config := service.config
+	organization := service.localOrganization
+	workspace := service.workspaces.config
+	config.Workspace = &workspace
+	cfg := *config.Postgres
+	cfg.LeaseClock = config.now
+	config.Postgres = &cfg
+	config.TenantRepository = nil
+	config.AccessRepository = nil
+	config.BillingRepository = nil
+	if config.Hosted == nil {
+		config.Hosted = startupConfig(startupConnection(t, admin, "detent_runtime_v2", "")).Hosted
+	}
+	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
 	repository, err := postgres.Open(t.Context(), cfg, postgres.RoleMigrations(os.DirFS("postgres/migrations")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.database.postgres = repository
-	service.config.TenantRepository = repository
-	service.config.AccessRepository = repository
-	service.config.BillingRepository = repository
-	service.database.billingRepository = repository
-	service.requestMetrics.repository = repository
+	t.Cleanup(func() { _ = repository.Close() })
 	projectRecordDatabases.Store(repository, admin)
 	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
+	reopened := openLocalPostgresHubTestService(t, repository, config)
+	reopened.database.hostedOrganization = tracker.OrganizationID(organization)
+	reopened.localOrganization = organization
+	reopened.requestMetrics.organization = tracker.OrganizationID(organization)
+	reopened.registerConversationRoutes(reopened.echo)
+	return reopened
 }
 
 func seedWorkspaceMember(t *testing.T, f *relayFixture, principal, subject, email, role string, grant, write, runners bool) {

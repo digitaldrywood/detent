@@ -143,6 +143,6 @@ func (w *workspaceService) dispatchActionRun(ctx context.Context, run actionRunR
 }
 
 func (w *workspaceService) failUndeliveredRun(ctx context.Context, run actionRunRecord, stream *relayStream) {
-	w.failExecRuns(ctx, []*execRunState{{runID: run.ID, actionID: run.ActionID}}, workspacesession.RunReasonStreamClosed)
+	w.failExecRuns(ctx, []*execRunState{{organization: run.OrganizationID, runID: run.ID, actionID: run.ActionID}}, workspacesession.RunReasonStreamClosed)
 	w.relay.closeStream(ctx, run.WorkspaceID, stream.id)
 }

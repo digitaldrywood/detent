@@ -590,7 +590,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		connection.revoke()
 		return
 	}
-	w.touchWorkspace(ctx, record.ID)
+	w.touchWorkspace(ctx, record)
 	if frame.Type == workspacesession.TypeResume {
 		w.handlePersonResume(connection, frame)
 		return
@@ -853,10 +853,10 @@ func relayCodeMessage(code string) string {
 // that resets the idle clock. The write is best effort: losing one touch
 // shortens a workspace's life by nothing a person would notice, and failing a
 // frame over it would be worse.
-func (w *workspaceService) touchWorkspace(ctx context.Context, workspaceID string) {
+func (w *workspaceService) touchWorkspace(ctx context.Context, record workspaceRecord) {
 
-	if err := w.touchWorkspaceRecord(ctx, workspaceID); err != nil {
-		w.logger.Warn("workspace.activity_not_recorded", "workspace_id", workspaceID, "error", err)
+	if err := w.touchWorkspaceRecord(ctx, record); err != nil {
+		w.logger.Warn("workspace.activity_not_recorded", "workspace_id", record.ID, "error", err)
 	}
 	return
 
