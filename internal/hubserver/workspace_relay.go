@@ -870,7 +870,7 @@ func (r *workspaceRelay) resumeStream(connection *relayConnection, id string, la
 			replay = append(replay, buffered.frame)
 		}
 	}
-	if len(replay) == 0 && lastSeq < stream.toPerson {
+	if lastSeq < stream.toPerson && (len(replay) == 0 || stream.buffer[0].seq > lastSeq+1) {
 		// The client is behind and the hub no longer holds what it missed:
 		// answering resume_failed is the only honest reply, because a silent
 		// gap in a stream is worse than a stream that ended.
@@ -878,6 +878,10 @@ func (r *workspaceRelay) resumeStream(connection *relayConnection, id string, la
 	}
 	if connection.streams >= workspacesession.MaxStreamsPerConnection {
 		return nil, nil, workspacesession.CodeStreamLimit
+	}
+	resumed, err := workspacesession.Encode(workspacesession.ResumePayload{Stream: stream.id, LastSeq: lastSeq})
+	if err != nil {
+		return nil, nil, workspacesession.CodeResumeFailed
 	}
 	delete(room.detached, id)
 	stream.connectionID = connection.id
@@ -889,6 +893,14 @@ func (r *workspaceRelay) resumeStream(connection *relayConnection, id string, la
 	r.releaseThrough(stream, lastSeq)
 	room.streams[id] = stream
 	connection.streams++
+	if !connection.enqueue(relayOutbound{frame: workspacesession.Frame{Channel: stream.channel, Stream: stream.id, Type: workspacesession.TypeResumed, Payload: resumed}}) {
+		return stream, replay, ""
+	}
+	for _, buffered := range replay {
+		if !connection.enqueue(relayOutbound{frame: buffered}) {
+			break
+		}
+	}
 	return stream, replay, ""
 }
 
@@ -928,6 +940,7 @@ type relayRunnerOutput struct {
 
 type relayRunnerFrame struct {
 	frame      workspacesession.Frame
+	person     *relayConnection
 	overflow   bool
 	execRuns   []*execRunState
 	recordings []*terminalStreamState
@@ -948,6 +961,9 @@ func (r *workspaceRelay) captureRunnerFrame(runner *relayConnection, stream *rel
 	frame.Actor = nil
 	frame.Seq = stream.toPerson
 	captured := relayRunnerFrame{frame: frame}
+	if room.streams[stream.id] == stream {
+		captured.person = room.people[stream.connectionID]
+	}
 	if state := room.execRuns[stream.id]; state != nil && output.exec != nil {
 		state.append(output.exec)
 	}

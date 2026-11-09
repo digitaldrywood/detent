@@ -142,7 +142,7 @@ func TestWorkspaceRelaySweepPreservesResumeWindow(t *testing.T) {
 			room, stream := addWorkspaceRelaySweepStream(relay, "workspace", started)
 			now := started.Add(workspacesession.ResumeWindow + test.offset)
 			relay.sweep(t.Context(), now)
-			connection := &relayConnection{id: "resumed", workspaceID: room.workspaceID, principalID: stream.principalID, sessionID: stream.sessionID}
+			connection := &relayConnection{id: "resumed", workspaceID: room.workspaceID, principalID: stream.principalID, sessionID: stream.sessionID, out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
 			resumed, replay, code := relay.resumeStream(connection, stream.id, 0, now)
 			if !test.wantExpired {
 				if resumed != stream || len(replay) != 1 || code != "" || relay.memoryUsed() != 64 {

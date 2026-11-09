@@ -791,22 +791,13 @@ func (w *workspaceService) handlePersonResume(connection *relayConnection, frame
 		connection.send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, workspacesession.CodeResumeFailed, "resume is malformed"))
 		return
 	}
-	stream, replay, code := w.relay.resumeStream(connection, payload.Stream, payload.LastSeq, w.now())
+	stream, _, code := w.relay.resumeStream(connection, payload.Stream, payload.LastSeq, w.now())
 	if stream == nil {
 		if code == "" {
 			code = workspacesession.CodeResumeFailed
 		}
 		connection.send(workspacesession.ErrorFrame(frame.Channel, payload.Stream, code, relayCodeMessage(code)))
 		return
-	}
-	resumed, err := workspacesession.Encode(map[string]any{"stream": stream.id, "last_seq": payload.LastSeq})
-	if err != nil {
-		connection.send(workspacesession.ErrorFrame(frame.Channel, payload.Stream, workspacesession.CodeResumeFailed, "resume could not be answered"))
-		return
-	}
-	connection.send(workspacesession.Frame{Channel: stream.channel, Stream: stream.id, Type: workspacesession.TypeResumed, Payload: resumed})
-	for _, buffered := range replay {
-		connection.send(buffered)
 	}
 }
 
@@ -985,6 +976,7 @@ func (w *workspaceService) handleRunnerStreamFrame(ctx context.Context, connecti
 	if !accepted {
 		return
 	}
+	person = captured.person
 	// A hub stream has no person to deliver to and none to acknowledge, so
 	// nothing is buffered on it for a replay nobody can ask for.
 	// Buffering would make a long build overflow a stream with no

@@ -1900,7 +1900,7 @@ func TestWorkspaceRelayResumeReleasesAcknowledgedFrames(t *testing.T) {
 				streams: map[string]*relayStream{}, detached: map[string]*relayStream{stream.id: stream},
 				terminals: map[string]*terminalStreamState{},
 			}
-			connection := &relayConnection{id: "relayconn_new", workspaceID: "ws_1", principalID: "principal", sessionID: "session"}
+			connection := &relayConnection{id: "relayconn_new", workspaceID: "ws_1", principalID: "principal", sessionID: "session", out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
 			resumed, replay, code := relay.resumeStream(connection, stream.id, test.lastSeq, time.Now())
 			if code != "" || resumed != stream {
 				t.Fatalf("resume = %v, %q", resumed, code)
