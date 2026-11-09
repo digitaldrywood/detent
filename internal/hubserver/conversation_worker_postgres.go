@@ -122,11 +122,11 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 	record.UpdatedAt = now
 	var response conversationBindResponse
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
-		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
-			return err
-		}
 		if _, err := writer.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
 			return fmt.Errorf("lock bind runner: %w", err)
+		}
+		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
+			return err
 		}
 		if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
@@ -355,6 +355,9 @@ func (r *conversationWorkerRouter) unbindPostgres(e echo.Context, request conver
 	now := s.config.now()
 	var record conversationRecord
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if _, err := writer.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+			return fmt.Errorf("lock unbind runner: %w", err)
+		}
 		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return fmt.Errorf("authorize conversation unbind access: %w", err)
 		}
@@ -678,6 +681,9 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 	var result conversationTurnEventsResponse
 	changed := false
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if _, err := writer.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+			return fmt.Errorf("lock turn event runner: %w", err)
+		}
 		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return err
 		}
@@ -1137,6 +1143,9 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 	}
 	changed := false
 	err = r.service.server.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if _, err := writer.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+			return fmt.Errorf("lock control poll runner: %w", err)
+		}
 		if err := r.service.server.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return err
 		}

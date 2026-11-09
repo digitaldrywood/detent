@@ -70,8 +70,7 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 	if err != nil {
 		return leasestore.Lease{}, leasestore.Attempt{}, err
 	}
-	now := s.config.now()
-	if credential.Scope != string(apiScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) {
+	if credential.Scope != string(apiScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, s.config.now()) {
 		return leasestore.Lease{}, leasestore.Attempt{}, accessstore.ErrDenied
 	}
 	if s.config.ConversationWorkerAuthority == nil {
@@ -92,9 +91,6 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 	if lease.OrganizationID != scope.organization || lease.MachineID != string(scope.credential.Runner.MachineID) || lease.IssueID != item.ID || lease.FencingToken != int64(identity.FencingToken) {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease does not belong to this worker and work item")
 	}
-	if lease.RenewedAt.After(now) || !allowReleased && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
-		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is no longer current")
-	}
 	attempt, err := reader.Attempt(ctx, identity.AttemptID)
 	if errors.Is(err, corestore.ErrNotFound) && allowUnstarted && !allowReleased && validNativeID(runID, "run") && validNativeID(identity.AttemptID, "attempt") {
 		latest, latestErr := reader.LatestAttempt(ctx, item.ID)
@@ -104,6 +100,10 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 		if latestErr == nil && latest.LeaseID == lease.LeaseID {
 			return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is already bound to another attempt")
 		}
+		now := s.config.now()
+		if lease.RenewedAt.After(now) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
+			return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is no longer current")
+		}
 		return lease, leasestore.Attempt{OrganizationID: scope.organization, ID: identity.AttemptID, IssueID: item.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: runID, Status: "running"}, nil
 	}
 	if err != nil {
@@ -112,6 +112,7 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 	if attempt.OrganizationID != scope.organization || attempt.IssueID != item.ID || attempt.LeaseID != string(identity.LeaseID) || attempt.FencingToken != int64(identity.FencingToken) || (runID != "" && attempt.RunID != runID) {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The attempt is not the current work item owner")
 	}
+	now := s.config.now()
 	if !allowReleased && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || attempt.Status != "running") {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is no longer current")
 	}

@@ -162,14 +162,75 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		t.Fatal(err)
 	}
 	originalClock := f.service.config.now
-	f.service.config.now = func() time.Time { return currentLease.RenewedAt.Add(-time.Second) }
+	initialAuthority := f.service.config.ConversationWorkerAuthority
+	t.Cleanup(func() {
+		f.service.config.now = originalClock
+		f.service.config.ConversationWorkerAuthority = initialAuthority
+		deadline, ok := t.Deadline()
+		if !ok {
+			t.Error("worker fixture cleanup requires a test deadline")
+			return
+		}
+		cleanupCtx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		if _, err := admin.ExecContext(cleanupCtx, `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.organization, identity.LeaseID, currentLease.RenewedAt, currentLease.ExpiresAt); err != nil {
+			t.Error(err)
+		}
+	})
+	futureClock := time.Now().UTC()
+	f.service.config.now = func() time.Time { return futureClock }
+	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.organization, identity.LeaseID, futureClock.Add(time.Second), futureClock.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	futureRenewal := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		_, _, err := f.service.authorizeConversationWorkerLeasePG(t.Context(), r, scope, string(issue.NativeID), identity, "run-pg-worker", false, false)
 		return err
 	})
+	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.organization, identity.LeaseID, currentLease.RenewedAt, currentLease.ExpiresAt); err != nil {
+		t.Fatal(err)
+	}
 	f.service.config.now = originalClock
 	if futureRenewal == nil {
 		t.Fatal("future-dated lease renewal was accepted")
+	}
+	var futureRefusal *nativeError
+	if !errors.As(futureRenewal, &futureRefusal) || futureRefusal.Code != "stale_execution" {
+		t.Fatalf("future renewal did not reach lease validation: %v", futureRenewal)
+	}
+
+	originalAuthority := f.service.config.ConversationWorkerAuthority
+	var beforeVerification time.Time
+	var verificationRenewal leasestore.Lease
+	f.service.config.now = func() time.Time {
+		now := time.Now().UTC()
+		if beforeVerification.IsZero() {
+			beforeVerification = now
+		}
+		return now
+	}
+	f.service.config.ConversationWorkerAuthority = conversationWorkerAuthorityFunc(func(ctx context.Context, reader tenantstore.Reader, worker ConversationWorkerIdentity) error {
+		if verificationRenewal.LeaseID == "" {
+			if err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				var err error
+				verificationRenewal, err = w.Renew(ctx, leasestore.Fence{LeaseID: string(identity.LeaseID), FencingToken: int64(identity.FencingToken)}, time.Hour)
+				return err
+			}); err != nil {
+				return err
+			}
+			if !verificationRenewal.RenewedAt.After(beforeVerification) {
+				return errors.New("worker renewal did not follow the authority clock sample")
+			}
+		}
+		return originalAuthority.VerifyConversationWorker(ctx, reader, worker)
+	})
+	renewalAuthority := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		_, _, err := f.service.authorizeConversationWorkerLeasePG(t.Context(), reader, scope, string(issue.NativeID), identity, "run-pg-worker", false, false)
+		return err
+	})
+	f.service.config.ConversationWorkerAuthority = originalAuthority
+	f.service.config.now = func() time.Time { return verificationRenewal.RenewedAt }
+	if renewalAuthority != nil || verificationRenewal.LeaseID == "" {
+		t.Fatalf("valid renewal during verification lost worker authority: renewed=%t error=%v", verificationRenewal.LeaseID != "", renewalAuthority)
 	}
 
 	bindBody := map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "run_id": "run-pg-worker", "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
@@ -1093,6 +1154,10 @@ func pollControlsAgainstRunnerEvent(t *testing.T, admin *sql.DB, service *Servic
 	case <-order.attempted:
 	case <-finished:
 		t.Fatalf("control poll finished before runner authority: %v", pollErr)
+	}
+	var credentialID string
+	if err := blocker.QueryRowContext(t.Context(), `SELECT id FROM api_tokens WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT`, scope.organization, scope.credential.ID).Scan(&credentialID); err != nil {
+		t.Fatalf("control poll locked credential while waiting for runner identity: %v", err)
 	}
 	var conversationID string
 	if err := blocker.QueryRowContext(t.Context(), `SELECT id FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE NOWAIT`, scope.organization, scope.project, id).Scan(&conversationID); err != nil {
