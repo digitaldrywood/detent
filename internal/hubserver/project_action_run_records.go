@@ -189,25 +189,46 @@ func validateActionWorkspace(workspace workspaceRecord) error {
 	return nil
 }
 
+func actionRunForActor(ctx context.Context, r workspaceReader, scope nativeScope, id string) (postgres.ActionRun, error) {
+	row, err := r.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: id})
+	if err != nil {
+		return row, err
+	}
+	if _, err = r.ProjectAction(ctx, scope.project, row.ActionID); err != nil {
+		return row, err
+	}
+	if _, err = workspaceForActor(ctx, r, scope, row.WorkspaceID); err != nil {
+		return row, err
+	}
+	return row, nil
+}
+
+func (s *Service) readActionRunRecordByID(ctx context.Context, scope nativeScope, id string) (postgres.ActionRun, error) {
+	var row postgres.ActionRun
+	err := s.workspaceRead(ctx, scope, func(r workspaceReader) error {
+		var err error
+		row, err = actionRunForActor(ctx, r, scope, id)
+		return err
+	})
+	return row, err
+}
+
 func (s *Service) readActionRunRecords(ctx context.Context, scope nativeScope, action, id string, limit int) ([]postgres.ActionRun, error) {
 	var records []postgres.ActionRun
 	err := s.workspaceRead(ctx, scope, func(r workspaceReader) error {
-		if _, err := r.ProjectAction(ctx, scope.project, action); err != nil {
-			return err
-		}
 		if id != "" {
-			row, err := r.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: id})
+			row, err := actionRunForActor(ctx, r, scope, id)
 			if err != nil {
 				return err
 			}
 			if row.ActionID != action {
 				return nativeNotFound()
 			}
-			if _, err = workspaceForActor(ctx, r, scope, row.WorkspaceID); err != nil {
-				return err
-			}
 			records = []postgres.ActionRun{row}
 			return nil
+		}
+		if _, err := r.ProjectAction(ctx, scope.project, action); err != nil {
+			return err
 		}
 		rows, err := r.RecentActionRuns(ctx, postgres.ActionRunsInput{OrganizationID: scope.organization, ProjectID: scope.project, ActionID: action, Limit: int32(min(max(limit, 1), workspaceListLimit))})
 		if err != nil {

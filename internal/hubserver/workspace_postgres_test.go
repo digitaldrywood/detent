@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -282,6 +283,25 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		f.service = hubs[index/2]
 		if session := readSession(record); session.State != workspacesession.StateClosed {
 			t.Fatalf("ended workspace after reopen=%+v", session)
+		}
+		credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+		for _, id := range []string{record.run, record.automatic.ID} {
+			row, err := f.service.readActionRunRecordByID(t.Context(), scope, id)
+			if err != nil || row.ID != id || row.ActionID != record.action.ID {
+				t.Fatalf("scoped action-run lookup=%+v error=%v", row, err)
+			}
+			metadata, err := f.service.hydrateActionRunRecord(t.Context(), row, false)
+			if err != nil || metadata.Command != "printf example" || metadata.Output != "" || metadata.OutputBytes == 0 {
+				t.Fatalf("scoped action-run metadata=%+v error=%v", metadata, err)
+			}
+		}
+		foreign := saved[(index+2)%len(saved)].automatic.ID
+		if _, err := f.service.readActionRunRecordByID(t.Context(), scope, foreign); !isNativeNotFound(err) {
+			t.Fatalf("foreign action-run lookup error=%v, want opaque not found", err)
 		}
 		if run := readRun(record, record.run); run.Status != workspacesession.RunSucceeded || run.Command != "printf example" || run.OutputBytes != int64(len(record.marker+"\n")) {
 			t.Fatalf("completed action after reopen=%+v", run)
