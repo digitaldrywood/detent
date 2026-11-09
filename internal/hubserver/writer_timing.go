@@ -52,24 +52,6 @@ func (t *writerTiming) add(start time.Time) {
 	t.txs.Add(1)
 }
 
-func heartbeatWriterSteps(ctx context.Context) func(string) {
-	timing := writerTimingFrom(ctx)
-	if timing == nil {
-		return func(string) {}
-	}
-	var name string
-	var start time.Time
-	return func(next string) {
-		now := time.Now()
-		if name != "" {
-			timing.mu.Lock()
-			timing.spans = append(timing.spans, timingSpan{name: name, duration: now.Sub(start)})
-			timing.mu.Unlock()
-		}
-		name, start = next, now
-	}
-}
-
 func (t *writerTiming) logAttrs() []any {
 	t.mu.Lock()
 	defer t.mu.Unlock()

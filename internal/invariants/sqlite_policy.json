@@ -1513,9 +1513,6 @@
       "sql_pragma": 3,
       "sqlite_open": 1
     },
-    "internal/hubserver/request_latency_history.go": {
-      "sql_insert_or": 1
-    },
     "internal/hubserver/run_details_test.go": {
       "sql_insert_or": 1,
       "sql_pragma_table": 1,
@@ -1610,7 +1607,7 @@
       "sql_pragma": 1
     },
     "internal/hubserver/storage_reclaim.go": {
-      "sql_pragma": 4
+      "sql_pragma": 3
     },
     "internal/hubserver/storage_review_regression_test.go": {
       "database_path": 1

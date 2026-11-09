@@ -177,16 +177,6 @@ func (f storageConversionFamily) pending() string {
 	return strings.ReplaceAll(f.where, "r.", "")
 }
 
-func (f storageConversionFamily) discoverySelection() string {
-	if f.name == "runs" {
-		return "SELECT rowid FROM collaboration_events WHERE payload_version=0 AND type IN ('run.started','run.checkpointed','run.observed','run.finished','scheduler.decision') AND conversion_state<>1 ORDER BY id LIMIT ?"
-	}
-	if f.name == "landings" || f.name == "messages" || f.name == "conversation_events" {
-		return "SELECT rowid FROM " + f.table() + " WHERE " + f.pending() + " AND conversion_state<>1 ORDER BY rowid LIMIT ?"
-	}
-	return "SELECT rowid FROM " + f.table() + " WHERE conversion_state=0 ORDER BY rowid LIMIT ?"
-}
-
 func (f storageConversionFamily) discoveryUpsert() string {
 	state := "r.conversion_state=0"
 	if f.name == "landings" || f.name == "messages" || f.name == "conversation_events" {
@@ -210,35 +200,6 @@ func (f storageConversionFamily) completionUpdate() string {
 		return `UPDATE storage_conversion_progress SET complete=1,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=? AND NOT EXISTS (SELECT 1 FROM collaboration_events WHERE conversion_state<>1 AND payload_version=0 AND type IN ('run.started','run.checkpointed','run.observed','run.finished','scheduler.decision') LIMIT 1) AND NOT EXISTS (` + f.positions() + " AND " + f.aggregate + "=? LIMIT 1)"
 	}
 	return `UPDATE storage_conversion_progress SET complete=1,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=? AND NOT EXISTS (SELECT 1 FROM ` + f.table() + ` WHERE conversion_state=0 LIMIT 1) AND NOT EXISTS (` + f.positions() + " AND " + f.aggregate + "=? LIMIT 1)"
-}
-
-func (s *Service) discoverStorageFamily(ctx context.Context, family storageConversionFamily, now time.Time) error {
-	limit := storageConversionRows
-	if family.name == "messages" || family.name == "conversation_events" {
-		limit = 1
-	}
-	rows, err := s.database.reader.QueryContext(ctx, family.discoverySelection(), limit)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	var candidates []int64
-	for rows.Next() {
-		var row int64
-		if err := rows.Scan(&row); err != nil {
-			return err
-		}
-		candidates = append(candidates, row)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	for _, row := range candidates {
-		if err := s.discoverStorageRow(ctx, family, row, now); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *Service) discoverStorageRow(ctx context.Context, family storageConversionFamily, row int64, now time.Time) error {
