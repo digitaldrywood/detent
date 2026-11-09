@@ -2,6 +2,7 @@ package reportstore
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -9,33 +10,53 @@ import (
 )
 
 type EventProjection struct {
-	DurationSeconds float64
-	RunSequence     int64
-	RunStatus       string
-	Role            string
-	Model           string
-	Effort          string
-	Failed          bool
-	FailureClass    string
-	FailureKind     string
-	LandingReceipt  bool
-	Landed          bool
-	LandingChangeID string
-	ReworkClass     string
-	ReworkKind      string
+	ProcessEvidenceStatus   string
+	ProcessPeakMemoryBytes  int64
+	ProcessUserCPUSeconds   float64
+	ProcessSystemCPUSeconds float64
+	ProcessWallSeconds      float64
+	ProcessLeaseID          string
+	ProcessFencingToken     int64
+	ProcessRunnerID         string
+	ProcessMachineID        string
+	DurationSeconds         float64
+	RunSequence             int64
+	RunStatus               string
+	Role                    string
+	Model                   string
+	Effort                  string
+	Failed                  bool
+	FailureClass            string
+	FailureKind             string
+	LandingReceipt          bool
+	Landed                  bool
+	LandingChangeID         string
+	ReworkClass             string
+	ReworkKind              string
 }
 
 func ProjectEvent(event tracker.CollaborationEvent) *EventProjection {
-	if event.Data.Run == nil && !(event.Type == "workflow.transitioned" && event.Data.ToState == "Rework") {
+	if event.Data.Run == nil && (event.Type != "workflow.transitioned" || event.Data.ToState != "Rework") {
 		return nil
 	}
-	out := &EventProjection{}
+	out := &EventProjection{ProcessEvidenceStatus: "unknown"}
 	if event.Type == "workflow.transitioned" && event.Data.ToState == "Rework" {
 		class := ClassifyReworkReason(event.Data.FromState, event.Data.ReasonDetail)
 		out.ReworkClass, out.ReworkKind = class.Name, class.Kind
 	}
 	if run := event.Data.Run; run != nil {
 		out.RunSequence, out.RunStatus = run.Sequence, "running"
+		if event.Type == "run.finished" {
+			out.ProcessEvidenceStatus = "unavailable"
+			out.ProcessLeaseID, out.ProcessFencingToken, out.ProcessRunnerID, out.ProcessMachineID = string(run.LeaseID), int64(run.FencingToken), run.RunnerID, string(run.MachineID)
+		}
+		if u := run.ProcessUsage; event.Type == "run.finished" && u != nil && u.PeakMemoryBytes > 0 && u.WallSeconds > 0 && u.UserCPUSeconds >= 0 && u.SystemCPUSeconds >= 0 && !math.IsInf(u.WallSeconds+u.UserCPUSeconds+u.SystemCPUSeconds, 0) && !math.IsNaN(u.WallSeconds+u.UserCPUSeconds+u.SystemCPUSeconds) {
+			cores := (u.UserCPUSeconds + u.SystemCPUSeconds) / u.WallSeconds
+			if !math.IsInf(cores, 0) && !math.IsNaN(cores) {
+				out.ProcessEvidenceStatus = "usable"
+				out.ProcessPeakMemoryBytes, out.ProcessUserCPUSeconds, out.ProcessSystemCPUSeconds, out.ProcessWallSeconds = u.PeakMemoryBytes, u.UserCPUSeconds, u.SystemCPUSeconds, u.WallSeconds
+			}
+		}
 		if event.Type == "run.finished" {
 			out.RunStatus = run.Outcome
 		}

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -88,7 +89,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	run := tracker.NativeRunData{AttemptID: "attempt_report_failure", RunID: "run_report_failure", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "failed", TerminalFailure: &tracker.NativeTerminalFailure{Error: "hub request timed out"}, Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Identity{Role: "merge", ResolvedModel: agentidentity.NewValue("example-model", agentidentity.ProvenanceRuntime)}, Landing: &tracker.NativeLandingReceipt{Landed: false}}}
+	run := tracker.NativeRunData{ProcessUsage: &procgroup.Usage{PeakMemoryBytes: 4096, UserCPUSeconds: 8, SystemCPUSeconds: 2, WallSeconds: 10}, AttemptID: "attempt_report_failure", RunID: "run_report_failure", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "failed", TerminalFailure: &tracker.NativeTerminalFailure{Error: "hub request timed out"}, Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Identity{Role: "merge", ResolvedModel: agentidentity.NewValue("example-model", agentidentity.ProvenanceRuntime)}, Landing: &tracker.NativeLandingReceipt{Landed: false}}}
 	runRef, err := objects.StoreDetail(ctx, string(organization), historyJSON(t, run))
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +110,74 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+
+	provider, err := migrationProvider(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 20261109180410); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, "RESET ROLE"); err != nil {
+		t.Fatal(err)
+	}
+	var upgradedStatus string
+	if err := admin.QueryRowContext(ctx, "SELECT process_evidence_status FROM report_event_facts WHERE organization_id=$1 AND event_id=$2", organization, runEvent.ID).Scan(&upgradedStatus); err != nil || upgradedStatus != "unknown" {
+		t.Fatalf("upgrade invented historical coverage: status=%s error=%v", upgradedStatus, err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*eventstore.Event)
+	}{
+		{"object hash", func(e *eventstore.Event) { e.PayloadSHA256 = strings.Repeat("b", 64) }},
+		{"object key", func(e *eventstore.Event) { e.PayloadObjectKey += "_foreign" }},
+		{"project", func(e *eventstore.Event) { e.ProjectID = "foreign" }},
+		{"item", func(e *eventstore.Event) { e.WorkItemID = "foreign" }},
+		{"run", func(e *eventstore.Event) { e.RunID = "foreign" }},
+		{"attempt", func(e *eventstore.Event) { e.AttemptID = "foreign" }},
+		{"sequence", func(e *eventstore.Event) { p := *e.Report; p.RunSequence++; e.Report = &p }},
+	} {
+		t.Run("upgrade provenance/"+test.name, func(t *testing.T) {
+			bad := runEvent
+			test.edit(&bad)
+			if err := repository.ImportReportEventProjection(ctx, bad); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("mismatched upgrade provenance accepted: %v", err)
+			}
+			var status string
+			var peak int64
+			if err := admin.QueryRowContext(ctx, "SELECT process_evidence_status,process_peak_memory_bytes FROM report_event_facts WHERE organization_id=$1 AND event_id=$2", organization, runEvent.ID).Scan(&status, &peak); err != nil || status != "unknown" || peak != 0 {
+				t.Fatalf("failed upgrade changed evidence: %s %d %v", status, peak, err)
+			}
+		})
+	}
+	for _, mode := range []string{"event replay", "import replay"} {
+		if mode == "import replay" {
+			if _, err := admin.ExecContext(ctx, `UPDATE report_event_facts SET process_evidence_status='unknown',process_peak_memory_bytes=0,process_user_cpu_seconds=0,process_system_cpu_seconds=0,process_wall_seconds=0 WHERE organization_id=$1 AND event_id=$2`, organization, runEvent.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if mode == "event replay" {
+			if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(ctx, runEvent); return err }); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := repository.ImportReportEventProjection(ctx, runEvent); err != nil {
+			t.Fatal(err)
+		}
+		var status string
+		var peak int64
+		if err := admin.QueryRowContext(ctx, `SELECT process_evidence_status,process_peak_memory_bytes FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`, organization, runEvent.ID).Scan(&status, &peak); err != nil {
+			t.Fatal(err)
+		}
+		if status != "usable" || peak != 4096 {
+			t.Fatalf("%s lost verified process projection: status=%s peak=%d", mode, status, peak)
+		}
 	}
 	var landedLease leasestore.Lease
 	if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {

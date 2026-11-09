@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -61,7 +62,8 @@ func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, res
 		return nil, err
 	}
 	now := s.config.now().UTC()
-	var recommendation runnerRecommendation
+	var hours []recommendationHour
+	var facts reportstore.RunnerCapacityFacts
 	to := now.Truncate(time.Hour)
 	from := to.Add(-719 * time.Hour)
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -72,22 +74,38 @@ func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, res
 		if err != nil {
 			return err
 		}
-		hours, err := recommendationHoursFromSegments(segments)
+		hours, err = recommendationHoursFromSegments(segments)
 		if err != nil {
 			return err
 		}
-		recommendation, err = recommendRunner(r.Routing, hours, nil)
+		capacityReader, ok := reader.(reportstore.RunnerCapacityReader)
+		if !ok {
+			return errors.New("PostgreSQL runner capacity reader is unavailable")
+		}
+		facts, err = capacityReader.ReadRunnerCapacityFacts(ctx, reportstore.RunnerCapacityQuery{RunnerID: resource, MachineID: r.MachineID, From: from, To: to, Limit: reportstore.RunnerCapacityFactLimit})
+		if err != nil {
+			return err
+		}
 		return err
 	})
 	if err != nil {
 		return nil, projectRecordError(err)
 	}
-	recommendation.From, recommendation.To, recommendation.Partial = from, to, true
-	recommendation.Suggested = suggestedLimit{Current: r.CapacityLimit, Direction: "insufficient_evidence", Reasons: []string{"Historical runner occupancy and process usage are unavailable."}}
-	for i := range recommendation.Periods {
-		recommendation.Periods[i].Status = "insufficient_evidence"
-		recommendation.Periods[i].Slots = nil
+	current, err := s.readRunnerRouting(ctx, scope, resource)
+	if err != nil {
+		return nil, err
 	}
+	if current.Revision != r.Revision || current.MachineID != r.MachineID {
+		return nil, nativeConflict(tracker.Revision(current.Revision))
+	}
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error { return s.authorizeRunnerCapacity(ctx, reader, scope) }); err != nil {
+		return nil, projectRecordError(err)
+	}
+	recommendation, err := runnerRecommendationFromFacts(r.Routing, hours, facts)
+	if err != nil {
+		return nil, err
+	}
+	recommendation.From, recommendation.To = from, to
 	view, err := s.runnerCapacityView(ctx, nil, r, backend, now)
 	if err != nil {
 		return nil, err

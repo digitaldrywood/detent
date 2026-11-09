@@ -232,7 +232,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				if err := json.Unmarshal(read.Body.Bytes(), &got); err != nil {
 					t.Fatal(err)
 				}
-				if got.Desired != 3 || !got.Recommendation.Partial || len(got.ProviderCapacity) != 1 || got.Projects["project_one"].Used != 1 {
+				if got.Desired != 3 || got.Recommendation.Partial || len(got.ProviderCapacity) != 1 || got.Projects["project_one"].Used != 1 {
 					t.Fatalf("capacity=%+v", got)
 				}
 				body := fmt.Sprintf(`{"expected_revision":2,"expected_config_revision":%q,"capacity":4,"backend":"example","idempotency_key":"capacity"}`, strings.Repeat("a", 64))

@@ -1516,9 +1516,6 @@
     "internal/hubserver/runner_project_capacity_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/runner_recommendation.go": {
-      "sql_julianday": 5
-    },
     "internal/hubserver/runner_repositories.go": {
       "sql_julianday": 1
     },

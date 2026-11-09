@@ -1,8 +1,6 @@
 package hubserver
 
 import (
-	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -11,12 +9,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const capacityGiB = 1024 * 1024 * 1024
@@ -349,151 +345,35 @@ func recommendPeriod(period string, hours []recommendationHour, peaks, cores []f
 	return out
 }
 
-func (s *Service) readRunnerRecommendation(ctx context.Context, q nativeQueryer, r runnerauth.Runner, now time.Time) (runnerRecommendation, error) {
-	to := now.UTC().Truncate(time.Hour)
-	from := to.Add(-719 * time.Hour)
-	var hostHours []recommendationHour
-	if s.config.TenantRepository != nil {
-		var segments []hostmetrics.Summary
-		if err := s.config.TenantRepository.ReadTenant(ctx, r.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-			var err error
-			segments, err = reader.RunnerHostMetrics(ctx, r.RunnerID, from, to)
-			return err
-		}); err != nil {
-			return runnerRecommendation{}, err
-		}
-		var err error
-		hostHours, err = recommendationHoursFromSegments(segments)
-		if err != nil {
-			return runnerRecommendation{}, err
-		}
-	}
-	var hours []recommendationHour
-	var err error
-	if hostHours == nil {
-		hours, err = readRecommendationHours(ctx, q, r, from, to)
-	} else {
-		hours, err = readRecommendationUsageHours(ctx, q, r, from, to, hostHours)
-	}
-	if err != nil {
-		return runnerRecommendation{}, err
-	}
-	rows, err := q.QueryContext(ctx, `SELECT a.started_at,a.process_peak_memory_bytes,a.process_user_cpu_seconds,a.process_system_cpu_seconds,a.process_wall_seconds,CASE WHEN a.usage_facts_ready IS NULL THEN COALESCE(NULLIF(a.payload_object_key,''),a.data_json) END FROM native_attempts a JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND lr.runner_id=? AND a.status IN ('succeeded','failed','cancelled') AND a.started_at>=? AND a.updated_at<=? AND (a.process_peak_memory_bytes>0 OR a.usage_facts_ready IS NULL) ORDER BY a.started_at DESC LIMIT 10001`, r.OrganizationID, r.RunnerID, formatHubTime(from), formatHubTime(to))
-	if err != nil {
-		return runnerRecommendation{}, err
-	}
-	defer rows.Close()
-	runs := []recommendationRun{}
-	scanned := 0
-	for rows.Next() {
-		scanned++
-		var started string
-		var raw sql.NullString
-		var peak sql.NullInt64
-		var user, system, wall sql.NullFloat64
-		var run recommendationRun
-		if err := rows.Scan(&started, &peak, &user, &system, &wall, &raw); err != nil {
-			return runnerRecommendation{}, err
-		}
-		run.StartedAt, err = parseTimeValue(started)
-		if err != nil {
-			return runnerRecommendation{}, err
-		}
-		run.Usage = procgroup.Usage{PeakMemoryBytes: peak.Int64, UserCPUSeconds: user.Float64, SystemCPUSeconds: system.Float64, WallSeconds: wall.Float64}
-		if raw.Valid {
-			var data tracker.NativeRunData
-			if err := decodeRunDetail(ctx, q, raw.String, &data); err != nil {
-				return runnerRecommendation{}, err
-			}
-			if data.ProcessUsage == nil || data.ProcessUsage.PeakMemoryBytes <= 0 {
-				continue
-			}
-			run.Usage = *data.ProcessUsage
-		}
-		runs = append(runs, run)
-	}
-	if err := rows.Err(); err != nil {
-		return runnerRecommendation{}, err
-	}
-	partial := scanned > 10000
-	if len(runs) > 10000 {
-		runs = runs[:10000]
-	}
-	out, err := recommendRunner(r.Routing, hours, runs)
-	out.From, out.To, out.Partial = from, to, partial
-	return out, err
-}
-
-func readRecommendationHostHours(ctx context.Context, q nativeQueryer, r runnerauth.Runner, from, to time.Time) ([]recommendationHour, error) {
-	rows, err := q.QueryContext(ctx, `SELECT summary_json FROM runner_host_hours WHERE organization_id=? AND runner_id=? AND hour>=? AND hour<? ORDER BY hour LIMIT 720`, r.OrganizationID, r.RunnerID, formatHubTime(from), formatHubTime(to))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	hours := []recommendationHour{}
-	for rows.Next() {
-		var raw string
-		var hour recommendationHour
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		if err := decodeStorageJSON(ctx, []byte(raw), &hour.Summary); err != nil {
-			return nil, err
-		}
-		hours = append(hours, hour)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for i := 1; i < len(hours); i++ {
-		hours[i].OverCapacity = swapGrowing(hours[i], hours[i-1])
-	}
-	return hours, nil
-}
-
-func readRecommendationHours(ctx context.Context, q nativeQueryer, r runnerauth.Runner, from, to time.Time) ([]recommendationHour, error) {
-	hours, err := readRecommendationHostHours(ctx, q, r, from, to)
-	if err != nil {
-		return nil, err
-	}
-	return readRecommendationUsageHours(ctx, q, r, from, to, hours)
-}
-
-func readRecommendationUsageHours(ctx context.Context, q nativeQueryer, r runnerauth.Runner, from, to time.Time, hours []recommendationHour) ([]recommendationHour, error) {
-	rows, err := q.QueryContext(ctx, `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l INDEXED BY runner_capacity_lease_window JOIN issues i ON i.id=l.issue_id JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE i.organization_id=? AND l.machine_id=? AND lr.runner_id=? AND julianday(l.acquired_at)<julianday(?) AND min(julianday(coalesce(l.released_at,l.expires_at)),julianday(l.expires_at))>julianday(?)`, r.OrganizationID, r.MachineID, r.RunnerID, formatHubTime(to), formatHubTime(from))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var acquired, released, expires string
-		if err := rows.Scan(&acquired, &released, &expires); err != nil {
-			return nil, err
-		}
-		start, err := parseTimeValue(acquired)
-		if err != nil {
-			return nil, err
-		}
-		finish, err := parseTimeValue(released)
-		if err != nil {
-			return nil, err
-		}
-		expiry, err := parseTimeValue(expires)
-		if err != nil {
-			return nil, err
-		}
-		finish = minTime(finish, expiry)
-		first, _ := slices.BinarySearchFunc(hours, start.Truncate(time.Hour), func(hour recommendationHour, at time.Time) int {
-			return hour.Hour.Compare(at)
-		})
-		for i := first; i < len(hours) && hours[i].Hour.Before(finish); i++ {
-			overlap := minTime(finish, hours[i].Hour.Add(time.Hour)).Sub(maxTime(start, hours[i].Hour))
+func runnerRecommendationFromFacts(r runnerauth.Routing, hours []recommendationHour, facts reportstore.RunnerCapacityFacts) (runnerRecommendation, error) {
+	for _, lease := range facts.Occupancy {
+		first, _ := slices.BinarySearchFunc(hours, lease.From.Truncate(time.Hour), func(hour recommendationHour, at time.Time) int { return hour.Hour.Compare(at) })
+		for i := first; i < len(hours) && hours[i].Hour.Before(lease.To); i++ {
+			overlap := minTime(lease.To, hours[i].Hour.Add(time.Hour)).Sub(maxTime(lease.From, hours[i].Hour))
 			if overlap > 0 {
 				hours[i].Slots += overlap.Hours()
 			}
 		}
 	}
-	return hours, rows.Err()
+	runs := make([]recommendationRun, 0, len(facts.Runs))
+	for _, run := range facts.Runs {
+		runs = append(runs, recommendationRun{StartedAt: run.StartedAt, Usage: run.Usage})
+	}
+	out, err := recommendRunner(r, hours, runs)
+	out.Partial = facts.OccupancyPartial || facts.RunsPartial
+	for _, hour := range hours {
+		out.Partial = out.Partial || hour.Partial
+	}
+	if facts.OccupancyPartial || facts.RunsPartial {
+		out.Suggested = suggestedLimit{Current: r.CapacityLimit, Direction: "insufficient_evidence", Reasons: []string{"Runner occupancy or process history is incomplete."}}
+	}
+	if facts.OccupancyPartial || facts.RunsPartial {
+		for i := range out.Periods {
+			out.Periods[i].Status = "insufficient_evidence"
+			out.Periods[i].Slots = nil
+		}
+	}
+	return out, err
 }
 
 func recommendationHoursFromSegments(segments []hostmetrics.Summary) ([]recommendationHour, error) {

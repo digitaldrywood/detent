@@ -9,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -49,7 +53,22 @@ func TestRunnerCapacityApplication(t *testing.T) {
 	request := runnerCapacityChange{CapacityRequest: runnerauth.CapacityRequest{ExpectedConfigRevision: config.Revision, Capacity: 6, Backend: "codex"}, ExpectedRevision: before.Revision, IdempotencyKey: "six-workers"}
 	response := performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/capacity", testHubAdminToken, request)
 	requireNativeStatus(t, response, http.StatusOK)
-	requireCommandPayloadObject(t, f.service, f.project.OrganizationID, "runner_capacity "+r.binding.RunnerID, request.IdempotencyKey, response.Body.Bytes())
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt eventstore.Receipt
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		receipt, err = reader.Receipt(t.Context(), credential.ID, "runner_capacity "+r.binding.RunnerID, request.IdempotencyKey)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	storedResponse, err := eventstore.NewContent(f.service.runDetailStore()).Receipt(t.Context(), receipt)
+	if err != nil || receipt.PayloadObjectKey == "" || !bytes.Equal(bytes.TrimSpace(storedResponse), bytes.TrimSpace(response.Body.Bytes())) {
+		t.Fatalf("capacity receipt=%+v error=%v", receipt, err)
+	}
 	var view runnerauth.CapacityView
 	decodeHubResponse(t, response, &view)
 	if view.Desired != 6 || view.Effective == nil || *view.Effective != 2 || view.Status != "partially_applied" {
@@ -71,7 +90,7 @@ func TestRunnerCapacityApplication(t *testing.T) {
 		{"stale runner", runnerCapacityChange{CapacityRequest: request.CapacityRequest, ExpectedRevision: before.Revision, IdempotencyKey: "stale"}, testHubAdminToken, r.identityPath() + "/capacity", http.StatusConflict},
 		{"stale configuration", runnerCapacityChange{CapacityRequest: runnerauth.CapacityRequest{ExpectedConfigRevision: strings.Repeat("b", 64), Capacity: 6, Backend: "codex"}, ExpectedRevision: before.Revision + 1, IdempotencyKey: "stale-configuration"}, testHubAdminToken, r.identityPath() + "/capacity", http.StatusConflict},
 		{"worker authority", request, r.redemption.Credential, r.identityPath() + "/capacity", http.StatusForbidden},
-		{"other organization", request, testHubAdminToken, "/api/v2/organizations/org_other/runners/" + r.binding.RunnerID + "/capacity", http.StatusNotFound},
+		{"other organization", request, testHubAdminToken, "/api/v2/organizations/org_other/runners/" + r.binding.RunnerID + "/capacity", http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, test.path, test.credential, test.change), test.want)
@@ -140,7 +159,7 @@ func TestRunnerCapacityApplication(t *testing.T) {
 	if strings.Contains(string(encoded), r.redemption.Credential) {
 		t.Fatal("credential escaped capacity read")
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET capacity_configuration_json='null' WHERE id=?", r.binding.RunnerID); err != nil {
+	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET capacity_config_revision=NULL,capacity_config_local_limit=NULL,capacity_config_client_limit=NULL,capacity_config_runtime_limit=NULL,capacity_config_manageable=NULL,capacity_config_constraint=NULL,capacity_config_observed_at=NULL WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, r.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
 	change := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: stored.Routing}, IdempotencyKey: "lower-total"}

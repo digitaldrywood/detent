@@ -4207,22 +4207,31 @@ type ReportEscapeFact struct {
 }
 
 type ReportEventFact struct {
-	OrganizationID  tracker.OrganizationID
-	EventID         string
-	DurationSeconds float64
-	RunSequence     int64
-	RunStatus       string
-	Role            string
-	Model           string
-	Effort          string
-	Failed          bool
-	FailureClass    string
-	FailureKind     string
-	LandingReceipt  bool
-	Landed          bool
-	LandingChangeID string
-	ReworkClass     string
-	ReworkKind      string
+	OrganizationID          tracker.OrganizationID
+	EventID                 string
+	DurationSeconds         float64
+	RunSequence             int64
+	RunStatus               string
+	Role                    string
+	Model                   string
+	Effort                  string
+	Failed                  bool
+	FailureClass            string
+	FailureKind             string
+	LandingReceipt          bool
+	Landed                  bool
+	LandingChangeID         string
+	ReworkClass             string
+	ReworkKind              string
+	ProcessEvidenceStatus   string
+	ProcessPeakMemoryBytes  int64
+	ProcessUserCpuSeconds   float64
+	ProcessSystemCpuSeconds float64
+	ProcessWallSeconds      float64
+	ProcessLeaseID          string
+	ProcessFencingToken     int64
+	ProcessRunnerID         string
+	ProcessMachineID        string
 }
 
 type ReportUsageCurrent struct {
