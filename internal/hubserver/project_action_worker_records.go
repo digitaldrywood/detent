@@ -127,6 +127,10 @@ func (s *Service) reportWorkspaceActionRunRecord(c echo.Context) error {
 		if row.ActionID != request.ActionID || row.WorkspaceID != workspace.ID {
 			return nativeNotFound()
 		}
+		if request.RunID == "" && request.IdempotencyKey != "" && request.Status == workspacesession.RunRunning {
+			reported = row
+			return nil
+		}
 		if workspacesession.TerminalRunStatus(row.Status) {
 			if row.Status == request.Status && row.OutputSha256 == ref.SHA256 && row.Reason == request.Reason && row.Truncated == truncated && (!row.ExitCode.Valid && request.ExitCode == nil || row.ExitCode.Valid && request.ExitCode != nil && int(row.ExitCode.Int32) == *request.ExitCode) {
 				reported = row

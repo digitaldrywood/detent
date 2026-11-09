@@ -40,6 +40,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		index     int
 		action    workspacesession.Action
 		run       string
+		automatic workspacesession.Run
 		pending   string
 		recording string
 		marker    string
@@ -72,6 +73,32 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		var receipt projectActionRunReceipt
 		decodeHubResponse(t, response, &receipt)
 		return receipt.RunID
+	}
+	automaticStart := func(record *savedWorkspace) workspacesession.Run {
+		t.Helper()
+		f := record.fixture
+		request := workspaceActionRunReport{WorkspaceIdentity: workspaceIdentity(f.lease), ActionID: record.action.ID, IdempotencyKey: "automatic-start", Status: workspacesession.RunRunning, OutputSequence: 1}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/workspaces/"+f.workspace+"/worker/action-runs", f.runner.redemption.Credential, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		var run workspacesession.Run
+		decodeHubResponse(t, response, &run)
+		return run
+	}
+	assertAutomaticReplay := func(record *savedWorkspace) {
+		t.Helper()
+		replayed := automaticStart(record)
+		want := record.automatic
+		if replayed.ID != want.ID || replayed.Status != want.Status || replayed.Revision != want.Revision || replayed.OutputBytes != want.OutputBytes || replayed.Command != want.Command {
+			t.Fatalf("automatic admission replay=%+v, want committed receipt %+v", replayed, want)
+		}
+		f := record.fixture
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/actions/"+record.action.ID+"/runs", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var listing projectActionRunList
+		decodeHubResponse(t, response, &listing)
+		if len(listing.Items) != 2 {
+			t.Fatalf("automatic admission replay left %d runs, want one requested and one automatic run", len(listing.Items))
+		}
 	}
 	for tenant, hub := range hubs {
 		organization := tracker.OrganizationID(hub.localOrganization)
@@ -130,7 +157,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 				}
 				return nil
 			})
-			authored := performHubAPIRequest(t, hub, http.MethodPost, f.base+"/actions", f.token, map[string]any{"idempotency_key": "action-" + f.workspace, "name": fmt.Sprintf("Action %d", index), "command": "printf example"})
+			authored := performHubAPIRequest(t, hub, http.MethodPost, f.base+"/actions", f.token, map[string]any{"idempotency_key": "action-" + f.workspace, "name": fmt.Sprintf("Action %d", index), "command": "printf example", "run_on_worktree_creation": true})
 			requireNativeStatus(t, authored, http.StatusCreated)
 			decodeHubResponse(t, authored, &record.action)
 			record.run = queueRun(record, "run-"+f.workspace)
@@ -138,6 +165,16 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 				report := workspaceActionRunReport{WorkspaceIdentity: workspaceIdentity(f.lease), ActionID: record.action.ID, RunID: record.run, Status: status, OutputSequence: int64(sequence + 1), Output: record.marker + "\n"}
 				requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPost, path+"/worker/action-runs", f.runner.redemption.Credential, report), http.StatusOK)
 			}
+			record.automatic = automaticStart(record)
+			if record.automatic.ID == "" || record.automatic.Status != workspacesession.RunRunning {
+				t.Fatalf("automatic admission=%+v", record.automatic)
+			}
+			assertAutomaticReplay(record)
+			automaticFinished := workspaceActionRunReport{WorkspaceIdentity: workspaceIdentity(f.lease), ActionID: record.action.ID, RunID: record.automatic.ID, Status: workspacesession.RunSucceeded, OutputSequence: 2, Output: "automatic-" + record.marker + "\n"}
+			finished := performHubAPIRequest(t, hub, http.MethodPost, path+"/worker/action-runs", f.runner.redemption.Credential, automaticFinished)
+			requireNativeStatus(t, finished, http.StatusOK)
+			decodeHubResponse(t, finished, &record.automatic)
+			assertAutomaticReplay(record)
 			lookup := httptest.NewRequest(http.MethodGet, f.base+"/work-items/"+f.item+"/workspace", nil).WithContext(t.Context())
 			lookup.Header.Set("Authorization", "Bearer "+f.runner.redemption.Credential)
 			lookup.Header.Set("X-Detent-Lease", string(f.lease.ID))
@@ -169,6 +206,7 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 					t.Fatalf("workspace restart lost its owner: %+v / %+v", session, owner.owner())
 				}
 				f.bind(t)
+				assertAutomaticReplay(record)
 			} else if session := readSession(record); session.State != workspacesession.StateReady {
 				t.Fatalf("another tenant's restart changed workspace state=%q", session.State)
 			}
@@ -223,6 +261,9 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		if run := readRun(record, record.run); run.Status != workspacesession.RunSucceeded || run.Command != "printf example" || run.OutputBytes != int64(len(record.marker+"\n")) {
 			t.Fatalf("completed action after reopen=%+v", run)
 		}
+		if run := readRun(record, record.automatic.ID); run.Status != workspacesession.RunSucceeded || run.Revision != record.automatic.Revision || run.OutputBytes != int64(len("automatic-"+record.marker+"\n")) {
+			t.Fatalf("automatic action after reopen=%+v", run)
+		}
 		if run := readRun(record, record.pending); run.Status != workspacesession.RunFailed || run.Reason != workspacesession.RunReasonWorkspaceEnd || run.StartedAt == nil || run.FinishedAt == nil || run.FinishedAt.Before(*run.StartedAt) {
 			t.Fatalf("orphaned action after reopen=%+v", run)
 		}
@@ -230,6 +271,11 @@ func TestPostgresWorkspaceTenantLifecycleSurvivesHubRestart(t *testing.T) {
 		requireNativeStatus(t, output, http.StatusOK)
 		if output.Body.String() != record.marker+"\n" {
 			t.Fatalf("action output after reopen=%q", output.Body.String())
+		}
+		automaticOutput := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/actions/"+record.action.ID+"/runs/"+record.automatic.ID+"/output", f.token, nil)
+		requireNativeStatus(t, automaticOutput, http.StatusOK)
+		if automaticOutput.Body.String() != "automatic-"+record.marker+"\n" {
+			t.Fatalf("automatic action output after reopen=%q", automaticOutput.Body.String())
 		}
 		cast := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/workspaces/"+f.workspace+"/terminal-recordings/"+record.recording, f.token, nil)
 		requireNativeStatus(t, cast, http.StatusOK)
