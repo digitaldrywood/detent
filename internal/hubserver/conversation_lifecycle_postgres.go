@@ -323,16 +323,28 @@ func conversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, 
 	if err != nil {
 		return false, err
 	}
-	attempt, err := reader.Attempt(ctx, record.Execution.Owner.AttemptID)
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+	owner := record.Execution.Owner
+	if lease.OrganizationID != record.OrganizationID || lease.IssueID != item.ID || lease.FencingToken != owner.FencingToken || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || lease.RenewedAt.After(now) {
 		return false, nil
+	}
+	attempt, err := reader.Attempt(ctx, owner.AttemptID)
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Settled || !validNativeID(owner.AttemptID, "attempt") || !validNativeID(owner.RunID, "run") {
+			return false, nil
+		}
+		latest, latestErr := reader.LatestAttempt(ctx, item.ID)
+		if errors.Is(latestErr, corestore.ErrNotFound) || errors.Is(latestErr, sql.ErrNoRows) {
+			return true, nil
+		}
+		if latestErr != nil {
+			return false, latestErr
+		}
+		return latest.LeaseID != lease.LeaseID, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	owner := record.Execution.Owner
-	return lease.OrganizationID == record.OrganizationID && lease.IssueID == item.ID && lease.FencingToken == owner.FencingToken && lease.ReleasedAt == nil && lease.ExpiresAt.After(now) && !lease.RenewedAt.After(now) &&
-		attempt.OrganizationID == record.OrganizationID && attempt.IssueID == item.ID && attempt.LeaseID == lease.LeaseID && attempt.FencingToken == owner.FencingToken && attempt.RunID == owner.RunID && attempt.Status == "running", nil
+	return attempt.OrganizationID == record.OrganizationID && attempt.IssueID == item.ID && attempt.LeaseID == lease.LeaseID && attempt.FencingToken == owner.FencingToken && attempt.RunID == owner.RunID && attempt.Status == "running", nil
 }
 
 func (c *conversationService) settleIdleConversationsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {

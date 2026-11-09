@@ -596,8 +596,52 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}); err != nil {
 		t.Fatal(err)
 	}
+	f.service.config.now = func() time.Time { return nextLease.RenewedAt }
+	nextIdentity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(nextLease.LeaseID), FencingToken: tracker.FencingToken(nextLease.FencingToken), AttemptID: newNativeID("attempt")}
+	nextRunID := newNativeID("run")
+	nextBindBody := map[string]any{"lease_id": nextIdentity.LeaseID, "fencing_token": nextIdentity.FencingToken, "attempt_id": nextIdentity.AttemptID, "run_id": nextRunID, "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
+	takeover := callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", nextBindBody, nextIdentity)
+	if takeover.Code != http.StatusOK {
+		t.Fatalf("replacement bind status = %d, body = %s, log = %s", takeover.Code, takeover.Body.String(), logs.String())
+	}
+	var unstarted conversationstore.Conversation
+	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		unstarted, err = r.Conversation(t.Context(), scope.project, linked.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		now    time.Time
+		status conversation.ExecutionStatus
+		fence  int64
+		want   bool
+	}{
+		{name: "current unstarted", now: nextLease.RenewedAt, status: conversation.ExecutionStarting, fence: nextLease.FencingToken, want: true},
+		{name: "future renewal", now: nextLease.RenewedAt.Add(-time.Second), status: conversation.ExecutionStarting, fence: nextLease.FencingToken},
+		{name: "expired unstarted", now: nextLease.ExpiresAt, status: conversation.ExecutionStarting, fence: nextLease.FencingToken},
+		{name: "stale fence", now: nextLease.RenewedAt, status: conversation.ExecutionStarting, fence: nextLease.FencingToken + 1},
+		{name: "missing running attempt", now: nextLease.RenewedAt, status: conversation.ExecutionRunning, fence: nextLease.FencingToken},
+	} {
+		if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			record := conversationRecordFromStore(unstarted)
+			record.Execution.Status, record.Execution.Owner.FencingToken = test.status, test.fence
+			current, err := conversationLeaseCurrentPG(t.Context(), r, record, test.now)
+			if err == nil && current != test.want {
+				t.Errorf("%s current=%t want %t", test.name, current, test.want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if changed, err := f.service.conversations.reconcileExecutionPG(t.Context(), scope.organization, unstarted); err != nil || changed {
+		t.Fatalf("current bound execution was settled before its first attempt event: changed=%t error=%v", changed, err)
+	}
 	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt-pg-worker-next", Fence: leasestore.Fence{LeaseID: nextLease.LeaseID, FencingToken: nextLease.FencingToken}, RunID: "run-pg-worker-next", Sequence: 1, Status: "running", DispatchGeneration: 2, PayloadObjectKey: "example/payload-next"})
+		_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: nextIdentity.AttemptID, Fence: leasestore.Fence{LeaseID: nextLease.LeaseID, FencingToken: nextLease.FencingToken}, RunID: nextRunID, Sequence: 1, Status: "running", DispatchGeneration: 2, PayloadObjectKey: "example/payload-next"})
 		if err != nil {
 			return fmt.Errorf("record replacement attempt: %w", err)
 		}
@@ -605,14 +649,24 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f.service.config.now = func() time.Time { return nextLease.RenewedAt }
-	nextIdentity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(nextLease.LeaseID), FencingToken: tracker.FencingToken(nextLease.FencingToken), AttemptID: "attempt-pg-worker-next"}
-	nextBindBody := map[string]any{"lease_id": nextIdentity.LeaseID, "fencing_token": nextIdentity.FencingToken, "attempt_id": nextIdentity.AttemptID, "run_id": "run-pg-worker-next", "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
-	takeover := callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", nextBindBody, nextIdentity)
-	if takeover.Code != http.StatusOK {
-		t.Fatalf("replacement bind status = %d, body = %s, log = %s", takeover.Code, takeover.Body.String(), logs.String())
-	}
 	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		for _, test := range []struct {
+			attemptID string
+			want      bool
+		}{
+			{attemptID: nextIdentity.AttemptID, want: true},
+			{attemptID: newNativeID("attempt")},
+		} {
+			record := conversationRecordFromStore(unstarted)
+			record.Execution.Owner.AttemptID = test.attemptID
+			current, err := conversationLeaseCurrentPG(t.Context(), r, record, nextLease.RenewedAt)
+			if err != nil {
+				return err
+			}
+			if current != test.want {
+				return fmt.Errorf("same-lease persisted attempt ownership current=%t want %t", current, test.want)
+			}
+		}
 		messages, err := r.FilteredMessages(t.Context(), conversationstore.MessageFilter{ConversationID: linked.ID, AttemptID: identity.AttemptID, Role: conversation.RoleAssistant, Limit: 10})
 		if err != nil {
 			return err
