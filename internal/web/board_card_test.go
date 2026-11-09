@@ -3,10 +3,12 @@ package web_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,7 +245,16 @@ func TestAPIBoardActivityStreamShowsDispatchSkipWithinTick(t *testing.T) {
 	t.Parallel()
 
 	issue := telemetry.Issue{ID: "issue-1156", Identifier: "example-org/example-project#1156", ProjectID: "detent", Title: "Live skip", State: "In Progress"}
-	backend := openWebTestStore(t)
+	var observed atomic.Pointer[store.IssueActivityEvent]
+	backend := boardActivityReaderFixture{read: func(ctx context.Context, query store.IssueActivityQuery) ([]store.IssueActivityEvent, error) {
+		if query.ProjectID != issue.ProjectID || query.IssueID != issue.ID {
+			return nil, errors.New("unexpected activity observation scope")
+		}
+		if event := observed.Load(); event != nil {
+			return []store.IssueActivityEvent{*event}, ctx.Err()
+		}
+		return nil, ctx.Err()
+	}}
 	deps := testDeps(t)
 	deps.Store = backend
 	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now().UTC(), BoardIssues: []telemetry.Issue{issue}}); err != nil {
@@ -256,16 +267,7 @@ func TestAPIBoardActivityStreamShowsDispatchSkipWithinTick(t *testing.T) {
 	withBoardSSEStream(t, server.Handler(), "/api/v1/board/activity/events?project=detent&issue=issue-1156", func(reader *bufio.Reader, _ func()) {
 		_ = readBoardSSEData(t, reader)
 
-		if _, err := backend.RecordSchedulerDecision(t.Context(), store.SchedulerDecision{
-			ProjectID:  "detent",
-			IssueID:    issue.ID,
-			Identifier: issue.Identifier,
-			Result:     store.SchedulerDecisionResultSkipped,
-			Reason:     "artifact_gate_wait_status",
-			DecisionAt: time.Now().UTC(),
-		}); err != nil {
-			t.Fatalf("RecordSchedulerDecision() error = %v", err)
-		}
+		observed.Store(&store.IssueActivityEvent{ID: "scheduler:1", Source: "scheduler", Kind: "decision", Name: "skipped", Reason: "artifact_gate_wait_status", Status: "skipped", At: time.Now().UTC()})
 		if data := readBoardSSEData(t, reader); !strings.Contains(data, "artifact_gate_wait_status") || !strings.Contains(data, "Dispatch skipped") {
 			t.Fatalf("activity SSE = %q", data)
 		}
@@ -646,6 +648,15 @@ func (c *blockingKanbanCommentConnector) FetchPullRequestComments(ctx context.Co
 	case <-c.prRelease:
 		return nil, nil
 	}
+}
+
+type boardActivityReaderFixture struct {
+	explanationStoreFixture
+	read func(context.Context, store.IssueActivityQuery) ([]store.IssueActivityEvent, error)
+}
+
+func (f boardActivityReaderFixture) ListIssueActivity(ctx context.Context, query store.IssueActivityQuery) ([]store.IssueActivityEvent, error) {
+	return f.read(ctx, query)
 }
 
 type blockingBoardDetailStore struct {

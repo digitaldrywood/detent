@@ -1984,7 +1984,8 @@ func TestAPIUsageLogRecordsReturnedHTTPErrorStatus(t *testing.T) {
 func TestAPIUsageWritesDrainOnShutdown(t *testing.T) {
 	t.Parallel()
 
-	server, backend, _, _ := newAPIKeyWorkItemTestServer(t, openWebTestStore(t))
+	owner, recorded := newAPIKeyUsageObserver()
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t, owner)
 	token, keyID := createAPIKeyThroughHTTP(t, server, `{
 		"name": "Shutdown drain",
 		"scopes": ["read"],
@@ -2003,17 +2004,15 @@ func TestAPIUsageWritesDrainOnShutdown(t *testing.T) {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
 
-	queries := backend.Queries()
-	if queries == nil {
-		t.Fatal("store Queries() = nil")
-	}
-	logs, err := queries.ListAPIUsageLogsByKey(context.Background(), keyID)
-	if err != nil {
-		t.Fatalf("ListAPIUsageLogsByKey() error = %v", err)
-	}
-	if len(logs) == 0 {
+	select {
+	case usage := <-recorded:
+		if usage.APIKeyID != keyID || usage.Method != http.MethodGet || usage.Path != "/api/v1/state" || usage.StatusCode != http.StatusOK {
+			t.Fatalf("shutdown usage write = %+v, want successful state read for %s", usage, keyID)
+		}
+	default:
 		t.Fatalf("usage log count for %s = 0, want at least 1", keyID)
 	}
+
 	key, err := backend.APIKey(context.Background(), keyID)
 	if err != nil {
 		t.Fatalf("APIKey() error = %v", err)
@@ -10978,9 +10977,7 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 func TestAdmissionProposalsRefreshOnDiagnosticsWithoutBoardFaults(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
-	backend := openWebTestStore(t)
 	proposal := admissionmodel.Proposal{
 		ID:              "proposal-open",
 		ProjectID:       "detent",
@@ -11002,9 +10999,7 @@ func TestAdmissionProposalsRefreshOnDiagnosticsWithoutBoardFaults(t *testing.T) 
 		CreatedAt:  now.Add(-time.Hour),
 		ExpiresAt:  now.Add(23 * time.Hour),
 	}
-	if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
-		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
-	}
+
 	expired := proposal
 	expired.ID = "proposal-expired"
 	expired.IssueID = "issue-expired"
@@ -11012,13 +11007,20 @@ func TestAdmissionProposalsRefreshOnDiagnosticsWithoutBoardFaults(t *testing.T) 
 	expired.Fingerprint = "fingerprint-expired"
 	expired.CreatedAt = now.Add(-48 * time.Hour)
 	expired.ExpiresAt = now
-	if created, err := backend.CreateAdmissionProposal(ctx, expired); err != nil || !created {
-		t.Fatalf("CreateAdmissionProposal(expired) = %t, %v", created, err)
-	}
+	var resolved atomic.Bool
+	backend := admissionDecisionReaderFixture{read: func(ctx context.Context, projectID string, observedAt time.Time) ([]admissionmodel.Proposal, error) {
+		if projectID != "" || !observedAt.Equal(now) && !observedAt.Equal(now.Add(time.Minute)) {
+			return nil, errors.New("unexpected admission observation scope")
+		}
+		if resolved.Load() {
+			return nil, ctx.Err()
+		}
+		return []admissionmodel.Proposal{proposal}, ctx.Err()
+	}}
 
 	deps := testDeps(t)
 	deps.Store = backend
-	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now}); err != nil {
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now, AdmissionProposals: []telemetry.AdmissionProposal{{ID: expired.ID, ProjectID: expired.ProjectID, IssueID: expired.IssueID, IssueIdentifier: expired.IssueIdentifier, IssueURL: expired.IssueURL, Confidence: expired.Confidence, CreatedAt: expired.CreatedAt, ExpiresAt: expired.ExpiresAt}}}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 	server, err := newServerWithLaneWriter(web.Config{}, deps)
@@ -11040,10 +11042,8 @@ func TestAdmissionProposalsRefreshOnDiagnosticsWithoutBoardFaults(t *testing.T) 
 		t.Fatalf("Board rendered review queue as a fault:\n%s", board)
 	}
 
-	if err := backend.TransitionAdmissionProposal(ctx, proposal.ID, admissionmodel.ProposalOpen, admissionmodel.ProposalAccepted, now.Add(time.Minute)); err != nil {
-		t.Fatalf("TransitionAdmissionProposal() error = %v", err)
-	}
-	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now.Add(time.Minute)}); err != nil {
+	resolved.Store(true)
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now.Add(time.Minute), AdmissionProposals: []telemetry.AdmissionProposal{{ID: proposal.ID, ProjectID: proposal.ProjectID, IssueID: proposal.IssueID, IssueIdentifier: proposal.IssueIdentifier, IssueURL: proposal.IssueURL, Confidence: proposal.Confidence, CreatedAt: proposal.CreatedAt, ExpiresAt: proposal.ExpiresAt}}}); err != nil {
 		t.Fatalf("Publish(refresh) error = %v", err)
 	}
 	diagnostics = requestHTML(t, server.Handler(), http.MethodGet, "/diagnostics", http.StatusOK)
@@ -12957,6 +12957,15 @@ func (s *budgetOverrideViewStore) ClearBudgetOverride(ctx context.Context, proje
 	}
 	s.value = nil
 	return nil
+}
+
+type admissionDecisionReaderFixture struct {
+	storeProbe
+	read func(context.Context, string, time.Time) ([]admissionmodel.Proposal, error)
+}
+
+func (f admissionDecisionReaderFixture) AdmissionProposalsAwaitingDecision(ctx context.Context, projectID string, observedAt time.Time) ([]admissionmodel.Proposal, error) {
+	return f.read(ctx, projectID, observedAt)
 }
 
 type storeProbe struct {
