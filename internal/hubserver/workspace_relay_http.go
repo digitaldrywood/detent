@@ -649,7 +649,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 	if frame.Channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecRun {
 		// The run row is claimed before the frame is forwarded, so a frame the
 		// hub refuses is never executed and a run can only be started once.
-		if code := w.startExecRun(ctx, connection, runner, record, stream, frame); code != "" {
+		if code := w.startExecRunRecord(ctx, connection, runner, record, stream, frame); code != "" {
 			connection.send(workspacesession.ErrorFrame(frame.Channel, stream.id, code, relayCodeMessage(code)))
 			return
 		}
@@ -1057,38 +1057,6 @@ func (w *workspaceService) decodeRunnerOutput(channel string, frame workspaceses
 // is the whole reason a run is a row before it is a process: the person who
 // asked may close the tab, and a run-on-worktree-creation run has no person at
 // all, so the record cannot be the client's.
-
-// errExecRunRefused is the marker a refusal inside the run transaction uses.
-// The code the person is told is carried beside it, because a relay answer is
-// a code and a sentence rather than an error.
-var errExecRunRefused = errors.New("the exec run frame was refused")
-
-// startExecRun claims the run a person's run frame names and marks it running.
-// It answers "" when the frame may be forwarded, and a relay error code
-// otherwise.
-//
-// Every field of the frame is checked against the row rather than trusted: the
-// run must belong to this workspace, name the action the frame names, still be
-// queued, and carry the command the hub stored. The last one is the one worth
-// spelling out -- the runner validates the command against the action it was
-// handed, and this is the check that makes "the action it was handed" mean the
-// project's command rather than one a client composed.
-func (w *workspaceService) startExecRun(ctx context.Context, connection, runner *relayConnection, record workspaceRecord, stream *relayStream, frame workspacesession.Frame) string {
-
-	return w.startExecRunRecord(ctx, connection, runner, record, stream, frame)
-
-	// A run of another workspace does not exist for this connection,
-	// the same answer a stream it does not own gets.
-
-	// The claim is what decides, and it decides once. A run the hub's own
-	// dispatch already handed to this workspace's runner is refused here
-	// with already_running rather than started a second time, so one row is
-	// never two processes in one worktree. The claimant is
-	// the stream, here and in that dispatch, so claimed_by always names the
-	// thing actually carrying the run's frames rather than a connection for
-	// one of them and a stream for the other.
-
-}
 
 func (w *workspaceService) recordExecFrame(ctx context.Context, connection *relayConnection, stream *relayStream, frame workspacesession.Frame) {
 	switch frame.Type {
