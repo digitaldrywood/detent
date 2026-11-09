@@ -19,10 +19,11 @@ import (
 )
 
 type ConversationImportRow struct {
-	Table   string
-	Columns []string
-	Values  []any
-	Receipt ConversationImportReceipt
+	Table             string
+	Columns           []string
+	Values            []any
+	Receipt           ConversationImportReceipt
+	legacyReceiptHash string
 }
 
 type ConversationImportBatch struct {
@@ -48,7 +49,7 @@ type ConversationImportReceipt struct {
 var conversationImportIdentifier = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 var conversationImportTables = map[string]map[string]struct{}{
-	"conversations":                importColumns("archived", "content_attachment_id", "conversion_state", "created_at", "creation_hash", "creation_key", "event_seq", "execution_json", "execution_lease_id", "execution_settled", "execution_status", "id", "last_message_at", "linked_at", "origin", "organization_id", "owner_principal_id", "owner_subject", "preferences_json", "project_id", "provider_thread_id", "provider_thread_origin", "provider_thread_runner_id", "query_metadata_version", "read_audience", "revision", "settled_at", "status", "subject_work_item_id", "title", "updated_at", "visibility", "work_item_id"),
+	"conversations":                importColumns("execution_continuation", "archived", "content_attachment_id", "conversion_state", "created_at", "creation_hash", "creation_key", "event_seq", "execution_json", "execution_lease_id", "execution_settled", "execution_status", "id", "last_message_at", "linked_at", "origin", "organization_id", "owner_principal_id", "owner_subject", "preferences_json", "project_id", "provider_thread_id", "provider_thread_origin", "provider_thread_runner_id", "query_metadata_version", "read_audience", "revision", "settled_at", "status", "subject_work_item_id", "title", "updated_at", "visibility", "work_item_id"),
 	"conversation_messages":        importColumns("actor_json", "actor_kind", "actor_principal_id", "attempt_id", "command_key", "content_attachment_id", "conversation_id", "conversion_state", "created_at", "data_json", "delivery", "id", "kind", "operator_action_agent", "operator_action_id", "operator_action_result", "organization_id", "provider_item_id", "query_metadata_version", "revision", "role", "seq", "stored_text_bytes", "text", "text_bytes", "thread_id", "tool_item_id", "tool_name", "tool_status", "turn_id", "updated_at"),
 	"conversation_questions":       importColumns("answered_by", "answers_json", "attempt_id", "content_attachment_id", "conversation_id", "conversion_state", "created_at", "expires_at", "id", "message_id", "organization_id", "prompts_json", "request_id", "status", "thread_id", "turn_id", "updated_at"),
 	"conversation_commands":        importColumns("content_attachment_id", "conversation_id", "conversion_state", "created_at", "key", "kind", "organization_id", "query_metadata_version", "receipt_json", "receipt_status", "request_hash", "updated_at"),
@@ -91,6 +92,11 @@ func (r *Repository) ImportConversationBatch(ctx context.Context, batch Conversa
 			}
 			seen[column] = struct{}{}
 		}
+		if row.Table == "conversations" {
+			if _, ok := seen["execution_continuation"]; !ok {
+				return corestore.ErrInvalidPage
+			}
+		}
 	}
 	for _, object := range batch.ContentObjects {
 		if object.OrganizationID != batch.OrganizationID {
@@ -126,10 +132,16 @@ func (s *session) importConversationRow(ctx context.Context, row ConversationImp
 	var previousSnapshot, previousHash string
 	err := s.db.QueryRow(ctx, `SELECT snapshot_id,request_hash FROM conversation_history_import_rows WHERE organization_id=$1 AND source_table=$2 AND source_row_id=$3`, s.organization, row.Table, row.Receipt.SourceRow).Scan(&previousSnapshot, &previousHash)
 	if err == nil {
-		if previousSnapshot != row.Receipt.SnapshotID || previousHash != row.Receipt.RequestHash {
+		if previousSnapshot != row.Receipt.SnapshotID {
 			return mutation.ErrConflict
 		}
-		return nil
+		if previousHash == row.Receipt.RequestHash {
+			return nil
+		}
+		if row.Table == "conversations" && row.legacyReceiptHash != "" && previousHash == row.legacyReceiptHash {
+			return s.recoverConversationImportOwnership(ctx, row)
+		}
+		return mutation.ErrConflict
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
@@ -182,4 +194,30 @@ func (s *session) importConversationAttachment(ctx context.Context, imported Con
 		return err
 	}
 	return s.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: row.OrganizationID, ArchiveID: object.ArchiveID, Kind: "conversation-attachment", ID: row.ID, CreatedAt: row.CreatedAt})
+}
+
+func (s *session) recoverConversationImportOwnership(ctx context.Context, row ConversationImportRow) error {
+	values := make(map[string]any, len(row.Columns))
+	for index, column := range row.Columns {
+		values[column] = row.Values[index]
+	}
+	continuation, ok := values["execution_continuation"].(bool)
+	if !ok {
+		return corestore.ErrInvalidPage
+	}
+	result, err := s.db.Exec(ctx, `UPDATE conversations SET execution_continuation=$1 WHERE organization_id=$2 AND id=$3 AND project_id=$4 AND origin=$5 AND revision=$6 AND event_seq=$7 AND work_item_id IS NOT DISTINCT FROM $8`, continuation, s.organization, values["id"], values["project_id"], values["origin"], values["revision"], values["event_seq"], values["work_item_id"])
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if result.RowsAffected() != 1 {
+		return mutation.ErrConflict
+	}
+	result, err = s.db.Exec(ctx, `UPDATE conversation_history_import_rows SET request_hash=$1 WHERE organization_id=$2 AND source_table='conversations' AND source_row_id=$3 AND snapshot_id=$4 AND request_hash=$5`, row.Receipt.RequestHash, s.organization, row.Receipt.SourceRow, row.Receipt.SnapshotID, row.legacyReceiptHash)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if result.RowsAffected() != 1 {
+		return mutation.ErrConflict
+	}
+	return nil
 }
