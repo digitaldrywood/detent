@@ -20,7 +20,7 @@ const modernOperatorMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-
 // selection, and a nested chat model approving or proposing operator mutations.
 func TestMCPOperatorChatRetry(t *testing.T) {
 	deps := testDeps(t)
-	deps.Store = openWebTestStore(t)
+	deps.Store = newOperatorReceiptStoreFixture()
 	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now().UTC(), BoardIssues: []telemetry.Issue{
 		{ID: "visible", ProjectID: "detent", Title: "Visible issue"},
 		{ID: "foreign", ProjectID: "other", Title: "foreign-project-sentinel"},

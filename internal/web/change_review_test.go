@@ -77,7 +77,7 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture := &nativeWebFixture{}
-	server := nativeWebServerWithBackend(t, native, fixture, openWebTestStore(t))
+	server := nativeWebServerWithBackend(t, native, fixture, newOperatorReceiptStoreFixture())
 	path := "/projects/native/issues/wi_example/changes/change_example/versions/" + version.ID + "/review"
 	for _, tt := range []struct {
 		name, action, member string
