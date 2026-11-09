@@ -84,7 +84,7 @@ func TestNativeArchiveBackedUsagePublication(t *testing.T) {
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done"}},
 				{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
 				{Name: "Done", Terminal: true},
-			}, true, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), RunDetails: details})
+			}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), RunDetails: details})
 			issue := h.createInProgress(t, "Record provider usage")
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)

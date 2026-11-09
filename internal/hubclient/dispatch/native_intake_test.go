@@ -34,7 +34,7 @@ import (
 
 func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("durable PostgreSQL integration")
 	}
 
 	t.Parallel()
@@ -591,7 +591,7 @@ func intakeSnapshot() tracker.GitHubIssueSnapshot {
 
 func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("durable PostgreSQL integration")
 	}
 
 	t.Parallel()
@@ -681,7 +681,7 @@ func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
 
 func TestNativeEditsDuringSourceFetch(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("durable PostgreSQL integration")
 	}
 
 	t.Parallel()

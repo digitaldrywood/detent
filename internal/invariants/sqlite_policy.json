@@ -157,30 +157,6 @@
     "internal/cloudentry/storage_backend_test.go": {
       "database_path": 1
     },
-    "internal/hubclient/evidence/validation_test.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/scenariotest/change_evidence.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/scenariotest/hubclient_postgres_fixture.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/testsupport/dispatch_postgres.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/internal/testsupport/nativechange_postgres.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/nativechange/native_change_test.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/nativechange/native_integration_test.go": {
-      "database_path": 1
-    },
-    "internal/hubclient/nativechange/native_run_details_test.go": {
-      "database_path": 1
-    },
     "internal/hubgithub/postgres_fixture_test.go": {
       "database_path": 1
     },

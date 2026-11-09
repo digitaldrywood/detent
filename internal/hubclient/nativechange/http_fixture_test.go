@@ -7,5 +7,3 @@ import (
 type executionRoundTrip = testsupport.RoundTrip
 
 var providerHandlerClient = testsupport.HandlerClient
-
-var hubDatabasePath = testsupport.NativeChangeDatabasePath

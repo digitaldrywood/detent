@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -246,8 +247,28 @@ func changeEvidenceArtifactService(t *testing.T, h *nativeChangeHub) (*artifact.
 		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: h.organization, TokenID: publisher.ID, ProjectID: h.project})
 	})
 	serviceID := artifact.NewID("service")
-	remote := &artifact.RemoteHub{Client: fixtureClient(h.admin.Transport()).httpClient, Origin: fixtureClient(h.admin.Transport()).baseURL.String(), ServiceID: serviceID, OrganizationID: string(h.organization), ProjectID: string(h.project), PublisherToken: func() string { return publisher.Token }}
-	store, err := artifact.NewService(t.Context(), artifact.Config{ServiceID: serviceID, OrganizationID: string(h.organization), Mode: "customer", DatabasePath: filepath.Join(t.TempDir(), "artifacts.db"), Policy: artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: artifact.MaxChunkBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}, &changeEvidenceStorage{objects: map[string][]byte{}}, nil)
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+	remote := &artifact.RemoteHub{Client: &http.Client{Transport: transport}, Origin: fixtureClient(h.admin.Transport()).baseURL.String(), ServiceID: serviceID, OrganizationID: string(h.organization), ProjectID: string(h.project), PublisherToken: func() string { return publisher.Token }}
+	var active atomic.Pointer[artifact.HTTPServer]
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		handler := active.Load()
+		if handler == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		handler.ServeHTTP(w, request)
+	}))
+	t.Cleanup(server.Close)
+	binding := artifact.Binding{ServiceID: serviceID, Origin: server.URL, Mode: "customer", PublisherTokenID: publisher.ID}
+	if err := h.admin.Transport().Request(t.Context(), http.MethodPut, h.admin.Scope()+"/artifact-services/"+binding.ServiceID, binding, nil); err != nil {
+		t.Fatal(err)
+	}
+	policy := artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: artifact.MaxChunkBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}
+	if err := h.admin.Transport().Request(t.Context(), http.MethodPut, h.admin.Scope()+"/artifact-services/"+binding.ServiceID+"/catalog-policy", policy, nil); err != nil {
+		t.Fatal(err)
+	}
+	store, err := artifact.NewService(t.Context(), artifact.Config{ServiceID: serviceID, OrganizationID: string(h.organization), ProjectID: string(h.project), Mode: "customer", Policy: policy, Catalog: &artifact.RemoteCatalog{Hub: remote}}, &changeEvidenceStorage{objects: map[string][]byte{}}, nil, artifact.ServiceOptions{Now: h.clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,12 +281,7 @@ func changeEvidenceArtifactService(t *testing.T, h *nativeChangeHub) (*artifact.
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	binding := artifact.Binding{ServiceID: serviceID, Origin: server.URL, Mode: "customer", PublisherTokenID: publisher.ID}
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPut, h.admin.Scope()+"/artifact-services/"+binding.ServiceID, binding, nil); err != nil {
-		t.Fatal(err)
-	}
+	active.Store(handler)
 	fixtureArtifactConfiguration(t, h.scheduler, binding.ServiceID, 4<<20)
 	return store, remote
 }

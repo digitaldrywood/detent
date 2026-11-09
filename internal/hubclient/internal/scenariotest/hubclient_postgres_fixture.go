@@ -54,7 +54,6 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 	if _, err := admin.ExecContext(t.Context(), `ALTER DATABASE `+`"`+connection.Database+`" CONNECTION LIMIT 10`); err != nil {
 		t.Fatal(err)
 	}
-	cfg.DatabasePath = ""
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 6, ServingConnections: 4, BackgroundConnections: 1}, LeaseClock: cfg.Clock}
 	if cfg.Hosted == nil {

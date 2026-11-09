@@ -96,11 +96,6 @@ func ScenarioPostgresDatabase(t *testing.T) *sql.DB {
 
 func CloseScenarioPostgres(ctx context.Context) error { return scenarioPostgresTemplate.Close(ctx) }
 
-func NativeChangeDatabasePath(t testing.TB) string {
-	t.Helper()
-	return ""
-}
-
 var nativeChangeDatabases sync.Map
 var nativeChangeRepositories sync.Map
 
@@ -138,7 +133,6 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 		}
 	})
 	admin.SetMaxIdleConns(0)
-	cfg.DatabasePath = ""
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
 	if cfg.Hosted == nil {
