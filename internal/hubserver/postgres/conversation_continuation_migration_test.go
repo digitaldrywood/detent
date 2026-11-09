@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -13,7 +14,10 @@ func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) 
 		name, delivery string
 		statuses       []string
 		want           bool
+		referenced     bool
 	}{
+		{name: "referenced_interrupted", delivery: "delivered", statuses: []string{"running", "interrupted"}, referenced: true, want: true},
+		{name: "referenced_completed", delivery: "delivered", statuses: []string{"completed", "interrupted"}, referenced: true},
 		{name: "saved", delivery: "saved", want: true},
 		{name: "queued", delivery: "queued", statuses: []string{"waiting_for_runner"}, want: true},
 		{name: "consumed", delivery: "sent", statuses: []string{"running", "interrupted", "starting", "interrupted"}, want: true},
@@ -60,6 +64,20 @@ func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) 
 				raw, err := json.Marshal(body)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if tc.referenced {
+					var metadata struct {
+						ID     string `json:"id"`
+						Kind   string `json:"kind"`
+						Status string `json:"status"`
+					}
+					if err := json.Unmarshal(raw, &metadata); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO conversation_events(organization_id,conversation_id,seq,type,body_json,content_attachment_id,query_metadata_version,object_id,message_kind,execution_status) VALUES($1,$2,$3,$4,'{}',$5,1,$6,$7,$8)`, organization, id, sequence, kind, fmt.Sprintf("archive_%s_%s_%d", organization, id, sequence), metadata.ID, metadata.Kind, metadata.Status); err != nil {
+						t.Fatal(err)
+					}
+					return
 				}
 				if _, err := db.ExecContext(t.Context(), `INSERT INTO conversation_events(organization_id,conversation_id,seq,type,body_json) VALUES($1,$2,$3,$4,$5)`, organization, id, sequence, kind, string(raw)); err != nil {
 					t.Fatal(err)

@@ -66,19 +66,21 @@ func backfillConversationContinuation(ctx context.Context, tx *sql.Tx, organizat
 	if origin == "worker" {
 		var verifiedCount, previousMessage int64
 		for after < head {
-			rows, err := tx.QueryContext(ctx, `SELECT seq,type,body_json,content_attachment_id FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2 AND seq>$3 ORDER BY seq LIMIT 128`, organization, id, after)
+			rows, err := tx.QueryContext(ctx, `SELECT seq,type,body_json,content_attachment_id,query_metadata_version,object_id,message_kind,execution_status FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2 AND seq>$3 ORDER BY seq LIMIT 128`, organization, id, after)
 			if err != nil {
 				return err
 			}
 			type event struct {
-				sequence        int64
-				kind, reference string
-				body            []byte
+				sequence                               int64
+				metadataVersion                        int64
+				objectID, messageKind, executionStatus sql.NullString
+				kind, reference                        string
+				body                                   []byte
 			}
 			var events []event
 			for rows.Next() {
 				var e event
-				if err := rows.Scan(&e.sequence, &e.kind, &e.body, &e.reference); err != nil {
+				if err := rows.Scan(&e.sequence, &e.kind, &e.body, &e.reference, &e.metadataVersion, &e.objectID, &e.messageKind, &e.executionStatus); err != nil {
 					return errors.Join(err, rows.Close())
 				}
 				events = append(events, e)
@@ -100,7 +102,12 @@ func backfillConversationContinuation(ctx context.Context, tx *sql.Tx, organizat
 						ID   string                   `json:"id"`
 						Kind conversation.MessageKind `json:"kind"`
 					}
-					if e.reference != "" || json.Unmarshal(e.body, &message) != nil || message.ID == "" || !message.Kind.Valid() {
+					if e.metadataVersion == 1 {
+						message.ID, message.Kind = e.objectID.String, conversation.MessageKind(e.messageKind.String)
+					} else if e.reference != "" || json.Unmarshal(e.body, &message) != nil {
+						return errors.New("conversation continuation message evidence is unavailable")
+					}
+					if message.ID == "" || !message.Kind.Valid() {
 						return errors.New("conversation continuation message evidence is unavailable")
 					}
 					if message.Kind == conversation.MessageContinue {
@@ -119,7 +126,12 @@ func backfillConversationContinuation(ctx context.Context, tx *sql.Tx, organizat
 					var execution struct {
 						Status conversation.ExecutionStatus `json:"status"`
 					}
-					if e.reference != "" || json.Unmarshal(e.body, &execution) != nil || !execution.Status.Valid() {
+					if e.metadataVersion == 1 {
+						execution.Status = conversation.ExecutionStatus(e.executionStatus.String)
+					} else if e.reference != "" || json.Unmarshal(e.body, &execution) != nil {
+						return errors.New("conversation continuation execution evidence is unavailable")
+					}
+					if !execution.Status.Valid() {
 						return errors.New("conversation continuation execution evidence is unavailable")
 					}
 					if execution.Status == conversation.ExecutionCompleted {
