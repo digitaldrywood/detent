@@ -52,7 +52,7 @@ func (s *session) LockAttemptDiffGeneration(ctx context.Context, attemptID, leas
 		return 0, corestore.ErrInvalidPage
 	}
 	var locked string
-	if err := s.db.QueryRow(ctx, `SELECT a.id FROM native_attempts a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id JOIN runner_lease_assignments rla ON rla.organization_id=l.organization_id AND rla.lease_id=l.lease_id JOIN runner_identities ri ON ri.organization_id=rla.organization_id AND ri.runner_id=rla.runner_id JOIN api_tokens t ON t.organization_id=ri.organization_id AND t.id=ri.token_id WHERE a.organization_id=$1 AND a.id=$2 AND l.lease_id=$3 AND t.id=$4 FOR UPDATE OF a,l,rla,ri,t`, s.organization, attemptID, leaseID, credentialID).Scan(&locked); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT a.id FROM native_attempts a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id JOIN runner_lease_assignments rla ON rla.organization_id=l.organization_id AND rla.lease_id=l.lease_id JOIN runner_identities ri ON ri.organization_id=rla.organization_id AND ri.runner_id=rla.runner_id JOIN api_tokens t ON t.organization_id=ri.organization_id AND t.id=ri.token_id WHERE a.organization_id=$1 AND a.id=$2 AND l.lease_id=$3 AND t.id=$4 FOR UPDATE OF a,l,rla,ri`, s.organization, attemptID, leaseID, credentialID).Scan(&locked); err != nil {
 		return 0, mapError(ctx, err)
 	}
 	return s.LatestAttemptDiffSequence(ctx, attemptID, source, sourceID)
