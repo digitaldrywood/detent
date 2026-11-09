@@ -124,6 +124,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		cleanupFailure bool
 		controller     bool
 		prepared       bool
+		prepareFinish  bool
 		retained       bool
 		terminal       bool
 		expired        bool
@@ -141,6 +142,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		{name: "superseded lease preserves its successor", controller: true, superseded: true},
 		{name: "prepared completion without publisher", controller: true, prepared: true},
 		{name: "prepared completion settles after claim loss", controller: true, prepared: true, retained: true},
+		{name: "prepared completion keeps ownership without controller", prepared: true, prepareFinish: true, retained: true},
 		{name: "released completion reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true},
 		{name: "released setup reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true, preProvider: true},
 		{name: "conflicting pending event preserves an unreleased lease", controller: true, prepared: true, retained: true, conflict: true, unreleased: true},
@@ -187,9 +189,15 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 				}()
 			}
 			if test.prepared {
-				e.preparedOutcome = "failed"
-				if test.retained {
-					e.RetainCompletion()
+				if test.prepareFinish {
+					if err := e.PrepareFinish(t.Context(), "failed", "The worker failed.", nil); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					e.preparedOutcome = "failed"
+					if test.retained {
+						e.RetainCompletion()
+					}
 				}
 				if !test.unreleased {
 					if err := h.native.Release(t.Context(), e.claim.lease, "cancelled"); err != nil {

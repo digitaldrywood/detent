@@ -428,6 +428,9 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) (err error) {
 	e.mu.Lock()
 	defer func() {
+		if err == nil && e.preparedOutcome != "" {
+			e.RetainCompletion()
+		}
 		e.mu.Unlock()
 		if err == nil {
 			e.refreshReasons(ctx, false)
