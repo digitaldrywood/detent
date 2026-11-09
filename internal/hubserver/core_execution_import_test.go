@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -259,10 +260,18 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 			}
 			var sourceID, issueID int64
 			var fencingToken sql.NullInt64
-			var machineID, kind, payload string
-			if err := admin.QueryRowContext(t.Context(), `SELECT source_id,issue_id,fencing_token,machine_id,kind,payload_json FROM core_work_events WHERE organization_id=$1 AND source_id=7`, organization).Scan(&sourceID, &issueID, &fencingToken, &machineID, &kind, &payload); err != nil {
+			var machineID, kind string
+			var ref attachment.ArchiveReference
+			var legacy sql.NullString
+			if err := admin.QueryRowContext(t.Context(), `SELECT source_id,issue_id,fencing_token,machine_id,kind,payload_json,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM core_work_events WHERE organization_id=$1 AND source_id=7`, organization).Scan(&sourceID, &issueID, &fencingToken, &machineID, &kind, &legacy, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize); err != nil {
 				t.Fatal(err)
 			}
+			ref.Codec, ref.SchemaVersion, ref.Kind, ref.Retention = "gzip", 1, "archive", attachment.ArchiveRetention
+			raw, err := objects.ReadDetail(t.Context(), string(organization), ref)
+			if err != nil || legacy.Valid {
+				t.Fatalf("work event object read=%v inline=%t", err, legacy.Valid)
+			}
+			payload := string(raw)
 			if sourceID != 7 || issueID != 41 || !fencingToken.Valid || fencingToken.Int64 != 40 || machineID != "machine_execution_import" || kind != "progress" || payload != `{"step":"compile"}` {
 				t.Fatalf("imported work event source=%d issue=%d fence=%v machine=%s kind=%s payload=%s", sourceID, issueID, fencingToken, machineID, kind, payload)
 			}
@@ -478,4 +487,25 @@ func historicalCoreAttemptReceipts(t *testing.T, source CoreExecutionImportSourc
 		t.Fatal(err)
 	}
 	return receipts
+}
+
+func TestCoreWorkEventObjectPreservesImportReceipt(t *testing.T) {
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			content := eventstore.NewContent(&memoryRunDetails{})
+			row := coreWorkEventImportRow{Event: postgres.CoreWorkEventImport{OrganizationID: org, ID: 7, IssueID: 41, Kind: "progress", PayloadJSON: ` {"step": "compile"} `, OccurredAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), RecordedAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)}}
+			before, err := prepareCoreExecutionReceipt(t.Context(), content, org, strings.Repeat("a", 64), "core-work-event", "7", row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row.Event.Payload, err = content.PreparePayload(t.Context(), org, []byte(row.Event.PayloadJSON))
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := prepareCoreExecutionReceipt(t.Context(), content, org, strings.Repeat("a", 64), "core-work-event", "7", row)
+			if err != nil || before.RequestHash != after.RequestHash || before.PayloadObjectKey != after.PayloadObjectKey || before.PayloadSHA256 != after.PayloadSHA256 {
+				t.Fatalf("object preparation changed historical receipt identity: before=%s after=%s error=%v", before.RequestHash, after.RequestHash, err)
+			}
+		})
+	}
 }

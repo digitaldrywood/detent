@@ -70,7 +70,7 @@ WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_
 
 -- name: ConversionInitializeCursors :exec
 INSERT INTO storage_conversion_cursors (organization_id, family)
-SELECT sqlc.arg(organization_id)::text, family FROM unnest(ARRAY['runs', 'versions', 'evidence']) AS family
+SELECT sqlc.arg(organization_id)::text, family FROM unnest(ARRAY['runs', 'versions', 'evidence', 'core-work-events']) AS family
 ON CONFLICT DO NOTHING;
 
 -- name: ConversionNextCursor :one
@@ -126,3 +126,10 @@ FROM (
   AND (change_id,sequence)>(sqlc.arg(aggregate_id)::text,sqlc.arg(sequence)::bigint)
  ORDER BY change_id,sequence LIMIT 1
 ) r JOIN change_requests c ON c.organization_id=r.organization_id AND c.id=r.change_id;
+
+-- name: ConversionNextCoreWorkEvent :one
+SELECT i.project_id,e.issue_id,e.source_id,octet_length(e.payload_json)::bigint AS payload_content_bytes
+FROM (SELECT pending.issue_id,pending.source_id,pending.organization_id,pending.payload_json FROM core_work_events pending
+ WHERE pending.organization_id=sqlc.arg(organization_id) AND pending.payload_json IS NOT NULL AND pending.source_id>sqlc.arg(after_source_id)::bigint
+ ORDER BY pending.source_id LIMIT 1) e
+JOIN issues i ON i.organization_id=e.organization_id AND i.id=e.issue_id;

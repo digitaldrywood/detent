@@ -924,17 +924,21 @@ type ConversationUsage struct {
 }
 
 type CoreWorkEvent struct {
-	OrganizationID tracker.OrganizationID
-	SourceID       int64
-	IssueID        int64
-	FencingToken   pgtype.Int8
-	MachineID      *string
-	SessionID      *string
-	RunID          *string
-	Kind           string
-	PayloadJson    string
-	OccurredAt     time.Time
-	RecordedAt     time.Time
+	OrganizationID      tracker.OrganizationID
+	SourceID            int64
+	IssueID             int64
+	FencingToken        pgtype.Int8
+	MachineID           *string
+	SessionID           *string
+	RunID               *string
+	Kind                string
+	PayloadJson         *string
+	OccurredAt          time.Time
+	RecordedAt          time.Time
+	PayloadObjectKey    *string
+	PayloadSHA256       *string
+	PayloadBytes        pgtype.Int8
+	PayloadContentBytes pgtype.Int8
 }
 
 type CostImport struct {

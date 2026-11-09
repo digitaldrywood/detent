@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -78,6 +80,7 @@ type CoreWorkEventImport struct {
 	OccurredAt     time.Time
 	RecordedAt     time.Time
 	Receipt        eventstore.Receipt
+	Payload        attachment.ArchiveReference `json:"-"`
 }
 
 func (r *Repository) ImportCoreRunnerEnrollment(ctx context.Context, record CoreRunnerEnrollmentImport) error {
@@ -217,25 +220,44 @@ func (r *Repository) ImportCoreWorkEvent(ctx context.Context, record CoreWorkEve
 	if record.OrganizationID == "" || record.ID < 1 || record.IssueID < 1 || record.Kind == "" || !json.Valid([]byte(record.PayloadJSON)) || record.OccurredAt.IsZero() || record.RecordedAt.IsZero() || record.Receipt.OrganizationID != record.OrganizationID || !validCoreImportReceipt(record.Receipt, "core-work-event", strconv.FormatInt(record.ID, 10)) {
 		return eventstore.ErrInvalidRecord
 	}
+	expected, _, err := attachment.PrepareArchive(string(record.OrganizationID), 1, bytes.NewReader([]byte(record.PayloadJSON)))
+	if err != nil || expected != record.Payload {
+		return eventstore.ErrInvalidRecord
+	}
 	return r.transaction(ctx, record.OrganizationID, corestore.Background, false, func(s *session) error {
 		replayed, err := checkCoreImportReceipt(ctx, s, record.Receipt)
 		if err != nil {
 			return err
 		}
-		_, err = s.db.Exec(ctx, `INSERT INTO core_work_events (organization_id,source_id,issue_id,fencing_token,machine_id,session_id,run_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (organization_id,source_id) DO NOTHING`, record.OrganizationID, record.ID, record.IssueID, record.FencingToken, record.MachineID, record.SessionID, record.RunID, record.Kind, record.PayloadJSON, recordTime(record.OccurredAt), recordTime(record.RecordedAt))
+		ref := record.Payload
+		_, err = s.db.Exec(ctx, `INSERT INTO core_work_events (organization_id,source_id,issue_id,fencing_token,machine_id,session_id,run_id,kind,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,occurred_at,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (organization_id,source_id) DO NOTHING`, record.OrganizationID, record.ID, record.IssueID, record.FencingToken, record.MachineID, record.SessionID, record.RunID, record.Kind, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, recordTime(record.OccurredAt), recordTime(record.RecordedAt))
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		var issueID int64
 		var fencing pgtype.Int8
-		var machine pgtype.Text
-		var sessionID, runID pgtype.Text
-		var kind, payload string
+		var machine, sessionID, runID, payload, key, digest pgtype.Text
+		var compressed, content pgtype.Int8
+		var kind string
 		var occurred, recorded time.Time
-		if err := s.db.QueryRow(ctx, `SELECT issue_id,fencing_token,machine_id,session_id,run_id,kind,payload_json,occurred_at,recorded_at FROM core_work_events WHERE organization_id=$1 AND source_id=$2`, record.OrganizationID, record.ID).Scan(&issueID, &fencing, &machine, &sessionID, &runID, &kind, &payload, &occurred, &recorded); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT issue_id,fencing_token,machine_id,session_id,run_id,kind,payload_json,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,occurred_at,recorded_at FROM core_work_events WHERE organization_id=$1 AND source_id=$2 FOR UPDATE`, record.OrganizationID, record.ID).Scan(&issueID, &fencing, &machine, &sessionID, &runID, &kind, &payload, &key, &digest, &compressed, &content, &occurred, &recorded); err != nil {
 			return mapError(ctx, err)
 		}
-		if issueID != record.IssueID || !sameCoreOptionalInt(fencing, record.FencingToken) || !sameCoreOptionalString(machine, record.MachineID) || !sameCoreOptionalString(sessionID, record.SessionID) || !sameCoreOptionalString(runID, record.RunID) || kind != record.Kind || payload != record.PayloadJSON || !occurred.Equal(recordTime(record.OccurredAt)) || !recorded.Equal(recordTime(record.RecordedAt)) {
+		if issueID != record.IssueID || !sameCoreOptionalInt(fencing, record.FencingToken) || !sameCoreOptionalString(machine, record.MachineID) || !sameCoreOptionalString(sessionID, record.SessionID) || !sameCoreOptionalString(runID, record.RunID) || kind != record.Kind || !occurred.Equal(recordTime(record.OccurredAt)) || !recorded.Equal(recordTime(record.RecordedAt)) {
+			return mutation.ErrConflict
+		}
+		if payload.Valid {
+			if payload.String != record.PayloadJSON {
+				return mutation.ErrConflict
+			}
+			committed, err := s.commitCoreWorkEventPayload(ctx, record.ID, record.IssueID, payload.String, ref)
+			if err != nil {
+				return err
+			}
+			if !committed {
+				return mutation.ErrConflict
+			}
+		} else if key.String != ref.Key || digest.String != ref.SHA256 || compressed.Int64 != ref.CompressedSize || content.Int64 != ref.UncompressedSize {
 			return mutation.ErrConflict
 		}
 		if replayed {

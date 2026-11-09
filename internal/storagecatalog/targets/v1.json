@@ -225,12 +225,16 @@
         "occurred_at": "timestamp with time zone",
         "organization_id": "text",
         "payload_json": "text",
+        "payload_object_key": "text",
+        "payload_sha256": "text",
+        "payload_bytes": "bigint",
+        "payload_content_bytes": "bigint",
         "recorded_at": "timestamp with time zone",
         "run_id": "text",
         "session_id": "text",
         "source_id": "bigint"
       },
-      "contract": "Preserve immutable legacy work-event identities and payloads for historical recovery.",
+      "contract": "Preserve immutable work-event identities and verified organization-owned object references; retain legacy inline sources until bounded conversion verifies their objects.",
       "family": "event",
       "organization": "organization-owned"
     },

@@ -14,6 +14,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -75,8 +77,6 @@ func (f storageConversionFamily) positions() string {
 const storageConversionDiscovery = `SELECT aggregate_id,through_rowid FROM storage_conversion_progress
 WHERE organization_id=? AND project_id=? AND family=? AND (complete=0 OR format_version<>1)
 ORDER BY updated_at,aggregate_id LIMIT 4`
-
-const storageConversionSchedule = `SELECT organization_id,project_id,family,aggregate_id FROM storage_conversion_progress WHERE (complete=0 OR format_version<>1) AND family IN ('runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments') AND family NOT IN ('attempts','analytics','versions','evidence','sources','diff_files') ORDER BY updated_at,organization_id,project_id,family,aggregate_id LIMIT 4`
 
 type storageConversionProgress struct {
 	Family    string `json:"family"`
@@ -678,8 +678,32 @@ func (s *Service) convertStorageBatch(ctx context.Context, now time.Time) error 
 	return ConvertStorageBatch(s.freshRunDetailContext(ctx), sqliteConversionStorage{service: s, now: now})
 }
 
-func ConvertStorageBatch(ctx context.Context, storage storageconversion.Storage) error {
+func (s *Service) convertPostgresStorage(ctx context.Context, tenant hubmaintenance.Tenant, limit int) (int, error) {
+	if limit < 1 {
+		return 0, nil
+	}
+	if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+	defer cancel()
+	storage := postgres.NewConversionStorage(s.database.postgres, tracker.OrganizationID(tenant.Organization), s.runDetailStore(), func(ctx context.Context, _ storageconversion.Candidate, raw []byte) ([]byte, error) {
+		return resolveStorageJSON(s.freshRunDetailContext(ctx), raw)
+	})
 	budget := &storageBatchBudget{}
+	err := convertStorageBatchBudget(ctx, storage, min(limit, storageConversionRows), budget)
+	return budget.rows, err
+}
+
+func ConvertStorageBatch(ctx context.Context, storage storageconversion.Storage) error {
+	return convertStorageBatchLimit(ctx, storage, storageConversionRows)
+}
+
+func convertStorageBatchLimit(ctx context.Context, storage storageconversion.Storage, limit int) error {
+	return convertStorageBatchBudget(ctx, storage, limit, &storageBatchBudget{})
+}
+
+func convertStorageBatchBudget(ctx context.Context, storage storageconversion.Storage, limit int, budget *storageBatchBudget) error {
 	ctx = context.WithValue(ctx, storageBatchKey{}, budget)
 	names, err := storage.Start(ctx)
 	if err != nil {
@@ -687,7 +711,7 @@ func ConvertStorageBatch(ctx context.Context, storage storageconversion.Storage)
 	}
 	familyCount := len(names)
 	var failures error
-	for turns := 0; turns < storageConversionRows*familyCount && budget.rows < storageConversionRows && len(names) > 0; turns++ {
+	for turns := 0; turns < limit*familyCount && budget.rows < limit && len(names) > 0; turns++ {
 		cursor, err := storage.Next(ctx, names)
 		if err != nil {
 			return errors.Join(failures, err)

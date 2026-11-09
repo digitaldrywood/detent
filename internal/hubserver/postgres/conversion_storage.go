@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -18,19 +19,20 @@ type ConversionStorage struct {
 	repository   *Repository
 	organization tracker.OrganizationID
 	converter    *storageconversion.Converter
+	content      *eventstore.Content
 }
 
 var _ storageconversion.Storage = (*ConversionStorage)(nil)
 
 func NewConversionStorage(repository *Repository, organization tracker.OrganizationID, objects attachment.DetailStore, transform storageconversion.Transform) *ConversionStorage {
-	return &ConversionStorage{repository: repository, organization: organization, converter: storageconversion.New(repository, objects, transform)}
+	return &ConversionStorage{repository: repository, organization: organization, converter: storageconversion.New(repository, objects, transform), content: eventstore.NewContent(objects)}
 }
 
 func (s *ConversionStorage) Start(ctx context.Context) ([]string, error) {
 	err := s.repository.transaction(ctx, s.organization, corestore.Background, false, func(session *session) error {
 		return session.queries.ConversionInitializeCursors(ctx, string(s.organization))
 	})
-	return []string{"runs", "versions", "evidence"}, err
+	return []string{"runs", "versions", "evidence", "core-work-events"}, err
 }
 
 func (s *ConversionStorage) Next(ctx context.Context, families []string) (storageconversion.FamilyCursor, error) {
@@ -83,6 +85,9 @@ func (s *ConversionStorage) Convert(ctx context.Context, cursor storageconversio
 		return err
 	}
 	turn.Advance(func(ctx context.Context) error { return s.advance(ctx, next) })
+	if candidate.Scope.Family == coreWorkEventFamily {
+		return s.convertCoreWorkEvent(ctx, candidate, turn)
+	}
 	_, _, err = s.converter.Convert(ctx, candidate, turn.Expand)
 	return err
 }
@@ -99,6 +104,14 @@ func (s *ConversionStorage) candidate(ctx context.Context, cursor storageconvers
 			var err error
 			candidate.Scope = storageconversion.Scope{Organization: s.organization, Family: storageconversion.Family(cursor.Family)}
 			switch candidate.Scope.Family {
+			case coreWorkEventFamily:
+				row, readErr := session.queries.ConversionNextCoreWorkEvent(ctx, pgquery.ConversionNextCoreWorkEventParams{OrganizationID: s.organization, AfterSourceID: sequence})
+				err = readErr
+				candidate.Scope.Project, candidate.Scope.AggregateID = row.ProjectID, strconv.FormatInt(row.IssueID, 10)
+				candidate.Position = storageconversion.Position{ID: strconv.FormatInt(row.SourceID, 10), Sequence: row.SourceID}
+				candidate.FormatVersion = 1
+				candidate.Source.UncompressedSize = row.PayloadContentBytes
+				next.Keys = [4]string{}
 			case storageconversion.Runs:
 				row, readErr := session.queries.ConversionNextRun(ctx, pgquery.ConversionNextRunParams{OrganizationID: s.organization, ProjectID: keys[0], AggregateID: keys[1], RecordID: keys[2], Sequence: sequence})
 				err = readErr

@@ -237,6 +237,10 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 				if err != nil {
 					return fmt.Errorf("prepare work event import: %w", err)
 				}
+				event.Payload, err = content.PreparePayload(ctx, source.OrganizationID, []byte(event.PayloadJSON))
+				if err != nil {
+					return fmt.Errorf("prepare work event payload: %w", err)
+				}
 				if err := target.ImportCoreWorkEvent(ctx, event); err != nil {
 					return fmt.Errorf("import work event %d: %w", event.ID, err)
 				}

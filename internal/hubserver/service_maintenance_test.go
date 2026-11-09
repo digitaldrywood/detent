@@ -152,6 +152,11 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			var conversionOwners int
+			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM storage_conversion_cursors WHERE organization_id=$1 AND family='core-work-events'`, org).Scan(&conversionOwners); err != nil || conversionOwners != 1 {
+				t.Fatalf("hosted maintenance did not advance the conversion owner: owners=%d error=%v", conversionOwners, err)
+			}
+
 			for _, other := range tenants {
 				if err := service.config.TenantRepository.ReadTenant(t.Context(), other, corestore.Serving, func(r tenantstore.Reader) error {
 					ready, err := r.(viewstore.WorkItemPageReadinessReader).WorkItemPageReady(t.Context(), "example", "wi_example", "item")
@@ -211,6 +216,109 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 			}
 		})
 	}
+	t.Run("continuous page work", func(t *testing.T) {
+		tx, err := admin.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(t.Context(), `ALTER TABLE core_work_events DROP CONSTRAINT core_work_events_object_writes`); err != nil {
+			t.Fatal(err)
+		}
+		for _, org := range tenants {
+			raw := fmt.Sprintf(" {\"tenant\":%q, \"legacy\":true} \n", org)
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at)
+ SELECT i.organization_id,n,i.id,'progress',$2,$3,$3 FROM issues i CROSS JOIN generate_series(7,8) n
+ WHERE i.organization_id=$1 AND i.project_id='example' AND i.native_id='wi_example'`, org, raw, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := tx.ExecContext(t.Context(), `ALTER TABLE core_work_events ADD CONSTRAINT core_work_events_object_writes CHECK(payload_json IS NULL) NOT VALID;
+ CREATE TABLE maintenance_page_activity (organization_id text PRIMARY KEY,publications bigint NOT NULL DEFAULT 0);
+ INSERT INTO maintenance_page_activity(organization_id) VALUES ('org_first'),('org_second');
+ CREATE FUNCTION continuously_dirty_maintenance_page() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+ BEGIN
+  UPDATE public.maintenance_page_activity SET publications=publications+1 WHERE organization_id=NEW.organization_id;
+  INSERT INTO public.native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind)
+  VALUES(NEW.organization_id,NEW.project_id,NEW.work_item_id,NEW.work_item_id,'item')
+  ON CONFLICT(organization_id,project_id,work_item_id,record_id,kind) DO UPDATE SET generation=DEFAULT,source_at=clock_timestamp();
+  RETURN NEW;
+ END $$;
+ CREATE TRIGGER continuously_dirty_maintenance_page AFTER INSERT OR UPDATE ON native_work_item_pages
+ FOR EACH ROW EXECUTE FUNCTION continuously_dirty_maintenance_page();
+ INSERT INTO native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind)
+ SELECT organization_id,project_id,native_id,native_id,'item' FROM issues WHERE organization_id IN ('org_first','org_second') AND native_id='wi_example'
+ ON CONFLICT(organization_id,project_id,work_item_id,record_id,kind) DO UPDATE SET generation=DEFAULT,source_at=clock_timestamp()`); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		for _, org := range tenants {
+			t.Run(string(org), func(t *testing.T) {
+				cfg.Hosted.OrganizationID = string(org)
+				cfg.Hosted.WorkOSOrganizationID = "provider_" + string(org)
+				cfg.runMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				service, err := Open(t.Context(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := service.Close(); err != nil {
+						t.Error(err)
+					}
+				}()
+				service.workerCancel()
+				<-service.workerDone
+				feature := service.WorkItemPageMaintenanceFeature()
+				tenant := hubmaintenance.Tenant{Organization: string(org), Generation: 1}
+				budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: feature.Bytes}
+				var previousPages, previousEvents int64
+				for turn := 0; turn < 4; turn++ {
+					if err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
+						t.Fatal(err)
+					}
+					var pages, events int64
+					var pending bool
+					if err := admin.QueryRowContext(t.Context(), `SELECT publications,
+ (SELECT count(*) FROM core_work_events WHERE organization_id=$1 AND payload_json IS NULL),
+ EXISTS(SELECT 1 FROM native_work_item_page_dirty WHERE organization_id=$1 AND kind='item')
+ FROM maintenance_page_activity WHERE organization_id=$1`, org).Scan(&pages, &events, &pending); err != nil {
+						t.Fatal(err)
+					}
+					if pages <= previousPages || !pending {
+						t.Fatalf("continuous page producer stopped: turn=%d pages=%d previous=%d pending=%t", turn, pages, previousPages, pending)
+					}
+					if pages-previousPages+events-previousEvents > int64(budget.Items) {
+						t.Fatalf("tenant turn exceeded item budget: pages=%d events=%d budget=%d", pages-previousPages, events-previousEvents, budget.Items)
+					}
+					if turn > 0 && events == previousEvents && pages-previousPages != int64(budget.Items) {
+						t.Errorf("unused conversion capacity withheld from pages: turn=%d page_items=%d budget=%d", turn, pages-previousPages, budget.Items)
+					}
+					previousPages, previousEvents = pages, events
+				}
+				t.Logf("continuous tenant=%s turns=4 page_publications=%d converted=%d", org, previousPages, previousEvents)
+				if previousEvents != 2 {
+					t.Errorf("continuous pages starved legacy conversion after 4 tenant turns: tenant=%s pages=%d converted=%d/2", org, previousPages, previousEvents)
+				}
+				for _, id := range []int64{7, 8} {
+					var key, digest string
+					var compressed, content int64
+					if err := admin.QueryRowContext(t.Context(), `SELECT coalesce(payload_object_key,''),coalesce(payload_sha256,''),coalesce(payload_bytes,0),coalesce(payload_content_bytes,0) FROM core_work_events WHERE organization_id=$1 AND source_id=$2`, org, id).Scan(&key, &digest, &compressed, &content); err != nil {
+						t.Fatal(err)
+					}
+					raw, err := cfg.RunDetails.ReadDetail(t.Context(), string(org), eventstore.Reference(key, digest, compressed, content))
+					if err != nil || string(raw) != fmt.Sprintf(" {\"tenant\":%q, \"legacy\":true} \n", org) {
+						t.Fatalf("converted legacy bytes changed: tenant=%s event=%d error=%v", org, id, err)
+					}
+				}
+			})
+		}
+	})
+
 }
 
 func TestHostedMaintenanceCloseJoinsScheduler(t *testing.T) {

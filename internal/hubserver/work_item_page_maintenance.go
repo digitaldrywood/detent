@@ -19,38 +19,46 @@ func (s *Service) WorkItemPageMaintenanceFeature() hubmaintenance.Feature {
 		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
 			return err
 		}
-		for range budget.Items {
-			worked, err := s.MaintainWorkItemPage(ctx, tracker.OrganizationID(tenant.Organization))
+		conversionItems := min(4, budget.Items/2)
+		conversionUsed, conversionErr := s.convertPostgresStorage(ctx, tenant, conversionItems)
+		var pageErr error
+		backfilled := false
+		for range budget.Items - conversionUsed {
+			worked, err := s.maintainWorkItemPage(ctx, tracker.OrganizationID(tenant.Organization), &backfilled)
 			if err != nil || !worked {
-				return err
+				pageErr = err
+				break
 			}
 		}
-		return nil
+		return errors.Join(pageErr, conversionErr)
 	}}
 }
 
 func (s *Service) MaintainWorkItemPage(ctx context.Context, organization tracker.OrganizationID) (bool, error) {
+	return s.maintainWorkItemPage(ctx, organization, new(bool))
+}
+
+func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker.OrganizationID, backfilled *bool) (bool, error) {
 	if err := hubmaintenance.RequireAllowance(ctx, string(organization), hubmaintenance.ByteLimit); err != nil {
 		return false, err
 	}
 	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
 		return false, errors.New("maintenance requires byte-limited payload storage")
 	}
-	complete := false
-	if err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		backfill, ok := w.(viewstore.WorkItemPageBackfiller)
+	complete := *backfilled
+	backfill := func(w tenantstore.Writer) error {
+		if complete {
+			return nil
+		}
+		owner, ok := w.(viewstore.WorkItemPageBackfiller)
 		if !ok {
 			return workItemStorageUnavailable()
 		}
 		var err error
-		complete, err = backfill.BackfillWorkItemPages(ctx)
+		complete, err = owner.BackfillWorkItemPages(ctx)
 		return err
-	}); err != nil {
-		return false, err
 	}
-	if !complete {
-		return true, nil
-	}
+
 	ctx = context.WithValue(ctx, detailBatchContextKey{}, nil)
 	ctx = context.WithValue(ctx, changeContentKey{}, nil)
 	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
@@ -113,7 +121,14 @@ func (s *Service) MaintainWorkItemPage(ctx context.Context, organization tracker
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) && candidate.Generation == 0 {
-		return false, nil
+		if complete {
+			return false, nil
+		}
+		if err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, backfill); err != nil {
+			return false, err
+		}
+		*backfilled = complete
+		return !complete, nil
 	}
 	if candidate.Generation != 0 {
 		cursorErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
@@ -121,8 +136,14 @@ func (s *Service) MaintainWorkItemPage(ctx context.Context, organization tracker
 			if !ok {
 				return workItemStorageUnavailable()
 			}
+			if err := backfill(w); err != nil {
+				return err
+			}
 			return writer.AdvanceWorkItemPageCursor(ctx, candidate)
 		})
+		if cursorErr == nil {
+			*backfilled = complete
+		}
 		if err != nil || cursorErr != nil {
 			return false, errors.Join(err, cursorErr)
 		}

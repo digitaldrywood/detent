@@ -19,6 +19,7 @@ EXISTS (SELECT 1 FROM change_review_policy_revisions WHERE organization_id=$1 AN
 EXISTS (SELECT 1 FROM change_versions WHERE organization_id=$1 AND payload_object_key=$2) OR
 EXISTS (SELECT 1 FROM change_versions WHERE organization_id=$1 AND source_object_key=$2) OR
 EXISTS (SELECT 1 FROM collaboration_events WHERE organization_id=$1 AND payload_object_key=$2) OR
+EXISTS (SELECT 1 FROM core_work_events WHERE organization_id=$1 AND payload_object_key=$2) OR
 EXISTS (SELECT 1 FROM collaboration_versions WHERE organization_id=$1 AND payload_object_key=$2) OR
 EXISTS (SELECT 1 FROM conversation_content_objects WHERE organization_id=$1 AND object_key=$2) OR
 EXISTS (SELECT 1 FROM cost_import_rows WHERE organization_id=$1 AND object_key=$2) OR

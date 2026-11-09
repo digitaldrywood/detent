@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"testing"
@@ -22,6 +23,26 @@ func TestPageBackfillResumesWithoutSourceWriteLocks(t *testing.T) {
 		seedRepository(t, repository, org)
 		if _, err := admin.ExecContext(t.Context(), `DELETE FROM native_work_item_page_dirty WHERE organization_id=$1`, org); err != nil {
 			t.Fatal(err)
+		}
+		interrupted := errors.New("interrupt backfill transaction")
+		if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+			if _, err := w.(interface {
+				BackfillWorkItemPages(context.Context) (bool, error)
+			}).BackfillWorkItemPages(t.Context()); err != nil {
+				return err
+			}
+			return interrupted
+		}); !errors.Is(err, interrupted) {
+			t.Fatalf("interrupted backfill: %v", err)
+		}
+		var queuedAfterRollback, advancedAfterRollback int
+		if err := admin.QueryRowContext(t.Context(), `SELECT
+ (SELECT count(*) FROM native_work_item_page_dirty WHERE organization_id=$1),
+ (SELECT count(*) FROM native_work_item_page_progress WHERE organization_id=$1 AND (backfill_phase<>0 OR backfill_issue_id<>0 OR backfill_comment_id<>''))`, org).Scan(&queuedAfterRollback, &advancedAfterRollback); err != nil {
+			t.Fatal(err)
+		}
+		if queuedAfterRollback != 0 || advancedAfterRollback != 0 {
+			t.Fatalf("interrupted backfill persisted queue=%d checkpoints=%d", queuedAfterRollback, advancedAfterRollback)
 		}
 		for step := 0; step < 14; step++ {
 			done := false
@@ -59,6 +80,16 @@ func TestPageBackfillResumesWithoutSourceWriteLocks(t *testing.T) {
 			if done {
 				if queued != 16 {
 					t.Fatalf("replayed seed rows=%d, want four items, four relationship heads and eight comments", queued)
+				}
+				var invalidPairs int
+				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_work_item_page_dirty item
+ JOIN native_work_item_page_dirty relations USING(organization_id,project_id,work_item_id,record_id)
+ WHERE item.organization_id=$1 AND item.kind='item' AND relations.kind='relationships'
+ AND (item.generation>=relations.generation OR NOT relations.propagate)`, org).Scan(&invalidPairs); err != nil {
+					t.Fatal(err)
+				}
+				if invalidPairs != 0 {
+					t.Fatalf("backfill lost body-before-relationship ordering or propagation: %d", invalidPairs)
 				}
 				if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
 					complete, err := w.(interface {

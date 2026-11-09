@@ -1,13 +1,6 @@
 package postgres
 
-import (
-	"context"
-	"errors"
-
-	"github.com/jackc/pgx/v5"
-
-	"github.com/digitaldrywood/detent/internal/tracker"
-)
+import "context"
 
 func (s *session) BackfillWorkItemPages(ctx context.Context) (bool, error) {
 	if _, err := s.db.Exec(ctx, `INSERT INTO native_work_item_page_progress(organization_id) VALUES($1) ON CONFLICT DO NOTHING`, s.organization); err != nil {
@@ -22,32 +15,26 @@ func (s *session) BackfillWorkItemPages(ctx context.Context) (bool, error) {
 	if phase == 2 {
 		return true, nil
 	}
-	var project tracker.ProjectID
-	var item tracker.NativeWorkItemID
 	var err error
 	if phase == 0 {
-		err = s.db.QueryRow(ctx, `SELECT id,project_id,native_id FROM issues WHERE organization_id=$1 AND id>$2 ORDER BY id LIMIT 1`, s.organization, issueID).Scan(&issueID, &project, &item)
+		err = s.db.QueryRow(ctx, `WITH source AS MATERIALIZED (
+ SELECT id,project_id,native_id FROM issues WHERE organization_id=$1 AND id>$2 ORDER BY id LIMIT 1
+ ), queued AS (
+ INSERT INTO native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind,propagate)
+ SELECT $1,source.project_id,source.native_id,source.native_id,kinds.kind,kinds.kind='relationships'
+ FROM source CROSS JOIN (VALUES ('item'),('relationships')) AS kinds(kind) ORDER BY kinds.kind ON CONFLICT DO NOTHING
+ ) UPDATE native_work_item_page_progress SET backfill_phase=CASE WHEN EXISTS(SELECT FROM source) THEN 0 ELSE 1 END,
+ backfill_issue_id=COALESCE((SELECT id FROM source),backfill_issue_id),examined_at=clock_timestamp()
+ WHERE organization_id=$1 RETURNING backfill_phase`, s.organization, issueID).Scan(&phase)
 	} else {
-		err = s.db.QueryRow(ctx, `SELECT id,project_id,work_item_id FROM native_comments WHERE organization_id=$1 AND id>$2 ORDER BY id LIMIT 1`, s.organization, commentID).Scan(&commentID, &project, &item)
+		err = s.db.QueryRow(ctx, `WITH source AS MATERIALIZED (
+ SELECT id,project_id,work_item_id FROM native_comments WHERE organization_id=$1 AND id>$2 ORDER BY id LIMIT 1
+ ), queued AS (
+ INSERT INTO native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind)
+ SELECT $1,project_id,work_item_id,id,'comment' FROM source ON CONFLICT DO NOTHING
+ ) UPDATE native_work_item_page_progress SET backfill_phase=CASE WHEN EXISTS(SELECT FROM source) THEN 1 ELSE 2 END,
+ backfill_comment_id=COALESCE((SELECT id FROM source),backfill_comment_id),examined_at=clock_timestamp()
+ WHERE organization_id=$1 RETURNING backfill_phase`, s.organization, commentID).Scan(&phase)
 	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		phase++
-	} else if err != nil {
-		return false, mapError(ctx, err)
-	} else {
-		kind, record := "item", string(item)
-		if phase == 1 {
-			kind, record = "comment", commentID
-		}
-		if _, err := s.db.Exec(ctx, `INSERT INTO native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, s.organization, project, item, record, kind); err != nil {
-			return false, mapError(ctx, err)
-		}
-		if phase == 0 {
-			if _, err := s.db.Exec(ctx, `INSERT INTO native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind,propagate) VALUES($1,$2,$3,$3,'relationships',true) ON CONFLICT DO NOTHING`, s.organization, project, item); err != nil {
-				return false, mapError(ctx, err)
-			}
-		}
-	}
-	_, err = s.db.Exec(ctx, `UPDATE native_work_item_page_progress SET backfill_phase=$2,backfill_issue_id=$3,backfill_comment_id=$4,examined_at=clock_timestamp() WHERE organization_id=$1`, s.organization, phase, issueID, commentID)
 	return phase == 2, mapError(ctx, err)
 }

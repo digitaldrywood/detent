@@ -32,6 +32,13 @@ func (c *Content) prepare(ctx context.Context, organization tracker.Organization
 	if err != nil {
 		return attachment.ArchiveReference{}, fmt.Errorf("encode history payload: %w", ErrInvalidRecord)
 	}
+	return c.PreparePayload(ctx, organization, raw)
+}
+
+func (c *Content) PreparePayload(ctx context.Context, organization tracker.OrganizationID, raw []byte) (attachment.ArchiveReference, error) {
+	if c.store == nil || len(raw) == 0 {
+		return attachment.ArchiveReference{}, artifact.ErrStorage
+	}
 	ref, err := c.store.StoreDetail(ctx, string(organization), raw)
 	if err != nil {
 		return ref, fmt.Errorf("store history payload: %w", err)
@@ -268,21 +275,7 @@ func (c *Content) PrepareSourceBundle(ctx context.Context, organization tracker.
 	if len(bundle) == 0 || len(bundle) > tracker.MaxChangeSourceBytes || c.store == nil {
 		return attachment.ArchiveReference{}, ErrInvalidRecord
 	}
-	ref, err := c.store.StoreDetail(ctx, string(organization), bundle)
-	if err != nil {
-		return attachment.ArchiveReference{}, fmt.Errorf("store change source: %w", err)
-	}
-	if ref.Validate(string(organization)) != nil || ref.BindingID != "" || ref.CustomerOwned || ref.SchemaVersion != 1 || ref.UncompressedSize != int64(len(bundle)) {
-		return attachment.ArchiveReference{}, artifact.ErrIntegrity
-	}
-	verified, err := c.store.ReadDetail(ctx, string(organization), ref)
-	if err != nil {
-		return attachment.ArchiveReference{}, fmt.Errorf("verify change source: %w", errors.Join(artifact.ErrIntegrity, err))
-	}
-	if !bytes.Equal(verified, bundle) {
-		return attachment.ArchiveReference{}, artifact.ErrIntegrity
-	}
-	return ref, nil
+	return c.PreparePayload(ctx, organization, bundle)
 }
 
 func (c *Content) SourceBundle(ctx context.Context, organization tracker.OrganizationID, row Version, source tracker.ChangeSource) ([]byte, error) {

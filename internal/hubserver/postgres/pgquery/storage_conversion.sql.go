@@ -144,13 +144,45 @@ func (q *Queries) ConversionCommit(ctx context.Context, arg ConversionCommitPara
 
 const conversionInitializeCursors = `-- name: ConversionInitializeCursors :exec
 INSERT INTO storage_conversion_cursors (organization_id, family)
-SELECT $1::text, family FROM unnest(ARRAY['runs', 'versions', 'evidence']) AS family
+SELECT $1::text, family FROM unnest(ARRAY['runs', 'versions', 'evidence', 'core-work-events']) AS family
 ON CONFLICT DO NOTHING
 `
 
 func (q *Queries) ConversionInitializeCursors(ctx context.Context, organizationID string) error {
 	_, err := q.db.Exec(ctx, conversionInitializeCursors, organizationID)
 	return err
+}
+
+const conversionNextCoreWorkEvent = `-- name: ConversionNextCoreWorkEvent :one
+SELECT i.project_id,e.issue_id,e.source_id,octet_length(e.payload_json)::bigint AS payload_content_bytes
+FROM (SELECT pending.issue_id,pending.source_id,pending.organization_id,pending.payload_json FROM core_work_events pending
+ WHERE pending.organization_id=$1 AND pending.payload_json IS NOT NULL AND pending.source_id>$2::bigint
+ ORDER BY pending.source_id LIMIT 1) e
+JOIN issues i ON i.organization_id=e.organization_id AND i.id=e.issue_id
+`
+
+type ConversionNextCoreWorkEventParams struct {
+	OrganizationID tracker.OrganizationID
+	AfterSourceID  int64
+}
+
+type ConversionNextCoreWorkEventRow struct {
+	ProjectID           tracker.ProjectID
+	IssueID             int64
+	SourceID            int64
+	PayloadContentBytes int64
+}
+
+func (q *Queries) ConversionNextCoreWorkEvent(ctx context.Context, arg ConversionNextCoreWorkEventParams) (ConversionNextCoreWorkEventRow, error) {
+	row := q.db.QueryRow(ctx, conversionNextCoreWorkEvent, arg.OrganizationID, arg.AfterSourceID)
+	var i ConversionNextCoreWorkEventRow
+	err := row.Scan(
+		&i.ProjectID,
+		&i.IssueID,
+		&i.SourceID,
+		&i.PayloadContentBytes,
+	)
+	return i, err
 }
 
 const conversionNextCursor = `-- name: ConversionNextCursor :one
