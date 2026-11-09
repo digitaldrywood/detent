@@ -227,6 +227,7 @@ func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 	cursor := w.maintenanceCursors[organization]
 	cutoff := w.now().Add(-actionRunDispatchGrace)
 	var ended, queued []postgres.ActionRun
+	var workspaces map[string]postgres.WorkspaceSession
 	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner := reader.(workspaceReader)
 		rows, err := owner.ActiveActionRunsAfter(ctx, cursor.actionRun, workspaceMaintenanceBatch)
@@ -241,12 +242,12 @@ func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 		if err != nil {
 			return err
 		}
-		states := make(map[string]string, len(sessions))
+		workspaces = make(map[string]postgres.WorkspaceSession, len(sessions))
 		for _, session := range sessions {
-			states[session.ID] = session.State
+			workspaces[session.ID] = session
 		}
 		for _, row := range rows {
-			state := states[row.WorkspaceID]
+			state := workspaces[row.WorkspaceID].State
 			if workspacesession.Terminal(state) {
 				ended = append(ended, row)
 			} else if row.Status == workspacesession.RunQueued && (state == workspacesession.StateReady || state == workspacesession.StateIdle) && !row.CreatedAt.After(cutoff) && len(queued) < actionRunDispatchBatch {
@@ -268,7 +269,7 @@ func (w *workspaceService) sweepActionRunRecords(ctx context.Context) {
 	}
 	w.storeMaintenanceCursor(organization, cursor)
 	for _, row := range ended {
-		if err = w.finishActionRunRecord(ctx, &execRunState{organization: row.OrganizationID, runID: row.ID}, workspacesession.RunFailed, nil, workspacesession.RunReasonWorkspaceEnd); err != nil {
+		if err = w.finishActionRunRecord(ctx, &execRunState{organization: row.OrganizationID, runID: row.ID}, workspacesession.RunFailed, nil, actionRunReasonFor(workspaces[row.WorkspaceID].Reason)); err != nil {
 			w.logger.Warn("action_run.sweep_transition_failed", "run_id", row.ID, "error", err)
 		}
 	}

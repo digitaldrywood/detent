@@ -533,89 +533,117 @@ func TestWorkspaceWorkerActionRunReport(t *testing.T) {
 // whose workspace is gone.
 func TestProjectActionRunSweepEndsRunsOfEndedWorkspaces(t *testing.T) {
 	t.Parallel()
-	f := newActionFixture(t)
-	action := f.authored(t, map[string]any{"name": "Install", "command": "npm install",
-		"run_on_worktree_creation": true})
+	for _, test := range []struct {
+		name       string
+		reason     string
+		wantReason string
+	}{
+		{name: "explicit close", reason: workspacesession.ReasonClosedByActor, wantReason: workspacesession.RunReasonWorkspaceEnd},
+		{name: "worker reports lease lost", reason: workspacesession.ReasonLeaseLost, wantReason: workspacesession.RunReasonLeaseLost},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newActionFixture(t)
+			action := f.authored(t, map[string]any{"name": "Install", "command": "npm install",
+				"run_on_worktree_creation": true})
 
-	// Two workspaces, one run reported running on each. One workspace then
-	// ends; the other stays ready.
-	ended, endedLease := f.requested(t)
-	requireNativeStatus(t, f.workerPost(t, ended.ID, "bind", workspaceBindRequest{
-		workspaceWorkerIdentity: workspaceIdentity(endedLease), Capabilities: execCapabilities,
-		Isolation: workspacesession.IsolationContainer}), http.StatusOK)
-	alive, aliveLease := f.requested(t)
-	requireNativeStatus(t, f.workerPost(t, alive.ID, "bind", workspaceBindRequest{
-		workspaceWorkerIdentity: workspaceIdentity(aliveLease), Capabilities: execCapabilities,
-		Isolation: workspacesession.IsolationContainer}), http.StatusOK)
+			// Two workspaces, one run reported running on each. One workspace then
+			// ends; the other stays ready.
+			ended, endedLease := f.requested(t)
+			requireNativeStatus(t, f.workerPost(t, ended.ID, "bind", workspaceBindRequest{
+				workspaceWorkerIdentity: workspaceIdentity(endedLease), Capabilities: execCapabilities,
+				Isolation: workspacesession.IsolationContainer}), http.StatusOK)
+			alive, aliveLease := f.requested(t)
+			requireNativeStatus(t, f.workerPost(t, alive.ID, "bind", workspaceBindRequest{
+				workspaceWorkerIdentity: workspaceIdentity(aliveLease), Capabilities: execCapabilities,
+				Isolation: workspacesession.IsolationContainer}), http.StatusOK)
 
-	orphan := f.reportRun(t, ended.ID, endedLease, action.ID)
-	live := f.reportRun(t, alive.ID, aliveLease, action.ID)
+			orphan := f.reportRun(t, ended.ID, endedLease, action.ID)
+			live := f.reportRun(t, alive.ID, aliveLease, action.ID)
 
-	// The runner's next report never arrives -- it crashed, or the hub
-	// restarted, or the report was refused and not retried -- and the
-	// workspace ends. Nothing but the sweep can end this run.
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete,
-		f.base+"/workspaces/"+ended.ID, f.token, nil), http.StatusNoContent)
-	if before := f.readRun(t, action.ID, orphan); before.Status != workspacesession.RunRunning {
-		t.Fatalf("run = %#v, want it still running before the sweep", before)
+			// The runner's next report never arrives -- it crashed, or the hub
+			// restarted, or the report was refused and not retried -- and the
+			// workspace ends. Nothing but the sweep can end this run.
+			if test.reason == workspacesession.ReasonLeaseLost {
+				requireNativeStatus(t, f.workerPost(t, ended.ID, "unbind", workspaceUnbindRequest{workspaceWorkerIdentity: workspaceIdentity(endedLease), Reason: test.reason}), http.StatusNoContent)
+			} else {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete,
+					f.base+"/workspaces/"+ended.ID, f.token, nil), http.StatusNoContent)
+			}
+			if before := f.readRun(t, action.ID, orphan); before.Status != workspacesession.RunRunning {
+				t.Fatalf("run = %#v, want it still running before the sweep", before)
+			}
+
+			f.service.workspaces.sweepActionRuns(t.Context())
+
+			swept := f.readRun(t, action.ID, orphan)
+			if swept.Status != workspacesession.RunFailed || swept.Reason != test.wantReason {
+				t.Fatalf("run = %#v, want failed with %s", swept, test.wantReason)
+			}
+			if swept.FinishedAt == nil || swept.ExitCode != nil {
+				t.Fatalf("run = %#v, want a finish time and no exit code", swept)
+			}
+
+			// The negative half, and the reason the predicate is the workspace's state
+			// rather than a run's age: a long test run on a healthy workspace is
+			// indistinguishable from a stuck row by age alone.
+			if untouched := f.readRun(t, action.ID, live); untouched.Status != workspacesession.RunRunning {
+				t.Fatalf("run = %#v, want a run on a ready workspace left alone", untouched)
+			}
+
+			t.Run("a second sweep leaves the failed run alone", func(t *testing.T) {
+				before := f.readRun(t, action.ID, orphan)
+				f.service.workspaces.sweepActionRuns(t.Context())
+				after := f.readRun(t, action.ID, orphan)
+				if after.Revision != before.Revision || after.UpdatedAt != before.UpdatedAt {
+					t.Fatalf("run = %#v, want the terminal row untouched at revision %d", after, before.Revision)
+				}
+			})
+
+			t.Run("a run still queued when its workspace ended is failed too", func(t *testing.T) {
+				// A queued run of an ended workspace can never start: the row would
+				// otherwise sit queued for ever, which reads as "waiting".
+				workspace := f.execWorkspace(t)
+				run := f.queueRun(t, action.ID, workspace)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete,
+					f.base+"/workspaces/"+workspace, f.token, nil), http.StatusNoContent)
+				f.service.workspaces.sweepActionRuns(t.Context())
+				failed := f.readRun(t, action.ID, run)
+				if failed.Status != workspacesession.RunFailed || failed.Reason != workspacesession.RunReasonWorkspaceEnd {
+					t.Fatalf("run = %#v, want failed with workspace_closed", failed)
+				}
+				// A finished_at with no started_at would read as a run of negative
+				// length, so the sweep stamps both.
+				if failed.StartedAt == nil || failed.FinishedAt == nil {
+					t.Fatalf("run = %#v, want both timestamps stamped", failed)
+				}
+			})
+
+			t.Run("canceled cleanup finishes an accepted run", func(t *testing.T) {
+				workspace := f.execWorkspace(t)
+				run := f.queueRun(t, action.ID, workspace)
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				f.service.workspaces.finishExecRun(ctx, &execRunState{organization: f.project.OrganizationID, runID: run}, workspacesession.RunFailed, nil, workspacesession.RunReasonStreamClosed)
+				finished := f.readRun(t, action.ID, run)
+				if finished.Status != workspacesession.RunFailed || finished.Reason != workspacesession.RunReasonStreamClosed {
+					t.Fatalf("canceled cleanup left the accepted run unfinished: %+v", finished)
+				}
+			})
+
+			beforeReopen := f.readRun(t, action.ID, orphan)
+			f.service = reopenWorkspaceHub(t, f.service)
+			persisted := f.readRun(t, action.ID, orphan)
+			if persisted.Status != workspacesession.RunFailed || persisted.Reason != test.wantReason || persisted.FinishedAt == nil || persisted.ExitCode != nil {
+				t.Fatalf("run after Hub reopen = %#v, want failed with %s, a finish time and no exit code", persisted, test.wantReason)
+			}
+			if persisted.Revision != beforeReopen.Revision || !persisted.UpdatedAt.Equal(beforeReopen.UpdatedAt) || !persisted.FinishedAt.Equal(*beforeReopen.FinishedAt) {
+				t.Fatalf("Hub reopen changed the terminal run: before=%#v after=%#v", beforeReopen, persisted)
+			}
+			if untouched := f.readRun(t, action.ID, live); untouched.Status != workspacesession.RunRunning {
+				t.Fatalf("run after Hub reopen = %#v, want the live-workspace control left running", untouched)
+			}
+		})
 	}
-
-	f.service.workspaces.sweepActionRuns(t.Context())
-
-	swept := f.readRun(t, action.ID, orphan)
-	if swept.Status != workspacesession.RunFailed || swept.Reason != workspacesession.RunReasonWorkspaceEnd {
-		t.Fatalf("run = %#v, want failed with workspace_closed", swept)
-	}
-	if swept.FinishedAt == nil || swept.ExitCode != nil {
-		t.Fatalf("run = %#v, want a finish time and no exit code", swept)
-	}
-
-	// The negative half, and the reason the predicate is the workspace's state
-	// rather than a run's age: a long test run on a healthy workspace is
-	// indistinguishable from a stuck row by age alone.
-	if untouched := f.readRun(t, action.ID, live); untouched.Status != workspacesession.RunRunning {
-		t.Fatalf("run = %#v, want a run on a ready workspace left alone", untouched)
-	}
-
-	t.Run("a second sweep leaves the failed run alone", func(t *testing.T) {
-		before := f.readRun(t, action.ID, orphan)
-		f.service.workspaces.sweepActionRuns(t.Context())
-		after := f.readRun(t, action.ID, orphan)
-		if after.Revision != before.Revision || after.UpdatedAt != before.UpdatedAt {
-			t.Fatalf("run = %#v, want the terminal row untouched at revision %d", after, before.Revision)
-		}
-	})
-
-	t.Run("a run still queued when its workspace ended is failed too", func(t *testing.T) {
-		// A queued run of an ended workspace can never start: the row would
-		// otherwise sit queued for ever, which reads as "waiting".
-		workspace := f.execWorkspace(t)
-		run := f.queueRun(t, action.ID, workspace)
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete,
-			f.base+"/workspaces/"+workspace, f.token, nil), http.StatusNoContent)
-		f.service.workspaces.sweepActionRuns(t.Context())
-		failed := f.readRun(t, action.ID, run)
-		if failed.Status != workspacesession.RunFailed || failed.Reason != workspacesession.RunReasonWorkspaceEnd {
-			t.Fatalf("run = %#v, want failed with workspace_closed", failed)
-		}
-		// A finished_at with no started_at would read as a run of negative
-		// length, so the sweep stamps both.
-		if failed.StartedAt == nil || failed.FinishedAt == nil {
-			t.Fatalf("run = %#v, want both timestamps stamped", failed)
-		}
-	})
-
-	t.Run("canceled cleanup finishes an accepted run", func(t *testing.T) {
-		workspace := f.execWorkspace(t)
-		run := f.queueRun(t, action.ID, workspace)
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		f.service.workspaces.finishExecRun(ctx, &execRunState{organization: f.project.OrganizationID, runID: run}, workspacesession.RunFailed, nil, workspacesession.RunReasonStreamClosed)
-		finished := f.readRun(t, action.ID, run)
-		if finished.Status != workspacesession.RunFailed || finished.Reason != workspacesession.RunReasonStreamClosed {
-			t.Fatalf("canceled cleanup left the accepted run unfinished: %+v", finished)
-		}
-	})
 }
 
 // reportRun records one running run through the worker endpoint, the way a
