@@ -685,6 +685,9 @@ type projectUpdateBeforeWriteRepository struct {
 }
 
 func (r *projectUpdateBeforeWriteRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	if workload != corestore.Serving {
+		return r.Repository.WriteTenant(ctx, organization, workload, write)
+	}
 	r.mu.Lock()
 	before := r.before
 	if r.skip > 0 {
