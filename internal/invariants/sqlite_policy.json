@@ -1609,24 +1609,6 @@
     "internal/hubserver/workflow_lanes_migration_test.go": {
       "sqlite_open": 2
     },
-    "internal/hubserver/workspace_relay_http.go": {
-      "sql_julianday": 2
-    },
-    "internal/hubserver/workspace_relay_test.go": {
-      "database_path": 2
-    },
-    "internal/hubserver/workspace_relay_tickets.go": {
-      "sql_julianday": 6
-    },
-    "internal/hubserver/workspace_runner_lane_test.go": {
-      "database_path": 2
-    },
-    "internal/hubserver/workspace_store.go": {
-      "sql_insert_or": 1
-    },
-    "internal/hubserver/workspace_test.go": {
-      "database_path": 1
-    },
     "internal/hubserver/writer_timing.go": {
       "driver_import": 1,
       "sqlite_open": 1
