@@ -420,7 +420,7 @@ func TestConversationContractFixtures(t *testing.T) {
 	t.Parallel()
 	entries, err := os.ReadDir(conversationFixtureDirectory)
 	if err != nil {
-		t.Skipf("shared contract fixtures are not available at %s: %v", conversationFixtureDirectory, err)
+		t.Fatalf("shared contract fixtures are not available at %s: %v", conversationFixtureDirectory, err)
 	}
 	cases := conversationFixtureCases(t)
 	present := map[string]bool{}

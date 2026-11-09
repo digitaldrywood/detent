@@ -422,7 +422,7 @@ func TestHostedTenantContractFixtures(t *testing.T) {
 			t.Parallel()
 			raw, err := os.ReadFile(filepath.Join(conversationFixtureDirectory, test.fixture))
 			if err != nil {
-				t.Skipf("shared contract fixture is not available: %v", err)
+				t.Fatalf("shared contract fixture is not available: %v", err)
 			}
 			value := test.target()
 			if err := json.Unmarshal(raw, value); err != nil {
