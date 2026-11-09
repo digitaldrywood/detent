@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"database/sql"
@@ -15,12 +16,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type coreNeutralImport struct {
-	bundle  *postgres.VerifiedNeutralImport
-	indexes map[string]map[string][]coreNeutralIndexEntry
+	bundle         *postgres.VerifiedNeutralImport
+	indexes        map[string]map[string][]coreNeutralIndexEntry
+	schema         storagecatalog.Schema
+	versionChanges map[string]string
 }
 
 type coreNeutralIndexEntry struct {
@@ -29,7 +33,7 @@ type coreNeutralIndexEntry struct {
 }
 
 func newCoreNeutralImport(bundle *postgres.VerifiedNeutralImport) *coreNeutralImport {
-	return &coreNeutralImport{bundle: bundle, indexes: make(map[string]map[string][]coreNeutralIndexEntry)}
+	return &coreNeutralImport{bundle: bundle, schema: bundle.Schema(), indexes: make(map[string]map[string][]coreNeutralIndexEntry)}
 }
 
 func (s *coreNeutralImport) rows(ctx context.Context, table string, filters map[string]string, order, after []string, limit int) ([]postgres.NeutralImportRow, error) {
@@ -41,7 +45,7 @@ func (s *coreNeutralImport) rows(ctx context.Context, table string, filters map[
 	descriptor, _ := json.Marshal([]any{table, columns, order})
 	index, found := s.indexes[string(descriptor)]
 	numeric := make([]bool, len(order))
-	schema := s.bundle.Schema()[table]
+	schema := s.schema[table]
 	for i, column := range order {
 		var signature []json.RawMessage
 		if json.Unmarshal([]byte(schema[column]), &signature) != nil || len(signature) != 7 {
@@ -84,7 +88,14 @@ func (s *coreNeutralImport) rows(ctx context.Context, table string, filters map[
 				values := make([]*string, len(columns))
 				for i, column := range columns {
 					cell, ok := row.Values[column]
-					if !ok || !cell.Null && cell.Encoding != "utf8" {
+					if !ok {
+						derived, err := s.changeFilterValue(ctx, table, row, column)
+						if err != nil {
+							return nil, err
+						}
+						cell = derived
+					}
+					if !cell.Null && cell.Encoding != "utf8" {
 						return nil, postgres.ErrNeutralImport
 					}
 					if !cell.Null {
@@ -180,13 +191,25 @@ func readCoreNeutralObject(ctx context.Context, source *coreNeutralImport, organ
 		return nil, err
 	}
 	raw, err := objects.ReadDetail(ctx, string(organization), ref)
-	if err != nil {
+	if err == nil && int64(len(raw)) == ref.UncompressedSize {
+		return raw, nil
+	}
+	if err == nil {
+		err = artifact.ErrIntegrity
+	}
+	cell, ok := row.Values["pending_content"]
+	if !ok || cell.Null || len(cell.Data) == 0 {
 		return nil, err
 	}
-	if int64(len(raw)) != ref.UncompressedSize {
-		return nil, artifact.ErrIntegrity
+	pending, decodeErr := coreNeutralBytes(row, "pending_content")
+	if decodeErr != nil {
+		return nil, decodeErr
 	}
-	return raw, nil
+	prepared, _, prepareErr := attachment.PrepareArchive(string(organization), ref.SchemaVersion, bytes.NewReader(pending))
+	if prepareErr != nil || prepared != ref {
+		return nil, errors.Join(artifact.ErrIntegrity, prepareErr)
+	}
+	return pending, nil
 }
 
 func (s *coreNeutralImport) each(ctx context.Context, table string, filters map[string]string, order []string, read func(postgres.NeutralImportRow) error) error {
@@ -222,14 +245,7 @@ func resolveCoreNeutralJSON(ctx context.Context, source *coreNeutralImport, orga
 		if org != string(organization) || ref.Validate(org) != nil {
 			return nil, artifact.ErrIntegrity
 		}
-		value, err := objects.ReadDetail(ctx, org, ref)
-		if err != nil {
-			return nil, err
-		}
-		if int64(len(value)) != ref.UncompressedSize {
-			return nil, artifact.ErrIntegrity
-		}
-		return value, nil
+		return readCoreNeutralArchive(ctx, source, organization, objects, ref)
 	})
 }
 

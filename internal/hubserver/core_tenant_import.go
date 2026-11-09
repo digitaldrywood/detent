@@ -39,6 +39,7 @@ type TenantCoreImportResult struct {
 	CostCurrentSources int64 `json:"cost_current_sources"`
 	CostHistoryRows    int64 `json:"cost_history_rows"`
 	ExecutionRows      int64 `json:"execution_rows"`
+	UsageRows          int64 `json:"usage_rows"`
 	MonthlyAdmissions  int64 `json:"monthly_admissions"`
 	MonthlyLeases      int64 `json:"monthly_leases"`
 	Changes            int64 `json:"changes"`
@@ -57,7 +58,8 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err := source.Catalog.Validate(); err != nil {
 		return result, err
 	}
-	if err := postgres.VerifyNeutralCoreCutover(ctx, source.BundlePath, source.OrganizationID); err != nil {
+	identity, err := postgres.VerifyNeutralCoreCutoverSource(ctx, source.BundlePath, source.OrganizationID)
+	if err != nil {
 		return result, err
 	}
 	database, err := openPostgresDatabase(ctx, config)
@@ -125,7 +127,13 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err != nil {
 		return result, fmt.Errorf("import tenant execution: %w", err)
 	}
-	result.Changes, err = ImportCoreChanges(ctx, repository, CoreChangeImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
+	usage, err := ImportCoreReportUsage(ctx, repository, ReportUsageImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, ExpectedSHA256: identity.SourceSHA256})
+	if err != nil {
+		return result, fmt.Errorf("import tenant usage facts: %w", err)
+	}
+	result.UsageRows = usage.UsageRows
+
+	result.Changes, err = ImportCoreChanges(ctx, repository, CoreChangeImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant changes: %w", err)
 	}

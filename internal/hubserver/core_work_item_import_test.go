@@ -23,7 +23,7 @@ import (
 
 func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testing.T) {
 	var native *pgxpool.Config
-	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
+	repository, _ := coreImportPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
 	objects := &memoryRunDetails{}
 	orgs := []tracker.OrganizationID{"org_import_first", "org_import_second"}
 	for _, org := range orgs {
@@ -216,7 +216,7 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 }
 
 func TestCoreWorkItemImportRejectsChangedCopyWhenAllIssuesWereDeleted(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository := coreImportPostgres(t)
 	objects := &memoryRunDetails{}
 	org := tracker.OrganizationID("org_import_empty_changed")
 	project := tracker.ProjectID("prj_import_empty_changed")
@@ -252,7 +252,7 @@ func TestCoreWorkItemImportRejectsChangedCopyWhenAllIssuesWereDeleted(t *testing
 }
 
 func TestCoreIssueDependencyImportWaitsForCrossProjectIssuesAndReplays(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	objects := &memoryRunDetails{}
 	for _, org := range []tracker.OrganizationID{"org_import_dependency", "org_import_dependency_other"} {
 		t.Run(string(org), func(t *testing.T) {
@@ -343,7 +343,7 @@ func TestCoreIssueDependencyImportWaitsForCrossProjectIssuesAndReplays(t *testin
 }
 
 func TestCoreWorkItemImportRollsBackMalformedQueue(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository := coreImportPostgres(t)
 	objects := &memoryRunDetails{}
 	org := tracker.OrganizationID("org_import_malformed")
 	project := tracker.ProjectID("prj_import_malformed")
@@ -492,7 +492,7 @@ func parseTestTime(t *testing.T, raw string) time.Time {
 }
 
 func TestCoreWorkItemImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	for _, family := range []string{"work_items", "dependencies", "report_events"} {
 		t.Run(family, func(t *testing.T) {
 			fixture := coreWorkItemNeutralFixture(t, "org_work_item_schema", "prj_example", false)

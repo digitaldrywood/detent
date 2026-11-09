@@ -2,12 +2,15 @@ package hubserver
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,12 +19,8 @@ import (
 	"testing"
 )
 
-func coreNeutralFixtureTable(t *testing.T, name string, keys []postgres.NeutralImportKey) postgres.NeutralImportTable {
+func coreNeutralFixtureTable(t *testing.T, catalog storagecatalog.Catalog, name string, keys []postgres.NeutralImportKey) postgres.NeutralImportTable {
 	t.Helper()
-	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
 	table := postgres.NeutralImportTable{Name: name, Key: keys, Columns: map[string]string{}}
 	for name, column := range catalog.Tables["hub/"+name].Columns {
 		table.Columns[name] = column.Source
@@ -174,8 +173,12 @@ type coreNeutralFixture struct {
 func newCoreNeutralFixture(t *testing.T, organization tracker.OrganizationID, names ...string) *coreNeutralFixture {
 	t.Helper()
 	fixture := &coreNeutralFixture{t: t, organization: organization, tables: make(map[string]postgres.NeutralImportTable), records: make(map[string][]postgres.NeutralImportRow)}
+	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range names {
-		table := coreNeutralFixtureTable(t, name, nil)
+		table := coreNeutralFixtureTable(t, catalog, name, nil)
 		type sourceKey struct {
 			position int
 			key      postgres.NeutralImportKey
@@ -210,6 +213,9 @@ func newCoreNeutralFixture(t *testing.T, organization tracker.OrganizationID, na
 		if name == "leases" {
 			table.Key = []postgres.NeutralImportKey{{Column: "lease_id", Kind: "text"}}
 		}
+		if name == "change_evidence" {
+			table.Key = []postgres.NeutralImportKey{{Column: "change_id", Kind: "text"}, {Column: "sequence", Kind: "integer"}}
+		}
 		if len(table.Key) == 0 {
 			t.Fatalf("missing fixture key for %s", name)
 		}
@@ -228,7 +234,11 @@ func (f *coreNeutralFixture) add(table string, values map[string]any) {
 			values["organization_id"] = f.organization
 		}
 	}
-	f.records[table] = append(f.records[table], coreNeutralFixtureRow(f.t, definition, values))
+	row := coreNeutralFixtureRow(f.t, definition, values)
+	if row.SourceRowID == 0 {
+		row.SourceRowID = int64(len(f.records[table]) + 1)
+	}
+	f.records[table] = append(f.records[table], row)
 }
 func (f *coreNeutralFixture) write() string {
 	f.t.Helper()
@@ -293,9 +303,46 @@ func (f *coreNeutralFixture) set(table string, filters map[string]string, update
 		for name, value := range updates {
 			values[name] = value
 		}
-		f.records[table][index] = coreNeutralFixtureRow(f.t, f.tables[table], values)
+		updated := coreNeutralFixtureRow(f.t, f.tables[table], values)
+		updated.SourceRowID = row.SourceRowID
+		updated.SourcePosition = row.SourcePosition
+		f.records[table][index] = updated
 	}
 	if matched == 0 {
 		f.t.Fatalf("no source rows matched %s update", table)
 	}
+}
+
+func coreImportPostgres(t *testing.T) *postgres.Repository {
+	t.Helper()
+	repository, _ := coreImportPostgresWithAdmin(t, 3)
+	return repository
+}
+func coreImportPostgresWithAdmin(t *testing.T, maxConnections int, configure ...func(*pgxpool.Config)) (*postgres.Repository, *sql.DB) {
+	t.Helper()
+	admin := postgresStartupTemplate.Database(t)
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT "+strconv.Itoa(maxConnections+1)); err != nil {
+		t.Fatal(err)
+	}
+	native := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
+	native.MaxConns = int32(maxConnections)
+	for _, option := range configure {
+		option(native)
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: maxConnections, ServingConnections: maxConnections - 1, BackgroundConnections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return repository, admin
 }

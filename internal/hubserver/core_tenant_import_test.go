@@ -7,12 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -38,14 +35,14 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 
 	for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
 		copyPath := coreTenantAggregateSourceCopy(t, organization, false)
-		source := TenantCoreImportSource{CopyPath: copyPath, OrganizationID: organization, Catalog: catalog, Objects: objects}
+		source := TenantCoreImportSource{BundlePath: copyPath, OrganizationID: organization, Catalog: catalog, Objects: objects}
 		var first TenantCoreImportResult
 		for replay := range 2 {
 			result, err := ImportTenantCoreCopy(t.Context(), config, source)
 			if err != nil {
 				t.Fatalf("organization %s import replay %d: %v", organization, replay, err)
 			}
-			if !result.CoreImportComplete || result.HubIdentityRows != 1 || result.Projects != 1 || result.WorkItems != 1 || result.ConversationRows < 2 || result.CreditAccounts != 1 || result.CreditTransactions != 1 {
+			if !result.CoreImportComplete || result.HubIdentityRows != 1 || result.Projects != 1 || result.WorkItems != 1 || result.ExecutionRows != 3 || result.UsageRows != 1 || result.ConversationRows < 2 || result.CreditAccounts != 1 || result.CreditTransactions != 1 {
 				t.Fatalf("organization %s import replay %d incomplete: %+v", organization, replay, result)
 			}
 			if replay == 0 {
@@ -57,7 +54,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 	}
 
 	failedCopy := coreTenantAggregateSourceCopy(t, "org_aggregate_failure", true)
-	failedSource := TenantCoreImportSource{CopyPath: failedCopy, OrganizationID: "org_aggregate_failure", Catalog: catalog, Objects: objects}
+	failedSource := TenantCoreImportSource{BundlePath: failedCopy, OrganizationID: "org_aggregate_failure", Catalog: catalog, Objects: objects}
 	failed, err := ImportTenantCoreCopy(t.Context(), config, failedSource)
 	if err == nil || failed.CoreImportComplete || failed.HubIdentityRows != 1 || failed.Projects != 1 || failed.WorkItems != 1 || failed.ConversationRows < 2 || failed.CreditTransactions != 0 {
 		t.Fatalf("late credit-stage refusal result=%+v error=%v", failed, err)
@@ -72,6 +69,14 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	for _, org := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
+		var count int
+		var cost float64
+		if err := admin.QueryRowContext(t.Context(), "SELECT count(*),sum(cost_estimate) FROM attempt_usage WHERE organization_id=$1", org).Scan(&count, &cost); err != nil || count != 1 || cost != 0.25 {
+			t.Fatalf("imported usage rows=%d cost=%v error=%v", count, cost, err)
+		}
+	}
+
 	for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
 		suffix := string(organization[len("org_aggregate_"):])
 		otherSuffix := "a"
@@ -139,12 +144,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 
 func coreTenantAggregateSourceCopy(t *testing.T, organization tracker.OrganizationID, unsupportedCreditPeriod bool) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "tenant-core-source.db")
-	seedHubDatabaseTemplate(t, path)
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fixture := newCoreNeutralFixture(t, organization, "ai_credit_accounts", "ai_credit_packs", "ai_credit_periods", "ai_credit_purchases", "ai_credit_transactions", "api_tokens", "artifact_grants", "artifact_references", "artifact_services", "attachments", "attempt_usage", "change_command_outputs", "change_content_objects", "change_evidence", "change_finding_attributions", "change_issue_links", "change_landing_receipts", "change_requests", "change_review_policies", "change_sources", "change_versions", "change_viewed_files", "collaboration_events", "collaboration_versions", "conversation_attachment_blobs", "conversation_attachments", "conversation_audience_events", "conversation_commands", "conversation_events", "conversation_messages", "conversation_prices", "conversation_questions", "conversation_starts", "conversation_tool_revisions", "conversation_turn_batches", "conversation_usage", "conversations", "daily_summary_preferences", "daily_summary_receipts", "hosted_audit", "hosted_audit_times", "hosted_binding_migrations", "hosted_invitations", "hosted_member_reservations", "hosted_members", "hosted_project_grants", "hosted_release_preferences", "hosted_sessions", "hosted_tenant", "hosted_transactions", "hub_identity", "issue_dependencies", "issues", "lease_policies", "lease_runners", "leases", "machines", "message_references", "monthly_budget_admissions", "monthly_budget_leases", "monthly_budget_policies", "native_attempt_events", "native_attempts", "native_comments", "native_pr_publications", "organization_secret_audit", "organization_secrets", "organizations", "policy_revisions", "project_policies", "project_secret_audit", "project_secrets", "projects", "queue_entries", "release_deliveries", "repositories", "runner_enrollment_projects", "runner_enrollments", "runner_identities", "runner_identity_events", "runner_project_capacity_limits", "runner_project_ranks", "token_grants", "usage_cost_observations", "work_events", "workflow_states")
 	const timestamp = "2026-10-01T00:00:00.000000000Z"
 	states, err := json.Marshal(nativeFixtureStates())
 	if err != nil {
@@ -155,39 +155,20 @@ func coreTenantAggregateSourceCopy(t *testing.T, organization tracker.Organizati
 		t.Fatal(err)
 	}
 	if organization == "" {
-		_ = db.Close()
 		t.Fatal("organization is required")
 	}
 	suffix := string(organization[len("org_aggregate_"):])
-	if _, err := db.ExecContext(t.Context(), `UPDATE organizations SET id=?,name=?,slug=? WHERE local=1`, organization, "Example organization "+suffix, "example-org-"+suffix); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `UPDATE hub_identity SET id=?,cursor_key=?`, "hub_"+strings.Repeat(suffix[:1], 32), bytes.Repeat([]byte{suffix[0]}, 32)); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_tenant(singleton,organization_id,provider_id,bootstrap_subject,public_url) VALUES(1,?,?, '', 'https://hub.example.test')`, organization, "provider_"+string(organization)); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
+	fixture.add("organizations", map[string]any{"id": organization, "name": "Example organization " + suffix, "slug": "example-org-" + suffix, "local": 1, "created_at": timestamp})
+	fixture.add("hub_identity", map[string]any{"id": "hub_" + strings.Repeat(suffix[:1], 32), "cursor_key": bytes.Repeat([]byte{suffix[0]}, 32)})
+	fixture.add("hosted_tenant", map[string]any{"singleton": 1, "organization_id": organization, "provider_id": "provider_" + string(organization), "bootstrap_subject": "", "public_url": "https://hub.example.test"})
 	tokenID := "token_aggregate_" + string(organization[len("org_aggregate_"):])
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at,native_only) VALUES(?,?,?,?,?,?,?,1)`, tokenID, tokenID, apikey.HashToken("example-token-"+string(organization)), "example-fingerprint-"+string(organization), "admin", timestamp, timestamp); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
+	fixture.add("api_tokens", map[string]any{"id": tokenID, "name": tokenID, "token_hash": apikey.HashToken("example-token-" + string(organization)), "token_fingerprint": "example-fingerprint-" + string(organization), "scope": "admin", "created_at": timestamp, "updated_at": timestamp, "native_only": 1})
 	projectID := tracker.ProjectID("prj_aggregate_" + suffix)
 	projectName := "Example project " + suffix
 	projectSlug := "example-project-" + suffix
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,slug,workflow_markdown) VALUES(?,?,?,'native',?,?,?,?)`, projectID, organization, projectName, string(states), timestamp, projectSlug, "Example workflow"); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
+	fixture.add("projects", map[string]any{"id": projectID, "organization_id": organization, "name": projectName, "profile": "native", "states_json": string(states), "created_at": timestamp, "slug": projectSlug, "workflow_markdown": "Example workflow"})
 	workflowStateID := 100
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO workflow_states(id,project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?, 'Todo','Todo',0,1,?,?)`, workflowStateID, projectID, timestamp, timestamp); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
+	fixture.add("workflow_states", map[string]any{"id": workflowStateID, "project_id": projectID, "source_name": "Todo", "detent_state": "Todo", "terminal": 0, "dispatchable": 1, "created_at": timestamp, "updated_at": timestamp})
 	workItemID := tracker.NativeWorkItemID("wi_aggregate_" + suffix)
 	issue := tracker.NativeIssue{
 		NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: projectID, WorkItemID: workItemID, Number: 1, Revision: 1, Profile: "native"},
@@ -202,53 +183,32 @@ func coreTenantAggregateSourceCopy(t *testing.T, organization tracker.Organizati
 	}
 	issueJSON, err := json.Marshal(issue)
 	if err != nil {
-		_ = db.Close()
 		t.Fatal(err)
 	}
 	issueID := 41
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO issues(id,native_id,organization_id,project_id,number,revision,event_sequence,title,body,issue_contract_json,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at,last_activity_at,workflow_state_id,actor_json,labels_json,assignees_json,author_login)
-VALUES(?,?,?,?,?,1,1,?,?,'{}',?,'open','source-v1',?,?,?,?,?,?,?,?,?,'[]','[]','example-owner')`, issueID, workItemID, organization, projectID, 1, issue.Title, issue.Body, "https://hub.example.test/issues/"+string(workItemID), timestamp, timestamp, timestamp, timestamp, timestamp, timestamp, timestamp, workflowStateID, string(actorJSON)); err != nil {
-		_ = db.Close()
+	fixture.add("issues", map[string]any{"id": issueID, "native_id": workItemID, "organization_id": organization, "project_id": projectID, "number": 1, "revision": 1, "event_sequence": 1, "title": issue.Title, "body": issue.Body, "issue_contract_json": "{}", "url": "https://hub.example.test/issues/" + string(workItemID), "github_state": "open", "source_version": "source-v1", "source_updated_at": timestamp, "synchronized_at": timestamp, "created_at": timestamp, "updated_at": timestamp, "native_created_at": timestamp, "native_updated_at": timestamp, "last_activity_at": timestamp, "workflow_state_id": workflowStateID, "actor_json": string(actorJSON), "labels_json": "[]", "assignees_json": "[]", "author_login": "example-owner"})
+	fixture.add("collaboration_versions", map[string]any{"organization_id": organization, "project_id": projectID, "work_item_id": workItemID, "record_id": workItemID, "revision": 1, "encoding": "snapshot", "record_json": string(issueJSON)})
+	fixture.add("collaboration_events", map[string]any{"id": "event_aggregate_" + suffix, "organization_id": organization, "project_id": projectID, "work_item_id": workItemID, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(actorJSON), "data_json": "{}", "recorded_at": timestamp, "event_revision": 1})
+	machineID, leaseID, attemptID, runID := "machine_aggregate_"+suffix, "lease_aggregate_"+suffix, "attempt_aggregate_"+suffix, "run_aggregate_"+suffix
+	fixture.add("machines", map[string]any{"id": machineID, "hostname": "example-host", "display_name": "Example host", "capacity": 1, "version": "example-v1", "sprite_name": "", "last_heartbeat_at": timestamp, "registered_at": timestamp, "updated_at": timestamp})
+	fixture.add("leases", map[string]any{"fencing_token": 17, "lease_id": leaseID, "issue_id": issueID, "machine_id": machineID, "session_id": "session_aggregate_" + suffix, "work_item_revision": 1, "landing_capacity": 0, "acquired_at": timestamp, "renewed_at": timestamp, "expires_at": "2026-10-01T01:00:00Z", "released_at": "2026-10-02T00:00:00Z"})
+	runJSON, err := json.Marshal(tracker.NativeRunData{AttemptID: attemptID, LeaseID: tracker.LeaseID(leaseID), FencingToken: 17, RunID: runID, Sequence: 1})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO collaboration_versions(organization_id,project_id,work_item_id,record_id,revision,encoding,record_json) VALUES(?,?,?,?,1,'snapshot',?)`, organization, projectID, workItemID, workItemID, string(issueJSON)); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,event_revision) VALUES(?,?,?, ?,1,'issue.created',1,?,'{}',?,1)`, "event_aggregate_"+suffix, organization, projectID, workItemID, string(actorJSON), timestamp); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
+	fixture.add("native_attempts", map[string]any{"id": attemptID, "project_id": projectID, "work_item_id": workItemID, "lease_id": leaseID, "fencing_token": 17, "run_id": runID, "sequence": 1, "status": "failed", "work_item_revision": 1, "dispatch_generation": 0, "data_json": string(runJSON), "checkpoint_json": nil, "artifact_ids_json": "[]", "started_at": timestamp, "updated_at": timestamp, "payload_object_key": "", "checkpoint_object_key": ""})
+	fixture.add("native_attempt_events", map[string]any{"attempt_id": attemptID, "sequence": 1, "request_hash": strings.Repeat("0", 64)})
+	fixture.add("attempt_usage", map[string]any{"attempt_id": attemptID, "project_id": projectID, "period": timestamp, "provider": "codex", "model": "example-model", "input": 100, "cached_input": 20, "output": 30, "cost_estimate": 0.25, "currency": "USD", "updated_at": timestamp})
+
 	conversationID := "conversation_aggregate_" + suffix
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO conversations(id,organization_id,project_id,owner_principal_id,title,visibility,status,execution_json,created_at,updated_at) VALUES(?,?,?,?,?,'private','active','{}',?,?)`, conversationID, organization, projectID, tokenID, "Example conversation "+suffix, timestamp, timestamp); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO conversation_messages(id,conversation_id,seq,role,kind,text,data_json,delivery,actor_json,created_at,updated_at) VALUES(?,?,1,'user','text',?,'{}','saved',?,?,?)`, "message_aggregate_"+suffix, conversationID, "Example message "+suffix, string(actorJSON), timestamp, timestamp); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',2500)`, organization); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test',?,2500,'purchase',1)`, organization, "aggregate-"+suffix); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
+	fixture.add("conversations", map[string]any{"id": conversationID, "organization_id": organization, "project_id": projectID, "owner_principal_id": tokenID, "title": "Example conversation " + suffix, "visibility": "private", "status": "active", "execution_json": "{}", "created_at": timestamp, "updated_at": timestamp})
+	fixture.add("conversation_messages", map[string]any{"id": "message_aggregate_" + suffix, "conversation_id": conversationID, "seq": 1, "role": "user", "kind": "text", "text": "Example message " + suffix, "data_json": "{}", "delivery": "saved", "actor_json": string(actorJSON), "created_at": timestamp, "updated_at": timestamp})
+	fixture.add("ai_credit_accounts", map[string]any{"organization_id": organization, "mode": "test", "balance_micros": 2500})
+	fixture.add("ai_credit_transactions", map[string]any{"organization_id": organization, "mode": "test", "source": "aggregate-" + suffix, "amount_micros": 2500, "kind": "purchase", "recorded_at": 1, "id": 1})
 	if unsupportedCreditPeriod {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO ai_credit_periods(organization_id,mode,period_start,period_end,allowance_micros,used_micros) VALUES(?,'test',1,2,100,0)`, organization); err != nil {
-			_ = db.Close()
-			t.Fatal(err)
-		}
+		fixture.add("ai_credit_periods", map[string]any{"organization_id": organization, "mode": "test", "period_start": 1, "period_end": 2, "allowance_micros": 100, "used_micros": 0})
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0o400); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return fixture.write()
 }
 
 func mustParseTestTime(t *testing.T, value string) time.Time {

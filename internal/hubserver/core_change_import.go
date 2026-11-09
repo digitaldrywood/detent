@@ -18,6 +18,7 @@ import (
 )
 
 type CoreChangeImportSource struct {
+	BundlePath     string
 	CopyPath       string
 	OrganizationID tracker.OrganizationID
 	SourceObjects  attachment.DetailStore
@@ -25,13 +26,21 @@ type CoreChangeImportSource struct {
 }
 
 func ImportCoreChanges(ctx context.Context, target *postgres.Repository, source CoreChangeImportSource) (int64, error) {
-	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
+	if source.CopyPath != "" {
+		return 0, postgres.ErrNeutralImport
+	}
+	if target == nil || source.BundlePath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
 		return 0, errors.New("invalid core change import source")
 	}
 	content := eventstore.NewContent(source.Objects)
 	var imported int64
-	err := postgres.ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
-		if err := target.PinCoreImportSource(ctx, source.OrganizationID, copyHash, source.Objects); err != nil {
+	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if err := validateCoreNeutralChangeImport(bundle); err != nil {
+			return err
+		}
+		tx := newCoreNeutralImport(bundle)
+		copyHash := bundle.Identity().SourceSHA256
+		if err := target.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
 		}
 		after := ""
@@ -82,21 +91,25 @@ type coreChangeImportRow struct {
 	links  []tracker.NativeWorkItemID
 }
 
-func readCoreChangePage(ctx context.Context, tx *sql.Tx, source CoreChangeImportSource, after string) ([]coreChangeImportRow, error) {
+func readCoreChangePage(ctx context.Context, tx *coreNeutralImport, source CoreChangeImportSource, after string) ([]coreChangeImportRow, error) {
 	organization := source.OrganizationID
-	rows, err := tx.QueryContext(ctx, `SELECT id,project_id,work_item_id,record_json FROM change_requests WHERE organization_id=? AND id>? ORDER BY id LIMIT 100`, organization, after)
+	rows, err := tx.rows(ctx, "change_requests", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
 	if err != nil {
 		return nil, err
 	}
 	result := make([]coreChangeImportRow, 0, 100)
-	for rows.Next() {
+	for _, sourceRecord := range rows {
 		var id, project, item string
-		var raw []byte
-		if err := rows.Scan(&id, &project, &item, &raw); err != nil {
+		var raw string
+		if err := sourceRecord.Decode(map[string]any{"id": &id, "project_id": &project, "work_item_id": &item, "record_json": &raw}); err != nil {
 			return nil, err
 		}
 		var change tracker.ChangeRequest
-		if err := json.Unmarshal(raw, &change); err != nil || change.ID != id || change.OrganizationID != organization || change.ProjectID != tracker.ProjectID(project) || change.WorkItemID != tracker.NativeWorkItemID(item) || change.Revision < 1 || change.CreatedAt.IsZero() || change.UpdatedAt.IsZero() {
+		resolved, err := resolveCoreNeutralJSON(ctx, tx, organization, source.SourceObjects, []byte(raw))
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(resolved, &change); err != nil || change.ID != id || change.OrganizationID != organization || change.ProjectID != tracker.ProjectID(project) || change.WorkItemID != tracker.NativeWorkItemID(item) || change.Revision < 1 || change.CreatedAt.IsZero() || change.UpdatedAt.IsZero() {
 			return nil, errors.Join(eventstore.ErrInvalidRecord, err)
 		}
 		links, err := readCoreChangeLinks(ctx, tx, organization, id, project)
@@ -109,24 +122,18 @@ func readCoreChangePage(ctx context.Context, tx *sql.Tx, source CoreChangeImport
 		}
 		result = append(result, coreChangeImportRow{change: change, links: links})
 	}
-	return result, closeCoreChangeRows(rows)
+	return result, nil
 }
 
-func closeCoreChangeRows(rows *sql.Rows) error {
-	defer rows.Close()
-	return rows.Err()
-}
-
-func readCoreChangeLinks(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, changeID, project string) ([]tracker.NativeWorkItemID, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT project_id,work_item_id FROM change_issue_links WHERE organization_id=? AND change_id=? ORDER BY work_item_id LIMIT 33`, organization, changeID)
+func readCoreChangeLinks(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, changeID, project string) ([]tracker.NativeWorkItemID, error) {
+	rows, err := tx.rows(ctx, "change_issue_links", map[string]string{"organization_id": string(organization), "change_id": changeID}, []string{"work_item_id"}, nil, 33)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	links := make([]tracker.NativeWorkItemID, 0, 32)
-	for rows.Next() {
+	for _, sourceRecord := range rows {
 		var linkProject, item string
-		if err := rows.Scan(&linkProject, &item); err != nil {
+		if err := sourceRecord.Decode(map[string]any{"project_id": &linkProject, "work_item_id": &item}); err != nil {
 			return nil, err
 		}
 		if linkProject != project || item == "" || len(links) == 32 {
@@ -134,16 +141,13 @@ func readCoreChangeLinks(ctx context.Context, tx *sql.Tx, organization tracker.O
 		}
 		links = append(links, tracker.NativeWorkItemID(item))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	if len(links) == 0 {
 		return nil, eventstore.ErrInvalidRecord
 	}
 	return links, nil
 }
 
-func importCoreChange(ctx context.Context, tx *sql.Tx, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string, row coreChangeImportRow) error {
+func importCoreChange(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string, row coreChangeImportRow) error {
 	raw, err := json.Marshal(row.change)
 	if err != nil {
 		return err
@@ -220,38 +224,16 @@ func checkCoreChangeReceipt(ctx context.Context, w eventstore.Writer, receipt ev
 	return false, nil
 }
 
-func coreChangeSourceContext(ctx context.Context, tx *sql.Tx, objects attachment.DetailStore) context.Context {
-	ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{store: objects, query: tx})
-	return payloadQueryContext(ctx, tx)
+func readCoreChangeObject(ctx context.Context, tx *coreNeutralImport, source CoreChangeImportSource, key string) ([]byte, error) {
+	return readCoreNeutralObject(ctx, tx, source.OrganizationID, source.SourceObjects, key)
 }
 
-func readCoreChangeObject(ctx context.Context, tx *sql.Tx, source CoreChangeImportSource, key string) ([]byte, error) {
-	var ref attachment.ArchiveReference
-	ref.Codec = "gzip"
-	ref.SchemaVersion = 1
-	ref.Kind = "archive"
-	ref.Retention = attachment.ArchiveRetention
-	err := tx.QueryRowContext(ctx, `SELECT object_key,object_sha256,object_bytes,content_bytes FROM change_content_objects WHERE organization_id=? AND object_key=?
-UNION ALL SELECT object_key,sha256,size,uncompressed_size FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND customer_owned=0 AND storage_binding_id='' LIMIT 1`, source.OrganizationID, key, source.OrganizationID, key).Scan(&ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize)
-	if err != nil {
-		return nil, err
-	}
-	if err := ref.Validate(string(source.OrganizationID)); err != nil {
-		return nil, err
-	}
-	data, err := source.SourceObjects.ReadDetail(ctx, string(source.OrganizationID), ref)
-	if err != nil || int64(len(data)) != ref.UncompressedSize {
-		return nil, errors.Join(err, eventstore.ErrInvalidRecord)
-	}
-	return data, nil
-}
-
-func readCoreChangePayload(ctx context.Context, tx *sql.Tx, source CoreChangeImportSource, raw string) ([]byte, error) {
+func readCoreChangePayload(ctx context.Context, tx *coreNeutralImport, source CoreChangeImportSource, raw string) ([]byte, error) {
 	if raw == "" {
 		return nil, eventstore.ErrInvalidRecord
 	}
 	if json.Valid([]byte(raw)) {
-		return []byte(raw), nil
+		return resolveCoreNeutralJSON(ctx, tx, source.OrganizationID, source.SourceObjects, []byte(raw))
 	}
 	return readCoreChangeObject(ctx, tx, source, raw)
 }
@@ -262,16 +244,25 @@ type coreChangeEvidenceRow struct {
 	raw                        []byte
 }
 
-func readCoreChangeEvidencePage(ctx context.Context, tx *sql.Tx, source CoreChangeImportSource, changeID string, after int64) ([]coreChangeEvidenceRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT sequence,kind,COALESCE(version_id,''),COALESCE(source_key,''),COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND sequence>? ORDER BY sequence LIMIT 100`, changeID, after)
+func readCoreChangeEvidencePage(ctx context.Context, tx *coreNeutralImport, source CoreChangeImportSource, changeID string, after int64) ([]coreChangeEvidenceRow, error) {
+	rows, err := tx.rows(ctx, "change_evidence", map[string]string{"change_id": changeID}, []string{"sequence"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
 	result := make([]coreChangeEvidenceRow, 0, 100)
-	for rows.Next() {
+	for _, sourceRecord := range rows {
 		var row coreChangeEvidenceRow
 		var encoded string
-		if err := rows.Scan(&row.sequence, &row.kind, &row.versionID, &row.sourceKey, &encoded); err != nil {
+		if err := sourceRecord.Decode(map[string]any{"sequence": &row.sequence, "kind": &row.kind}); err != nil {
+			return nil, err
+		}
+		var version, key sql.NullString
+		if err := sourceRecord.Decode(map[string]any{"version_id": &version, "source_key": &key}); err != nil {
+			return nil, err
+		}
+		row.versionID, row.sourceKey = version.String, key.String
+		encoded, err = coreNeutralPayload(sourceRecord)
+		if err != nil {
 			return nil, err
 		}
 		row.raw, err = readCoreChangePayload(ctx, tx, source, encoded)
@@ -280,13 +271,13 @@ func readCoreChangeEvidencePage(ctx context.Context, tx *sql.Tx, source CoreChan
 		}
 		result = append(result, row)
 	}
-	return result, closeCoreChangeRows(rows)
+	return result, nil
 }
 
-func importCoreChangeVersions(ctx context.Context, tx *sql.Tx, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangeVersions(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	var after int64
 	for {
-		rows, err := tx.QueryContext(ctx, `SELECT id,number,COALESCE(NULLIF(payload_object_key,''),record_json),policy_revision_id FROM change_versions WHERE change_id=? AND number>? ORDER BY number LIMIT 100`, changeID, after)
+		rows, err := tx.rows(ctx, "change_versions", map[string]string{"change_id": changeID}, []string{"number"}, []string{strconv.FormatInt(after, 10)}, 100)
 		if err != nil {
 			return err
 		}
@@ -295,15 +286,16 @@ func importCoreChangeVersions(ctx context.Context, tx *sql.Tx, target *postgres.
 			number                int64
 		}
 		page := make([]versionRow, 0, 100)
-		for rows.Next() {
+		for _, sourceRecord := range rows {
 			var row versionRow
-			if err := rows.Scan(&row.id, &row.number, &row.encoded, &row.policyID); err != nil {
+			if err := sourceRecord.Decode(map[string]any{"id": &row.id, "number": &row.number, "policy_revision_id": &row.policyID}); err != nil {
+				return err
+			}
+			row.encoded, err = coreNeutralPayload(sourceRecord)
+			if err != nil {
 				return err
 			}
 			page = append(page, row)
-		}
-		if err := closeCoreChangeRows(rows); err != nil {
-			return err
 		}
 		if len(page) == 0 {
 			return nil
@@ -317,8 +309,7 @@ func importCoreChangeVersions(ctx context.Context, tx *sql.Tx, target *postgres.
 			if err := json.Unmarshal(raw, &value); err != nil || value.ID != row.id || value.ChangeID != changeID || value.Number != row.number || value.PolicyID != row.policyID {
 				return errors.Join(eventstore.ErrInvalidRecord, err)
 			}
-			sourceCtx := coreChangeSourceContext(ctx, tx, source.SourceObjects)
-			if err := hydrateChangeRecord(sourceCtx, tx, &value); err != nil {
+			if err := hydrateCoreNeutralVersion(ctx, tx, source, &value); err != nil {
 				return fmt.Errorf("hydrate source version: %w", err)
 			}
 			bundle, err := readCoreChangeBundle(ctx, tx, source, value)
@@ -365,12 +356,10 @@ func importCoreChangeVersions(ctx context.Context, tx *sql.Tx, target *postgres.
 	}
 }
 
-func importCoreChangePublications(ctx context.Context, tx *sql.Tx, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangePublications(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	after := ""
 	for {
-		rows, err := tx.QueryContext(ctx, `SELECT p.version_id,p.change_id,p.repository,p.base_ref,p.branch,p.head_sha,p.policy_id,p.source_attempt_id,p.recorder_attempt_id,p.provider,p.external_id,p.external_url,COALESCE(NULLIF(v.payload_object_key,''),v.record_json)
-FROM native_pr_publications p JOIN change_versions v ON v.id=p.version_id JOIN change_requests c ON c.id=p.change_id
-WHERE c.organization_id=? AND p.change_id=? AND p.version_id>? ORDER BY p.version_id LIMIT 100`, source.OrganizationID, changeID, after)
+		rows, err := tx.rows(ctx, "native_pr_publications", map[string]string{"change_id": changeID}, []string{"version_id"}, []string{after}, 100)
 		if err != nil {
 			return err
 		}
@@ -379,16 +368,21 @@ WHERE c.organization_id=? AND p.change_id=? AND p.version_id>? ORDER BY p.versio
 			raw    string
 		}
 		page := make([]publicationRow, 0, 100)
-		for rows.Next() {
+		for _, sourceRecord := range rows {
 			var row publicationRow
-			if err := rows.Scan(&row.record.VersionID, &row.record.ChangeID, &row.record.Repository, &row.record.BaseRef, &row.record.Branch, &row.record.HeadSHA, &row.record.PolicyID, &row.record.SourceAttemptID, &row.record.RecorderAttemptID, &row.record.External.Provider, &row.record.External.ID, &row.record.External.URL, &row.raw); err != nil {
+			if err := sourceRecord.Decode(map[string]any{"version_id": &row.record.VersionID, "change_id": &row.record.ChangeID, "repository": &row.record.Repository, "base_ref": &row.record.BaseRef, "branch": &row.record.Branch, "head_sha": &row.record.HeadSHA, "policy_id": &row.record.PolicyID, "source_attempt_id": &row.record.SourceAttemptID, "recorder_attempt_id": &row.record.RecorderAttemptID, "provider": &row.record.External.Provider, "external_id": &row.record.External.ID, "external_url": &row.record.External.URL}); err != nil {
+				return err
+			}
+			version, err := tx.one(ctx, "change_versions", map[string]string{"id": row.record.VersionID, "change_id": changeID}, []string{"id"})
+			if err != nil {
+				return err
+			}
+			row.raw, err = coreNeutralPayload(version)
+			if err != nil {
 				return err
 			}
 			row.record.OrganizationID = source.OrganizationID
 			page = append(page, row)
-		}
-		if err := closeCoreChangeRows(rows); err != nil {
-			return err
 		}
 		if len(page) == 0 {
 			return nil
@@ -415,21 +409,20 @@ WHERE c.organization_id=? AND p.change_id=? AND p.version_id>? ORDER BY p.versio
 	}
 }
 
-func importCoreReleaseDeliveries(ctx context.Context, tx *sql.Tx, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string) error {
+func importCoreReleaseDeliveries(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string) error {
 	after := ""
 	for {
-		rows, err := tx.QueryContext(ctx, `SELECT project_id,work_item_id,source_issue_id,source_change_id,source_merge_sha,repository_id,repository,pr_number,head_ref,head_sha,base_ref,base_sha,frozen_sha,change_id,version_id,principal_id,actor_kind,via_key,associated_at
-FROM release_deliveries WHERE organization_id=? AND work_item_id>? ORDER BY work_item_id LIMIT 100`, source.OrganizationID, after)
+		rows, err := tx.rows(ctx, "release_deliveries", map[string]string{"organization_id": string(source.OrganizationID)}, []string{"work_item_id"}, []string{after}, 100)
 		if err != nil {
 			return err
 		}
 		page := make([]eventstore.ReleaseDelivery, 0, 100)
-		for rows.Next() {
+		for _, sourceRecord := range rows {
 			var record eventstore.ReleaseDelivery
 			var repositoryID sql.NullInt64
 			var versionID sql.NullString
 			var associatedAt string
-			if err := rows.Scan(&record.ProjectID, &record.WorkItemID, &record.SourceIssueID, &record.SourceChangeID, &record.SourceMergeSHA, &repositoryID, &record.Repository, &record.PRNumber, &record.HeadRef, &record.HeadSHA, &record.BaseRef, &record.BaseSHA, &record.FrozenSHA, &record.ChangeID, &versionID, &record.Actor.PrincipalID, &record.Actor.Kind, &record.Actor.ViaKey, &associatedAt); err != nil {
+			if err := sourceRecord.Decode(map[string]any{"project_id": &record.ProjectID, "work_item_id": &record.WorkItemID, "source_issue_id": &record.SourceIssueID, "source_change_id": &record.SourceChangeID, "source_merge_sha": &record.SourceMergeSHA, "repository_id": &repositoryID, "repository": &record.Repository, "pr_number": &record.PRNumber, "head_ref": &record.HeadRef, "head_sha": &record.HeadSHA, "base_ref": &record.BaseRef, "base_sha": &record.BaseSHA, "frozen_sha": &record.FrozenSHA, "change_id": &record.ChangeID, "version_id": &versionID, "principal_id": &record.Actor.PrincipalID, "actor_kind": &record.Actor.Kind, "via_key": &record.Actor.ViaKey, "associated_at": &associatedAt}); err != nil {
 				return err
 			}
 			if repositoryID.Valid {
@@ -442,9 +435,6 @@ FROM release_deliveries WHERE organization_id=? AND work_item_id>? ORDER BY work
 			}
 			record.OrganizationID = source.OrganizationID
 			page = append(page, record)
-		}
-		if err := closeCoreChangeRows(rows); err != nil {
-			return err
 		}
 		if len(page) == 0 {
 			return nil
@@ -478,10 +468,8 @@ func targetVersionForCoreImport(ctx context.Context, target *postgres.Repository
 	return record, err
 }
 
-func readCoreChangeBundle(ctx context.Context, tx *sql.Tx, source CoreChangeImportSource, value tracker.ChangeVersion) ([]byte, error) {
-	var inline, key, digest string
-	var compressed, content sql.NullInt64
-	err := tx.QueryRowContext(ctx, `SELECT bundle,COALESCE(object_key,''),COALESCE(object_sha256,''),object_bytes,content_bytes FROM change_sources WHERE version_id=?`, value.ID).Scan(&inline, &key, &digest, &compressed, &content)
+func readCoreChangeBundle(ctx context.Context, tx *coreNeutralImport, source CoreChangeImportSource, value tracker.ChangeVersion) ([]byte, error) {
+	row, err := tx.one(ctx, "change_sources", map[string]string{"version_id": value.ID}, []string{"version_id"})
 	if errors.Is(err, sql.ErrNoRows) {
 		if value.Source != nil {
 			return nil, eventstore.ErrInvalidRecord
@@ -491,25 +479,25 @@ func readCoreChangeBundle(ctx context.Context, tx *sql.Tx, source CoreChangeImpo
 	if err != nil {
 		return nil, err
 	}
-	bundle := []byte(inline)
+	bundle, err := coreNeutralBytes(row, "bundle")
+	if err != nil {
+		return nil, err
+	}
+	var key, digest string
+	var compressed, content sql.NullInt64
+	if err := row.Decode(map[string]any{"object_key": &key, "object_sha256": &digest, "object_bytes": &compressed, "content_bytes": &content}); err != nil {
+		return nil, err
+	}
 	if key != "" {
 		if !compressed.Valid || !content.Valid {
 			return nil, eventstore.ErrInvalidRecord
 		}
-		metadata, err := tx.QueryContext(ctx, `SELECT object_key,object_sha256,object_bytes,content_bytes FROM change_content_objects WHERE organization_id=? AND object_key=?`, source.OrganizationID, key)
+		metadata, err := tx.one(ctx, "change_content_objects", map[string]string{"organization_id": string(source.OrganizationID), "object_key": key}, []string{"object_key"})
 		if err != nil {
 			return nil, err
 		}
-		defer metadata.Close()
-		var ref attachment.ArchiveReference
-		ref.Codec, ref.SchemaVersion, ref.Kind, ref.Retention = "gzip", 1, "archive", attachment.ArchiveRetention
-		if !metadata.Next() {
-			return nil, errors.Join(eventstore.ErrInvalidRecord, metadata.Err())
-		}
-		if err := metadata.Scan(&ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize); err != nil {
-			return nil, err
-		}
-		if err := metadata.Err(); err != nil {
+		ref := contentReference()
+		if err := metadata.Decode(map[string]any{"object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize}); err != nil {
 			return nil, err
 		}
 		if ref.Key != key || ref.SHA256 != digest || ref.CompressedSize != compressed.Int64 || ref.UncompressedSize != content.Int64 {
@@ -524,16 +512,13 @@ func readCoreChangeBundle(ctx context.Context, tx *sql.Tx, source CoreChangeImpo
 		}
 		bundle = archived
 	}
-	if value.Source == nil {
-		return nil, eventstore.ErrInvalidRecord
-	}
-	if value.Source.Validate(value.BaseSHA, value.HeadSHA, bundle) != nil {
+	if value.Source == nil || value.Source.Validate(value.BaseSHA, value.HeadSHA, bundle) != nil {
 		return nil, eventstore.ErrInvalidRecord
 	}
 	return bundle, nil
 }
 
-func importCoreChangeEvidence(ctx context.Context, tx *sql.Tx, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangeEvidence(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	var after int64
 	for {
 		page, err := readCoreChangeEvidencePage(ctx, tx, source, changeID, after)
@@ -580,7 +565,7 @@ func importCoreChangeEvidence(ctx context.Context, tx *sql.Tx, target *postgres.
 	}
 }
 
-func importCoreChangeLandings(ctx context.Context, tx *sql.Tx, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangeLandings(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	type sourceLanding struct {
 		attemptID  string
 		versionID  string
@@ -589,20 +574,24 @@ func importCoreChangeLandings(ctx context.Context, tx *sql.Tx, target *postgres.
 	}
 	after := ""
 	for {
-		rows, err := tx.QueryContext(ctx, `SELECT l.attempt_id,l.version_id,v.repository,l.record_json FROM change_landing_receipts l JOIN change_versions v ON v.id=l.version_id WHERE v.change_id=? AND l.attempt_id>? ORDER BY l.attempt_id LIMIT 100`, changeID, after)
+		rows, err := tx.rows(ctx, "change_landing_receipts", map[string]string{"change_id": changeID}, []string{"attempt_id"}, []string{after}, 100)
 		if err != nil {
 			return err
 		}
 		page := make([]sourceLanding, 0, 100)
-		for rows.Next() {
+		for _, sourceRecord := range rows {
 			var row sourceLanding
-			if err := rows.Scan(&row.attemptID, &row.versionID, &row.repository, &row.raw); err != nil {
+			if err := sourceRecord.Decode(map[string]any{"attempt_id": &row.attemptID, "version_id": &row.versionID, "record_json": &row.raw}); err != nil {
+				return err
+			}
+			version, err := tx.one(ctx, "change_versions", map[string]string{"id": row.versionID, "change_id": changeID}, []string{"id"})
+			if err != nil {
+				return err
+			}
+			if err := version.Decode(map[string]any{"repository": &row.repository}); err != nil {
 				return err
 			}
 			page = append(page, row)
-		}
-		if err := closeCoreChangeRows(rows); err != nil {
-			return err
 		}
 		if len(page) == 0 {
 			return nil
@@ -638,21 +627,32 @@ func importCoreChangeLandings(ctx context.Context, tx *sql.Tx, target *postgres.
 	}
 }
 
-func importCoreChangeViewedFiles(ctx context.Context, tx *sql.Tx, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangeViewedFiles(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	var afterVersion, afterPrincipal, afterManifest, afterFile string
 	for {
-		rows, err := tx.QueryContext(ctx, `SELECT f.version_id,f.principal_id,f.manifest_sha256,f.file_sha256,f.viewed,v.created_at,c.project_id
-FROM change_viewed_files f JOIN change_versions v ON v.id=f.version_id JOIN change_requests c ON c.id=v.change_id
-WHERE v.change_id=? AND (f.version_id>? OR (f.version_id=? AND f.principal_id>?) OR (f.version_id=? AND f.principal_id=? AND f.manifest_sha256>?) OR (f.version_id=? AND f.principal_id=? AND f.manifest_sha256=? AND f.file_sha256>?))
-ORDER BY f.version_id,f.principal_id,f.manifest_sha256,f.file_sha256 LIMIT 100`, changeID, afterVersion, afterVersion, afterPrincipal, afterVersion, afterPrincipal, afterManifest, afterVersion, afterPrincipal, afterManifest, afterFile)
+		rows, err := tx.rows(ctx, "change_viewed_files", map[string]string{"change_id": changeID}, []string{"version_id", "principal_id", "manifest_sha256", "file_sha256"}, []string{afterVersion, afterPrincipal, afterManifest, afterFile}, 100)
 		if err != nil {
 			return err
 		}
 		page := make([]eventstore.ViewedFile, 0, 100)
-		for rows.Next() {
+		for _, sourceRecord := range rows {
 			var record eventstore.ViewedFile
 			var createdAt string
-			if err := rows.Scan(&record.VersionID, &record.PrincipalID, &record.ManifestSHA256, &record.FileSHA256, &record.Viewed, &createdAt, &record.ProjectID); err != nil {
+			if err := sourceRecord.Decode(map[string]any{"version_id": &record.VersionID, "principal_id": &record.PrincipalID, "manifest_sha256": &record.ManifestSHA256, "file_sha256": &record.FileSHA256, "viewed": &record.Viewed}); err != nil {
+				return err
+			}
+			version, err := tx.one(ctx, "change_versions", map[string]string{"id": record.VersionID, "change_id": changeID}, []string{"id"})
+			if err != nil {
+				return err
+			}
+			if err := version.Decode(map[string]any{"created_at": &createdAt}); err != nil {
+				return err
+			}
+			change, err := tx.one(ctx, "change_requests", map[string]string{"id": changeID, "organization_id": string(source.OrganizationID)}, []string{"id"})
+			if err != nil {
+				return err
+			}
+			if err := change.Decode(map[string]any{"project_id": &record.ProjectID}); err != nil {
 				return err
 			}
 			record.UpdatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
@@ -661,9 +661,6 @@ ORDER BY f.version_id,f.principal_id,f.manifest_sha256,f.file_sha256 LIMIT 100`,
 			}
 			record.OrganizationID, record.ChangeID = source.OrganizationID, changeID
 			page = append(page, record)
-		}
-		if err := closeCoreChangeRows(rows); err != nil {
-			return err
 		}
 		if len(page) == 0 {
 			return nil

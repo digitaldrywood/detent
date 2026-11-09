@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,11 +44,19 @@ type ReportImportSummary struct {
 
 func ImportCoreReportLandings(ctx context.Context, target ReportImportTarget, source CoreChangeImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
-	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
+	if source.CopyPath != "" {
+		return summary, postgres.ErrNeutralImport
+	}
+	if target == nil || source.BundlePath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
 		return summary, errors.New("invalid report landing import source")
 	}
 	digest := sha256.New()
-	err := postgres.ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
+	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if err := validateCoreNeutralChangeImport(bundle); err != nil {
+			return err
+		}
+		tx := newCoreNeutralImport(bundle)
+		copyHash := bundle.Identity().SourceSHA256
 		summary.SourceSHA256 = copyHash
 		after := ""
 		for {
@@ -102,25 +111,28 @@ func ImportCoreReportLandings(ctx context.Context, target ReportImportTarget, so
 	return summary, err
 }
 
-func coreReportLandingProof(ctx context.Context, tx *sql.Tx, source CoreChangeImportSource, change tracker.ChangeRequest) (eventstore.LandingReceipt, error) {
+func coreReportLandingProof(ctx context.Context, tx *coreNeutralImport, source CoreChangeImportSource, change tracker.ChangeRequest) (eventstore.LandingReceipt, error) {
 	after := ""
 	for {
-		rows, err := tx.QueryContext(ctx, `SELECT l.attempt_id,l.record_json,v.repository FROM change_landing_receipts l JOIN change_versions v ON v.id=l.version_id WHERE l.version_id=? AND l.attempt_id>? ORDER BY l.attempt_id LIMIT 100`, change.Landed.VersionID, after)
+		rows, err := tx.rows(ctx, "change_landing_receipts", map[string]string{"version_id": change.Landed.VersionID}, []string{"attempt_id"}, []string{after}, 100)
 		if err != nil {
 			return eventstore.LandingReceipt{}, err
 		}
 		type sourceRow struct{ id, raw, repository string }
 		page := []sourceRow{}
-		for rows.Next() {
+		for _, sourceRecord := range rows {
 			var row sourceRow
-			if err := rows.Scan(&row.id, &row.raw, &row.repository); err != nil {
-				rows.Close()
+			if err := sourceRecord.Decode(map[string]any{"attempt_id": &row.id, "record_json": &row.raw}); err != nil {
+				return eventstore.LandingReceipt{}, err
+			}
+			version, err := tx.one(ctx, "change_versions", map[string]string{"id": change.Landed.VersionID, "change_id": change.ID}, []string{"id"})
+			if err != nil {
+				return eventstore.LandingReceipt{}, err
+			}
+			if err := version.Decode(map[string]any{"repository": &row.repository}); err != nil {
 				return eventstore.LandingReceipt{}, err
 			}
 			page = append(page, row)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return eventstore.LandingReceipt{}, err
 		}
 		if len(page) == 0 {
 			return eventstore.LandingReceipt{}, eventstore.ErrInvalidRecord
@@ -139,28 +151,32 @@ func coreReportLandingProof(ctx context.Context, tx *sql.Tx, source CoreChangeIm
 	}
 }
 
-func restoreCoreReportLanding(ctx context.Context, tx *sql.Tx, source CoreChangeImportSource, change *tracker.ChangeRequest) error {
+func restoreCoreReportLanding(ctx context.Context, tx *coreNeutralImport, source CoreChangeImportSource, change *tracker.ChangeRequest) error {
 	if change.Landed != nil || change.CurrentVersion == "" {
 		return nil
 	}
 	after := ""
 	for {
-		rows, err := tx.QueryContext(ctx, `SELECT l.attempt_id,l.record_json,coalesce(nullif(v.payload_object_key,''),v.record_json) FROM change_landing_receipts l JOIN change_versions v ON v.id=l.version_id WHERE l.version_id=? AND l.attempt_id>? ORDER BY l.attempt_id LIMIT 100`, change.CurrentVersion, after)
+		rows, err := tx.rows(ctx, "change_landing_receipts", map[string]string{"version_id": change.CurrentVersion}, []string{"attempt_id"}, []string{after}, 100)
 		if err != nil {
 			return err
 		}
 		type receiptRow struct{ id, receipt, version string }
 		page := []receiptRow{}
-		for rows.Next() {
+		for _, sourceRecord := range rows {
 			var row receiptRow
-			if err := rows.Scan(&row.id, &row.receipt, &row.version); err != nil {
-				rows.Close()
+			if err := sourceRecord.Decode(map[string]any{"attempt_id": &row.id, "record_json": &row.receipt}); err != nil {
+				return err
+			}
+			version, err := tx.one(ctx, "change_versions", map[string]string{"id": change.CurrentVersion, "change_id": change.ID}, []string{"id"})
+			if err != nil {
+				return err
+			}
+			row.version, err = coreNeutralPayload(version)
+			if err != nil {
 				return err
 			}
 			page = append(page, row)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return err
 		}
 		if len(page) == 0 {
 			return nil
@@ -386,16 +402,24 @@ func ImportCoreReportEvents(ctx context.Context, target ReportImportTarget, sour
 
 func ImportCoreReportEscapes(ctx context.Context, target ReportImportTarget, source CoreChangeImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
-	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
+	if source.CopyPath != "" {
+		return summary, postgres.ErrNeutralImport
+	}
+	if target == nil || source.BundlePath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
 		return summary, errors.New("invalid report escape import source")
 	}
 	digest := sha256.New()
-	err := postgres.ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
+	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if err := validateCoreNeutralChangeImport(bundle); err != nil {
+			return err
+		}
+		tx := newCoreNeutralImport(bundle)
+		copyHash := bundle.Identity().SourceSHA256
 		summary.SourceSHA256 = copyHash
 		changeAfter := ""
 		sequenceAfter := int64(0)
 		for {
-			rows, err := tx.QueryContext(ctx, `SELECT e.change_id,e.sequence,coalesce(e.version_id,''),coalesce(e.source_key,''),coalesce(nullif(e.payload_object_key,''),e.record_json) FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND e.kind='discussion' AND (e.change_id>? OR (e.change_id=? AND e.sequence>?)) ORDER BY e.change_id,e.sequence LIMIT 100`, source.OrganizationID, changeAfter, changeAfter, sequenceAfter)
+			rows, err := tx.rows(ctx, "change_evidence", map[string]string{"kind": "discussion"}, []string{"change_id", "sequence"}, []string{changeAfter, strconv.FormatInt(sequenceAfter, 10)}, 100)
 			if err != nil {
 				return err
 			}
@@ -404,16 +428,24 @@ func ImportCoreReportEscapes(ctx context.Context, target ReportImportTarget, sou
 				sequence                  int64
 			}
 			page := []sourceRow{}
-			for rows.Next() {
+			for _, sourceRecord := range rows {
 				var row sourceRow
-				if err := rows.Scan(&row.change, &row.sequence, &row.version, &row.key, &row.raw); err != nil {
-					rows.Close()
+				if err := sourceRecord.Decode(map[string]any{"change_id": &row.change, "sequence": &row.sequence}); err != nil {
+					return err
+				}
+				var version, key sql.NullString
+				if err := sourceRecord.Decode(map[string]any{"version_id": &version, "source_key": &key}); err != nil {
+					return err
+				}
+				row.version, row.key = version.String, key.String
+				row.raw, err = coreNeutralPayload(sourceRecord)
+				if err != nil {
+					return err
+				}
+				if _, err := tx.one(ctx, "change_requests", map[string]string{"id": row.change, "organization_id": string(source.OrganizationID)}, []string{"id"}); err != nil {
 					return err
 				}
 				page = append(page, row)
-			}
-			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-				return err
 			}
 			if len(page) == 0 {
 				return nil
@@ -470,6 +502,7 @@ func ImportCoreReportEscapes(ctx context.Context, target ReportImportTarget, sou
 }
 
 type ReportUsageImportSource struct {
+	BundlePath     string
 	CopyPath       string
 	OrganizationID tracker.OrganizationID
 	ExpectedSHA256 string
@@ -477,26 +510,30 @@ type ReportUsageImportSource struct {
 
 func ImportCoreReportUsage(ctx context.Context, target ReportImportTarget, source ReportUsageImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
-	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || len(source.ExpectedSHA256) != 64 {
+	if source.CopyPath != "" {
+		return summary, postgres.ErrNeutralImport
+	}
+	if target == nil || source.BundlePath == "" || source.OrganizationID == "" || len(source.ExpectedSHA256) != 64 {
 		return summary, errors.New("invalid pinned report usage source")
 	}
 	digest := sha256.New()
-	err := postgres.ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
+	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if err := postgres.ValidateNeutralCoreImportTables(bundle, "attempt_usage", "native_attempts"); err != nil {
+			return err
+		}
+		tx := newCoreNeutralImport(bundle)
+		copyHash := bundle.Identity().SourceSHA256
 		if copyHash != source.ExpectedSHA256 {
 			return errors.New("report usage source digest mismatch")
 		}
 		summary.SourceSHA256 = copyHash
-		var invalid int64
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM attempt_usage u LEFT JOIN native_attempts a ON a.id=u.attempt_id WHERE a.id IS NULL OR u.organization_id<>? OR a.organization_id<>u.organization_id OR a.project_id<>u.project_id`, source.OrganizationID).Scan(&invalid); err != nil {
+		if err := validateCoreNeutralUsageScope(ctx, tx, source.OrganizationID); err != nil {
 			return err
-		}
-		if invalid != 0 {
-			return errors.New("report usage source has invalid attempt scope")
 		}
 		counts := map[string]int64{}
 		var after int64
 		for {
-			rows, err := tx.QueryContext(ctx, `SELECT u.rowid,u.organization_id,u.project_id,a.work_item_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency,u.updated_at FROM attempt_usage u JOIN native_attempts a ON a.id=u.attempt_id WHERE u.rowid>? ORDER BY u.rowid LIMIT 100`, after)
+			rows, err := bundle.OrdinalPage(ctx, "attempt_usage", after, 100)
 			if err != nil {
 				return err
 			}
@@ -505,31 +542,32 @@ func ImportCoreReportUsage(ctx context.Context, target ReportImportTarget, sourc
 				record reportstore.UsageRecord
 			}
 			page := []entry{}
-			for rows.Next() {
+			for _, sourceRecord := range rows {
 				var e entry
 				var period, updated string
-				if err := rows.Scan(&e.id, &e.record.OrganizationID, &e.record.ProjectID, &e.record.WorkItemID, &e.record.AttemptID, &period, &e.record.Provider, &e.record.Model, &e.record.Input, &e.record.CachedInput, &e.record.Output, &e.record.Cost, &e.record.Currency, &updated); err != nil {
-					rows.Close()
+				if err := sourceRecord.Decode(map[string]any{"organization_id": &e.record.OrganizationID, "project_id": &e.record.ProjectID, "attempt_id": &e.record.AttemptID, "period": &period, "provider": &e.record.Provider, "model": &e.record.Model, "input": &e.record.Input, "cached_input": &e.record.CachedInput, "output": &e.record.Output, "cost_estimate": &e.record.Cost, "currency": &e.record.Currency, "updated_at": &updated}); err != nil {
+					return err
+				}
+				e.id = sourceRecord.Ordinal
+				attempt, err := tx.one(ctx, "native_attempts", map[string]string{"id": e.record.AttemptID, "organization_id": string(e.record.OrganizationID), "project_id": string(e.record.ProjectID)}, []string{"id"})
+				if err != nil {
+					return err
+				}
+				if err := attempt.Decode(map[string]any{"work_item_id": &e.record.WorkItemID}); err != nil {
 					return err
 				}
 				if e.record.OrganizationID != source.OrganizationID {
-					rows.Close()
 					return corestore.ErrTenantMismatch
 				}
 				e.record.Period, err = time.Parse(time.RFC3339Nano, period)
 				if err != nil {
-					rows.Close()
 					return err
 				}
 				e.record.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
 				if err != nil {
-					rows.Close()
 					return err
 				}
 				page = append(page, e)
-			}
-			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-				return err
 			}
 			if len(page) == 0 {
 				break

@@ -368,14 +368,6 @@
     "internal/hubserver/conversation_worker_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/core_change_import_test.go": {
-      "driver_import": 1,
-      "sqlite_open": 1
-    },
-    "internal/hubserver/core_tenant_import_test.go": {
-      "driver_import": 1,
-      "sqlite_open": 1
-    },
     "internal/hubserver/cost_records_test.go": {
       "database_path": 1
     },
@@ -1524,13 +1516,6 @@
     },
     "internal/hubserver/policy_test.go": {
       "database_path": 6
-    },
-    "internal/hubserver/postgres/core_project_import.go": {
-      "driver_import": 1,
-      "sqlite_open": 1
-    },
-    "internal/hubserver/postgres/import_copy_validation.go": {
-      "sql_pragma_table": 2
     },
     "internal/hubserver/postgres_worker_workflow_transition_test.go": {
       "database_path": 1

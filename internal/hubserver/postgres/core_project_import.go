@@ -8,13 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/url"
-	"os"
-	"path/filepath"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -201,115 +195,4 @@ func prepareCoreProjectImport(ctx context.Context, content *eventstore.Content, 
 	}
 	record.Core.StatesObjectKey = &statesRef.PayloadObjectKey
 	return record, receipt, nil
-}
-
-func openCoreImportCopy(ctx context.Context, path string) (database *sql.DB, digest string, resultErr error) {
-	path, err := filepath.Abs(path)
-	if err != nil {
-		return nil, "", err
-	}
-	path, err = filepath.EvalSymlinks(path)
-	if err != nil {
-		return nil, "", err
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, "", err
-	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			if database != nil {
-				err = errors.Join(err, database.Close())
-				database = nil
-			}
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	before, err := file.Stat()
-	if err != nil {
-		return nil, "", err
-	}
-	if !before.Mode().IsRegular() || before.Mode().Perm()&0222 != 0 {
-		return nil, "", errors.New("import requires a sealed read-only database copy")
-	}
-	for _, suffix := range []string{"-wal", "-journal"} {
-		info, err := os.Stat(path + suffix)
-		if err == nil && info.Size() != 0 {
-			return nil, "", errors.New("import copy has uncheckpointed journal data")
-		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, "", err
-		}
-	}
-	hash := sha256.New()
-	buffer := make([]byte, 1<<20)
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, "", err
-		}
-		n, err := file.Read(buffer)
-		if n > 0 {
-			_, _ = hash.Write(buffer[:n])
-		}
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, "", err
-		}
-	}
-	uri := url.URL{Scheme: "file", Path: path}
-	query := url.Values{"mode": {"ro"}, "immutable": {"1"}}
-	uri.RawQuery = query.Encode()
-	db, err := sql.Open("sqlite", uri.String())
-	if err != nil {
-		return nil, "", err
-	}
-	db.SetMaxOpenConns(1)
-	if err := db.PingContext(ctx); err != nil {
-		return nil, "", errors.Join(err, db.Close())
-	}
-	after, err := os.Stat(path)
-	if err != nil {
-		return nil, "", errors.Join(err, db.Close())
-	}
-	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || after.Mode().Perm()&0222 != 0 {
-		return nil, "", errors.Join(errors.New("import copy changed while opening"), db.Close())
-	}
-	return db, hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func ReadCoreImportCopy(ctx context.Context, path string, read func(*sql.Tx, string) error) (resultErr error) {
-	if read == nil {
-		return errors.New("missing core import reader")
-	}
-	db, hash, err := openCoreImportCopy(ctx, path)
-	if err != nil {
-		return err
-	}
-	defer func() { resultErr = errors.Join(resultErr, db.Close()) }()
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	defer func() {
-		err := tx.Rollback()
-		if err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	if err := read(tx, hash); err != nil {
-		return err
-	}
-	verified, finalHash, err := openCoreImportCopy(ctx, path)
-	if err != nil {
-		return err
-	}
-	if err := verified.Close(); err != nil {
-		return err
-	}
-	if hash != finalHash {
-		return mutation.ErrConflict
-	}
-	return nil
 }

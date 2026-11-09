@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -42,7 +43,7 @@ func prepareCoreNeutralRunDetail(ctx context.Context, source *coreNeutralImport,
 	if ref.Validate(string(organization)) != nil || ref.CustomerOwned || ref.BindingID != "" {
 		return artifact.ErrIntegrity
 	}
-	value, err := objects.ReadDetail(ctx, string(organization), ref)
+	value, err := readCoreNeutralArchive(ctx, source, organization, objects, ref)
 	if err != nil {
 		return err
 	}
@@ -55,4 +56,35 @@ func prepareCoreNeutralRunDetail(ctx context.Context, source *coreNeutralImport,
 	}
 	owner.cache[detail.AttachmentID] = runs
 	return nil
+}
+
+func validateCoreNeutralUsageScope(ctx context.Context, source *coreNeutralImport, organization tracker.OrganizationID) error {
+	var after []string
+	for {
+		rows, err := source.bundle.Page(ctx, "attempt_usage", after, 100)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, row := range rows {
+			var tenant tracker.OrganizationID
+			var project tracker.ProjectID
+			var attemptID, currency string
+			if err := row.Decode(map[string]any{"organization_id": &tenant, "project_id": &project, "attempt_id": &attemptID, "currency": &currency}); err != nil {
+				return err
+			}
+			if currency != "USD" {
+				return errors.New("report usage source has unsupported currency")
+			}
+			if tenant != organization {
+				return errors.New("report usage source has invalid attempt scope")
+			}
+			if _, err := source.one(ctx, "native_attempts", map[string]string{"id": attemptID, "organization_id": string(tenant), "project_id": string(project)}, []string{"id"}); err != nil {
+				return errors.Join(errors.New("report usage source has invalid attempt scope"), err)
+			}
+		}
+		after = rows[len(rows)-1].Key
+	}
 }

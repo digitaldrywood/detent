@@ -28,7 +28,7 @@ import (
 
 func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T) {
 	var native *pgxpool.Config
-	repository, admin := projectRecordPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
+	repository, admin := coreImportPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
 	objects := &memoryRunDetails{}
 	closeAfterTenants := t.Cleanup
 	for _, organization := range []tracker.OrganizationID{"org_execution_import", "org_execution_import_other"} {
@@ -206,7 +206,7 @@ func coreExecutionSourceCopy(t *testing.T, organization tracker.OrganizationID) 
 
 func coreExecutionNeutralFixture(t *testing.T, organization tracker.OrganizationID) *coreNeutralFixture {
 	t.Helper()
-	fixture := newCoreNeutralFixture(t, organization, "issues", "machines", "leases", "native_attempts", "native_attempt_events", "change_content_objects", "attachments", "api_tokens", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "work_events")
+	fixture := newCoreNeutralFixture(t, organization, "issues", "machines", "leases", "native_attempts", "native_attempt_events", "change_content_objects", "attachments", "api_tokens", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "work_events", "attempt_usage")
 	const acquired = "2026-10-01T00:00:00Z"
 	const updated = "2026-10-02T00:00:00Z"
 	const expired = "2026-10-01T01:00:00Z"
@@ -234,6 +234,8 @@ func coreExecutionNeutralFixture(t *testing.T, organization tracker.Organization
 		fixture.add("native_attempts", map[string]any{"id": id("attempt_execution_import"), "organization_id": organization, "project_id": "prj_execution_import", "work_item_id": id("wi_execution_import"), "lease_id": id("lease_execution_import"), "fencing_token": 40 + index, "run_id": id("run_execution_import"), "sequence": 1, "status": "failed", "work_item_revision": 0, "dispatch_generation": 0, "data_json": string(runData), "checkpoint_json": nil, "artifact_ids_json": "[]", "started_at": updated, "updated_at": updated, "payload_object_key": "", "checkpoint_object_key": ""})
 		requestHash := hex.EncodeToString(make([]byte, 32))
 		fixture.add("native_attempt_events", map[string]any{"attempt_id": id("attempt_execution_import"), "sequence": 1, "request_hash": requestHash})
+		fixture.add("attempt_usage", map[string]any{"attempt_id": id("attempt_execution_import"), "project_id": "prj_execution_import", "period": acquired, "provider": "codex", "model": "example-model", "input": 100, "cached_input": 20, "output": 30, "cost_estimate": 0.25, "currency": "USD", "updated_at": updated})
+
 		fixture.add("work_events", map[string]any{"id": 7 + index, "issue_id": 41 + index, "fencing_token": 40 + index, "machine_id": id("machine_execution_import"), "session_id": id("session_execution_import"), "run_id": id("run_execution_import"), "kind": "progress", "payload_json": "{\"step\":\"compile\"}", "occurred_at": updated, "recorded_at": updated})
 	}
 	return fixture
@@ -270,7 +272,7 @@ func TestCoreExecutionImportRefusesLegacyCopy(t *testing.T) {
 }
 
 func TestCoreExecutionImportRejectsUnsupportedSchemaBeforePin(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	for _, scenario := range []struct{ table, column, change string }{
 		{"native_attempts", "data_json", "extra"},
 		{"native_attempts", "activity_started_at", "generated"},
