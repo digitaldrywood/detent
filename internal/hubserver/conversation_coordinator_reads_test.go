@@ -14,12 +14,17 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func coordinatorReadFixture(t *testing.T) (hostedSecurityFixture, hostedSecurityUser, conversationRecord) {
@@ -96,9 +101,7 @@ func TestCoordinatorScreenReads(t *testing.T) {
 			f, _, record := coordinatorReadFixture(t)
 			user := f.user(t, "screen-viewer", role.role, "viewer@example.test", "read", "")
 			f.grant(t, user, false, role.runner)
-			seedHostedContextRunner(t, f, "attached", "v0.117.99", f.service.config.now(), false)
-			operatorSQL(t, f, "UPDATE api_tokens SET expires_at=? WHERE id='tok_attached'", formatHubTime(f.service.config.now().Add(time.Hour)))
-			operatorSQL(t, f, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES('tok_attached','org_security',?)", f.project)
+			seedCoordinatorReadRunner(t, f, "attached", "v0.117.99", f.service.config.now(), false)
 			issueID := f.seedIssue(t, 1)
 			tools, ctx := coordinatorViewerTools(t, f, record, user)
 			catalog := tools.tools()
@@ -431,5 +434,55 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func seedCoordinatorReadRunner(t *testing.T, f hostedSecurityFixture, id, version string, heartbeat time.Time, revoked bool) {
+	t.Helper()
+	org := f.service.accessOrganization()
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	expires := now.Add(time.Hour)
+	credential, enrollment, machine := "tok_"+id, "enr_"+id, "machine_"+id
+	operations := []string{runnerauth.Claim}
+	writeCoordinatorActionTenant(t, f.service, org, func(w tenantstore.Writer) error {
+		hash := apikey.HashToken(credential)
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: credential, Name: credential, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: enrollment, RunnerID: id, MachineID: tracker.MachineID(machine), TokenHash: apikey.HashToken(enrollment), Scope: "projects", ProjectIDs: []tracker.ProjectID{f.project}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollment, id, tracker.MachineID(machine), now); err != nil {
+			return err
+		}
+		registration, ok := w.(leasestore.MachineRegistrationWriter)
+		if !ok {
+			return errors.New("owned runner machine registration is unavailable")
+		}
+		row := leasestore.Machine{OrganizationID: org, ID: machine, Hostname: id, DisplayName: id, Capacity: 1, Version: version}
+		if err := registration.RegisterOwnedMachine(t.Context(), row, credential); err != nil {
+			return err
+		}
+		if err := w.HeartbeatMachine(t.Context(), row, heartbeat); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: id, MachineID: tracker.MachineID(machine), TokenID: credential, EnrollmentID: enrollment, Scope: "projects", State: "active", Operations: operations, DisplayName: id, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{f.project}, OS: "linux", Architecture: "arm64", CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: heartbeat}); err != nil {
+			return err
+		}
+		if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential, ProjectID: f.project}); err != nil {
+			return err
+		}
+		if revoked {
+			return w.RevokeAccessCredential(t.Context(), credential, now)
+		}
+		return nil
+	})
+	credentialScope, _, err := f.service.authenticateTenantAPIHash(t.Context(), org, apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: org, project: f.project, credential: credentialScope}, id)
+	if err != nil || runner.RunnerID != id || runner.MachineID != tracker.MachineID(machine) || !slices.Equal(runner.ProjectIDs, []tracker.ProjectID{f.project}) {
+		t.Fatalf("typed runner seed id=%s machine=%s projects=%v error=%v", runner.RunnerID, runner.MachineID, runner.ProjectIDs, err)
 	}
 }
