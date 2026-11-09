@@ -91,13 +91,15 @@ func TestHealthUsageDistinguishesMissingAndZeroBaseline(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) VALUES($1,$2,$3,$4,'example','example',0,0,0,0,'USD',$4)`, org, project, attempt.ID, now.Add(-48*time.Hour)); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,$2,$3,$4::timestamptz-n*interval '1 millisecond','example','example',0,0,0,0,'USD',$4 FROM generate_series(1,2) n`, org, project, attempt.ID, now.Add(-48*time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
-				page, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10, 10000)
-				if err != nil || page.Complete || page.ReadRows < 10001 || len(page.Values) != 0 {
-					t.Fatalf("organization=%s project=%s source overflow page=%+v err=%v", org, project, page, err)
+				for _, sourceLimit := range []int{0, 1, 10000} {
+					page, err := r.(healthstore.ObservationReader).HealthUsage(t.Context(), project, now.Add(-time.Minute), now, 10, sourceLimit)
+					if err != nil || page.Complete || page.ReadRows != sourceLimit+1 || len(page.Values) != 0 {
+						t.Fatalf("organization=%s project=%s sourceLimit=%d overflow page=%+v err=%v", org, project, sourceLimit, page, err)
+					}
 				}
 				return nil
 			}); err != nil {

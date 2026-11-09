@@ -56,7 +56,7 @@ func (s *session) HealthUsage(ctx context.Context, project tracker.ProjectID, ba
 	rows, err := s.db.Query(ctx, `WITH current_input AS MATERIALIZED (
  SELECT attempt_id,period,cost_estimate FROM report_usage_current WHERE organization_id=$1 AND project_id=$2 AND period<=$4 ORDER BY period,source_key LIMIT $5
  ), legacy_input AS MATERIALIZED (
- SELECT attempt_id,period,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND project_id=$2 AND upper(currency)='USD' AND period<=$4 ORDER BY period,attempt_id LIMIT $5
+ SELECT attempt_id,period,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND project_id=$2 AND upper(currency)='USD' AND period<=$4 ORDER BY period,attempt_id LIMIT ($5-(SELECT count(*) FROM current_input))
  ), overflow AS (
  SELECT (SELECT count(*) FROM current_input)+(SELECT count(*) FROM legacy_input) AS source_rows
  ), usage AS (
