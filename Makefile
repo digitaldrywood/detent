@@ -55,7 +55,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306,G703,G704
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race coverage-check test-cover soak visual-e2e lint vet gosec-build security-gosec-determinism check check-fast check-land check-release modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test app-test-run check-app build test test-fast test-race coverage-check test-cover soak visual-e2e lint vet gosec-build security-gosec-determinism check check-fast check-land check-release modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -116,7 +116,8 @@ app-dev:
 check-app:
 	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
 		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
-		(cd "$(APP_DIR)" && npm run typecheck && npm run design:tokens:check && npm run design:catalog:check && npx vitest run --maxWorkers=$(TEST_PROCS) && npm run build); \
+		(cd "$(APP_DIR)" && npm run typecheck && npm run design:tokens:check && npm run design:catalog:check); \
+		$(MAKE) app-test-run; \
 		grep -q "MIT" static/app/conversation/app.js || { \
 			echo "static/app/conversation/app.js is missing the MIT attribution banner."; \
 			exit 1; \
@@ -130,12 +131,23 @@ check-app:
 	fi
 
 app-test:
-	@if [ -f "$(APP_DIR)/package.json" ]; then \
+	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
 		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
-		(cd "$(APP_DIR)" && npm run typecheck && npm test); \
+		(cd "$(APP_DIR)" && npm run typecheck); \
+		$(MAKE) app-test-run; \
 	else \
 		echo "No conversation client at $(APP_DIR); skipping app tests."; \
 	fi
+
+app-test-run: app
+	@set -e; mkdir -p "$(CURDIR)/tmp"; \
+		fixture_root=$$(mktemp -d "$(CURDIR)/tmp/board-contract.XXXXXX"); \
+		mkdir "$$fixture_root/runtime"; \
+		export TMPDIR="$$fixture_root/runtime" TMP="$$fixture_root/runtime" TEMP="$$fixture_root/runtime" \
+			DETENT_TEST_BOARD_CONTRACT_DIR="$$fixture_root" DETENT_TEST_POSTGRES=binary \
+			GOTOOLCHAIN="$$(awk '$$1 == "toolchain" {print $$2}' go.mod)"; \
+		env -u DETENT_API_TOKEN go test -p $(TEST_PROCS) -parallel=$(TEST_PROCS) -timeout=120s -v ./internal/hubserver -run '^TestBoardRequestHasFixedSQLBudget$$'; \
+		(cd "$(APP_DIR)" && npm test -- --maxWorkers=$(TEST_PROCS) $(APP_TEST_ARGS))
 
 css-watch:
 	@if [ -f "$(TAILWIND_INPUT)" ]; then \
