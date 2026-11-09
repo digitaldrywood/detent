@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 	"slices"
@@ -115,24 +114,7 @@ func (s *Service) importSpriteUsageCommand(ctx context.Context, scope nativeScop
 	if err := validateSpriteUsageRequest(&request, s.config.now()); err != nil {
 		return nil, err
 	}
-	if s.config.TenantRepository != nil {
-		return s.importSpriteUsageRecords(ctx, scope, request)
-	}
-	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: "sprite_usage.import", Feature: "collaboration"}, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		recorded := 0
-		for _, observation := range request.Observations {
-			changed, err := recordCostObservation(ctx, tx, string(scope.organization), string(scope.project), observation, now)
-			if err != nil {
-				return nil, err
-			}
-			if changed {
-				recorded++
-			}
-		}
-		return struct {
-			Recorded int `json:"recorded"`
-		}{Recorded: recorded}, nil
-	})
+	return s.importSpriteUsageRecords(ctx, scope, request)
 }
 
 func validateSpriteUsageRequest(request *spriteUsageRequest, now time.Time) error {
