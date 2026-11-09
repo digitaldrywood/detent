@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -224,6 +225,15 @@ func copyAttemptEvidenceHistory(ctx context.Context, admin *sql.DB, first, last 
 				resultErr = errors.Join(resultErr, err)
 			}
 		}()
+		foreignKeys, err := attemptEvidenceForeignKeys(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, constraint := range foreignKeys {
+			if _, err := tx.Exec(ctx, "ALTER TABLE attachments DROP CONSTRAINT "+pgx.Identifier{constraint.name}.Sanitize()); err != nil {
+				return err
+			}
+		}
 		type group struct{ prefix, project, item, attempt string }
 		groups := make([]group, 0, 53)
 		for attempt := 1; attempt <= 50; attempt++ {
@@ -271,6 +281,47 @@ func copyAttemptEvidenceHistory(ctx context.Context, admin *sql.DB, first, last 
 		if copied != int64(want) {
 			return fmt.Errorf("history rows=%d, want%d", copied, want)
 		}
+		for _, constraint := range foreignKeys {
+			if _, err := tx.Exec(ctx, "ALTER TABLE attachments ADD CONSTRAINT "+pgx.Identifier{constraint.name}.Sanitize()+" "+constraint.definition); err != nil {
+				return fmt.Errorf("validate history foreign key: %w", err)
+			}
+		}
+		restored, err := attemptEvidenceForeignKeys(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(restored, foreignKeys) {
+			return errors.New("history foreign key definitions changed")
+		}
 		return tx.Commit(ctx)
 	})
+}
+
+type attemptEvidenceForeignKey struct{ name, definition string }
+
+func attemptEvidenceForeignKeys(ctx context.Context, tx pgx.Tx) ([]attemptEvidenceForeignKey, error) {
+	rows, err := tx.Query(ctx, `SELECT conname,pg_get_constraintdef(oid),convalidated FROM pg_constraint WHERE conrelid='attachments'::regclass AND contype='f' ORDER BY conname`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var constraints []attemptEvidenceForeignKey
+	for rows.Next() {
+		var constraint attemptEvidenceForeignKey
+		var validated bool
+		if err := rows.Scan(&constraint.name, &constraint.definition, &validated); err != nil {
+			return nil, err
+		}
+		if !validated {
+			return nil, errors.New("history fixture requires validated foreign keys")
+		}
+		constraints = append(constraints, constraint)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(constraints) == 0 {
+		return nil, errors.New("history fixture foreign keys are missing")
+	}
+	return constraints, nil
 }
