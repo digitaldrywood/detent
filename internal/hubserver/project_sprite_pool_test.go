@@ -1813,6 +1813,36 @@ func TestProjectSpriteAllocationCommands(t *testing.T) {
 	otherLater := newNativeFixture(t, f.service, other.project.OrganizationID, "other later")
 	setPlacementFixture(t, other, policy.Placement{Mode: "blended"}, 101)
 	fixtures := []nativeFixture{f, later, other, otherLater}
+	poolCommands := map[tracker.OrganizationID]map[string]any{}
+	for index, project := range []nativeFixture{f, other} {
+		path := "/api/v2/organizations/" + string(project.project.OrganizationID) + "/sprite-pool"
+		command := map[string]any{"idempotency_key": "pool-" + string(project.project.OrganizationID), "revision": 1, "min_runners": 0, "max_runners": 0, "idle_seconds": 600 + 300*index, "bootstrap": "echo " + string(project.project.OrganizationID), "isolation_tier": "native-trusted", "share_idle_capacity": index == 0}
+		poolCommands[project.project.OrganizationID] = command
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, path, "", command), http.StatusUnauthorized)
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, path, project.token, command), http.StatusForbidden)
+		foreign := other.token
+		if index == 1 {
+			foreign = f.token
+		}
+		refused := performHubAPIRequest(t, service, http.MethodPut, path, foreign, command)
+		if refused.Code != http.StatusUnauthorized && refused.Code != http.StatusForbidden {
+			t.Fatalf("foreign tenant pool write=%d %s", refused.Code, refused.Body.String())
+		}
+		for range 2 {
+			response := performHubAPIRequest(t, service, http.MethodPut, path, testHubAdminToken, command)
+			requireNativeStatus(t, response, http.StatusOK)
+			var settings spritePoolView
+			decodeHubResponse(t, response, &settings)
+			if settings.Revision != 2 || settings.MaxRunners != 0 || settings.IdleSeconds != 600+300*index || settings.Bootstrap != "echo "+string(project.project.OrganizationID) || settings.ShareIdleCapacity != (index == 0) {
+				t.Fatalf("pool command/replay=%+v", settings)
+			}
+		}
+		ceiling := 2
+		if index == 1 {
+			ceiling = 101
+		}
+		setPlacementFixture(t, project, policy.Placement{Mode: "blended"}, ceiling)
+	}
 	for _, project := range fixtures {
 		t.Run(string(project.project.ID), func(t *testing.T) {
 			for _, test := range []struct {
@@ -1896,8 +1926,18 @@ func TestProjectSpriteAllocationCommands(t *testing.T) {
 		if project.project.OrganizationID == "org_first_second" {
 			want = 101
 		}
-		if settings.MaxRunners != want {
+		index := 0
+		if project.project.OrganizationID == other.project.OrganizationID {
+			index = 1
+		}
+		if settings.MaxRunners != want || settings.Revision != 3 || settings.IdleSeconds != 600+300*index || settings.Bootstrap != "echo "+string(project.project.OrganizationID) || settings.ShareIdleCapacity != (index == 0) {
 			t.Fatalf("pool after service reopen=%+v", settings)
+		}
+		response = performHubAPIRequest(t, resumed, http.MethodPut, "/api/v2/organizations/"+string(project.project.OrganizationID)+"/sprite-pool", testHubAdminToken, poolCommands[project.project.OrganizationID])
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &settings)
+		if settings.Revision != 3 || settings.MaxRunners != want || settings.Bootstrap != "echo "+string(project.project.OrganizationID) {
+			t.Fatalf("old pool receipt overwrote newer state after reopen: %+v", settings)
 		}
 	}
 
