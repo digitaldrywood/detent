@@ -33,6 +33,7 @@ import (
 
 type nativeExecution struct {
 	completionOwner   atomic.Bool
+	preparedPublisher atomic.Bool
 	recovery          atomic.Pointer[tracker.NativeRecovery]
 	stepReviews       *tracker.ChangeDetail
 	stepDiscussion    []tracker.NativeComment
@@ -429,7 +430,7 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 	e.mu.Lock()
 	defer func() {
 		if err == nil && e.preparedOutcome != "" {
-			e.RetainCompletion()
+			e.preparedPublisher.Store(true)
 		}
 		e.mu.Unlock()
 		if err == nil {
@@ -1051,6 +1052,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 				failure = *e.pending.Data.TerminalFailure
 				e.data.TerminalFailure, e.pending = &failure, nil
 				e.preparedOutcome = ""
+				e.preparedPublisher.Store(false)
 				return &nativeCompletionRejection{failure: failure}
 			}
 			e.preparedOutcome, e.preparedFailure = "failed", &failure

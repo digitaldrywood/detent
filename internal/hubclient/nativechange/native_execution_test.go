@@ -193,6 +193,9 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 					if err := e.PrepareFinish(t.Context(), "failed", "The worker failed.", nil); err != nil {
 						t.Fatal(err)
 					}
+					if !e.preparedPublisher.Load() || e.completionOwner.Load() {
+						t.Fatal("preparing completion changed explicit handoff ownership")
+					}
 				} else {
 					e.preparedOutcome = "failed"
 					if test.retained {

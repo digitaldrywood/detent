@@ -110,10 +110,22 @@ func RunNoChangeCompletion(t *testing.T, factories Constructors) {
 				if err != nil || change.VersionError == "" || change.ImplementationReview != nil || change.Validator != nil || change.SecurityAudit != nil {
 					t.Fatalf("restored completion did not request fresh source verification: %+v, %v", change, err)
 				}
+				if err := e.PrepareSourceIteration(t.Context(), tracker.NativeChangeReference{HeadSHA: base}); err != nil {
+					t.Fatal(err)
+				}
+				if !e.OwnsWork() {
+					t.Fatal("source iteration discarded explicit handoff ownership")
+				}
 				return
 			}
 			if _, err := e.SourceReview(t.Context()); !errors.Is(err, runner.ErrValidatorInfrastructure) {
 				t.Fatalf("unavailable source verification was not instance-owned: %v", err)
+			}
+			if err := e.PrepareSourceIteration(t.Context(), tracker.NativeChangeReference{HeadSHA: base}); err != nil {
+				t.Fatal(err)
+			}
+			if e.OwnsWork() {
+				t.Fatal("source iteration retained an abandoned prepared publisher")
 			}
 		})
 	}
