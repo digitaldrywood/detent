@@ -352,8 +352,9 @@ func TestWakeSpriteRunners(t *testing.T) {
 		organizationScope      bool
 		wrongOrganizationToken bool
 		selector               bool
+		retryAfterCooldown     bool
 	}{
-		{name: "paused runner with dispatchable work", heartbeatAgo: time.Minute, dispatchable: true, storeToken: true, spriteStatus: http.StatusOK, wantWoken: 1, wantWakeCalls: 1},
+		{name: "paused runner with dispatchable work", heartbeatAgo: time.Minute, dispatchable: true, storeToken: true, spriteStatus: http.StatusOK, wantWoken: 1, wantWakeCalls: 1, retryAfterCooldown: true},
 		{name: "policy selector excludes another paused runner", heartbeatAgo: time.Minute, dispatchable: true, storeToken: true, spriteStatus: http.StatusOK, wantWoken: 1, wantWakeCalls: 1, selector: true},
 		{name: "organization runner inherits token", heartbeatAgo: time.Minute, dispatchable: true, organizationToken: true, organizationScope: true, spriteStatus: http.StatusOK, wantWoken: 1, wantWakeCalls: 1},
 		{name: "project token overrides organization token", heartbeatAgo: time.Minute, dispatchable: true, storeToken: true, organizationToken: true, wrongOrganizationToken: true, spriteStatus: http.StatusOK, wantWoken: 1, wantWakeCalls: 1},
@@ -437,6 +438,11 @@ func TestWakeSpriteRunners(t *testing.T) {
 				t.Fatalf("fixture project has no state with dispatchable=%t", tt.dispatchable)
 			}
 			assertSpritePostgresFacts(t, f)
+			clock := &leaseTestClock{value: f.service.config.now().UTC().Truncate(time.Microsecond)}
+			if tt.retryAfterCooldown {
+				f.service.spriteWakeWork.Wait()
+				f.service.config.now = clock.Now
+			}
 			beforeWake := f.service.config.now()
 			woken, err := f.service.wakeSpriteRunners(t.Context(), scope, state)
 			if err != nil {
@@ -463,17 +469,59 @@ func TestWakeSpriteRunners(t *testing.T) {
 			if woken != tt.wantWoken {
 				t.Fatalf("woken = %d, want %d", woken, tt.wantWoken)
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			if len(calls) != tt.wantWakeCalls {
-				t.Fatalf("wake calls = %d, want %d", len(calls), tt.wantWakeCalls)
-			}
-			for _, call := range calls {
-				if call.Method != http.MethodPost || call.URL.String() != "https://api.sprites.dev/v1/sprites/customer-host/services/detent-runner/start?duration=30s" {
-					t.Fatalf("wake request = %s %s", call.Method, call.URL)
+			assertCalls := func(want int) {
+				t.Helper()
+				mu.Lock()
+				defer mu.Unlock()
+				if len(calls) != want {
+					t.Fatalf("wake calls = %d, want %d", len(calls), want)
 				}
-				if call.Header.Get("Authorization") != "Bearer "+spritesSecretSentinel {
-					t.Fatal("wake request did not carry the project's Sprites token")
+				for _, call := range calls {
+					if call.Method != http.MethodPost || call.URL.String() != "https://api.sprites.dev/v1/sprites/customer-host/services/detent-runner/start?duration=30s" {
+						t.Fatalf("wake request = %s %s", call.Method, call.URL)
+					}
+					if call.Header.Get("Authorization") != "Bearer "+spritesSecretSentinel {
+						t.Fatal("wake request did not carry the project's Sprites token")
+					}
+				}
+			}
+			assertCalls(tt.wantWakeCalls)
+			if tt.retryAfterCooldown {
+				var first postgres.SpriteOperation
+				if err := f.service.database.postgres.ReadSprite(t.Context(), scope.organization, corestore.Serving, func(r postgres.SpriteReader) error {
+					var err error
+					first, err = r.SpriteEnrollmentWake(t.Context(), runners[0].enrollment.ID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				for _, step := range []struct {
+					advance time.Duration
+					woken   int
+					calls   int
+				}{{time.Minute - time.Microsecond, 0, 1}, {time.Microsecond, tt.wantWoken, 2}, {0, 0, 2}} {
+					clock.Advance(step.advance)
+					woken, err := f.service.wakeSpriteRunners(t.Context(), scope, state)
+					if err != nil || woken != step.woken {
+						t.Fatalf("wake after %s=%d err=%v, want %d", step.advance, woken, err, step.woken)
+					}
+					assertCalls(step.calls)
+				}
+				if err := f.service.database.postgres.ReadSprite(t.Context(), scope.organization, corestore.Serving, func(r postgres.SpriteReader) error {
+					latest, err := r.SpriteEnrollmentWake(t.Context(), runners[0].enrollment.ID)
+					if err != nil {
+						return err
+					}
+					old, err := r.SpriteOperation(t.Context(), first.IdempotencyKey)
+					if err != nil {
+						return err
+					}
+					if latest.IdempotencyKey == first.IdempotencyKey || !latest.CreatedAt.Equal(clock.Now()) || latest.Outcome != first.Outcome || old.Outcome != first.Outcome || !old.UpdatedAt.Equal(first.UpdatedAt) {
+						t.Fatalf("wake receipts first=%+v old=%+v latest=%+v", first, old, latest)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
 				}
 			}
 		})

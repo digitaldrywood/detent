@@ -1753,12 +1753,20 @@ func (s *Service) wakeSpriteRunnersBudgetRecord(ctx context.Context, scope nativ
 			if err != nil || !allowed {
 				return err
 			}
-			op, err = owner.SpriteOperation(ctx, operationKey)
+			op, err = owner.SpriteEnrollmentWake(ctx, candidate.Enrollment)
 			if errors.Is(err, corestore.ErrNotFound) {
 				return nil
 			}
 			if err == nil && (op.Name != candidate.Hostname || op.Operation != "wake" || op.TargetEnrollmentID != candidate.Enrollment || op.SourceRevision != "") {
 				return corestore.ErrUniqueViolation
+			}
+			if err == nil && op.Outcome == "committed" {
+				if !op.UpdatedAt.After(candidate.LastHeartbeatAt) {
+					op = postgres.SpriteOperation{}
+				} else if s.config.now().Sub(op.UpdatedAt) >= time.Minute {
+					operationKey += ":" + op.UpdatedAt.UTC().Format(time.RFC3339Nano)
+					op = postgres.SpriteOperation{}
+				}
 			}
 			return err
 		})
