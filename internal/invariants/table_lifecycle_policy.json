@@ -101,6 +101,8 @@
     "health_detector_ticks": {"class": "derived_with_retention", "retention": "latest tick per detector"},
     "health_scheduled_reports": {"class": "immutable_payload", "retention": "project lifetime; stable scheduled run receipts and health cadence history"},
     "health_finding_issues": {"class": "index"},
+    "health_issue_queue": {"class": "hot_state", "retention": "current health finding/project publication receipt; cascades with its finding project link"},
+    "health_issue_reports": {"class": "hot_state", "retention": "current health intake publication receipt; cascades with its canonical finding issue link"},
     "health_finding_projects": {"class": "index"},
     "health_findings": {"class": "derived_with_retention", "retention": "latest detector finding per subject; health retention"},
     "hosted_artifact_usage": {"class": "derived_with_retention", "retention": "organization lifetime; replace usage projection"},

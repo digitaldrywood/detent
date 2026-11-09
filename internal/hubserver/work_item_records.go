@@ -112,6 +112,9 @@ func (s *Service) hydrateCanonicalWorkItemRecord(ctx context.Context, row corest
 }
 
 func (s *Service) readWorkItem(ctx context.Context, scope nativeScope, id string) (tracker.NativeIssue, error) {
+	if scope.healthPublication != nil {
+		return s.readHealthIssue(ctx, scope, id)
+	}
 	row, version, err := s.readWorkItemRecord(ctx, scope, id)
 	if err != nil {
 		return tracker.NativeIssue{}, err
@@ -380,6 +383,8 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		return plan, nil
 	}
 	switch request := input.(type) {
+	case healthIssueCancellation:
+		return planHealthIssueCancellation(scope, plan, request, now)
 	case tracker.CreateIssue:
 		state := request.State
 		if request.GitHubIssueURL != "" && (scope.integrationRepository == "" || request.State == "") {
@@ -779,9 +784,18 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		var machinePriority *workItemMachinePriority
 		if request, ok := plannedInput.(tracker.CreateIssue); ok && !plan.existing && request.GitHubIssueURL == "" && scope.credential.HostedRole != "reporter" {
 			if _, machine := issueorigin.Parse(request.Body); machine {
-				machineSearch, err = s.prepareWorkItemDuplicates(ctx, scope, request, true)
-				if err != nil {
-					return nil, err
+				if scope.healthPublication != nil {
+					machineSearch = &workItemDuplicateSearch{}
+				} else {
+					machineSearch, err = s.prepareWorkItemDuplicates(ctx, scope, request, true)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if scope.healthPublication != nil {
+					if err := s.filterHealthPublicationDuplicates(ctx, scope, machineSearch); err != nil {
+						return nil, err
+					}
 				}
 				if len(machineSearch.matches) > 0 {
 					candidate := machineSearch.matches[0]
@@ -924,6 +938,10 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				return nil, err
 			}
 			data := tracker.CollaborationData{Revision: tracker.Revision(revision), Fields: plan.fields}
+			if request, ok := input.(healthIssueCancellation); ok {
+				data.FromState, data.ToState = stringValue(plan.current.WorkflowStateName), plan.issue.State
+				data.Reason, data.ReasonDetail = request.Reason, request.ReasonDetail
+			}
 			if request, ok := input.(tracker.VerifyFix); ok {
 				if plan.issue.Verification != nil {
 					data.Verification = plan.issue.Verification.State
@@ -1315,6 +1333,9 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				if err := link.write(ctx, w, plan); err != nil {
 					return err
 				}
+			}
+			if err := recordHealthPublication(ctx, w, scope, plan); err != nil {
+				return err
 			}
 			if err := s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK); err != nil {
 				return err

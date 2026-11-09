@@ -45,6 +45,9 @@ func (s *Service) accessAuthority(scope nativeScope, write bool) accessstore.Aut
 }
 
 func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader, scope nativeScope, write bool) error {
+	if scope.healthPublication != nil {
+		return authorizeHealthPublication(ctx, r, scope, write)
+	}
 	if scope.integrationRepository != "" {
 		reader, ok := r.(projectstore.Reader)
 		if !ok {

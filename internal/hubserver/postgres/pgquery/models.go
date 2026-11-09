@@ -1289,6 +1289,30 @@ type HealthFindingProject struct {
 	PageSequence   int64
 }
 
+type HealthIssueQueue struct {
+	OrganizationID   tracker.OrganizationID
+	FindingID        string
+	ProjectID        tracker.ProjectID
+	SourceRevision   int64
+	Revision         int64
+	SourceDigest     string
+	AfterFingerprint string
+	Pending          bool
+	NextCheckAt      time.Time
+	CheckedAt        *time.Time
+}
+
+type HealthIssueReport struct {
+	OrganizationID         tracker.OrganizationID
+	FindingID              string
+	ProjectID              tracker.ProjectID
+	WorkItemID             string
+	PublicationSequence    pgtype.Int8
+	IntakeFingerprint      string
+	ReportedEvidenceDigest string
+	ReportedResolvedAt     *time.Time
+}
+
 type HealthScheduledReport struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID

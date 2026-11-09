@@ -26,6 +26,8 @@ func (s *Service) publishHealthEvaluation(ctx context.Context, organization trac
 			return errors.New("duplicate health fingerprint")
 		}
 		seen[finding.Fingerprint] = true
+	}
+	for _, finding := range findings {
 		raw, err := json.Marshal(finding.Evidence)
 		if err != nil {
 			return fmt.Errorf("encode health evidence: %w", err)
@@ -109,6 +111,9 @@ func (s *Service) publishHealthFinding(ctx context.Context, organization tracker
 				return err
 			}
 		}
+		if err := enqueueHealthIssueRecord(ctx, w, organization, row, finding, at); err != nil {
+			return err
+		}
 		if created && row.Severity == "attention" {
 			return enqueueSlackHealthRecord(ctx, w, organization, row, "opened", at)
 		}
@@ -120,6 +125,10 @@ func (s *Service) resolveHealthRecord(ctx context.Context, organization tracker.
 	return s.database.postgres.WriteHealth(ctx, organization, corestore.Background, func(w postgres.HealthWriter) error {
 		updated, err := w.UpdateHealthRecord(ctx, postgres.UpdateHealthRecordInput{OrganizationID: organization, ID: row.ID, ExpectedRevision: row.Revision, LastSeenAt: row.LastSeenAt, ResolvedAt: &at, Severity: row.Severity, Summary: row.Summary, NextAction: row.NextAction, EvidenceObjectKey: row.EvidenceObjectKey, EvidenceSha256: row.EvidenceSha256, EvidenceBytes: row.EvidenceBytes, EvidenceContentBytes: row.EvidenceContentBytes})
 		if err != nil {
+			return err
+		}
+		finding := healthFinding{Fingerprint: row.Fingerprint, Class: row.Class, Subject: healthSubject{Kind: row.SubjectKind, ID: row.SubjectID}, Severity: row.Severity}
+		if err := enqueueHealthIssueRecord(ctx, w, organization, updated, finding, at); err != nil {
 			return err
 		}
 		if row.Severity == "attention" {

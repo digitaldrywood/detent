@@ -47,6 +47,7 @@ type githubIntakeRevision struct {
 }
 
 type nativeScope struct {
+	healthPublication     *healthIssuePublication
 	integrationOwned      bool
 	githubIntakeRevision  *githubIntakeRevision
 	integrationRepository string
