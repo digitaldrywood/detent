@@ -66,11 +66,22 @@ func (s *Service) rejectSpriteOperationWithRetry(ctx context.Context, op postgre
 	if err != nil {
 		return err
 	}
-	var member spritePoolMember
+	var deletion postgres.SpriteOperation
 	err = s.config.TenantRepository.WriteTenant(cleanup, op.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(postgres.SpriteWriter)
 		if !ok {
 			return accessstore.ErrTransactionRequired
+		}
+		var lockedRunner string
+		if remoteCreated {
+			var err error
+			lockedRunner, err = lockSpriteMemberRunner(cleanup, w, owner, op.Name)
+			if err != nil {
+				return err
+			}
+			if _, err := owner.LockSpritePool(cleanup); err != nil {
+				return err
+			}
 		}
 		op.Outcome = "rejected"
 		op.ReceiptObjectKey = &key
@@ -103,7 +114,16 @@ func (s *Service) rejectSpriteOperationWithRetry(ctx context.Context, op postgre
 				return err
 			}
 		}
-		member = spritePoolMember{Name: row.Name, EnrollmentID: row.EnrollmentID, AllocationProjectID: row.AllocationProjectID}
+		if remoteCreated {
+			provision, err := owner.SpriteOperation(cleanup, "provision:"+row.EnrollmentID)
+			if err != nil {
+				return err
+			}
+			deletion, err = s.createSpriteDeleteOperationRecord(cleanup, w, owner, current, provision, lockedRunner)
+			if err != nil {
+				return err
+			}
+		}
 		if retry && row.AllocationProjectID != "" {
 			allocation, err := owner.SpriteAllocation(cleanup, row.AllocationProjectID)
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -118,10 +138,10 @@ func (s *Service) rejectSpriteOperationWithRetry(ctx context.Context, op postgre
 		}
 		return nil
 	})
-	if err != nil || !remoteCreated {
+	if err != nil || !remoteCreated || ctx.Err() != nil {
 		return err
 	}
-	return s.retirePoolSpriteRecord(cleanup, nativeScope{organization: op.OrganizationID, project: op.ProjectID}, member, ctx.Err() == nil)
+	return s.runSpriteOperation(cleanup, deletion)
 }
 
 func (s *Service) spriteLifecycleArchive(ctx context.Context, organization tracker.OrganizationID, value any) (string, error) {
@@ -930,6 +950,9 @@ func (s *Service) completeSpriteOperation(ctx context.Context, op postgres.Sprit
 			if err != nil {
 				return err
 			}
+			if _, err := owner.LockSpritePool(ctx); err != nil {
+				return err
+			}
 		}
 		op.Outcome = "committed"
 		op.ReceiptObjectKey = &key
@@ -1380,6 +1403,30 @@ func lockSpriteMemberRunner(ctx context.Context, writer tenantstore.Writer, owne
 	return id, nil
 }
 
+func (s *Service) createSpriteDeleteOperationRecord(ctx context.Context, writer tenantstore.Writer, owner postgres.SpriteWriter, member postgres.SpriteMember, provision postgres.SpriteOperation, lockedRunner string) (postgres.SpriteOperation, error) {
+	if provision.Operation != "provision" || provision.Outcome != "committed" || provision.Name != member.Name || provision.TargetEnrollmentID != member.EnrollmentID {
+		return postgres.SpriteOperation{}, corestore.ErrRevisionConflict
+	}
+	id, err := owner.SpriteMemberRunner(ctx, member.Name)
+	if err == nil {
+		if id != lockedRunner {
+			return postgres.SpriteOperation{}, corestore.ErrRevisionConflict
+		}
+		identity, err := writer.RunnerIdentity(ctx, id)
+		if err != nil {
+			return postgres.SpriteOperation{}, err
+		}
+		identity.State = "draining"
+		if err := writer.UpdateRunnerRouting(ctx, identity.Revision, identity); err != nil {
+			return postgres.SpriteOperation{}, err
+		}
+	} else if !errors.Is(err, corestore.ErrNotFound) {
+		return postgres.SpriteOperation{}, err
+	}
+	now := s.config.now()
+	return owner.CreateSpriteOperation(ctx, postgres.SpriteOperation{OrganizationID: member.OrganizationID, IdempotencyKey: "delete:" + member.EnrollmentID, Name: member.Name, Operation: "delete", TargetEnrollmentID: member.EnrollmentID, ProjectID: tracker.ProjectID(member.AllocationProjectID), RequestObjectKey: provision.RequestObjectKey, ProviderResourceID: provision.ProviderResourceID, CreatedAt: now, NextAttemptAt: now})
+}
+
 func (s *Service) retirePoolSpriteRecord(ctx context.Context, scope nativeScope, member spritePoolMember, execute bool) error {
 	var operation postgres.SpriteOperation
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -1471,24 +1518,7 @@ func (s *Service) retirePoolSpriteRecord(ctx context.Context, scope nativeScope,
 				return err
 			}
 		}
-		id, err := owner.SpriteMemberRunner(ctx, member.Name)
-		if err == nil {
-			if id != lockedRunner {
-				return corestore.ErrRevisionConflict
-			}
-			identity, err := w.RunnerIdentity(ctx, id)
-			if err != nil {
-				return err
-			}
-			identity.State = "draining"
-			if err := w.UpdateRunnerRouting(ctx, identity.Revision, identity); err != nil {
-				return err
-			}
-		} else if !errors.Is(err, corestore.ErrNotFound) {
-			return err
-		}
-		now := s.config.now()
-		operation, err = owner.CreateSpriteOperation(ctx, postgres.SpriteOperation{OrganizationID: scope.organization, IdempotencyKey: "delete:" + member.EnrollmentID, Name: member.Name, Operation: "delete", TargetEnrollmentID: member.EnrollmentID, ProjectID: scope.project, RequestObjectKey: provision.RequestObjectKey, ProviderResourceID: provision.ProviderResourceID, CreatedAt: now, NextAttemptAt: now})
+		operation, err = s.createSpriteDeleteOperationRecord(ctx, w, owner, current, provision, lockedRunner)
 		if err != nil {
 			return err
 		}

@@ -2895,6 +2895,178 @@ func TestProjectSpriteProvisioningRecovery(t *testing.T) {
 			}
 		})
 	}
+	t.Run("bootstrap and deletion lock pool before receipts", func(t *testing.T) {
+		f, scope, provider := newSpritePoolFixture(t, "bootstrap")
+		setSpriteAllocationFixture(t, f, 1, 0)
+		started := []chan struct{}{make(chan struct{}), make(chan struct{})}
+		release := []chan struct{}{make(chan struct{}), make(chan struct{})}
+		var resume [2]sync.Once
+		unblock := func(index int) { resume[index].Do(func() { close(release[index]) }) }
+		ctx, cancel := context.WithCancel(t.Context())
+		var held *sql.Tx
+		var work sync.WaitGroup
+		t.Cleanup(func() {
+			cancel()
+			unblock(0)
+			unblock(1)
+			if held != nil {
+				_ = held.Rollback()
+			}
+			work.Wait()
+		})
+		provider.stage = func(stage string) {
+			if stage == "exec" {
+				close(started[0])
+				<-release[0]
+			}
+		}
+		provider.deleteStarted, provider.releaseDelete = started[1], release[1]
+		done := make(chan error, 1)
+		work.Go(func() { done <- f.service.scaleSpritePool(ctx, scope, false) })
+		stored, ok := projectRecordDatabases.Load(f.service.database.postgres)
+		if !ok {
+			t.Fatal("cleanup fixture has no PostgreSQL administrator")
+		}
+		for index, phase := range []string{"bootstrap", "delete"} {
+			waitSpriteWake(t, started[index])
+			var err error
+			held, err = stored.(*sql.DB).BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var organization, enrollment string
+			if err := held.QueryRowContext(ctx, `SELECT organization_id FROM organization_sprite_pools WHERE organization_id=$1 FOR UPDATE`, scope.organization).Scan(&organization); err != nil {
+				t.Fatal(err)
+			}
+			if err := held.QueryRowContext(ctx, `SELECT enrollment_id FROM runner_sprite_memberships WHERE organization_id=$1 AND name=$2 FOR UPDATE`, scope.organization, provider.created[0]).Scan(&enrollment); err != nil {
+				t.Fatal(err)
+			}
+			var runners int
+			if err := held.QueryRowContext(ctx, `SELECT count(*) FROM runner_identities WHERE organization_id=$1 AND enrollment_id=$2`, scope.organization, enrollment).Scan(&runners); err != nil || runners != 0 {
+				t.Fatalf("cleanup fixture runner identities=%d error=%v", runners, err)
+			}
+			unblock(index)
+			testenv.WaitUntil(t, ctx, func() error {
+				if _, err := held.ExecContext(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
+					return err
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("cleanup finished before row contention: %v", err)
+				default:
+				}
+				var waiting int
+				if err := held.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock'`).Scan(&waiting); err != nil {
+					return err
+				}
+				if waiting == 0 {
+					return errors.New("cleanup has not reached row contention")
+				}
+				return nil
+			})
+			var key string
+			if err := held.QueryRowContext(ctx, `SELECT idempotency_key FROM sprite_lifecycle_operations WHERE organization_id=$1 AND idempotency_key=$2 FOR UPDATE NOWAIT`, scope.organization, phase+":"+enrollment).Scan(&key); err != nil {
+				t.Errorf("%s cleanup held its receipt before acquiring the pool: %v", phase, err)
+			}
+			if err := held.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := <-done; err == nil {
+			t.Fatal("bootstrap failure was accepted")
+		}
+		if len(provider.deleted) != 1 {
+			t.Fatalf("cleanup after releasing contention deleted=%v", provider.deleted)
+		}
+	})
+	t.Run("bootstrap cleanup survives administrator replacement and restart", func(t *testing.T) {
+		f, scope, provider := newSpritePoolFixture(t, "bootstrap")
+		now := f.service.config.now()
+		f.service.config.now = func() time.Time { return now }
+		setSpriteAllocationFixture(t, f, 1, 0)
+		var replacement accessstore.Credential
+		replacementToken := newNativeID("token")
+		writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+			var err error
+			replacement, err = w.AccessCredential(t.Context(), scope.credential.ID)
+			if err != nil {
+				return err
+			}
+			replacement.ID = newNativeID("credential")
+			replacement.Name = "Example replacement administrator"
+			replacement.Hash = apikey.HashToken(replacementToken)
+			replacement.Fingerprint = tokenFingerprint(replacement.Hash)
+			return w.CreateAccessCredential(t.Context(), replacement)
+		})
+		revoked := make(chan error, 1)
+		var revoke sync.Once
+		provider.stage = func(stage string) {
+			if stage == "exec" {
+				revoke.Do(func() {
+					revoked <- f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.RevokeAccessCredential(t.Context(), scope.credential.ID, now)
+					})
+				})
+			}
+		}
+		if err := f.service.scaleSpritePool(t.Context(), scope, false); err == nil {
+			t.Fatal("bootstrap failure with revoked authority was accepted")
+		}
+		select {
+		case err := <-revoked:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatal("bootstrap did not reach authority revocation")
+		}
+		if len(provider.created) != 1 || len(provider.deleted) != 0 {
+			t.Fatalf("revoked cleanup created=%v deleted=%v", provider.created, provider.deleted)
+		}
+		var deletion postgres.SpriteOperation
+		if err := f.service.database.postgres.ReadSprite(t.Context(), scope.organization, corestore.Serving, func(r postgres.SpriteReader) error {
+			member, err := r.SpriteMember(t.Context(), provider.created[0])
+			if err != nil {
+				return err
+			}
+			if member.State != "deleting" {
+				return fmt.Errorf("rejected bootstrap member state=%s", member.State)
+			}
+			deletion, err = r.SpriteOperation(t.Context(), "delete:"+member.EnrollmentID)
+			return err
+		}); err != nil {
+			t.Fatalf("rejected bootstrap lost its cleanup intent: %v", err)
+		}
+		if deletion.Outcome != "pending" || deletion.ProviderResourceID != "resource-"+provider.created[0] || deletion.RequestObjectKey == nil {
+			t.Fatalf("cleanup intent lost resource identity: %+v", deletion)
+		}
+		updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.ConfiguredBy = replacement.ID })
+		configuration := Config{DatabaseBackend: DatabasePostgres, Postgres: f.service.config.Postgres, Hosted: &HostedConfig{OrganizationID: string(scope.organization), WorkOSOrganizationID: "provider_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}, SecretKeys: f.service.config.SecretKeys, RunDetails: f.service.config.RunDetails, SpritesHTTPClient: f.service.config.SpritesHTTPClient, Version: f.service.config.Version, now: func() time.Time { return now }}
+		if err := f.service.Close(); err != nil {
+			t.Fatal(err)
+		}
+		resumed := openTestService(t, configuration)
+		resumed.workerCancel()
+		<-resumed.workerDone
+		<-resumed.secretRewrapDone
+		resumed.spriteWakeWork.Wait()
+		f.service, provider.f.service = resumed, resumed
+		provider.stage = nil
+		credential, status, err := resumed.authenticateTenantAPIHash(t.Context(), scope.organization, replacement.Hash, "", "")
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("replacement administrator authority=%d error=%v", status, err)
+		}
+		scope.credential = credential
+		if err := resumed.scaleSpritePool(t.Context(), scope, false); err != nil {
+			t.Fatal(err)
+		}
+		if len(provider.created) != 1 || len(provider.deleted) != 1 || provider.deleted[0] != provider.created[0] {
+			t.Fatalf("cleanup after restart created=%v deleted=%v", provider.created, provider.deleted)
+		}
+		if members := projectSpriteMembers(t, f, scope); len(members) != 0 {
+			t.Fatalf("cleanup after restart retained members=%+v", members)
+		}
+	})
 	t.Run("Hub restart releases an interrupted reservation", func(t *testing.T) {
 		f, scope, provider := newSpritePoolFixture(t, "")
 		setSpriteAllocationFixture(t, f, 1, 0)
