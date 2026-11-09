@@ -67,24 +67,32 @@ func (s *Service) readHealthRateRecords(ctx context.Context, organization tracke
 			if err != nil {
 				return fmt.Errorf("read health attempts: %w", err)
 			}
+			attemptIDs := make([]string, len(attempts))
+			for i, attempt := range attempts {
+				attemptIDs[i] = attempt.AttemptID
+			}
+			sources, err := readHealthAttemptSources(ctx, r, organization, tracker.ProjectID(p.ID), attemptIDs)
+			if err != nil {
+				return err
+			}
 			for _, attempt := range attempts {
 				var input tenantAttemptSnapshot
-				input.attempt, err = r.Attempt(ctx, attempt.AttemptID)
+				input.attempt, err = sources.Attempt(ctx, attempt.AttemptID)
 				if err != nil {
 					return err
 				}
-				input.lease, err = r.Lease(ctx, input.attempt.LeaseID)
+				input.lease, err = sources.Lease(ctx, input.attempt.LeaseID)
 				if err != nil {
 					return err
 				}
-				input.event, err = r.LatestRunEvent(ctx, attempt.ProjectID, attempt.AttemptID)
+				input.event, err = sources.LatestRunEvent(ctx, attempt.ProjectID, attempt.AttemptID)
 				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 					return err
 				}
 				if input.event.ID == "" {
 					input.event = eventstore.Event{OrganizationID: organization, ProjectID: attempt.ProjectID, WorkItemID: attempt.WorkItemID}
 				}
-				if err := readTenantAttemptRunPayload(ctx, r, &input); err != nil {
+				if err := readTenantAttemptRunPayload(ctx, sources, &input); err != nil {
 					return err
 				}
 				attemptRuns = append(attemptRuns, input)

@@ -288,6 +288,20 @@ func (s *Service) readHealthWaitRecords(ctx context.Context, organization tracke
 		if !ok {
 			return workItemStorageUnavailable()
 		}
+		projectAttempts := map[tracker.ProjectID][]string{}
+		for _, item := range items {
+			if item.AttemptID != "" {
+				projectAttempts[item.Project] = append(projectAttempts[item.Project], item.AttemptID)
+			}
+		}
+		projectSources := map[tracker.ProjectID]tenantstore.Reader{}
+		for _, project := range slices.Sorted(maps.Keys(projectAttempts)) {
+			sources, err := readHealthAttemptSources(ctx, r, organization, project, projectAttempts[project])
+			if err != nil {
+				return err
+			}
+			projectSources[project] = sources
+		}
 		for _, item := range items {
 			input := itemEvents{item: item}
 			input.transition, err = transitions.LatestWorkflowTransition(ctx, item.Project, item.Item)
@@ -295,20 +309,21 @@ func (s *Service) readHealthWaitRecords(ctx context.Context, organization tracke
 				return err
 			}
 			if item.AttemptID != "" {
-				input.attempt.attempt, err = r.Attempt(ctx, item.AttemptID)
+				sources := projectSources[item.Project]
+				input.attempt.attempt, err = sources.Attempt(ctx, item.AttemptID)
 				if err != nil {
 					return err
 				}
 				input.item.AttemptStatus = input.attempt.attempt.Status
 				input.item.AttemptUpdatedAt = input.attempt.attempt.UpdatedAt
-				input.attempt.event, err = r.LatestRunEvent(ctx, item.Project, item.AttemptID)
+				input.attempt.event, err = sources.LatestRunEvent(ctx, item.Project, item.AttemptID)
 				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 					return err
 				}
 				if input.attempt.event.ID == "" {
 					input.attempt.event = eventstore.Event{OrganizationID: organization, ProjectID: item.Project, WorkItemID: item.Item}
 				}
-				if err := readTenantAttemptRunPayload(ctx, r, &input.attempt); err != nil {
+				if err := readTenantAttemptRunPayload(ctx, sources, &input.attempt); err != nil {
 					return err
 				}
 			}
