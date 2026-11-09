@@ -48,6 +48,13 @@ func schemaVersions() ([]int64, error) {
 		}
 		versions = append(versions, version)
 	}
+	source, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	for _, migration := range ConversationMigrations(source) {
+		versions = append(versions, migration.Version)
+	}
 	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
 	return versions, nil
 }
