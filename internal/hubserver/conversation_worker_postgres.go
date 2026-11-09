@@ -1148,8 +1148,11 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			return err
 		}
 		record := conversationRecordFromStore(stored)
-		if stored.Revision != snapshot.Revision || stored.Execution.Owner.AttemptID != snapshot.Execution.Owner.AttemptID {
-			return conversationStale("The conversation changed; retry the control poll")
+		if stored.Execution.Owner.AttemptID != snapshot.Execution.Owner.AttemptID {
+			return conversationStale("The conversation worker changed")
+		}
+		if stored.Revision != snapshot.Revision {
+			return nativeConflict(tracker.Revision(stored.Revision))
 		}
 		acknowledged, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: id, AttemptID: identity.AttemptID, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliverySending}, BeforeSequence: after + 1, Limit: limit})
 		if err != nil {

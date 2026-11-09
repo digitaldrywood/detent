@@ -293,6 +293,39 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	if len(controlPage.Controls) != 1 || controlPage.Controls[0].Key != "pg-control" || controlPage.Controls[0].Text != "Example instruction" {
 		t.Fatalf("controls page = %+v", controlPage)
 	}
+	t.Run("concurrent revision retries with the same worker", func(t *testing.T) {
+		f.service.config.TenantRepository = &conversationControlSnapshotRepository{Repository: repository, beforeWrite: func() error {
+			return repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				stored, err := w.Conversation(t.Context(), scope.project, linked.ID)
+				if err != nil {
+					return err
+				}
+				stored.Title = "Example updated conversation"
+				_, err = w.UpdateConversation(t.Context(), stored, stored.Revision)
+				return err
+			})
+		}}
+		t.Cleanup(func() { f.service.config.TenantRepository = repository })
+		response := callConversationWorkerRoute(t, router.controls, scope, http.MethodGet, fmt.Sprintf("/controls?after=%d&wait=0", controlPage.Cursor), "", linked.ID, nil, identity)
+		f.service.config.TenantRepository = repository
+		requireConversationErrorCode(t, response, http.StatusConflict, "revision_conflict")
+		if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			message, err := r.Message(t.Context(), linked.ID, controlPage.Controls[0].MessageID)
+			if err != nil {
+				return err
+			}
+			if message.Delivery != conversation.DeliverySending {
+				return fmt.Errorf("revision conflict acknowledged control delivery: %s", message.Delivery)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		page, err := router.pollControlsPostgres(t.Context(), scope, linked.ID, identity, 0)
+		if err != nil || len(page.Controls) != 1 || page.Controls[0].Key != "pg-control" || page.Controls[0].Expected.AttemptID != identity.AttemptID {
+			t.Fatalf("same worker could not resume its control poll: %+v, %v", page, err)
+		}
+	})
 	controlCursor := controlPage.Cursor
 	for _, test := range []struct {
 		name    string
