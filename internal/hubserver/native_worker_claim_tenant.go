@@ -351,7 +351,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return err
 		}
 		if plan.replay == nil {
-			if err := checkSpriteClaimRecord(ctx, w, identity.RunnerID, scope.project, authoritativeNow); err != nil {
+			if err := checkSpriteClaimRecord(ctx, w, identity.RunnerID, scope.project, request, authoritativeNow); err != nil {
 				return err
 			}
 		}

@@ -987,5 +987,8 @@ func (s *Service) spritePlacementScopeRecord(ctx context.Context, scope nativeSc
 	if result.ReadyTodo == 0 {
 		result.Reason = "No compatible ready Todo demand"
 	}
+	if limit := result.Policy.SpriteLimit(); limit > 0 && result.SpriteUsed >= limit {
+		result.Reason = "Configured maximum Sprite concurrency is full"
+	}
 	return result, nil
 }
