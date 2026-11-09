@@ -1658,24 +1658,13 @@
       "backend_sqlite": 1,
       "sqlite_open": 1
     },
-    "internal/orchestrator/heartbeat_contention_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
     "internal/orchestrator/history_retention_test.go": {
       "backend_sqlite": 1,
       "driver_import": 1,
       "sqlite_open": 2
     },
-    "internal/orchestrator/human_question_test.go": {
-      "sqlite_open": 2
-    },
     "internal/orchestrator/implement_dependency_deferral_test.go": {
       "sqlite_open": 4
-    },
-    "internal/orchestrator/issue_contract_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 3
     },
     "internal/orchestrator/lane_mutation_test.go": {
       "backend_sqlite": 1,
@@ -1723,10 +1712,6 @@
     },
     "internal/project/runner_setup_test.go": {
       "sqlite_open": 2
-    },
-    "internal/runner/activity_profile_benchmark_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
     },
     "internal/sqlstmt/cache_test.go": {
       "driver_import": 1

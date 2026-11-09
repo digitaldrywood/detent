@@ -365,10 +365,6 @@ func TestReworkGateWaitReloadReconcilesRepairs(t *testing.T) {
 }
 
 func TestReworkGateWaitRestoreDispatchesCurrentHeadValidatorRework(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	for _, tt := range []struct {
@@ -391,7 +387,7 @@ func TestReworkGateWaitRestoreDispatchesCurrentHeadValidatorRework(t *testing.T)
 			snapshot := cloneIssue(issue)
 			snapshot.PullRequest.HeadSHA = tt.snapshotHead
 
-			memo := openValidatorMemoStore(t)
+			memo := &validatorMemoFixture{}
 			attempt := successfulReworkGateWaitAttempt(now.Add(-time.Minute), issue, autoPromoteReworkSignature{
 				PRNumber: int64(issue.PullRequest.Number),
 				HeadSHA:  issue.PullRequest.HeadSHA,
@@ -508,10 +504,6 @@ func TestReworkGateWaitRestoreDispatchesCurrentHeadValidatorRework(t *testing.T)
 }
 
 func TestReworkGateWaitRestoreRequiresCurrentHeadHydration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	for _, tt := range []struct {
@@ -533,7 +525,7 @@ func TestReworkGateWaitRestoreRequiresCurrentHeadHydration(t *testing.T) {
 				PRNumber: int64(issue.PullRequest.Number),
 				HeadSHA:  issue.PullRequest.HeadSHA,
 			}, true)
-			memo := openValidatorMemoStore(t)
+			memo := &validatorMemoFixture{}
 			if err := memo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
 				ProjectID:  "detent",
 				IssueID:    issue.ID,
@@ -566,7 +558,7 @@ func TestReworkGateWaitRestoreRequiresCurrentHeadHydration(t *testing.T) {
 			orch := &Orchestrator{
 				cfg:           cfg,
 				connector:     tracker,
-				workAttempts:  memo,
+				workAttempts:  &recordingWorkAttemptStore{},
 				validatorMemo: memo,
 				logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 			}

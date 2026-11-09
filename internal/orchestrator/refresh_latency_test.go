@@ -19,12 +19,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-// Replay the actual authorization and blocked owners with many excluded active
-// cards and genuinely unresolved dependencies, using SQLite rather than a no-op
-// evidence writer. Counters separate store time from provider fanout.
 func BenchmarkRefreshMaintenance(b *testing.B) {
-	backend := storetest.Open(b)
-	metrics := &maintenanceStore{Store: backend}
+	backend := &refreshMaintenanceFixture{}
+	metrics := &maintenanceStore{maintenanceBackend: backend}
 	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "latency"}, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}, Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"owned"}}}, DependencyAutoUnblock: DependencyAutoUnblockConfig{Enabled: true}})
 	var excluded, blocked []connector.Issue
 	for i := range 100 {
@@ -61,17 +58,38 @@ func BenchmarkRefreshMaintenance(b *testing.B) {
 			}
 			b.ReportMetric(float64(metrics.reads)/float64(cycles), "timeline_reads/op")
 			b.ReportMetric(float64(metrics.writes)/float64(cycles), "decision_writes/op")
-			b.ReportMetric(float64(metrics.batches)/float64(cycles), "batch_commits/op")
-			b.ReportMetric(float64(metrics.readTime.Nanoseconds())/float64(cycles), "store_read_ns/op")
-			b.ReportMetric(float64(metrics.writeTime.Nanoseconds())/float64(cycles), "store_write_ns/op")
+			b.ReportMetric(float64(metrics.batches)/float64(cycles), "batch_calls/op")
+			b.ReportMetric(float64(metrics.readTime.Nanoseconds())/float64(cycles), "owner_read_ns/op")
+			b.ReportMetric(float64(metrics.writeTime.Nanoseconds())/float64(cycles), "owner_write_ns/op")
 			b.ReportMetric(float64(len(tracker.fetchComments))/float64(cycles), "comment_calls/op")
 			b.ReportMetric(float64(len(tracker.fetchIdentifiers))/float64(cycles), "identity_calls/op")
 		})
 	}
 }
 
+type maintenanceBackend interface {
+	store.WorkAttemptStore
+	store.SchedulerDecisionBatchStore
+	WorkflowMetricsRecorder
+	IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error)
+}
+
+type refreshMaintenanceFixture struct {
+	autoPromoteWorkflowMetricsRecorder
+	recordingWorkAttemptStore
+}
+
+func (s *refreshMaintenanceFixture) RecordSchedulerDecisions(_ context.Context, decisions []store.SchedulerDecision) ([]int64, error) {
+	ids := make([]int64, len(decisions))
+	for index, decision := range decisions {
+		s.decisions = append(s.decisions, decision)
+		ids[index] = int64(len(s.decisions))
+	}
+	return ids, nil
+}
+
 type maintenanceStore struct {
-	store.Store
+	maintenanceBackend
 	batches             int
 	reads, writes       int
 	readTime, writeTime time.Duration
@@ -80,14 +98,14 @@ type maintenanceStore struct {
 func (s *maintenanceStore) IssueWorkflowTimeline(ctx context.Context, id store.IssueIdentity) (store.WorkflowTimeline, error) {
 	start := time.Now()
 	s.reads++
-	v, e := s.Store.IssueWorkflowTimeline(ctx, id)
+	v, e := s.maintenanceBackend.IssueWorkflowTimeline(ctx, id)
 	s.readTime += time.Since(start)
 	return v, e
 }
 func (s *maintenanceStore) RecordSchedulerDecision(ctx context.Context, d store.SchedulerDecision) (int64, error) {
 	start := time.Now()
 	s.writes++
-	v, e := s.Store.RecordSchedulerDecision(ctx, d)
+	v, e := s.maintenanceBackend.RecordSchedulerDecision(ctx, d)
 	s.writeTime += time.Since(start)
 	return v, e
 }
@@ -96,7 +114,7 @@ func (s *maintenanceStore) RecordSchedulerDecisions(ctx context.Context, d []sto
 	start := time.Now()
 	s.batches++
 	s.writes += len(d)
-	ids, e := s.Store.(store.SchedulerDecisionBatchStore).RecordSchedulerDecisions(ctx, d)
+	ids, e := s.maintenanceBackend.RecordSchedulerDecisions(ctx, d)
 	s.writeTime += time.Since(start)
 	return ids, e
 }
@@ -105,7 +123,7 @@ func (s *maintenanceStore) RecordSchedulerDecisions(ctx context.Context, d []sto
 // snapshot; every exclusion must still have durable per-issue evidence.
 func TestAuthorizationBatchRetainsEveryRefusal(t *testing.T) {
 	backend := storetest.Open(t)
-	evidence := &maintenanceStore{Store: backend}
+	evidence := &maintenanceStore{maintenanceBackend: backend.(maintenanceBackend)}
 	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "latency"}, ActiveStates: []string{"In Progress"}, Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"owned"}}}})
 	state := newState(cfg)
 	var issues []connector.Issue

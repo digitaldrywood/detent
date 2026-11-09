@@ -4,6 +4,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,18 +27,43 @@ import (
 )
 
 type activityBenchmarkStore struct {
-	store.Store
+	SessionStore
+	mu     sync.Mutex
+	events map[int64]store.WorkflowPhaseEvent
+	nextID int64
 	writes atomic.Int64
 }
 
 func (s *activityBenchmarkStore) SaveWorkflowActivityProfile(ctx context.Context, id int64, event store.WorkflowPhaseEvent, profile workflowmetrics.ActivityProfile) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	data, err := json.Marshal(profile)
+	if err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id == 0 {
+		s.nextID++
+		id = s.nextID
+	}
+	event.ID, event.MetadataJSON = id, string(data)
+	s.events[id] = event
 	s.writes.Add(1)
-	return s.Store.(activityProfileStore).SaveWorkflowActivityProfile(ctx, id, event, profile)
+	return id, nil
 }
 
-// This controlled experiment uses real short shell tools and long commands,
-// received provider lifecycles, SQLite checkpoints, and concurrent audit reads.
-// Run with -benchtime=1x -count=6; baseline omits only the recorder.
+func (s *activityBenchmarkStore) timeline() store.WorkflowTimeline {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := make([]store.WorkflowPhaseEvent, 0, len(s.events))
+	for id := int64(1); id <= s.nextID; id++ {
+		events = append(events, s.events[id])
+	}
+	return store.WorkflowTimeline{Events: events}
+}
+
 func BenchmarkActivityProfileWorkloads(b *testing.B) {
 	for _, workload := range []struct {
 		name               string
@@ -79,18 +105,12 @@ func activityBenchmarkWorkload(b *testing.B, attempts, commands int, command str
 			b.Fatal(err)
 		}
 	}
-	path := filepath.Join(dir, "profile.db")
-	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer backend.Close()
-	measuredStore := &activityBenchmarkStore{Store: backend}
+	measuredStore := &activityBenchmarkStore{events: map[int64]store.WorkflowPhaseEvent{}}
+
 	r := &Runner{store: measuredStore, projectID: "fixture", now: time.Now, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	cpuBefore := activityBenchmarkCPU()
-	walBefore := activityBenchmarkFileSize(path + "-wal")
 	started := time.Now()
 	b.StartTimer()
 	var workers, auditors sync.WaitGroup
@@ -105,11 +125,7 @@ func activityBenchmarkWorkload(b *testing.B, attempts, commands int, command str
 				case <-stopQueries:
 					return
 				case <-ticker.C:
-					timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: "fixture", IssueID: "fixture-issue"})
-					if err != nil {
-						b.Error(err)
-						return
-					}
+					timeline := measuredStore.timeline()
 					_ = workflowmetrics.ActivityAudits(timeline.Events, time.Now())
 					auditCount.Add(1)
 				}
@@ -195,16 +211,12 @@ func activityBenchmarkWorkload(b *testing.B, attempts, commands int, command str
 	report(float64(after.Mallocs-before.Mallocs), "allocations")
 	report(float64(after.HeapAlloc), "heap-B")
 	report(float64(measuredStore.writes.Load()), "writes")
-	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: "fixture", IssueID: "fixture-issue"})
-	if err != nil {
-		b.Fatal(err)
-	}
+	timeline := measuredStore.timeline()
 	var metadataBytes int
 	for _, event := range timeline.Events {
 		metadataBytes += len(event.MetadataJSON)
 	}
 	report(float64(metadataBytes), "metadata-B")
-	report(float64(max(0, activityBenchmarkFileSize(path+"-wal")-walBefore)), "wal-B")
 	report(float64(auditCount.Load()), "audits")
 	b.StartTimer()
 }
@@ -218,11 +230,4 @@ func activityBenchmarkCPU() float64 {
 		}
 	}
 	return total
-}
-
-func activityBenchmarkFileSize(path string) int64 {
-	if info, err := os.Stat(path); err == nil {
-		return info.Size()
-	}
-	return 0
 }

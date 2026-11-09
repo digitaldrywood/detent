@@ -2,8 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -52,10 +50,6 @@ func TestINV14DispatchQuestionTool(t *testing.T) {
 }
 
 func TestINV14LegacyQuestionRowDispatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name, gateKind, commentID string
@@ -66,29 +60,10 @@ func TestINV14LegacyQuestionRowDispatch(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			path := filepath.Join(t.TempDir(), "detent.db")
-			db, err := store.Open(t.Context(), store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := db.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			legacy, err := sql.Open("sqlite", path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := legacy.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			_, err = legacy.ExecContext(t.Context(), `INSERT INTO human_questions(project_id, issue_id, question_key, issue_identifier, body, question_comment_id, answer_comment_id) VALUES ('detent', 'issue', 'decision', 'owner/repo#3035', 'What next?', ?, '')`, tc.commentID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			db := &historicalQuestionAttemptStore{questions: []store.HumanQuestion{{
+				ProjectID: "detent", IssueID: "issue", Key: "decision", Identifier: "owner/repository#3035",
+				Body: "What next?", QuestionCommentID: tc.commentID,
+			}}}
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}, AutoPromote: AutoPromoteConfig{Enabled: true, PassState: "Merging", Gate: gate.Config{Kind: tc.gateKind}}})
 			worker := newWorkerHostRunner()
 			o := Orchestrator{cfg: cfg, connector: fakehub.New(fakehub.Config{}), workAttempts: db, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runner.Completion, 1)}
@@ -100,12 +75,30 @@ func TestINV14LegacyQuestionRowDispatch(t *testing.T) {
 			if request.Issue.ID != "issue" {
 				t.Fatalf("dispatched issue = %q", request.Issue.ID)
 			}
-			receipts, err := db.(interface {
-				HumanQuestions(context.Context, string, string) ([]store.HumanQuestion, error)
-			}).HumanQuestions(t.Context(), "detent", "issue")
+			if db.reads != 0 {
+				t.Fatal("dispatch consulted historical questions")
+			}
+			receipts, err := db.HumanQuestions(t.Context(), "detent", "issue")
 			if err != nil || len(receipts) != 1 || receipts[0].AnswerCommentID != "" {
 				t.Fatalf("historical receipt changed: %+v, %v", receipts, err)
 			}
 		})
 	}
+}
+
+type historicalQuestionAttemptStore struct {
+	recordingWorkAttemptStore
+	questions []store.HumanQuestion
+	reads     int
+}
+
+func (s *historicalQuestionAttemptStore) HumanQuestions(_ context.Context, projectID, issueID string) ([]store.HumanQuestion, error) {
+	s.reads++
+	var questions []store.HumanQuestion
+	for _, question := range s.questions {
+		if question.ProjectID == projectID && question.IssueID == issueID {
+			questions = append(questions, question)
+		}
+	}
+	return questions, nil
 }

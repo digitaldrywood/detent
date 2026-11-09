@@ -1476,7 +1476,7 @@ func TestBlockedRecoveryRecomputesDispatchWithoutDerivedHolds(t *testing.T) {
 				}
 				tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
 				cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "Rework"}, TerminalStates: []string{"Done"}, FailureRetryBaseDelay: time.Second, MaxRetryBackoff: time.Minute})
-				db := openWorkAttemptRecoveryStore(t, t.Context())
+				db := &autoPromoteWorkflowMetricsRecorder{}
 				o := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: db}
 				state := newState(cfg)
 				hold := workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerOrchestrator, Cause: workAttemptErrorRunner, SourceRevision: holdSourceRevision(issue), ExpiresAt: now.Add(time.Hour)}

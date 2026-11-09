@@ -1,8 +1,7 @@
 package orchestrator
 
 import (
-	"database/sql"
-	"path/filepath"
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -10,13 +9,11 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
-	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/store/storetest"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-func TestIssueContractRolloutPolicyOnFreshStore(t *testing.T) {
+func TestIssueContractRolloutPolicyFromOwner(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name           string
@@ -27,16 +24,7 @@ func TestIssueContractRolloutPolicyOnFreshStore(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			path := storetest.NewDatabasePath(t)
-			backend, err := store.Open(t.Context(), store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := backend.Close(); err != nil {
-					t.Error(err)
-				}
-			})
+			backend := &issueContractPolicyFixture{cutoff: time.Date(2026, 10, 7, 20, 0, 0, 0, time.UTC)}
 			contract, err := workflowconfig.ResolveIssueContract("Run `make check-land`.")
 			if err != nil {
 				t.Fatal(err)
@@ -50,23 +38,12 @@ func TestIssueContractRolloutPolicyOnFreshStore(t *testing.T) {
 			}
 			replacementCutoff := replacement.cfg.IssueContractRolloutAt
 			if replacementCutoff.IsZero() {
-				t.Fatal("fresh store has no rollout cutoff")
+				t.Fatal("owner rollout cutoff was not loaded")
 			}
 			originalCutoff := replacementCutoff.Add(-2 * time.Hour)
 			betweenCutoffs := originalCutoff.Add(time.Hour)
 			if test.preservePolicy {
-				db, err := sql.Open("sqlite", path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					if err := db.Close(); err != nil {
-						t.Error(err)
-					}
-				})
-				if _, err := db.ExecContext(t.Context(), "UPDATE issue_contract_rollout SET activated_at = ?", originalCutoff.Format(time.RFC3339Nano)); err != nil {
-					t.Fatal(err)
-				}
+				backend.cutoff = originalCutoff
 			}
 			orch, err := New(cfg, deps)
 			if err != nil {
@@ -172,13 +149,8 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 			state := newState(cfg)
 			orch := &Orchestrator{cfg: cfg, connector: backend}
 			if test.restart {
-				db, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = db.Close() })
-				orch.workflowMetrics = db
-				orch.laneLedger = db
+				orch.workflowMetrics = &autoPromoteWorkflowMetricsRecorder{}
+				orch.laneLedger = &recordingLaneLedger{}
 			}
 			if test.deferred {
 				allowed, err := orch.enforceIssueContract(t.Context(), &state, issue, "Todo", now)
@@ -245,4 +217,13 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+type issueContractPolicyFixture struct {
+	autoPromoteWorkflowMetricsRecorder
+	cutoff time.Time
+}
+
+func (s *issueContractPolicyFixture) IssueContractRolloutAt(context.Context) (time.Time, error) {
+	return s.cutoff, nil
 }

@@ -3134,14 +3134,10 @@ func TestTickAutoPromoteStartsValidatorBeforeAutomatedReview(t *testing.T) {
 }
 
 func TestTickAutoPromoteValidatorUnavailableRoutesRework(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := t.Context()
-	memo := openValidatorMemoStore(t)
+	memo := &validatorMemoFixture{}
 	now := time.Date(2026, 7, 13, 10, 30, 0, 0, time.UTC)
 	cfg := autoPromoteValidatorTestConfig()
 	issue := autoPromoteTickIssue("issue-validator-unavailable", []string{"bug"}, &connector.PullRequest{
@@ -3602,14 +3598,10 @@ func TestTickAutoPromoteValidatorFailureBackoff(t *testing.T) {
 }
 
 func TestTickAutoPromoteValidatorFailureExhaustionRoutesRework(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := t.Context()
-	memo := openValidatorMemoStore(t)
+	memo := &validatorMemoFixture{}
 	clock := newAutoPromoteTickClock(time.Date(2026, 7, 13, 11, 0, 0, 0, time.UTC))
 	cfg := autoPromoteValidatorTestConfig()
 	cfg.FailureRetryBaseDelay = time.Second
