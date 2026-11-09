@@ -282,6 +282,9 @@ func requireCounterStopped(t *testing.T, path string) {
 	t.Helper()
 	process := counterProcess(t, path)
 	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		identity, inspectErr := procgroup.Inspect(&exec.Cmd{Process: process})
+		observations, observeErr := procgroup.Observe([]procgroup.Identity{identity})
+		t.Logf("terminal teardown observations=%+v inspect_error=%v observe_error=%v", observations, inspectErr, observeErr)
 		t.Fatalf("the terminal process still exists after its session ended: %v", err)
 	}
 }
