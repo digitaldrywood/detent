@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -993,6 +994,11 @@ func spriteReservationWanted(ctx context.Context, r tenantstore.Reader, op postg
 	return enrollment.RevokedAt == nil && (enrollment.RedeemedAt != nil || enrollment.ExpiresAt.After(now)), nil
 }
 
+func spriteCreationLabel(op postgres.SpriteOperation) string {
+	digest := sha256.Sum256([]byte("detent-sprite-create\x00" + string(op.OrganizationID) + "\x00" + op.IdempotencyKey))
+	return fmt.Sprintf("detent-owner-%x", digest[:16])
+}
+
 func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOperation) error {
 	request, err := s.spriteLifecyclePayload(ctx, op)
 	if err != nil {
@@ -1137,8 +1143,9 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 				return err
 			}
 			body, err := json.Marshal(struct {
-				Name string `json:"name"`
-			}{op.Name})
+				Name   string   `json:"name"`
+				Labels []string `json:"labels"`
+			}{op.Name, []string{spriteCreationLabel(op)}})
 			if err != nil {
 				return fmt.Errorf("encode Sprite name: %w", err)
 			}
@@ -1160,10 +1167,17 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 			return spritesResponseError(status)
 		}
 		var resource struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID     string   `json:"id"`
+			Name   string   `json:"name"`
+			Labels []string `json:"labels"`
 		}
 		if json.Unmarshal(raw, &resource) != nil || resource.ID == "" || resource.Name != op.Name {
+			return errSpritesValidation
+		}
+		if op.ProviderResourceID != "" && resource.ID != op.ProviderResourceID {
+			return errSpritesValidation
+		}
+		if status == http.StatusOK && op.ProviderResourceID == "" && !slices.Contains(resource.Labels, spriteCreationLabel(op)) {
 			return errSpritesValidation
 		}
 		return s.completeSpriteOperation(ctx, op, spriteLifecycleReceipt{ResourceID: resource.ID}, "bootstrap", request)
