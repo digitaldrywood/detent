@@ -174,8 +174,25 @@ func (s *Service) reportWorkspaceActionRunRecord(c echo.Context) error {
 }
 
 func (w *workspaceService) claimActionRunRecord(ctx context.Context, scope nativeScope, id, stream string, runner *relayConnection) (actionRunRecord, error) {
+	var source postgres.ActionRun
+	err := w.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(workspaceReader)
+		if !ok {
+			return workspaceUnavailable()
+		}
+		var err error
+		source, err = reader.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: id})
+		return err
+	})
+	if err != nil {
+		return actionRunRecord{}, err
+	}
+	prepared, err := w.server.hydrateActionRunRecord(ctx, source, false)
+	if err != nil {
+		return actionRunRecord{}, err
+	}
 	var row postgres.ActionRun
-	err := w.server.workspaceWrite(ctx, scope, func(writer workspaceWriter, now time.Time) error {
+	err = w.server.workspaceWrite(ctx, scope, func(writer workspaceWriter, now time.Time) error {
 		current, err := writer.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: id})
 		if err != nil {
 			return err
@@ -199,7 +216,9 @@ func (w *workspaceService) claimActionRunRecord(ctx context.Context, scope nativ
 	if err != nil {
 		return actionRunRecord{}, err
 	}
-	return w.server.hydrateActionRunRecord(ctx, row, false)
+	claimed := actionRunFromRecord(row)
+	claimed.Command = prepared.Command
+	return claimed, nil
 }
 
 func (w *workspaceService) dispatchActionRunRecords(ctx context.Context) {
