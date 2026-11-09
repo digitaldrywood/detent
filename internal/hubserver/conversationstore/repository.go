@@ -137,20 +137,24 @@ type ContentObject struct {
 }
 
 type Attachment struct {
-	OrganizationID tracker.OrganizationID
-	ConversationID string
-	ProjectID      tracker.ProjectID
-	ID             string
-	MessageID      string
-	PrincipalID    string
-	Name           string
-	MIME           string
-	Size           int64
-	ArtifactRef    string
-	ContentID      string
-	CreatedAt      time.Time
-	ExpiresAt      *time.Time
-	DeletedAt      *time.Time
+	PublicationPending   bool
+	PublicationOperation string
+	PublicationKey       string
+	PublicationHash      string
+	OrganizationID       tracker.OrganizationID
+	ConversationID       string
+	ProjectID            tracker.ProjectID
+	ID                   string
+	MessageID            string
+	PrincipalID          string
+	Name                 string
+	MIME                 string
+	Size                 int64
+	ArtifactRef          string
+	ContentID            string
+	CreatedAt            time.Time
+	ExpiresAt            *time.Time
+	DeletedAt            *time.Time
 }
 
 type ConversationQuery struct {

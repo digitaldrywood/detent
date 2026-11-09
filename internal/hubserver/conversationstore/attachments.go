@@ -21,6 +21,7 @@ type AttachmentWriter interface {
 	LockAttachmentConversation(context.Context, tracker.ProjectID, string) (Conversation, error)
 	AttachmentReader
 	CreateConversationAttachment(context.Context, Attachment, ContentObject) error
+	CompleteConversationAttachmentPublication(context.Context, Attachment, time.Time) error
 	DeleteConversationAttachment(context.Context, tracker.ProjectID, string, string, time.Time) error
 }
 

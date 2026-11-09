@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -143,7 +146,7 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 			admin := usagePostgresAdmin(t, f.service)
 			for _, created := range conversations {
 				var rows int
-				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM (SELECT 1 FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 LIMIT 2) bounded", f.project.OrganizationID, f.project.ID, created.Conversation.ID).Scan(&rows); err != nil {
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM (SELECT 1 FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND NOT publication_pending LIMIT 2) bounded", f.project.OrganizationID, f.project.ID, created.Conversation.ID).Scan(&rows); err != nil {
 					t.Fatal(err)
 				}
 				want := 0
@@ -269,7 +272,7 @@ func TestConversationAttachmentPublicationRechecksRevision(t *testing.T) {
 			count := func() int {
 				t.Helper()
 				var rows int
-				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM (SELECT 1 FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 LIMIT 2) bounded", f.project.OrganizationID, f.project.ID, recordID).Scan(&rows); err != nil {
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM (SELECT 1 FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND NOT publication_pending LIMIT 2) bounded", f.project.OrganizationID, f.project.ID, recordID).Scan(&rows); err != nil {
 					t.Fatal(err)
 				}
 				return rows
@@ -383,6 +386,210 @@ func TestConversationUnsentAttachmentRetainsLastArchiveCharge(t *testing.T) {
 				return err
 			}); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestConversationAbandonedAttachmentPublicationUsesSweep(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		expire bool
+		shared bool
+		change func(context.Context, tenantstore.Writer, conversationAPIFixture, string) error
+	}{
+		{"revoked principal", false, false, func(ctx context.Context, w tenantstore.Writer, f conversationAPIFixture, _ string) error {
+			return w.RevokeAccessCredential(ctx, f.ownerID, f.service.config.now())
+		}},
+		{"archived conversation", false, false, func(ctx context.Context, w tenantstore.Writer, f conversationAPIFixture, id string) error {
+			row, err := w.Conversation(ctx, f.project.ID, id)
+			if err != nil {
+				return err
+			}
+			row.Archived = true
+			_, err = w.UpdateConversation(ctx, row, row.Revision)
+			return err
+		}},
+		{"expiry before late publication", true, false, nil},
+		{"shared expired publication", true, true, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			var clockMu sync.Mutex
+			objects := &conversationContentFixture{}
+			f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects}, func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now })
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			id := f.create(t, f.token, map[string]any{"title": "Abandoned attachment"}).Conversation.ID
+			peer := f.create(t, f.other, map[string]any{"title": "Usable peer"}).Conversation.ID
+			messageResponse := f.command(t, f.token, id, conversation.Command{Key: "binding-target", Kind: conversation.CommandMessage, Text: "Attachment binding target"})
+			requireNativeStatus(t, messageResponse, http.StatusOK)
+			var target conversation.Receipt
+			decodeHubResponse(t, messageResponse, &target)
+			f.service.tokenUseWork.Wait()
+			repository := f.service.database.postgres
+			usage := func() (int64, int64) {
+				t.Helper()
+				var raw, archive int64
+				if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					raw, err = r.CollaborationBytes(t.Context())
+					if err != nil {
+						return err
+					}
+					archive, err = r.ArchiveBytes(t.Context())
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return raw, archive
+			}
+			content := []byte("retained abandoned publication")
+			if test.shared {
+				upload := f.upload(t, f.other, peer, "example.txt", "text/plain", content)
+				requireNativeStatus(t, f.command(t, f.other, peer, conversation.Command{Key: "shared-custody", Kind: conversation.CommandMessage, Text: "Retain shared attachment", Attachments: []string{upload.ID}}), http.StatusOK)
+				f.service.tokenUseWork.Wait()
+			}
+			before, _ := usage()
+			changed := false
+			objects.onIO = func() error {
+				if changed {
+					return nil
+				}
+				changed = true
+				var pending conversationstore.Attachment
+				if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					pending, err = r.(conversationstore.AttachmentReader).ConversationAttachmentByRef(t.Context(), f.project.ID, id, conversationAttachmentRef(id, f.ownerID, "abandoned-upload"))
+					return err
+				}); err != nil {
+					return err
+				}
+				if !pending.PublicationPending || pending.PublicationKey != "abandoned-upload" {
+					return errors.New("attachment has no typed publication custody")
+				}
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: f.ownerID, Hash: apikey.HashToken(f.token), Scope: apiScopeOperator}}
+				_, _, readErr := f.service.readAttachmentPG(t.Context(), scope, id, pending.ID)
+				var denied *nativeError
+				if !errors.As(readErr, &denied) || denied.Code != "not_found" {
+					return errors.New("pending attachment was downloadable")
+				}
+				if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.(conversationstore.AttachmentWriter).BindConversationAttachment(t.Context(), f.project.ID, id, pending.ID, f.ownerID, target.MessageID, f.service.config.now())
+				}); !errors.Is(err, corestore.ErrNotFound) {
+					return errors.New("pending attachment was bindable")
+				}
+				if test.expire {
+					clockMu.Lock()
+					now = now.Add(conversation.AttachmentTTL + time.Second)
+					clockMu.Unlock()
+					swept, err := f.service.conversations.sweepAttachmentsPG(t.Context())
+					if err != nil || swept != 1 {
+						t.Errorf("in-flight expiry=%d error=%v, want1", swept, err)
+						return errors.New("in-flight attachment did not expire")
+					}
+					return nil
+				}
+				return repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { return test.change(t.Context(), w, f, id) })
+			}
+			response := postConversationAttachment(t, f.service, f.base, f.token, id, "example.txt", "text/plain", content, "abandoned-upload")
+			if response.Code == http.StatusCreated || response.Code == http.StatusOK || !changed {
+				t.Fatalf("publication was not abandoned: status=%d changed=%v", response.Code, changed)
+			}
+			objects.onIO = nil
+			ref, _, err := attachment.PrepareArchive(string(f.project.OrganizationID), 1, bytes.NewReader(content))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := objects.ReadContent(t.Context(), string(f.project.OrganizationID), ref)
+			if err != nil || !bytes.Equal(stored, content) {
+				t.Fatalf("late publication lost retained bytes: error=%v", err)
+			}
+			after, archiveAfter := usage()
+			wantCharge := int64(len(content))
+			if test.shared {
+				wantCharge = 0
+			}
+			if after != before+wantCharge {
+				t.Fatalf("reservation bytes=%d, want%d", after-before, wantCharge)
+			}
+			if !test.expire {
+				clockMu.Lock()
+				now = now.Add(conversation.AttachmentTTL + time.Second)
+				clockMu.Unlock()
+			}
+			objects.onIO = func() error {
+				if occupied := repository.Stats().AcquiredConns(); occupied != 0 {
+					t.Errorf("sweep object read holds%d connections", occupied)
+				}
+				return nil
+			}
+			swept, err := f.service.conversations.sweepAttachmentsPG(t.Context())
+			wantSwept := 1
+			if test.expire {
+				wantSwept = 0
+			}
+			if err != nil || swept != wantSwept {
+				t.Fatalf("abandoned sweep=%d error=%v, want%d", swept, err, wantSwept)
+			}
+			if test.expire {
+				objects.mu.Lock()
+				publications := objects.publications
+				objects.mu.Unlock()
+				retry := postConversationAttachment(t, f.service, f.base, f.token, id, "example.txt", "text/plain", content, "abandoned-upload")
+				requireNativeStatus(t, retry, http.StatusConflict)
+				objects.mu.Lock()
+				retried := objects.publications
+				objects.mu.Unlock()
+				if retried != publications {
+					t.Fatalf("expired publication retried object IO: before=%d after=%d", publications, retried)
+				}
+			}
+			if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.Receipt(t.Context(), f.ownerID, "conversation-attachment/"+string(f.project.ID)+"/"+id, "abandoned-upload")
+				if !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("abandoned receipt remains: %v", err)
+				}
+				row, err := r.(conversationstore.AttachmentReader).ConversationAttachmentByRef(t.Context(), f.project.ID, id, conversationAttachmentRef(id, f.ownerID, "abandoned-upload"))
+				if err != nil || row.DeletedAt == nil || row.MessageID != "" {
+					t.Fatalf("abandoned custody=%+v error=%v", row, err)
+				}
+				object, err := r.ConversationContent(t.Context(), row.ContentID)
+				if err != nil {
+					return err
+				}
+				var owners int
+				if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND archive_id=$2 AND owner_kind='conversation-attachment' AND owner_id=$3", f.project.OrganizationID, object.ArchiveID, row.ID).Scan(&owners); err != nil {
+					return err
+				}
+				wantOwners := 1
+				if test.shared {
+					wantOwners = 0
+				}
+				if owners != wantOwners {
+					t.Fatalf("retained archive owners=%d,want%d", owners, wantOwners)
+				}
+				if test.shared {
+					var total int
+					if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND archive_id=$2 AND owner_kind='conversation-attachment'", f.project.OrganizationID, object.ArchiveID).Scan(&total); err != nil {
+						return err
+					}
+					if total != 1 {
+						t.Fatalf("shared retained archive owners=%d,want1", total)
+					}
+				}
+				_, err = r.Conversation(t.Context(), f.project.ID, peer)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			retained, archiveRetained := usage()
+			if retained != after || archiveRetained != archiveAfter {
+				t.Fatalf("verified retained bytes refunded: raw=%d want%d archive=%d want%d", retained, after, archiveRetained, archiveAfter)
+			}
+			if swept, err := f.service.conversations.sweepAttachmentsPG(t.Context()); err != nil || swept != 0 {
+				t.Fatalf("repeated sweep=%d error=%v", swept, err)
 			}
 		})
 	}

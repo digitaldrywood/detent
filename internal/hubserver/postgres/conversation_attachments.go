@@ -13,11 +13,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const pgConversationAttachmentColumns = `organization_id,project_id,conversation_id,id,coalesce(message_id,''),principal_id,name,mime,size,artifact_ref,coalesce(content_attachment_id,''),created_at,expires_at,deleted_at`
+const pgConversationAttachmentColumns = `organization_id,project_id,conversation_id,id,coalesce(message_id,''),principal_id,name,mime,size,artifact_ref,coalesce(content_attachment_id,''),created_at,expires_at,deleted_at,publication_pending,publication_operation,publication_key,publication_hash`
 
 func scanPGConversationAttachment(row interface{ Scan(...any) error }) (conversationstore.Attachment, error) {
 	var a conversationstore.Attachment
-	err := row.Scan(&a.OrganizationID, &a.ProjectID, &a.ConversationID, &a.ID, &a.MessageID, &a.PrincipalID, &a.Name, &a.MIME, &a.Size, &a.ArtifactRef, &a.ContentID, &a.CreatedAt, &a.ExpiresAt, &a.DeletedAt)
+	err := row.Scan(&a.OrganizationID, &a.ProjectID, &a.ConversationID, &a.ID, &a.MessageID, &a.PrincipalID, &a.Name, &a.MIME, &a.Size, &a.ArtifactRef, &a.ContentID, &a.CreatedAt, &a.ExpiresAt, &a.DeletedAt, &a.PublicationPending, &a.PublicationOperation, &a.PublicationKey, &a.PublicationHash)
 	return a, err
 }
 
@@ -36,6 +36,9 @@ func (s *session) CreateConversationAttachment(ctx context.Context, a conversati
 		return err
 	}
 	if a.OrganizationID != object.OrganizationID || a.ContentID != object.ID || object.ID != pgConversationContentID(string(s.organization), object.Reference) || object.Reference.Validate(string(s.organization)) != nil || object.Reference.UncompressedSize != a.Size || a.CreatedAt.IsZero() || object.CreatedAt.IsZero() || a.ProjectID == "" || a.PrincipalID == "" || a.ArtifactRef == "" || a.Name == "" || a.MIME == "" || a.MessageID != "" || a.DeletedAt != nil || a.ExpiresAt == nil || !a.ExpiresAt.After(a.CreatedAt) || conversation.ValidateAttachmentID(a.ID) != nil || conversation.ValidateAttachmentBytes(a.Size) != nil {
+		return corestore.ErrInvalidPage
+	}
+	if a.PublicationPending && (a.PublicationOperation == "" || a.PublicationKey == "" || a.PublicationHash == "") {
 		return corestore.ErrInvalidPage
 	}
 	current, err := s.AttachmentConversation(ctx, a.ProjectID, a.ConversationID)
@@ -64,11 +67,25 @@ func (s *session) CreateConversationAttachment(ctx context.Context, a conversati
 	if stored.Reference != ref || stored.ArchiveID != archive.ID {
 		return corestore.ErrUniqueViolation
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO conversation_attachments (organization_id,project_id,conversation_id,id,principal_id,name,mime,size,artifact_ref,content_attachment_id,created_at,expires_at,collaboration_bytes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$8)`, s.organization, a.ProjectID, a.ConversationID, a.ID, a.PrincipalID, a.Name, a.MIME, a.Size, a.ArtifactRef, a.ContentID, a.CreatedAt, a.ExpiresAt)
+	_, err = s.db.Exec(ctx, `INSERT INTO conversation_attachments (organization_id,project_id,conversation_id,id,principal_id,name,mime,size,artifact_ref,content_attachment_id,created_at,expires_at,collaboration_bytes,publication_pending,publication_operation,publication_key,publication_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$8,$13,$14,$15,$16)`, s.organization, a.ProjectID, a.ConversationID, a.ID, a.PrincipalID, a.Name, a.MIME, a.Size, a.ArtifactRef, a.ContentID, a.CreatedAt, a.ExpiresAt, a.PublicationPending, a.PublicationOperation, a.PublicationKey, a.PublicationHash)
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	return s.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: s.organization, ArchiveID: archive.ID, Kind: "conversation-attachment", ID: a.ID, CreatedAt: a.CreatedAt})
+}
+
+func (s *session) CompleteConversationAttachmentPublication(ctx context.Context, a conversationstore.Attachment, at time.Time) error {
+	if err := s.checkOrganization(a.OrganizationID); err != nil {
+		return err
+	}
+	result, err := s.db.Exec(ctx, `UPDATE conversation_attachments SET publication_pending=false WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND principal_id=$5 AND publication_operation=$6 AND publication_key=$7 AND publication_hash=$8 AND content_attachment_id=$9 AND artifact_ref=$10 AND publication_pending AND deleted_at IS NULL AND expires_at>$11`, s.organization, a.ProjectID, a.ConversationID, a.ID, a.PrincipalID, a.PublicationOperation, a.PublicationKey, a.PublicationHash, a.ContentID, a.ArtifactRef, at)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if result.RowsAffected() != 1 {
+		return corestore.ErrNotFound
+	}
+	return nil
 }
 
 func (s *session) DeleteConversationAttachment(ctx context.Context, project tracker.ProjectID, conversationID, id string, at time.Time) error {
@@ -97,7 +114,7 @@ func (s *session) DeleteConversationAttachment(ctx context.Context, project trac
 		return mapError(ctx, err)
 	}
 	if accounted && shared {
-		return s.reclaimSharedConversationAttachment(ctx, project, conversationID, id, object.ArchiveID)
+		return s.reclaimSharedConversationAttachment(ctx, project, conversationID, id, object.ArchiveID, a.PublicationPending, at)
 	}
 	result, err := s.db.Exec(ctx, `UPDATE conversation_attachments SET deleted_at=$5 WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND message_id IS NULL AND deleted_at IS NULL`, s.organization, project, conversationID, id, at)
 	if err != nil {
@@ -110,9 +127,14 @@ func (s *session) DeleteConversationAttachment(ctx context.Context, project trac
 	return nil
 }
 
-func (s *session) reclaimSharedConversationAttachment(ctx context.Context, project tracker.ProjectID, conversationID, id, archiveID string) error {
+func (s *session) reclaimSharedConversationAttachment(ctx context.Context, project tracker.ProjectID, conversationID, id, archiveID string, pending bool, at time.Time) error {
 	var charged int64
-	err := s.db.QueryRow(ctx, `DELETE FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND message_id IS NULL AND deleted_at IS NULL RETURNING collaboration_bytes`, s.organization, project, conversationID, id).Scan(&charged)
+	var err error
+	if pending {
+		err = s.db.QueryRow(ctx, `WITH previous AS MATERIALIZED (SELECT collaboration_bytes FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND publication_pending AND message_id IS NULL AND deleted_at IS NULL FOR UPDATE) UPDATE conversation_attachments a SET collaboration_bytes=0,deleted_at=$5 FROM previous WHERE a.organization_id=$1 AND a.project_id=$2 AND a.conversation_id=$3 AND a.id=$4 AND a.publication_pending AND a.message_id IS NULL AND a.deleted_at IS NULL RETURNING previous.collaboration_bytes`, s.organization, project, conversationID, id, at).Scan(&charged)
+	} else {
+		err = s.db.QueryRow(ctx, `DELETE FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND message_id IS NULL AND deleted_at IS NULL RETURNING collaboration_bytes`, s.organization, project, conversationID, id).Scan(&charged)
+	}
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -149,7 +171,7 @@ func (s *session) attachmentConversation(ctx context.Context, project tracker.Pr
 }
 
 func (s *session) BindConversationAttachment(ctx context.Context, project tracker.ProjectID, conversationID, id, principal, message string, now time.Time) error {
-	result, err := s.db.Exec(ctx, `UPDATE conversation_attachments SET message_id=$6,expires_at=NULL WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND principal_id=$5 AND message_id IS NULL AND deleted_at IS NULL AND expires_at>$7 AND content_attachment_id IS NOT NULL`, s.organization, project, conversationID, id, principal, message, now)
+	result, err := s.db.Exec(ctx, `UPDATE conversation_attachments SET message_id=$6,expires_at=NULL WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND principal_id=$5 AND message_id IS NULL AND deleted_at IS NULL AND NOT publication_pending AND expires_at>$7 AND content_attachment_id IS NOT NULL`, s.organization, project, conversationID, id, principal, message, now)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -168,7 +190,7 @@ func (s *session) MessageAttachments(ctx context.Context, project tracker.Projec
 	if len(messages) == 0 {
 		return items, nil
 	}
-	rows, err := s.db.Query(ctx, `SELECT a.* FROM unnest($4::text[]) AS selected(message) CROSS JOIN LATERAL (SELECT `+pgConversationAttachmentColumns+` FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND message_id=selected.message AND deleted_at IS NULL ORDER BY created_at,id LIMIT $5) a`, s.organization, project, conversationID, messages, conversation.MaxMessageAttachments+1)
+	rows, err := s.db.Query(ctx, `SELECT a.* FROM unnest($4::text[]) AS selected(message) CROSS JOIN LATERAL (SELECT `+pgConversationAttachmentColumns+` FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND message_id=selected.message AND deleted_at IS NULL AND NOT publication_pending ORDER BY created_at,id LIMIT $5) a`, s.organization, project, conversationID, messages, conversation.MaxMessageAttachments+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

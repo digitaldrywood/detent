@@ -689,21 +689,25 @@ type Conversation struct {
 }
 
 type ConversationAttachment struct {
-	OrganizationID      tracker.OrganizationID
-	ConversationID      string
-	ProjectID           tracker.ProjectID
-	ID                  string
-	MessageID           *string
-	PrincipalID         string
-	Name                string
-	Mime                string
-	Size                int64
-	ArtifactRef         string
-	ContentAttachmentID *string
-	CreatedAt           time.Time
-	ExpiresAt           *time.Time
-	DeletedAt           *time.Time
-	CollaborationBytes  int64
+	OrganizationID       tracker.OrganizationID
+	ConversationID       string
+	ProjectID            tracker.ProjectID
+	ID                   string
+	MessageID            *string
+	PrincipalID          string
+	Name                 string
+	Mime                 string
+	Size                 int64
+	ArtifactRef          string
+	ContentAttachmentID  *string
+	CreatedAt            time.Time
+	ExpiresAt            *time.Time
+	DeletedAt            *time.Time
+	CollaborationBytes   int64
+	PublicationPending   bool
+	PublicationOperation string
+	PublicationKey       string
+	PublicationHash      string
 }
 
 type ConversationAudienceEvent struct {

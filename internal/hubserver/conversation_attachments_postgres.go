@@ -10,7 +10,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -47,7 +46,7 @@ func (s *Service) conversationAttachmentReplayPG(ctx context.Context, scope nati
 	if s.conversations.store.contents == nil {
 		return nil, conversationContentUnavailable()
 	}
-	if a.DeletedAt != nil || a.ExpiresAt != nil && !a.ExpiresAt.After(s.config.now()) || a.Name != name || a.MIME != media || a.Size != int64(len(content)) {
+	if a.PublicationPending || a.DeletedAt != nil || a.ExpiresAt != nil && !a.ExpiresAt.After(s.config.now()) || a.Name != name || a.MIME != media || a.Size != int64(len(content)) {
 		return nil, attachmentUploadConflict()
 	}
 	var object conversationstore.ContentObject
@@ -97,12 +96,9 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 	}
 	ref := conversationAttachmentRef(id, scope.credential.ID, upload.key)
 	operation := "conversation-attachment/" + string(scope.project) + "/" + id
-	stageID, err := nativeCommandHash(struct{ Actor, Operation, Key string }{scope.credential.ID, operation, upload.key})
-	if err != nil {
-		return nil, err
-	}
 	now := s.config.now().UTC().Truncate(time.Microsecond)
-	stage := artifactstore.ArchiveOwner{OrganizationID: scope.organization, Kind: "conversation-attachment-stage", ID: stageID, CreatedAt: now}
+	expires := now.Add(conversation.AttachmentTTL)
+	a := conversationstore.Attachment{OrganizationID: scope.organization, ProjectID: scope.project, ConversationID: id, ID: conversation.NewAttachmentID(), PrincipalID: scope.credential.ID, Name: name, MIME: media, Size: int64(len(upload.content)), ArtifactRef: ref, ContentID: contentArchiveID(string(scope.organization), archive), CreatedAt: now, ExpiresAt: &expires, PublicationPending: true, PublicationOperation: operation, PublicationKey: upload.key, PublicationHash: hash}
 	var existing conversationstore.Attachment
 	var revision int64
 	var pending bool
@@ -124,6 +120,18 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 		}
 		existing, err = owner.ConversationAttachmentByRef(ctx, scope.project, id, ref)
 		if err == nil {
+			if !existing.PublicationPending {
+				return nil
+			}
+			if existing.DeletedAt != nil || existing.ExpiresAt == nil || !existing.ExpiresAt.After(now) {
+				return attachmentUploadConflict()
+			}
+			if existing.PrincipalID != scope.credential.ID || existing.PublicationOperation != operation || existing.PublicationKey != upload.key || existing.PublicationHash != hash || existing.ContentID != a.ContentID || existing.Name != name || existing.MIME != media || existing.Size != a.Size {
+				return attachmentUploadConflict()
+			}
+			a = existing
+			pending = true
+			revision = current.Revision
 			return nil
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
@@ -136,7 +144,9 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		pending = !claimed
+		if !claimed {
+			return errors.New("attachment publication receipt has no attachment owner")
+		}
 		if claimed {
 			limit, err := s.attachmentQuotaLimit(ctx, w)
 			if err != nil {
@@ -153,12 +163,7 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 				return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 			}
 		}
-		object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: contentArchiveID(string(scope.organization), archive), Reference: archive, CreatedAt: now})
-		if err != nil {
-			return err
-		}
-		stage.ArchiveID = object.ID
-		if err := w.AddArchiveOwner(ctx, stage); err != nil {
+		if err := owner.CreateConversationAttachment(ctx, a, conversationstore.ContentObject{OrganizationID: scope.organization, ID: a.ContentID, Reference: archive, CreatedAt: now}); err != nil {
 			return err
 		}
 		revision = current.Revision
@@ -167,7 +172,7 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 	if err != nil {
 		return nil, translateConversationError(err)
 	}
-	if existing.ID != "" {
+	if existing.ID != "" && !existing.PublicationPending {
 		return s.conversationAttachmentReplayPG(ctx, scope, existing, name, media, upload.content)
 	}
 	published := false
@@ -180,8 +185,6 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 			return nil, err
 		}
 	}
-	expires := now.Add(conversation.AttachmentTTL)
-	a := conversationstore.Attachment{OrganizationID: scope.organization, ProjectID: scope.project, ConversationID: id, ID: conversation.NewAttachmentID(), PrincipalID: scope.credential.ID, Name: name, MIME: media, Size: int64(len(upload.content)), ArtifactRef: ref, ContentID: contentArchiveID(string(scope.organization), archive), CreatedAt: now, ExpiresAt: &expires}
 	replay := false
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(conversationstore.AttachmentWriter)
@@ -200,12 +203,21 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 			return err
 		}
 		existing, err = owner.ConversationAttachmentByRef(ctx, scope.project, id, ref)
-		if err == nil {
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nativeConflict(tracker.Revision(current.Revision))
+		}
+		if err != nil {
+			return err
+		}
+		if !existing.PublicationPending {
 			replay = true
 			return nil
 		}
-		if !errors.Is(err, corestore.ErrNotFound) {
-			return err
+		if existing.DeletedAt != nil || existing.ExpiresAt == nil || !existing.ExpiresAt.After(s.config.now()) {
+			return nativeConflict(tracker.Revision(current.Revision))
+		}
+		if existing.ID != a.ID || existing.ContentID != a.ContentID || existing.PublicationOperation != operation || existing.PublicationKey != upload.key || existing.PublicationHash != hash {
+			return attachmentUploadConflict()
 		}
 		if current.Revision != revision {
 			return nativeConflict(tracker.Revision(current.Revision))
@@ -220,10 +232,7 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 		if !reservation.ResponseClaimed || !reservation.ResponsePending || reservation.RequestHash != hash {
 			return attachmentUploadConflict()
 		}
-		if err := owner.CreateConversationAttachment(ctx, a, conversationstore.ContentObject{OrganizationID: scope.organization, ID: a.ContentID, Reference: archive, CreatedAt: now}); err != nil {
-			return err
-		}
-		if err := w.RemoveArchiveOwner(ctx, stage); err != nil {
+		if err := owner.CompleteConversationAttachmentPublication(ctx, a, s.config.now().UTC()); err != nil {
 			return err
 		}
 		return receipts.AbandonReceipt(ctx, scope.credential.ID, operation, upload.key, hash)
@@ -259,7 +268,7 @@ func (s *Service) readAttachmentPG(ctx context.Context, scope nativeScope, conve
 		if err != nil {
 			return err
 		}
-		if a.DeletedAt != nil || a.ExpiresAt != nil && !a.ExpiresAt.After(s.config.now()) {
+		if a.PublicationPending || a.DeletedAt != nil || a.ExpiresAt != nil && !a.ExpiresAt.After(s.config.now()) {
 			return nativeNotFound()
 		}
 		object, err = r.ConversationContent(ctx, a.ContentID)
@@ -301,7 +310,7 @@ func (s *Service) commandDeleteAttachmentPG(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		if a.DeletedAt != nil || a.PrincipalID != scope.credential.ID {
+		if a.PublicationPending || a.DeletedAt != nil || a.PrincipalID != scope.credential.ID {
 			return nativeNotFound()
 		}
 		if a.MessageID != "" {
@@ -332,7 +341,7 @@ func (s *Service) recheckConversationAttachmentPG(ctx context.Context, scope nat
 		if err != nil {
 			return err
 		}
-		if a.DeletedAt != nil || a.ContentID != previous.ContentID || a.ExpiresAt != nil && !a.ExpiresAt.After(s.config.now()) {
+		if a.PublicationPending || a.DeletedAt != nil || a.ContentID != previous.ContentID || a.ExpiresAt != nil && !a.ExpiresAt.After(s.config.now()) {
 			return nativeNotFound()
 		}
 		return nil
@@ -358,7 +367,7 @@ func loadCommandAttachmentsPG(ctx context.Context, reader tenantstore.Reader, sc
 		if err != nil {
 			return nil, err
 		}
-		if a.PrincipalID != scope.credential.ID || a.MessageID != "" || a.DeletedAt != nil || a.ExpiresAt == nil || !now.Before(*a.ExpiresAt) || a.ContentID == "" {
+		if a.PublicationPending || a.PrincipalID != scope.credential.ID || a.MessageID != "" || a.DeletedAt != nil || a.ExpiresAt == nil || !now.Before(*a.ExpiresAt) || a.ContentID == "" {
 			return nil, nativeInvalid("Attachment is not available on this conversation")
 		}
 		if err := conversation.ValidateAttachmentBytes(a.Size); err != nil {
@@ -428,6 +437,15 @@ func (c *conversationService) sweepAttachmentsPG(ctx context.Context) (int, erro
 			}
 			if err := owner.DeleteConversationAttachment(ctx, a.ProjectID, a.ConversationID, a.ID, now); err != nil {
 				return err
+			}
+			if a.PublicationPending {
+				receipts, ok := w.(receiptstore.Writer)
+				if !ok {
+					return conversationContentUnavailable()
+				}
+				if err := receipts.AbandonReceipt(ctx, a.PrincipalID, a.PublicationOperation, a.PublicationKey, a.PublicationHash); err != nil {
+					return err
+				}
 			}
 			removed = true
 			return nil
