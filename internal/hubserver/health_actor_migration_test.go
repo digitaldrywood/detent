@@ -140,6 +140,30 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 				t.Fatalf("stage=%s org=%s count=%d error=%v", stage, source.OrganizationID, count, err)
 			}
 		}
+		if stage == "import" {
+			for _, want := range expected {
+				if err := service.refreshBoardRecord(t.Context(), want.issue.OrganizationID, viewstore.BoardCandidate{ProjectID: want.issue.ProjectID, WorkItemID: want.issue.WorkItemID}, at); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		type projectScope struct {
+			organization tracker.OrganizationID
+			project      tracker.ProjectID
+		}
+		pages := map[projectScope]tracker.NativeIssuePage{}
+		for _, want := range expected {
+			key := projectScope{want.issue.OrganizationID, want.issue.ProjectID}
+			if _, exists := pages[key]; exists {
+				continue
+			}
+			f := want.fixture
+			response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items?archived=all", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.NativeIssuePage
+			decodeHubResponse(t, response, &page)
+			pages[key] = page
+		}
 		for _, want := range expected {
 			f := want.fixture
 			f.service = service
@@ -198,11 +222,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 					t.Fatalf("stage=%s retained version %+v changed beyond actor normalization: got=%s want=%s", stage, key, raw, expected)
 				}
 			}
-			if err := service.refreshBoardRecord(t.Context(), want.issue.OrganizationID, viewstore.BoardCandidate{ProjectID: want.issue.ProjectID, WorkItemID: want.issue.WorkItemID}, at); err != nil {
-				t.Fatal(err)
-			}
-			var page tracker.NativeIssuePage
-			decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items?archived=all", f.token, nil), &page)
+			page := pages[projectScope{want.issue.OrganizationID, want.issue.ProjectID}]
 			if !slices.ContainsFunc(page.Items, func(item tracker.NativeIssue) bool {
 				return item.WorkItemID == want.issue.WorkItemID && item.Actor == want.issue.Actor
 			}) {
