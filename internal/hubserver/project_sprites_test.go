@@ -871,11 +871,26 @@ func TestWakeSpriteRunnersFreshAuthority(t *testing.T) {
 				err   error
 			}
 			result := make(chan outcome, 1)
+			ctx, cancel := context.WithCancel(t.Context())
+			unblock := sync.OnceFunc(func() { close(release) })
+			done := make(chan struct{})
+			t.Cleanup(func() {
+				cancel()
+				unblock()
+				<-done
+			})
 			go func() {
-				woken, err := f.service.wakeSpriteRunners(t.Context(), scope, "Todo")
+				defer close(done)
+				woken, err := f.service.wakeSpriteRunners(ctx, scope, "Todo")
 				result <- outcome{woken, err}
 			}()
-			waitSpriteWake(t, started)
+			select {
+			case <-started:
+			case got := <-result:
+				t.Fatalf("wake completed before the authority barrier: count=%d error=%v", got.woken, got.err)
+			case <-testenv.WaitContext(t, t.Context()).Done():
+				t.Fatal("wake did not reach the authority barrier")
+			}
 			id := runners[1].binding.RunnerID
 			if test.change == "rotation" {
 				storeSpriteWakeSecret(t, f, spritesSecretSentinel+"-rotated")
@@ -914,7 +929,7 @@ func TestWakeSpriteRunnersFreshAuthority(t *testing.T) {
 					return nil
 				})
 			}
-			close(release)
+			unblock()
 			select {
 			case got := <-result:
 				if got.err != nil || got.woken != test.want || len(requests) != test.want {
@@ -959,6 +974,10 @@ func TestWakeSpriteRunnersCancellation(t *testing.T) {
 			if mode == "context" {
 				ctx, cancel := context.WithCancel(t.Context())
 				done := make(chan struct{})
+				t.Cleanup(func() {
+					cancel()
+					<-done
+				})
 				go func() {
 					defer close(done)
 					_, err := f.service.wakeSpriteRunners(ctx, scope, "Todo")
@@ -966,7 +985,13 @@ func TestWakeSpriteRunnersCancellation(t *testing.T) {
 						t.Errorf("wake cancellation error=%v", err)
 					}
 				}()
-				waitSpriteWake(t, started)
+				select {
+				case <-started:
+				case <-done:
+					t.Fatal("wake completed before the cancellation barrier")
+				case <-testenv.WaitContext(t, t.Context()).Done():
+					t.Fatal("wake did not reach the cancellation barrier")
+				}
 				cancel()
 				waitSpriteWake(t, done)
 			} else {
