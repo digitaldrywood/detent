@@ -343,6 +343,12 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 	defer s.releaseProjectRecordAuthority(ctx, authority)
 	var existing *eventstore.Receipt
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		switch input.(type) {
+		case createNativeProjectRequest, deleteCloudProjectRequest, cloudModelSelectionRequest:
+			if err := w.LockAccessOrganization(ctx); err != nil {
+				return err
+			}
+		}
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}

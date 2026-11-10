@@ -352,6 +352,9 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential ap
 	created := false
 	var limitErr *hostedLimitError
 	err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
+			return err
+		}
 		if err := s.authorizeAccessScope(ctx, w, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {
 			return err
 		}

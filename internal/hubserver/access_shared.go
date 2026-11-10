@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claims cloudassert.Claims) (auth.Session, string, error) {
@@ -69,9 +70,48 @@ func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claim
 	return session, claims.Binding, nil
 }
 
-func (s *Service) storeAccessMember(ctx context.Context, w tenantstore.Writer, identity auth.Identity, membership auth.Membership) error {
+type accessMemberPreparation struct {
+	organization tracker.OrganizationID
+	subject      string
+	principal    string
+	hash         string
+	fingerprint  string
+}
+
+func (s *Service) prepareAccessMember(ctx context.Context, identity auth.Identity) (accessMemberPreparation, error) {
+	prepared := accessMemberPreparation{organization: s.accessOrganization(), subject: identity.Subject, principal: "hosted_" + apikey.HashToken(identity.Subject)[:32]}
+	if prepared.organization == "" || prepared.subject == "" || !identity.EmailVerified {
+		return accessMemberPreparation{}, auth.ErrHostedIdentity
+	}
+	err := s.accessRead(ctx, prepared.organization, func(r tenantstore.Reader) error {
+		_, err := r.AccessCredential(ctx, prepared.principal)
+		return err
+	})
+	if err == nil {
+		return prepared, nil
+	}
+	if errors.Is(err, tenantauth.ErrUnavailable) || !errors.Is(err, corestore.ErrNotFound) {
+		return accessMemberPreparation{}, err
+	}
+	token, err := s.config.generateToken()
+	if err != nil {
+		return accessMemberPreparation{}, err
+	}
+	prepared.hash = apikey.HashToken(token)
+	prepared.fingerprint = tokenFingerprint(prepared.hash)
+	return prepared, nil
+}
+
+func (s *Service) storeAccessMember(ctx context.Context, w tenantstore.Writer, identity auth.Identity, membership auth.Membership, prepared accessMemberPreparation) error {
 	if !identity.EmailVerified || identity.Subject != membership.UserID || membership.Status != "active" || !auth.ValidOrganizationRole(membership.Role.Slug) {
 		return auth.ErrHostedIdentity
+	}
+	principal := "hosted_" + apikey.HashToken(identity.Subject)[:32]
+	if prepared.organization != s.accessOrganization() || prepared.subject != identity.Subject || prepared.principal != principal {
+		return auth.ErrHostedIdentity
+	}
+	if err := w.LockAccessOrganization(ctx); err != nil {
+		return err
 	}
 	tenant, err := w.AccessTenant(ctx)
 	if err != nil {
@@ -80,17 +120,14 @@ func (s *Service) storeAccessMember(ctx context.Context, w tenantstore.Writer, i
 	if membership.OrganizationID != tenant.ProviderID {
 		return auth.ErrHostedIdentity
 	}
-	principal := "hosted_" + apikey.HashToken(identity.Subject)[:32]
 	now := s.config.now()
 	if _, err := w.AccessCredential(ctx, principal); errors.Is(err, tenantauth.ErrUnavailable) {
 		return err
 	} else if errors.Is(err, corestore.ErrNotFound) {
-		token, err := s.config.generateToken()
-		if err != nil {
-			return err
+		if prepared.hash == "" || prepared.fingerprint == "" {
+			return auth.ErrHostedIdentity
 		}
-		hash := apikey.HashToken(token)
-		if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: s.accessOrganization(), ID: principal, Name: principal, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "selected", Kind: "personal"}); err != nil {
+		if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: s.accessOrganization(), ID: principal, Name: principal, Hash: prepared.hash, Fingerprint: prepared.fingerprint, Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "selected", Kind: "personal"}); err != nil {
 			return err
 		}
 	} else if err != nil {

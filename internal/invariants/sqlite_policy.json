@@ -238,9 +238,6 @@
     "internal/hubserver/conversation_worker_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/credential_maintenance_test.go": {
-      "database_path": 1
-    },
     "internal/hubserver/dashboard_delivery_test.go": {
       "sqlite_open": 1
     },

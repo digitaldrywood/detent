@@ -2,12 +2,14 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -69,6 +71,9 @@ func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (
 		scope = nativeScope{organization: row.OrganizationID, credential: issuer, action: "credentials", requireHostedAdmin: request.KeyScope == apikey.ScopeAdmin}
 	}
 	err = s.accessWrite(ctx, row.OrganizationID, func(w tenantstore.Writer) error {
+		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, row.OrganizationID); err != nil {
+			return err
+		}
 		if request.Issuer != nil {
 			member, err := w.AuthorizeAccess(ctx, s.accessAuthority(scope, false), now)
 			if err != nil {
@@ -85,6 +90,9 @@ func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (
 			}
 		}
 		if err := w.CreateAccessCredential(ctx, row); err != nil {
+			if errors.Is(err, corestore.ErrUniqueViolation) {
+				return nativeConflict(0)
+			}
 			return err
 		}
 		for _, project := range request.ProjectIDs {
@@ -112,6 +120,9 @@ func (s *Service) rotateAccessToken(ctx context.Context, id string) (tokenRespon
 	hash := apikey.HashToken(token)
 	var response tokenResponse
 	err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, s.accessOrganization()); err != nil {
+			return err
+		}
 		if err := w.RotateAccessCredential(ctx, id, hash, tokenFingerprint(hash), now); err != nil {
 			return err
 		}

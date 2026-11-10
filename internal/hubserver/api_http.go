@@ -46,12 +46,12 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 	e.Pre(s.timeWriterUse)
 	e.Pre(s.serverTiming)
 	e.JSONSerializer = timedJSONSerializer{}
-	if s.database.postgres != nil {
-		s.registerPostgresRoutes(e)
-		return
-	}
 	if s.config.CredentialMaintenance {
 		s.registerCredentialMaintenanceRoutes(e)
+		return
+	}
+	if s.database.postgres != nil {
+		s.registerPostgresRoutes(e)
 		return
 	}
 	if s.config.Hosted != nil {

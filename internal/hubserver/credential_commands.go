@@ -18,11 +18,22 @@ func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenRespon
 }
 
 func (s *Service) revokeAPITokenFor(ctx context.Context, id string) error {
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessCredential(ctx, id, s.config.now()) })
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, s.accessOrganization()); err != nil {
+			return err
+		}
+		return w.RevokeAccessCredential(ctx, id, s.config.now())
+	})
 }
 
 func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, project string) error {
+	if s.config.CredentialMaintenance && tracker.OrganizationID(organization) != s.accessOrganization() {
+		return accessstore.ErrDenied
+	}
 	return s.accessWrite(ctx, tracker.OrganizationID(organization), func(w tenantstore.Writer) error {
+		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, tracker.OrganizationID(organization)); err != nil {
+			return err
+		}
 		return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(organization), TokenID: id, ProjectID: tracker.ProjectID(project)})
 	})
 }

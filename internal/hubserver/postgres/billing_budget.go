@@ -23,9 +23,8 @@ func (s *session) SetBillingMonthlyPolicy(ctx context.Context, row billingstore.
 	if err := row.Policy.Validate(); err != nil {
 		return err
 	}
-	var id tracker.OrganizationID
-	if err := s.db.QueryRow(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR UPDATE`, s.organization).Scan(&id); err != nil {
-		return mapError(ctx, err)
+	if err := s.LockAccessOrganization(ctx); err != nil {
+		return err
 	}
 	previous, err := s.BillingMonthlyPolicy(ctx, row.ProjectID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {

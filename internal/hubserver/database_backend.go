@@ -27,7 +27,7 @@ func validateDatabaseBackend(cfg Config) error {
 			return ErrDatabaseBackend
 		}
 	case DatabasePostgres:
-		if cfg.Postgres == nil || cfg.DatabasePath != "" || cfg.Hosted == nil || cfg.CredentialMaintenance || cfg.hostedBindingMigration {
+		if cfg.Postgres == nil || cfg.DatabasePath != "" || cfg.Hosted == nil || cfg.hostedBindingMigration {
 			return ErrDatabaseBackend
 		}
 	default:

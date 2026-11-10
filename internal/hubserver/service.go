@@ -169,6 +169,11 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 	}
 	ctx = database.policyContext(ctx)
+	if database.postgres != nil && cfg.CredentialMaintenance {
+		if err := (&Service{config: cfg}).validateAccessMaintenanceBinding(ctx); err != nil {
+			return nil, errors.Join(err, database.Close())
+		}
+	}
 	var secretKeysErr error
 	if cfg.AccessRepository != nil {
 		if cfg.Hosted == nil {
@@ -181,7 +186,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := secretKeysErr; err != nil {
 		return nil, errors.Join(err, database.Close())
 	}
-	if database.postgres != nil {
+	if database.postgres != nil && !cfg.CredentialMaintenance {
 		if err := database.configureHostedPlans(ctx, cfg.Hosted); err != nil {
 			return nil, errors.Join(err, database.Close())
 		}

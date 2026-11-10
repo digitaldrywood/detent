@@ -42,6 +42,9 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 		}
 		value.Enabled = *request.Enabled
 		err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+			if err := w.LockAccessOrganization(ctx); err != nil {
+				return err
+			}
 			member, err := authorizeIssueNotificationMember(ctx, w, credential)
 			if err != nil {
 				return err

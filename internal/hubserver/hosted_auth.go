@@ -375,8 +375,12 @@ func (s *Service) addHostedMember(ctx context.Context, identity auth.Identity, m
 }
 
 func (s *Service) storeHostedMember(ctx context.Context, identity auth.Identity, membership auth.Membership, organizationName string) (resultErr error) {
+	prepared, err := s.prepareAccessMember(ctx, identity)
+	if err != nil {
+		return err
+	}
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-		if err := s.storeAccessMember(ctx, w, identity, membership); err != nil {
+		if err := s.storeAccessMember(ctx, w, identity, membership, prepared); err != nil {
 			return err
 		}
 		if organizationName != "" {

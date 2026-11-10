@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -410,6 +411,23 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	if s.config.TenantRepository == nil {
 		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", nativeRunEventStorageUnavailable())
 	}
+	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}
+	var prepared accessMemberPreparation
+	var members []accessstore.Member
+	err = s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		var err error
+		members, err = r.AccessMembers(ctx, "", 2)
+		return err
+	})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if len(members) == 0 {
+		prepared, err = s.prepareAccessMember(ctx, identity)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	err = s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
@@ -424,8 +442,7 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 			}
 			return errHostedOwnerAlreadyBootstrapped
 		}
-		identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}
-		if err := s.storeAccessMember(ctx, w, identity, membership); err != nil {
+		if err := s.storeAccessMember(ctx, w, identity, membership, prepared); err != nil {
 			return err
 		}
 		if err := w.DeleteAccessMemberReservation(ctx, strings.ToLower(claims.Email)); err != nil {

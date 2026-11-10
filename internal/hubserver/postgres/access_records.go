@@ -84,7 +84,7 @@ func (s *session) createAccessOrganization(ctx context.Context, row accessstore.
 
 func (s *session) LockAccessOrganization(ctx context.Context) error {
 	var organization tracker.OrganizationID
-	if err := s.db.QueryRow(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR UPDATE`, s.organization).Scan(&organization); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR NO KEY UPDATE`, s.organization).Scan(&organization); err != nil {
 		return mapError(ctx, err)
 	}
 	return nil
@@ -294,9 +294,8 @@ func (s *session) ReserveAccessMemberReservation(ctx context.Context, row access
 	if limit < 0 {
 		return false, accessstore.ErrDenied
 	}
-	var locked string
-	if err := s.db.QueryRow(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR UPDATE`, s.organization).Scan(&locked); err != nil {
-		return false, mapError(ctx, err)
+	if err := s.LockAccessOrganization(ctx); err != nil {
+		return false, err
 	}
 	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_member_reservations WHERE organization_id=$1 AND expires_at<=$2`, s.organization, now); err != nil {
 		return false, mapError(ctx, err)

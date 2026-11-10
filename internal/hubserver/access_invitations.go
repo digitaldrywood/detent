@@ -48,6 +48,10 @@ func (s *Service) acceptAccessInvitation(ctx context.Context, identity auth.Iden
 	if err != nil {
 		return err
 	}
+	prepared, err := s.prepareAccessMember(ctx, identity)
+	if err != nil {
+		return err
+	}
 	if invitation.State == "pending" {
 		if byID {
 			err = auth.AcceptInvitationID(ctx, s.config.Hosted.Provider, token, identity.Subject)
@@ -82,6 +86,9 @@ func (s *Service) acceptAccessInvitation(ctx context.Context, identity auth.Iden
 		return auth.ErrHostedIdentity
 	}
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
+			return err
+		}
 		current, err := w.AccessInvitation(ctx, invitation.ID)
 		if err != nil {
 			return err
@@ -92,7 +99,7 @@ func (s *Service) acceptAccessInvitation(ctx context.Context, identity auth.Iden
 		if err := w.AcceptAccessInvitation(ctx, stored.ID, identity.Email, identity.Subject, s.config.now()); err != nil {
 			return err
 		}
-		if err := s.storeAccessMember(ctx, w, identity, membership); err != nil {
+		if err := s.storeAccessMember(ctx, w, identity, membership, prepared); err != nil {
 			return err
 		}
 		if err := w.ClearAccessMemberGrants(ctx, identity.Subject); err != nil {
