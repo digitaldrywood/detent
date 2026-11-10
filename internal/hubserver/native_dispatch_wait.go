@@ -2,15 +2,19 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -74,13 +78,17 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 		now := s.config.now().UTC()
 		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				var lookup *accessstore.LookupError
+				if errors.Is(err, accessstore.ErrDenied) && errors.As(err, &lookup) && lookup.Step == "credential" {
+					return runnerUnauthorized()
+				}
 				return err
 			}
 			identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
 			if err != nil {
 				return err
 			}
-			if !runnerIdentityCanClaim(identity, scope, scope.credential.Runner.MachineID, now) {
+			if !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, scope.credential.ID, scope.credential.Runner.MachineID, now) || now.Before(identity.LastHeartbeatAt) || !now.Before(identity.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)) || !slices.Contains(identity.Operations, runnerauth.Claim) {
 				return tracker.ErrMachineNotFound
 			}
 			allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
@@ -88,7 +96,7 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 				return err
 			}
 			if !allowed {
-				return tracker.ErrMachineNotFound
+				return accessstore.ErrDenied
 			}
 			return nil
 		})

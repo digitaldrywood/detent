@@ -118,7 +118,9 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	var snapshot runnerauth.RoutingSnapshot
 	var heartbeatChanges *runnerauth.HeartbeatChanges
 	var acknowledgments []hostmetrics.Acknowledgment
+	dispatchChanged := false
 	write := func(ctx context.Context, w tenantstore.Writer) error {
+		dispatchChanged = false
 		identity, err := w.RunnerIdentityByCredential(ctx, credential.ID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -148,6 +150,11 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			if !allowed {
 				return nativeNotFound()
 			}
+		}
+		previous := identity
+		if identity.CapacityConfig != nil {
+			config := *identity.CapacityConfig
+			previous.CapacityConfig = &config
 		}
 		heartbeatAt := receivedAt
 		if identity.LastHeartbeatAt.After(heartbeatAt) {
@@ -303,6 +310,16 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if err != nil {
 			return err
 		}
+		heartbeatFresh := func(record runnerstore.Identity) bool {
+			return !receivedAt.Before(record.LastHeartbeatAt) && receivedAt.Before(record.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout))
+		}
+		capacityFresh := func(record runnerstore.Identity) bool {
+			return record.CapacityConfig != nil && !receivedAt.Before(record.CapacityConfig.ObservedAt) && receivedAt.Before(record.CapacityConfig.ObservedAt.Add(runnerauth.HeartbeatTimeout))
+		}
+		dispatchChanged = previous.ReportedCapacity != identity.ReportedCapacity || heartbeatFresh(previous) != heartbeatFresh(identity) || capacityFresh(previous) != capacityFresh(identity) || (previous.CapacityConfig == nil) != (identity.CapacityConfig == nil)
+		if previous.CapacityConfig != nil && identity.CapacityConfig != nil {
+			dispatchChanged = dispatchChanged || previous.CapacityConfig.LocalLimit != identity.CapacityConfig.LocalLimit || previous.CapacityConfig.ClientLimit != identity.CapacityConfig.ClientLimit || previous.CapacityConfig.RuntimeLimit != identity.CapacityConfig.RuntimeLimit
+		}
 		projects, err := w.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
 		if err != nil {
 			return err
@@ -379,6 +396,9 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	if dispatchChanged {
+		s.notifications.notify(dispatchNotificationKey(credential.Runner.OrganizationID))
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, snapshot)

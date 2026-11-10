@@ -1382,10 +1382,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			}
 			return nil, projectRecordError(err)
 		}
-		select {
-		case s.boardRefresh <- struct{}{}:
-		default:
-		}
+		s.signalNativeDispatch(scope)
 		return raw, nil
 	}
 }

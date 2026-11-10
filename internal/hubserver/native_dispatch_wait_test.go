@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -163,15 +176,245 @@ func awaitDispatchSubscribers(t *testing.T, s *Service, organization tracker.Org
 	})
 }
 
+type dispatchWaitPostgresTrace struct {
+	queries    atomic.Int64
+	candidates atomic.Int64
+	pool       atomic.Pointer[pgxpool.Pool]
+}
+
+func (p *dispatchWaitPostgresTrace) record(statement string) {
+	p.queries.Add(1)
+	if strings.HasPrefix(strings.TrimSpace(statement), "SELECT i.id,i.revision,i.number,i.native_id,") {
+		p.candidates.Add(1)
+	}
+}
+func (p *dispatchWaitPostgresTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	p.record(data.SQL)
+	return ctx
+}
+func (*dispatchWaitPostgresTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (p *dispatchWaitPostgresTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	for _, q := range data.Batch.QueuedQueries {
+		p.record(q.SQL)
+	}
+	return ctx
+}
+func (*dispatchWaitPostgresTrace) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {
+}
+func (*dispatchWaitPostgresTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+func (p *dispatchWaitPostgresTrace) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
+	p.pool.Store(pool)
+	return ctx
+}
+func (*dispatchWaitPostgresTrace) TraceAcquireEnd(context.Context, *pgxpool.Pool, pgxpool.TraceAcquireEndData) {
+}
+
+type dispatchWaitMutationRepository struct {
+	*postgres.Repository
+	beforeWrite      func()
+	reject           atomic.Bool
+	credentialOutage atomic.Bool
+	credentialID     string
+	aliasCapacity    bool
+}
+
+func (r *dispatchWaitMutationRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	if r.beforeWrite != nil {
+		r.beforeWrite()
+	}
+	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error {
+		if err := write(w); err != nil {
+			return err
+		}
+		if r.reject.Load() {
+			return errors.New("fixture commit refused")
+		}
+		return nil
+	})
+}
+
+func (r *dispatchWaitMutationRepository) WriteRunnerHeartbeat(ctx context.Context, organization tracker.OrganizationID, credentialID, runnerID string, write func(context.Context, tenantstore.Writer) error) error {
+	return r.Repository.WriteRunnerHeartbeat(ctx, organization, credentialID, runnerID, func(ctx context.Context, w tenantstore.Writer) error {
+		if r.aliasCapacity {
+			w = dispatchWaitCapacityWriter{w}
+		}
+		if err := write(ctx, w); err != nil {
+			return err
+		}
+		if r.reject.Load() {
+			return errors.New("fixture commit refused")
+		}
+		return nil
+	})
+}
+
+func (r *dispatchWaitMutationRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		if r.credentialOutage.Load() {
+			return read(dispatchWaitAuthorityReader{Reader: reader, repository: r})
+		}
+		return read(reader)
+	})
+}
+
+type dispatchWaitAuthorityReader struct {
+	tenantstore.Reader
+	repository *dispatchWaitMutationRepository
+}
+
+func (r dispatchWaitAuthorityReader) AuthorizeAccess(ctx context.Context, authority accessstore.Authority, now time.Time) (accessstore.Member, error) {
+	if authority.CredentialID == r.repository.credentialID && r.repository.credentialOutage.Load() {
+		return accessstore.Member{}, &accessstore.LookupError{Step: "credential", Cause: tenantauth.ErrUnavailable}
+	}
+	return r.Reader.AuthorizeAccess(ctx, authority, now)
+}
+
+type dispatchWaitCapacityWriter struct{ tenantstore.Writer }
+
+func (w dispatchWaitCapacityWriter) UpdateRunnerCapacityConfig(ctx context.Context, id string, config runnerauth.CapacityConfig) error {
+	identity, err := w.RunnerIdentity(ctx, id)
+	if err != nil {
+		return err
+	}
+	if identity.CapacityConfig != nil {
+		*identity.CapacityConfig = config
+	}
+	return w.Writer.UpdateRunnerCapacityConfig(ctx, id, config)
+}
+
+func (w dispatchWaitCapacityWriter) RunnerClaimState(ctx context.Context, runner string, project tracker.ProjectID, after string, limit int, now time.Time) (runnerstore.ClaimStatePage, error) {
+	return w.Writer.(runnerstore.ClaimStateReader).RunnerClaimState(ctx, runner, project, after, limit, now)
+}
+
 func TestNativeDispatchWaitLifecycle(t *testing.T) {
-	for _, action := range []string{"queue", "dependency", "capacity", "unchanged heartbeat", "routing", "revocation", "cancel", "shutdown", "reconnect"} {
+	for _, action := range []string{
+		"queue", "dependency", "capacity", "unchanged heartbeat", "routing", "revocation", "cancel", "shutdown", "reconnect",
+		"replayed queue", "rejected queue", "other tenant queue",
+		"capacity local limit", "capacity client limit", "capacity runtime limit", "aliased capacity config", "unchanged capacity config", "stale capacity config", "stale heartbeat", "rejected heartbeat", "heartbeat rollback",
+		"unchanged routing", "replayed routing", "interleaved routing replay", "rejected routing", "routing rollback", "other tenant capacity", "other tenant routing", "disabled routing",
+		"denied project", "denied runner project", "revoked denied project", "credential outage",
+	} {
 		t.Run(action, func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "wait")
+			probe := &dispatchWaitPostgresTrace{}
+			repository, _ := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
+				config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, probe)
+			})
+			var clock atomic.Int64
+			clock.Store(time.Now().UTC().Truncate(time.Microsecond).UnixNano())
+			now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+			service := openLocalPostgresHubTestService(t, repository, Config{SecretKeys: secretTestKeys(t, "1", "1"), now: now})
+			organization := nativeOrganization{ID: "org_first", Name: "org_first", Slug: "org-first"}
+			seedPostgresHubAdmin(t, repository, service, organization)
+			service.database.hostedOrganization = organization.ID
+			service.localOrganization = string(organization.ID)
+			service.requestMetrics.organization = organization.ID
+			f := newNativeFixture(t, service, organization.ID, "wait")
+			await := func(count int) {
+				testenv.WaitUntil(t, t.Context(), func() error {
+					service.notifications.mu.Lock()
+					got := len(service.notifications.subscribers[dispatchNotificationKey(organization.ID)])
+					service.notifications.mu.Unlock()
+					pool := probe.pool.Load()
+					if pool != nil && got == count && pool.Stat().AcquiredConns() == 0 {
+						return nil
+					}
+					return fmt.Errorf("subscribers=%d want%d; pool idle=%t", got, count, pool != nil && pool.Stat().AcquiredConns() == 0)
+				})
+			}
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			worker := r.redemption.Credential
-			probe := measureDispatchQueries(t, f.service)
+			var identity runnerstore.Identity
+			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+				var err error
+				identity, err = reader.RunnerIdentity(t.Context(), r.binding.RunnerID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			mutations := &dispatchWaitMutationRepository{Repository: repository, credentialID: identity.TokenID, aliasCapacity: action == "aliased capacity config"}
+			service.config.TenantRepository = mutations
+			config := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, ObservedAt: now()}
+			configCase := strings.Contains(action, "capacity") && action != "capacity" && action != "other tenant capacity"
+			if configCase {
+				if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, config)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			routingResponse := performHubAPIRequest(t, service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
+			requireNativeStatus(t, routingResponse, http.StatusOK)
+			var currentRouting runnerauth.Runner
+			decodeHubResponse(t, routingResponse, &currentRouting)
+			routing := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: currentRouting.Revision, Routing: currentRouting.Routing}, IdempotencyKey: "routing-" + action}
+			if action == "replayed routing" || action == "interleaved routing replay" {
+				routing.Tags = []string{"example"}
+			}
+			var replayBody string
+			if action == "replayed routing" {
+				response := performHubAPIRequest(t, service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing)
+				requireNativeStatus(t, response, http.StatusOK)
+				replayBody = response.Body.String()
+			}
 			item, blocker := f.create(t, "dependent"), f.create(t, "blocker")
+			assertNoExecution := func() {
+				t.Helper()
+				if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+					active, err := reader.RunnerHasActiveLease(t.Context(), r.binding.RunnerID, now())
+					if err != nil {
+						return err
+					}
+					if active {
+						return errors.New("cursor reader gained an execution lease")
+					}
+					owned, err := reader.WorkItem(t.Context(), f.project.ID, item.WorkItemID)
+					if err != nil {
+						return err
+					}
+					attempts, err := reader.AttemptPage(t.Context(), owned.ID, leasestore.AttemptCursor{}, 1)
+					if err != nil {
+						return err
+					}
+					if len(attempts.Items) != 0 {
+						return errors.New("cursor read or refused claim created an attempt")
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if action == "routing" || action == "disabled routing" {
+				assertNoExecution()
+			}
+			var other nativeFixture
+			var otherRunner runnerFixture
+			var otherCursor string
+			if strings.HasPrefix(action, "other tenant ") {
+				second := nativeOrganization{ID: "org_second", Name: "org_second", Slug: "org-second"}
+				seedPostgresHubAdmin(t, repository, service, second)
+				other = newNativeFixture(t, service, second.ID, "other wait")
+				if action != "other tenant queue" {
+					otherRunner = prepareRunner(t, other, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+					otherRunner.enroll(t)
+				}
+				otherCursor = service.notifications.dispatchCursor(dispatchNotificationKey(second.ID))
+			}
+			var anotherProject nativeFixture
+			if action == "denied runner project" {
+				anotherProject = newNativeFixture(t, service, organization.ID, "unassigned wait")
+			}
+			probe.candidates.Store(0)
+			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+				_, err := reader.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: f.project.ID, Scope: string(f.project.ID), WorkItemID: item.WorkItemID, AvailableAt: service.config.now(), Limit: 1})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if probe.candidates.Load() != 1 {
+				t.Fatal("PG candidate probe did not observe real candidate owner")
+			}
+			probe.candidates.Store(0)
 			cursor := dispatchWaitCursor(t, serveDispatchWait(t.Context(), f, worker, ""))
 			if action == "reconnect" {
 				f.create(t, "gap")
@@ -183,32 +426,182 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			result := make(chan *httptest.ResponseRecorder, 1)
+			joined := false
+			defer func() {
+				cancel()
+				if !joined {
+					<-result
+				}
+			}()
 			go func() { result <- serveDispatchWait(ctx, f, worker, cursor) }()
-			awaitDispatchSubscribers(t, f.service, f.project.OrganizationID, 1)
+			await(1)
 			queries := probe.queries.Load()
 			if probe.candidates.Load() != 0 {
 				t.Fatal("wait scanned candidates")
 			}
+			quiet := false
 			switch action {
 			case "queue":
 				f.create(t, "ready")
+			case "replayed queue":
+				if replay := f.create(t, "dependent"); replay.WorkItemID != item.WorkItemID {
+					t.Fatal("queue replay changed work item")
+				}
+			case "rejected queue":
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-dependent"}, Title: "different", Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: "Todo"}), http.StatusConflict)
+			case "other tenant queue":
+				other.create(t, "unrelated queue")
 			case "dependency":
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "relation"}, ExpectedRevision: item.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}), http.StatusOK)
-			case "capacity", "unchanged heartbeat":
-				capacity := 3
-				if action == "unchanged heartbeat" {
-					capacity = 2
+			case "capacity", "unchanged heartbeat", "capacity local limit", "capacity client limit", "capacity runtime limit", "aliased capacity config", "unchanged capacity config", "stale capacity config", "stale heartbeat", "rejected heartbeat", "heartbeat rollback":
+				capacity := 2
+				if action == "capacity" || action == "heartbeat rollback" {
+					capacity = 3
 				}
-				heartbeat := map[string]any{"capacity": capacity, "version": "test", "backend_isolation": r.redemption.BackendIsolation}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", worker, heartbeat), http.StatusOK)
-				if action == "unchanged heartbeat" {
-					if next := f.service.notifications.dispatchCursor(dispatchNotificationKey(f.project.OrganizationID)); next != cursor {
-						t.Fatal("unchanged heartbeat woke admission")
+				clock.Add(int64(time.Second))
+				if action == "stale heartbeat" || action == "stale capacity config" {
+					if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+						if action == "stale capacity config" {
+							stale := config
+							stale.ObservedAt = now().Add(-runnerauth.HeartbeatTimeout)
+							return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, stale)
+						}
+						identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						identity.LastHeartbeatAt = now().Add(-runnerauth.HeartbeatTimeout)
+						return w.UpdateRunnerIdentity(t.Context(), identity)
+					}); err != nil {
+						t.Fatal(err)
 					}
-					cancel()
 				}
-			case "routing":
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "draining", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}), http.StatusOK)
+				heartbeat := map[string]any{"display_name": r.redemption.DisplayName, "capacity": capacity, "version": "test", "backend_isolation": r.redemption.BackendIsolation}
+				if configCase {
+					switch action {
+					case "capacity local limit":
+						config.LocalLimit++
+					case "capacity client limit":
+						config.ClientLimit++
+					case "capacity runtime limit", "aliased capacity config":
+						config.RuntimeLimit++
+					}
+					heartbeat["capacity_configuration"] = config
+				}
+				want := http.StatusOK
+				if action == "rejected heartbeat" {
+					heartbeat["capacity"] = -1
+					want = http.StatusUnprocessableEntity
+				}
+				if action == "heartbeat rollback" {
+					mutations.reject.Store(true)
+					want = http.StatusInternalServerError
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", worker, heartbeat), want)
+				if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+					identity, err := reader.RunnerIdentity(t.Context(), r.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					if want == http.StatusOK {
+						if identity.ReportedCapacity != int64(capacity) || configCase && (identity.CapacityConfig == nil || identity.CapacityConfig.LocalLimit != config.LocalLimit || identity.CapacityConfig.ClientLimit != config.ClientLimit || identity.CapacityConfig.RuntimeLimit != config.RuntimeLimit || !identity.CapacityConfig.ObservedAt.Equal(now())) || !identity.LastHeartbeatAt.Equal(now()) {
+							return errors.New("typed heartbeat fields did not commit")
+						}
+					} else if identity.ReportedCapacity != 2 {
+						return errors.New("rejected heartbeat changed durable capacity")
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				quiet = action == "unchanged heartbeat" || action == "unchanged capacity config" || want != http.StatusOK
+
+			case "routing", "disabled routing":
+				state := "draining"
+				if action == "disabled routing" {
+					state = "disabled"
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: state, CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}), http.StatusOK)
+				refused := performHubAPIRequest(t, service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: r.binding.MachineID, SessionID: "routing-refused", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: []string{"Todo"}})
+				requireNativeStatus(t, refused, http.StatusNotFound)
+				var denial apiErrorResponse
+				decodeHubResponse(t, refused, &denial)
+				if denial.Code != "machine_not_found" {
+					t.Fatalf("claim refusal code=%s", denial.Code)
+				}
+				assertNoExecution()
+			case "unchanged routing", "replayed routing", "interleaved routing replay", "rejected routing", "routing rollback":
+				want := http.StatusOK
+				if action == "rejected routing" {
+					routing.ExpectedRevision = 99
+					want = http.StatusConflict
+				}
+				if action == "routing rollback" {
+					routing.Tags = []string{"example"}
+					mutations.reject.Store(true)
+					want = http.StatusInternalServerError
+				}
+				var interleave atomic.Bool
+				var committedCursor string
+				if action == "interleaved routing replay" {
+					interleave.Store(true)
+					mutations.beforeWrite = func() {
+						if interleave.CompareAndSwap(true, false) {
+							response := performHubAPIRequest(t, service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing)
+							requireNativeStatus(t, response, http.StatusOK)
+							replayBody = response.Body.String()
+							committedCursor = service.notifications.dispatchCursor(dispatchNotificationKey(organization.ID))
+						}
+					}
+				}
+				response := performHubAPIRequest(t, service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing)
+				requireNativeStatus(t, response, want)
+				if (action == "replayed routing" || action == "interleaved routing replay") && response.Body.String() != replayBody {
+					t.Fatal("routing replay changed committed response")
+				}
+				if action == "interleaved routing replay" && (interleave.Load() || service.notifications.dispatchCursor(dispatchNotificationKey(organization.ID)) != committedCursor) {
+					t.Fatal("receipt replay notified after another command committed")
+				}
+				if action == "routing rollback" {
+					after := performHubAPIRequest(t, service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
+					requireNativeStatus(t, after, http.StatusOK)
+					var unchanged runnerauth.Runner
+					decodeHubResponse(t, after, &unchanged)
+					if unchanged.Revision != currentRouting.Revision || !slices.Equal(unchanged.Tags, currentRouting.Tags) {
+						t.Fatal("rejected routing changed durable intent")
+					}
+				}
+				quiet = action != "interleaved routing replay"
+			case "other tenant capacity":
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, other.base+"/machines/"+string(otherRunner.binding.MachineID)+"/heartbeat", otherRunner.redemption.Credential, map[string]any{"display_name": otherRunner.redemption.DisplayName, "capacity": 3, "version": "test", "backend_isolation": otherRunner.redemption.BackendIsolation}), http.StatusOK)
+				quiet = true
+			case "other tenant routing":
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, otherRunner.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "draining", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{other.project.ID}}}), http.StatusOK)
+				quiet = true
+			case "denied project", "denied runner project", "revoked denied project":
+				if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+					if action != "denied runner project" {
+						return w.DeleteAccessTokenGrant(t.Context(), identity.TokenID, f.project.ID)
+					}
+					record, err := w.ProjectRecord(t.Context(), f.project.ID)
+					if err != nil {
+						return err
+					}
+					return w.RetireProject(t.Context(), f.project.ID, record.Settings.Revision, now())
+				}); err != nil {
+					t.Fatal(err)
+				}
+				switch action {
+				case "revoked denied project":
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, r.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
+				case "denied runner project":
+					anotherProject.create(t, "reauthorize")
+				default:
+					f.create(t, "reauthorize")
+				}
+			case "credential outage":
+				mutations.credentialOutage.Store(true)
+				service.notifications.notify(dispatchNotificationKey(organization.ID))
 			case "revocation":
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, r.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
 			case "cancel":
@@ -218,14 +611,33 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			quiet = quiet || action == "replayed queue" || action == "rejected queue" || action == "other tenant queue"
+			if strings.HasPrefix(action, "other tenant ") && service.notifications.dispatchCursor(dispatchNotificationKey(other.project.OrganizationID)) == otherCursor {
+				t.Fatal("other tenant committed mutation did not notify its own scope")
+			}
+			if quiet {
+				if next := service.notifications.dispatchCursor(dispatchNotificationKey(f.project.OrganizationID)); next != cursor {
+					t.Fatal("unchanged/replayed/rejected/other-tenant command woke admission")
+				}
+				cancel()
+			} else if action != "cancel" && action != "unchanged heartbeat" && action != "shutdown" {
+				if next := service.notifications.dispatchCursor(dispatchNotificationKey(f.project.OrganizationID)); next == cursor {
+					t.Fatal("notification did not advance cursor after committed mutation")
+				}
+			}
 			select {
 			case response := <-result:
-				switch action {
-				case "cancel", "unchanged heartbeat":
-				case "shutdown":
+				joined = true
+				switch {
+				case quiet || action == "cancel":
+				case action == "shutdown":
 					requireNativeStatus(t, response, http.StatusServiceUnavailable)
-				case "revocation":
+				case action == "revocation" || action == "revoked denied project":
 					requireNativeStatus(t, response, http.StatusUnauthorized)
+				case action == "denied project" || action == "denied runner project":
+					requireNativeStatus(t, response, http.StatusForbidden)
+				case action == "credential outage":
+					requireNativeStatus(t, response, http.StatusServiceUnavailable)
 				default:
 					if next := dispatchWaitCursor(t, response); next == cursor {
 						t.Fatal("notification did not advance cursor")
@@ -234,7 +646,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("held wait did not finish")
 			}
-			awaitDispatchSubscribers(t, f.service, f.project.OrganizationID, 0)
+			await(0)
 			t.Logf("queries=%d candidate_queries=%d", probe.queries.Load()-queries, probe.candidates.Load())
 		})
 	}

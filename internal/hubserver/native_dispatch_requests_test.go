@@ -13,9 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -858,6 +863,38 @@ func TestNativeDerivedHoldDispatchEquivalence(t *testing.T) {
 
 func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
 	f := newDispatchGuardFixture(t)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		record.Core.RequireDependencies = true
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("fixture authority status%d: %v", status, err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	candidate := func(t *testing.T) bool {
+		t.Helper()
+		found := false
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.authorizeAccessScope(t.Context(), r, scope, false); err != nil {
+				return err
+			}
+			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: scope.project, Scope: string(scope.project), WorkItemID: f.issue.WorkItemID, AvailableAt: f.service.config.now(), Limit: 1})
+			found = len(page.Items) == 1
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
 	blockers := []tracker.NativeIssue{f.create(t, "First prerequisite"), f.create(t, "Second prerequisite")}
 	for _, blocker := range blockers {
 		current := f.reload(t)
@@ -865,20 +902,71 @@ func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/dependencies", f.token, request), http.StatusOK)
 	}
 	f.succeed(t, &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "prerequisite", Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState}}}})
-	if f.candidate(t) {
+	if candidate(t) {
 		t.Fatal("unfinished dependencies allowed a candidate")
 	}
 	for index, blocker := range blockers {
 		request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "finish-" + string(blocker.WorkItemID)}, ExpectedRevision: blocker.Revision, State: "Done", Reason: "user_requested"}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(blocker.WorkItemID)+"/workflow", f.token, request), http.StatusOK)
-		if got, want := f.candidate(t), index == len(blockers)-1; got != want {
+		if got, want := candidate(t), index == len(blockers)-1; got != want {
 			t.Fatalf("after prerequisite %d: candidate=%t want=%t", index, got, want)
 		}
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_remove(data_json, '$.disposition') WHERE id=?", f.attempt); err != nil {
+	before, err := f.service.readNativeAttemptSnapshotTenant(t.Context(), scope, string(f.issue.WorkItemID), f.attempt)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !f.candidate(t) {
+	run, err := f.service.readNativeAttemptRunTenant(t.Context(), before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Disposition == nil || len(run.Disposition.BlockerEvidence) != 1 {
+		t.Fatalf("missing historical dependency evidence: %+v", run.Disposition)
+	}
+	run.Disposition = nil
+	raw, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := f.service.runDetailStore().StoreDetail(t.Context(), string(scope.organization), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateNativeDetailReference(t.Context(), f.service.runDetailStore(), scope.organization, ref, raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.now()})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key=$1,claim_disposition='' WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.organization, f.attempt, before.attempt.Sequence, before.attempt.PayloadObjectKey, before.attempt.LeaseID, before.attempt.FencingToken, before.attempt.RunID, before.attempt.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+		t.Fatalf("historical fixture CAS rows%d: %v", changed, err)
+	}
+	after, err := f.service.readNativeAttemptSnapshotTenant(t.Context(), scope, string(f.issue.WorkItemID), f.attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := f.service.readNativeAttemptRunTenant(t.Context(), after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := before.attempt
+	expected.PayloadObjectKey = ref.Key
+	expected.ClaimDisposition = new("")
+	if cleared.Disposition != nil || !reflect.DeepEqual(after.attempt, expected) || !reflect.DeepEqual(after.lease, before.lease) {
+		t.Fatal("historical fixture changed attempt/lease identity or retained disposition")
+	}
+	original, err := f.service.readNativeAttemptRunTenant(t.Context(), before)
+	if err != nil || original.Disposition == nil {
+		t.Fatalf("original immutable history lost: %v", err)
+	}
+	if !candidate(t) {
 		t.Fatal("wiping historical dependency evidence changed eligibility")
 	}
 }

@@ -489,10 +489,10 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 
 	credential, err := s.AccessCredential(ctx, authority.CredentialID)
 	if err != nil {
-		return accessstore.Member{}, accessAuthorizationError(err)
+		return accessstore.Member{}, &accessstore.LookupError{Step: "credential", Cause: accessAuthorizationError(err)}
 	}
 	if !credential.Valid(authority.Hash, now) {
-		return accessstore.Member{}, accessstore.ErrDenied
+		return accessstore.Member{}, &accessstore.LookupError{Step: "credential", Cause: accessstore.ErrDenied}
 	}
 	required := apikey.ScopeRead
 	if authority.Write {

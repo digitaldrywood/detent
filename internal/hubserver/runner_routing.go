@@ -604,6 +604,12 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		return nil, projectRecordError(err)
 	}
 	previousRouting := current.Routing
+	dispatchChanged := previousRouting.Scope != change.Scope || !slices.Equal(previousRouting.ProjectIDs, change.ProjectIDs) || previousRouting.State != change.State || !slices.Equal(previousRouting.Tags, change.Tags) || previousRouting.CapacityLimit != change.CapacityLimit || !maps.Equal(previousRouting.ProjectCapacityLimits, change.ProjectCapacityLimits) || !maps.Equal(current.ProjectRankOverrides, change.ProjectRanks) || previousRouting.MachineUse != change.MachineUse || previousRouting.IsolationTier != change.IsolationTier || !slices.Equal(previousRouting.HostServices, change.HostServices) || previousRouting.Availability.Timezone != change.Availability.Timezone || !slices.Equal(previousRouting.Availability.Windows, change.Availability.Windows) || !maps.Equal(previousRouting.Availability.WindowSlots, change.Availability.WindowSlots) || previousRouting.Availability.HardDeadline != change.Availability.HardDeadline
+	if previousRouting.CapacityRequest == nil || change.CapacityRequest == nil {
+		dispatchChanged = dispatchChanged || (previousRouting.CapacityRequest == nil) != (change.CapacityRequest == nil)
+	} else {
+		dispatchChanged = dispatchChanged || *previousRouting.CapacityRequest != *change.CapacityRequest
+	}
 	current.Routing, current.Revision = change.Routing, identity.Revision+1
 	current.ProjectRanks = responseRanks
 	raw, err := json.Marshal(current)
@@ -616,7 +622,9 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 			return nil, err
 		}
 	}
+	wroteRouting := false
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		wroteRouting = false
 		if err := authorize(writer); err != nil {
 			return err
 		}
@@ -668,6 +676,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		if err := writer.UpdateRunnerRouting(ctx, change.ExpectedRevision, identity); err != nil {
 			return err
 		}
+		wroteRouting = true
 		if request.IdempotencyKey != "" {
 			var err error
 			receipt, err = writer.PutReceipt(ctx, receipt)
@@ -677,6 +686,9 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 	})
 	if err != nil {
 		return nil, projectRecordError(err)
+	}
+	if wroteRouting && dispatchChanged {
+		s.notifications.notify(dispatchNotificationKey(scope.organization))
 	}
 	if request.IdempotencyKey != "" {
 		return s.readRunnerRoutingReceipt(ctx, scope, resource, receipt, content)
