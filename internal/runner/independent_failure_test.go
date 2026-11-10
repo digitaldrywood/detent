@@ -10,6 +10,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -130,7 +132,16 @@ func TestIndependentFailureReviewResume(t *testing.T) {
 			}
 			agent := &resolvingReworkAgent{t: t, reviewVerdict: "pass"}
 			cfg := config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "check-input", AutomatedReview: gate.AutomatedReviewRequired}}
-			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the source"}, Workspace: backend, AgentBackend: agent})
+			sessions := &fakeSessionStore{sessionID: 73}
+			if err := sessions.ReconcileSessionFinalization(t.Context(), prior.ImplementationReview.SessionID, &sessionmodel.Finalization{
+				SessionID: prior.ImplementationReview.SessionID,
+				Finish:    store.SessionFinish{CompletedAt: prior.CreatedAt, FinalState: FinalStateCompleted},
+				Usage:     store.UsageEvent{SessionID: prior.ImplementationReview.SessionID, IssueID: "native", Identifier: "native#1", StartedAt: prior.CreatedAt, FinishedAt: prior.CreatedAt, Outcome: FinalStateCompleted},
+				Phase:     &store.WorkflowPhaseEvent{SessionID: prior.ImplementationReview.SessionID, IssueID: "native", Identifier: "native#1", PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: FinalStateCompleted, StartedAt: prior.CreatedAt, FinishedAt: prior.CreatedAt},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the source"}, Workspace: backend, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -138,6 +149,9 @@ func TestIndependentFailureReviewResume(t *testing.T) {
 			result, err := r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Issue: connector.Issue{ID: "native", Identifier: "native#1", State: "Rework"}, Execution: owner})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if sessions.startCalls != 1 || sessions.finishCalls != 2 || sessions.usageCalls != 2 || sessions.usage.SessionID != 73 || sessions.phase.SessionID != 73 || sessions.finished.Turns != 0 || sessions.finished.FinalState != FinalStateCompleted {
+				t.Fatal("repair retry lost its bookkeeping-only session")
 			}
 			if result.TurnStarted || agent.calls != 0 || agent.reviewCalls != 0 || backend.validationCalls != 1 || backend.finalizationCalls != 1 {
 				t.Fatalf("repair retry repeated valid work or reused a failed gate: turn=%v coding=%d reviews=%d gates=%d finalizations=%d", result.TurnStarted, agent.calls, agent.reviewCalls, backend.validationCalls, backend.finalizationCalls)
