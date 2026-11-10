@@ -270,15 +270,17 @@ describe("the board card", () => {
 
   it("keeps known relations and readiness when a mutation response declares them omitted", () => {
     const blocker = { work_item_id: "wi_one", project_id: "prj_example", number: 7, title: "Foundation", state: "Todo", terminal: false };
-    const previous = { ...itemFixture as unknown as NativeIssue, blockers: [blocker], dependents: [blocker], related: [blocker], dependency_ready: undefined };
-    const response = { ...previous, blockers: [], dependents: [], related: undefined, dependency_ready: false, omitted_fields: ["blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"] } as unknown as NativeIssue;
+    const previous = { ...itemFixture as unknown as NativeIssue, dependencies: [blocker.work_item_id], blockers: [blocker], dependents: [blocker], related: [blocker], dependency_ready: undefined };
+    const response = { ...previous, dependencies: [], blockers: [], dependents: [], related: undefined, dependency_ready: false, omitted_fields: ["dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"] } as unknown as NativeIssue;
     const kept = retainOmittedRelations(previous as unknown as NativeIssue, response);
+    expect(kept.dependencies).toEqual([blocker.work_item_id]);
     expect(kept.blockers).toEqual([blocker]);
     expect(kept.dependents).toEqual([blocker]);
     expect(kept.related).toEqual([blocker]);
     expect(kept.dependency_ready).toBeUndefined();
     expect(statusPill(toWorkItemView(kept, "Example"))?.label ?? null).toBe("Waiting on #7");
     const authoritative = retainOmittedRelations(previous as unknown as NativeIssue, { ...response, omitted_fields: undefined } as unknown as NativeIssue);
+    expect(authoritative.dependencies).toEqual([]);
     expect(authoritative.blockers).toEqual([]);
     expect(authoritative.dependency_ready).toBe(false);
     expect(statusPill(toWorkItemView(authoritative, "Example"))?.label ?? null).toBeNull();

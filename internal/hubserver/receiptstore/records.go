@@ -15,7 +15,7 @@ const ReplayRetention = 24 * time.Hour
 const MaxRetentionBatch = 5000
 const MaxImportBatch = 500
 
-var ErrExpired = errors.New("command response replay expired")
+var ErrExpired = errors.New("the command completed; its stored response is no longer available; the command will not be repeated")
 var ErrImmutableReceiptPresent = errors.New("metadata import intersects an immutable response")
 
 type Record struct {

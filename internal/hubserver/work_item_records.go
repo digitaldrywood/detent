@@ -703,10 +703,11 @@ func (s *Service) prepareWorkItemFields(ctx context.Context, organization tracke
 }
 
 func relationshipOmittedIssue(issue tracker.NativeIssue) tracker.NativeIssue {
+	issue.Dependencies = []tracker.NativeWorkItemID{}
 	issue.Blockers, issue.Dependents, issue.Related = []tracker.NativeDependency{}, []tracker.NativeDependency{}, nil
 	issue.DependencyReady, issue.BlockedReason, issue.UnblocksReason = false, tracker.DependencyReason{}, tracker.DependencyReason{}
 	issue.OmittedFields = slices.Clone(issue.OmittedFields)
-	for _, field := range []string{"blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+	for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
 		if !slices.Contains(issue.OmittedFields, field) {
 			issue.OmittedFields = append(issue.OmittedFields, field)
 		}
@@ -723,8 +724,8 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 	case tracker.CreateComment, tracker.UpdateComment:
 		return raw, nil
 	}
-	var issue tracker.NativeIssue
-	if json.Unmarshal(raw, &issue) == nil && issue.WorkItemID != "" {
+	var challenge duplicateChallenge
+	if json.Unmarshal(raw, &challenge) == nil && challenge.ChallengeToken != "" {
 		return s.nativeIssueJSON(ctx, scope, raw)
 	}
 	return raw, nil
@@ -773,7 +774,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			return nil, err
 		}
 		if found {
-			return s.readWorkItemRecordReceipt(ctx, scope, receipt)
+			return s.readWorkItemRecordReceipt(ctx, scope, receipt, input, options.Item)
 		}
 		var confirmation *workItemDuplicateConfirmation
 		if request, ok := input.(tracker.CreateIssue); ok && request.ChallengeToken != "" {
@@ -784,7 +785,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 					return nil, replayErr
 				}
 				if found {
-					return s.readWorkItemRecordReceipt(ctx, scope, replayed)
+					return s.readWorkItemRecordReceipt(ctx, scope, replayed, input, options.Item)
 				}
 				return nil, err
 			}
@@ -839,11 +840,11 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 								return nil, err
 							}
 						}
-						machinePriority, err = s.prepareWorkItemMachinePriority(ctx, scope, plan, request.Priority)
-						if err != nil {
-							return nil, err
-						}
-						if machinePriority != nil {
+						if !plan.issue.Terminal && request.Priority != nil && (plan.issue.Priority == nil || *request.Priority < *plan.issue.Priority) {
+							machinePriority, err = s.prepareWorkItemMachinePriority(ctx, scope, plan, request.Priority)
+							if err != nil {
+								return nil, err
+							}
 							plan.issue = machinePriority.plan.issue
 						}
 						machineReused = true
@@ -909,9 +910,6 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			if len(duplicateLinks) > 0 {
 				issue = duplicateLinks[len(duplicateLinks)-1].issue
 			}
-			if _, relationship := input.(tracker.DependencyMutation); relationship {
-				issue = relationshipOmittedIssue(issue)
-			}
 			value = scope.reporterIssue(issue)
 		}
 		if machineReused {
@@ -921,6 +919,24 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		}
 		if challengeResponse != nil {
 			value = challengeResponse
+		}
+		if issue, ok := value.(tracker.NativeIssue); ok {
+			if !scope.reporterOwns(issue.Actor) {
+				return nil, nativeNotFound()
+			}
+			issue = relationshipOmittedIssue(scope.reporterIssue(issue))
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				organization, err := r.AccessOrganization(ctx)
+				if err == nil {
+					issue.WebURL = issueBrowserPath(organization.Slug, plan.project.Core.Slug, issue.Number)
+				}
+				return err
+			})
+			if err != nil {
+				issue.WebURL = ""
+				issue.OmittedFields = append(issue.OmittedFields, "web_url")
+			}
+			value = s.nativeIssueResponse(issue)
 		}
 		raw, err := json.Marshal(value)
 		if err != nil {
@@ -1377,7 +1393,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 					return nil, replayErr
 				}
 				if found {
-					return s.readWorkItemRecordReceipt(ctx, scope, replayed)
+					return s.readWorkItemRecordReceipt(ctx, scope, replayed, input, options.Item)
 				}
 			}
 			return nil, projectRecordError(err)

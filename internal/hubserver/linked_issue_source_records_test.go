@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -35,15 +36,6 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "org_provider"}); err != nil {
 			return err
 		}
-		created, err := w.CreateProjectRecord(t.Context(), project)
-		if err != nil {
-			return err
-		}
-		created.Settings.RepositoryEnabled = true
-		created.Settings.Repository = "example/repository"
-		if _, err := w.UpdateProjectRecord(t.Context(), created); err != nil {
-			return err
-		}
 		free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
 		plan := billingstore.Plan{OrganizationID: organization, PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, MonthlyUSDCents: free.MonthlyUSDCents, Allowances: free.Allowances, Features: free.Features}
 		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
@@ -61,6 +53,17 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 	})
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		created, err := w.ProjectRecord(t.Context(), projectID)
+		if err != nil {
+			return err
+		}
+		created.Core.Name, created.Core.Slug, created.Core.RequireDependencies = project.Core.Name, project.Core.Slug, project.Core.RequireDependencies
+		created.States = project.States
+		created.Settings.RepositoryEnabled = true
+		created.Settings.Repository = "example/repository"
+		if _, err := w.UpdateProjectRecord(t.Context(), created); err != nil {
+			return err
+		}
 		member, err := w.AccessMember(t.Context(), owner.identity.Subject)
 		if err != nil {
 			return err
@@ -86,5 +89,15 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 	decodeHubResponse(t, response, &refreshed)
 	if refreshed.Title != snapshot.Title || refreshed.Body != snapshot.Body || refreshed.LinkedSource == nil || refreshed.LinkedSource.Status != "complete" {
 		t.Fatalf("source intake did not complete from selected owners: %+v", refreshed)
+	}
+	for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+		if !slices.Contains(refreshed.OmittedFields, field) {
+			t.Fatalf("source intake response did not omit %s", field)
+		}
+	}
+	replay := f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/source-intake", request)
+	requireNativeStatus(t, replay, http.StatusOK)
+	if replay.Body.String() != response.Body.String() {
+		t.Fatal("source intake replay changed its committed response")
 	}
 }

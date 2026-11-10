@@ -10,8 +10,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -51,7 +54,7 @@ func (s missingDetailReferenceStore) ReadDetail(ctx context.Context, organizatio
 func TestWorkItemRecordBackendParity(t *testing.T) {
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) {
-			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}}
+			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")}
 			var repository tenantstore.Repository
 			if backend == "postgres" {
 				repository = projectRecordPostgres(t)
@@ -64,10 +67,11 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					seedWorkItemRecordOrganization(t, repository, service, org)
 					key := string(org.ID) + ":"
 					projectBase := "/api/v2/organizations/" + string(org.ID) + "/projects"
-					response := performHubAPIRequest(t, service, http.MethodPost, projectBase, testHubAdminToken, map[string]any{"idempotency_key": key + "project", "name": "Example project", "states": nativeFixtureStates()})
-					requireNativeStatus(t, response, http.StatusOK)
+					response := performHubAPIRequest(t, service, http.MethodPost, projectBase, testHubAdminToken, map[string]any{"idempotency_key": key + "project", "name": "Example project", "states": nativeFixtureStates(), "grant_access": true})
+					requireNativeStatus(t, response, http.StatusCreated)
 					var project tracker.NativeProject
 					decodeHubResponse(t, response, &project)
 					if repository == nil {
@@ -90,13 +94,11 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 					base := projectBase + "/" + string(project.ID) + "/work-items"
 					input := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key + "issue"}, Title: "Example issue", Body: workItemRecordBody, Labels: []string{"example"}, Assignees: []string{"example-user"}}
 					if repository != nil {
-						machine := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key + "machine"}, Title: "Machine report", Body: issueorigin.Stamp(workItemRecordBody, issueorigin.Origin{Kind: "worker", Fingerprint: "example-fingerprint"})}
-						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, machine), http.StatusServiceUnavailable)
 						challenged := input
 						challenged.IdempotencyKey = key + "challenge"
 						challenged.ChallengeToken = "example-challenge"
 						challenged.NotDuplicateOf = []int{1}
-						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, challenged), http.StatusServiceUnavailable)
+						requireNativeCode(t, performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, challenged), http.StatusGone, "idempotency_expired")
 					}
 					response = performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, input)
 					requireNativeStatus(t, response, http.StatusOK)
@@ -104,6 +106,11 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 					decodeHubResponse(t, response, &issue)
 					if issue.Number != 1 || issue.Revision != 1 || issue.Body != input.Body || !slices.Equal(issue.Labels, input.Labels) || !slices.Equal(issue.Assignees, input.Assignees) {
 						t.Fatalf("created=%+v", issue)
+					}
+					for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+						if !slices.Contains(issue.OmittedFields, field) {
+							t.Fatalf("create response did not omit %s", field)
+						}
 					}
 					replay := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, input)
 					requireNativeStatus(t, replay, http.StatusOK)
@@ -194,7 +201,17 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 					if !archivedIssue.Archived || archivedIssue.Revision != 3 {
 						t.Fatalf("archive=%+v", archivedIssue)
 					}
-					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/restore", testHubAdminToken, archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: key + "restore"}, ExpectedRevision: 3}), http.StatusOK)
+					restored := performHubAPIRequest(t, service, http.MethodPost, itemPath+"/restore", testHubAdminToken, archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: key + "restore"}, ExpectedRevision: 3})
+					requireNativeStatus(t, restored, http.StatusOK)
+					for _, response := range []*httptest.ResponseRecorder{response, edited, archived, restored} {
+						var issue tracker.NativeIssue
+						decodeHubResponse(t, response, &issue)
+						for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+							if !slices.Contains(issue.OmittedFields, field) {
+								t.Fatalf("mutation response did not omit %s: %s", field, response.Body.String())
+							}
+						}
+					}
 					results := make(chan *httptest.ResponseRecorder, 4)
 					var workers sync.WaitGroup
 					for index := range 4 {
@@ -293,6 +310,17 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 						}
 						if historical.Body != original.Body || historical.Deleted {
 							t.Fatalf("history changed: %+v", historical)
+						}
+						machine := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key + "machine"}, Title: "Machine report", Body: issueorigin.Stamp(workItemRecordBody, issueorigin.Origin{Kind: "worker", Fingerprint: "example-fingerprint"})}
+						machineReply := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, machine)
+						requireNativeStatus(t, machineReply, http.StatusOK)
+						var machineIssue tracker.NativeIssue
+						decodeHubResponse(t, machineReply, &machineIssue)
+						if machineIssue.OrganizationID != org.ID || machineIssue.ProjectID != project.ID || machineIssue.WorkItemID == "" || machineIssue.WorkItemID == issue.WorkItemID || machineIssue.Number != 7 || machineIssue.Revision != 1 || machineIssue.PublicationReused || machineIssue.Title != machine.Title || machineIssue.Body != machine.Body {
+							t.Fatalf("machine report did not preserve a new scoped issue: %+v", machineIssue)
+						}
+						if machineIssue.Actor.Kind != "human" || machineIssue.Actor.PrincipalID != "test_hub_admin" || machineIssue.IssueContract == nil || len(machineIssue.IssueContract.ConfirmedSections) != 0 {
+							t.Fatal("machine origin changed the authenticated actor or fabricated human confirmation")
 						}
 						if name == "First organization" {
 							verifyWorkItemMaximumCommentPage(t, service, repository, issue, itemPath)
@@ -438,17 +466,19 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var linked tracker.NativeIssue
 	decodeHubResponse(t, response, &linked)
-	if linked.Revision != 3 || !slices.Equal(linked.Dependencies, []tracker.NativeWorkItemID{target.WorkItemID}) {
+	if linked.Revision != 3 {
 		t.Fatalf("dependency mutation=%+v", linked)
 	}
-	for _, field := range []string{"blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
-		if !slices.Contains(linked.OmittedFields, field) {
-			t.Fatalf("dependency mutation response does not declare %s omitted: %+v", field, linked.OmittedFields)
+	t.Run("mutation response projection", func(t *testing.T) {
+		for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+			if !slices.Contains(linked.OmittedFields, field) {
+				t.Fatalf("dependency mutation response does not declare %s omitted: %+v", field, linked.OmittedFields)
+			}
 		}
-	}
-	if linked.Blockers == nil || len(linked.Blockers) != 0 || linked.Dependents == nil || len(linked.Dependents) != 0 || linked.DependencyReady {
-		t.Fatalf("dependency mutation response carries relationship facts it declares omitted: %+v", linked)
-	}
+		if linked.Dependencies == nil || len(linked.Dependencies) != 0 || linked.Blockers == nil || len(linked.Blockers) != 0 || linked.Dependents == nil || len(linked.Dependents) != 0 || linked.DependencyReady {
+			t.Fatalf("dependency mutation response carries relationship facts it declares omitted: %+v", linked)
+		}
+	})
 	var sourceRead tracker.NativeIssue
 	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &sourceRead)
 	if !slices.Equal(sourceRead.Dependencies, []tracker.NativeWorkItemID{target.WorkItemID}) || len(sourceRead.Blockers) != 1 || sourceRead.Blockers[0].ID != target.WorkItemID || sourceRead.DependencyReady {
@@ -691,6 +721,313 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	if len(allRelated.Related) != bulkCount+2 {
 		t.Fatalf("relationship hydration truncated at one storage page: got=%d want=%d", len(allRelated.Related), bulkCount+2)
 	}
+	for _, organization := range []nativeOrganization{firstOrganization, secondOrganization} {
+		t.Run(string(organization.ID)+"/legacy_receipt_privacy", func(t *testing.T) {
+			f := newNativeFixture(t, service, organization.ID, "Legacy response source")
+			other := newNativeFixture(t, service, organization.ID, "Legacy response related")
+			item := f.create(t, "Legacy response item")
+			visible := f.create(t, "Visible dependency")
+			hidden := other.create(t, "Private dependency")
+			path := f.base + "/work-items/" + string(item.WorkItemID)
+			for _, dependency := range []tracker.NativeIssue{visible, hidden} {
+				request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "link-" + string(dependency.WorkItemID)}, ExpectedRevision: item.Revision, RelatedWorkItemID: dependency.WorkItemID, Operation: "add"}
+				response := performHubAPIRequest(t, service, http.MethodPost, path+"/dependencies", testHubAdminToken, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &item)
+			}
+			credential, _, err := service.authenticateTenantAPIHash(t.Context(), organization.ID, apikey.HashToken(f.token), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacyScope := nativeScope{organization: organization.ID, project: f.project.ID, credential: credential}
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credential.ID, ProjectID: other.project.ID})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var granted tracker.NativeIssue
+			response := performHubAPIRequest(t, service, http.MethodGet, path, f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &granted)
+			if !slices.Contains(granted.Dependencies, visible.WorkItemID) || !slices.Contains(granted.Dependencies, hidden.WorkItemID) {
+				t.Fatalf("initial authorized dependency read=%+v", granted.Dependencies)
+			}
+			content := eventstore.NewContent(service.runDetailStore())
+			grantRevoked := false
+			var finalMethod, finalPath string
+			var finalInput any
+			for index, test := range []struct {
+				name, projection string
+				create           bool
+				status           int
+			}{
+				{"lost create with absent facts", "absent", true, http.StatusOK},
+				{"fact empty legacy edit", "empty", false, http.StatusOK},
+				{"legacy private identifiers", "original", false, http.StatusGone},
+				{"six field omission retains private identifiers", "six", false, http.StatusGone},
+				{"duplicate field conceals earlier private identifiers", "duplicate", false, http.StatusGone},
+				{"case variant field conceals earlier private identifiers", "case duplicate", false, http.StatusGone},
+				{"duplicate reason conceals earlier private text", "duplicate reason", false, http.StatusGone},
+				{"unknown private field", "unknown", false, http.StatusGone},
+				{"malformed relationship field", "malformed", false, http.StatusGone},
+				{"missing issue identity", "missing identity", false, http.StatusGone},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					key := "legacy-" + string(organization.ID) + "-" + strconv.Itoa(index)
+					method, resource, selected := http.MethodPatch, path, string(item.WorkItemID)
+					var command tracker.Mutation
+					var input any
+					if test.create {
+						request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: "Legacy created item", Body: workItemRecordBody, State: "Todo"}
+						input, command = request, request.Mutation
+						method, resource, selected = http.MethodPost, f.base+"/work-items", ""
+					} else {
+						row, _, err := service.readWorkItemRecord(t.Context(), legacyScope, selected)
+						if err != nil {
+							t.Fatal(err)
+						}
+						request := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedRevision: tracker.Revision(row.Revision), Title: new("Committed legacy edit " + strconv.Itoa(index))}
+						input, command = request, request.Mutation
+					}
+					plan, err := service.loadWorkItemPlan(t.Context(), legacyScope, selected, "", input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					plan, err = service.planWorkItemRecord(t.Context(), legacyScope, plan, input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					canonical, err := json.Marshal(plan.issue)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var body map[string]json.RawMessage
+					if err := json.Unmarshal(canonical, &body); err != nil {
+						t.Fatal(err)
+					}
+					if test.projection != "original" {
+						for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason", "omitted_fields"} {
+							delete(body, field)
+						}
+					}
+					if test.projection != "original" && test.projection != "absent" {
+						body["dependencies"], body["blockers"], body["dependents"] = json.RawMessage(`[]`), json.RawMessage(`[]`), json.RawMessage(`[]`)
+						body["dependency_ready"], body["blocked_reason"], body["unblocks_reason"] = json.RawMessage(`false`), json.RawMessage(`{}`), json.RawMessage(`{}`)
+					}
+					switch test.projection {
+					case "six", "duplicate", "case duplicate":
+						body["dependencies"], err = json.Marshal(plan.issue.Dependencies)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if test.projection == "six" {
+							body["omitted_fields"] = json.RawMessage(`["blockers","dependents","related","dependency_ready","blocked_reason","unblocks_reason"]`)
+						}
+					case "duplicate reason":
+						private, err := json.Marshal(string(hidden.WorkItemID))
+						if err != nil {
+							t.Fatal(err)
+						}
+						body["blocked_reason"] = json.RawMessage(`{"text":` + string(private) + `,"text":""}`)
+					case "unknown":
+						body["unknown_relationship"], err = json.Marshal(hidden.WorkItemID)
+						if err != nil {
+							t.Fatal(err)
+						}
+					case "malformed":
+						body["dependencies"] = json.RawMessage(`{}`)
+					case "missing identity":
+						delete(body, "work_item_id")
+					}
+					legacy, err := json.Marshal(body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if test.projection == "duplicate" {
+						legacy = append(legacy[:len(legacy)-1], []byte(`,"dependencies":[]}`)...)
+					}
+					if test.projection == "case duplicate" {
+						legacy = append(legacy[:len(legacy)-1], []byte(`,"DEPENDENCIES":[]}`)...)
+					}
+					version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization.ID, ProjectID: f.project.ID, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: int64(plan.issue.Revision)}, canonical)
+					if err != nil {
+						t.Fatal(err)
+					}
+					eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization.ID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: legacyScope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					event, err := content.PrepareEvent(t.Context(), organization.ID, eventRaw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					fields, err := service.prepareWorkItemFields(t.Context(), organization.ID, plan)
+					if err != nil {
+						t.Fatal(err)
+					}
+					searchDocument, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: organization.ID, ProjectID: plan.issue.ProjectID, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + string(plan.issue.WorkItemID), SourceID: string(plan.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+					if err != nil {
+						t.Fatal(err)
+					}
+					hash, err := nativeCommandHash(input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: organization.ID, ActorID: credential.ID, Operation: method + " " + resource, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: plan.issue.UpdatedAt, ResponseReplayUntilNs: plan.issue.UpdatedAt.Add(receiptstore.ReplayRetention).UnixNano()}, legacy)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+						if err := writeWorkItemRecord(t.Context(), w, plan, fields); err != nil {
+							return err
+						}
+						if err := w.PutSearch(t.Context(), searchDocument, plan.current.Revision); err != nil {
+							return err
+						}
+						if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+							return err
+						}
+						if _, err := w.AppendEvent(t.Context(), event); err != nil {
+							return err
+						}
+						var err error
+						receipt, err = w.PutReceipt(t.Context(), receipt)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if !grantRevoked && test.status == http.StatusGone {
+						if !bytes.Contains(legacy, []byte(hidden.WorkItemID)) {
+							t.Fatal("legacy response did not retain the formerly authorized dependency")
+						}
+						if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+							return w.DeleteAccessTokenGrant(t.Context(), credential.ID, other.project.ID)
+						}); err != nil {
+							t.Fatal(err)
+						}
+						grantRevoked = true
+					}
+					var before corestore.WorkItem
+					if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						before, err = r.WorkItem(t.Context(), f.project.ID, plan.issue.WorkItemID)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					for range 2 {
+						replay := performHubAPIRequest(t, service, method, resource, f.token, input)
+						requireNativeStatus(t, replay, test.status)
+						if test.status == http.StatusOK {
+							if replay.Body.String() != string(legacy) {
+								t.Fatal("safe legacy response was not replayed byte for byte")
+							}
+						} else if !strings.Contains(replay.Body.String(), "idempotency_expired") || !strings.Contains(replay.Body.String(), "completed") || !strings.Contains(replay.Body.String(), "will not be repeated") || strings.Contains(replay.Body.String(), string(hidden.WorkItemID)) {
+							t.Fatalf("unsafe legacy response did not preserve a private, committed refusal: %s", replay.Body.String())
+						}
+					}
+					if test.status == http.StatusGone {
+						_, readErr := service.readWorkItemRecordReceipt(t.Context(), legacyScope, receipt, input, selected)
+						if !errors.Is(readErr, receiptstore.ErrExpired) {
+							t.Fatalf("unsafe legacy reader error=%v", readErr)
+						}
+						var refusal *operatortool.RequestError
+						mapped := safeNativeWorkError(fmt.Errorf("execute work command: %w", readErr))
+						if !errors.As(mapped, &refusal) || refusal.Code != "idempotency_expired" || !strings.Contains(refusal.Message, "completed") || !strings.Contains(refusal.Message, "will not be repeated") {
+							t.Fatalf("generic operator legacy refusal lost committed outcome: %v", mapped)
+						}
+						if !errors.Is(workflowSafeError(readErr), receiptstore.ErrExpired) {
+							t.Fatal("workflow legacy refusal lost its existing sentinel")
+						}
+					}
+					var changed any
+					switch request := input.(type) {
+					case tracker.CreateIssue:
+						request.Title = "Different input"
+						changed = request
+					case tracker.UpdateIssue:
+						request.Title = new("Different input")
+						changed = request
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, service, method, resource, f.token, changed), http.StatusConflict)
+					if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+						after, err := r.WorkItem(t.Context(), f.project.ID, plan.issue.WorkItemID)
+						if err != nil {
+							return err
+						}
+						stored, err := r.Receipt(t.Context(), credential.ID, receipt.Operation, command.IdempotencyKey)
+						if err != nil {
+							return err
+						}
+						if after.Revision != before.Revision || after.EventSequence != before.EventSequence || after.Title != plan.issue.Title || !reflect.DeepEqual(stored, receipt) {
+							t.Fatalf("legacy replay changed its durable result: before=%+v after=%+v receipt=%+v", before, after, stored)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					original, err := content.Receipt(t.Context(), receipt)
+					if err != nil || !bytes.Equal(original, legacy) {
+						t.Fatalf("legacy receipt bytes changed: %v", err)
+					}
+					finalMethod, finalPath, finalInput = method, resource, input
+				})
+			}
+			if t.Failed() {
+				return
+			}
+			var authorized tracker.NativeIssue
+			response = performHubAPIRequest(t, service, http.MethodGet, path, f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &authorized)
+			if !slices.Contains(authorized.Dependencies, visible.WorkItemID) || slices.Contains(authorized.Dependencies, hidden.WorkItemID) {
+				t.Fatalf("authoritative read lost visible dependency or exposed revoked dependency: %+v", authorized.Dependencies)
+			}
+			update := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "safe-new-" + string(organization.ID)}, ExpectedRevision: authorized.Revision, Title: new("Safe current response")}
+			response = performHubAPIRequest(t, service, http.MethodPatch, path, f.token, update)
+			requireNativeStatus(t, response, http.StatusOK)
+			var updated tracker.NativeIssue
+			decodeHubResponse(t, response, &updated)
+			if strings.Contains(response.Body.String(), string(hidden.WorkItemID)) || strings.Contains(response.Body.String(), hidden.Title) || len(updated.Dependencies) != 0 {
+				t.Fatalf("current mutation exposed private relationship data: %s", response.Body.String())
+			}
+			for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+				if !slices.Contains(updated.OmittedFields, field) {
+					t.Fatalf("current mutation did not declare %s omitted", field)
+				}
+			}
+			replay := performHubAPIRequest(t, service, http.MethodPatch, path, f.token, update)
+			requireNativeStatus(t, replay, http.StatusOK)
+			if response.Body.String() != replay.Body.String() {
+				t.Fatal("safe current mutation replay changed bytes")
+			}
+			transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "safe-workflow-" + string(organization.ID)}, ExpectedRevision: updated.Revision, State: "In Progress", Reason: "user_requested"}
+			workflow := performHubAPIRequest(t, service, http.MethodPost, path+"/workflow", f.token, transition)
+			requireNativeStatus(t, workflow, http.StatusOK)
+			var transitioned tracker.NativeIssue
+			decodeHubResponse(t, workflow, &transitioned)
+			for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+				if !slices.Contains(transitioned.OmittedFields, field) {
+					t.Fatalf("workflow response did not declare %s omitted", field)
+				}
+			}
+			workflowReplay := performHubAPIRequest(t, service, http.MethodPost, path+"/workflow", f.token, transition)
+			requireNativeStatus(t, workflowReplay, http.StatusOK)
+			if workflow.Body.String() != workflowReplay.Body.String() || strings.Contains(workflow.Body.String(), string(hidden.WorkItemID)) {
+				t.Fatal("workflow response lost safe byte replay")
+			}
+			preflight, found, err := service.workflowCommandReplay(t.Context(), legacyScope, string(item.WorkItemID), transition)
+			if err != nil || !found || string(preflight) != workflow.Body.String() {
+				t.Fatalf("human workflow replay bypassed the stored safe response: found=%v error=%v", found, err)
+			}
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.DeleteAccessTokenGrant(t.Context(), credential.ID, f.project.ID)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, service, finalMethod, finalPath, f.token, finalInput), http.StatusForbidden)
+		})
+	}
 }
 
 func itemPathFor(organization tracker.OrganizationID, project tracker.ProjectID, item tracker.NativeWorkItemID) string {
@@ -855,24 +1192,31 @@ func TestWorkItemRecordReplayRechecksAccessInTenantWrite(t *testing.T) {
 
 func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.TenantRepository = repository
-		cfg.RunDetails = &memoryRunDetails{}
-	})
-	scope := nativeScope{organization: tracker.OrganizationID("org_security"), project: f.project}
+	scope := nativeScope{organization: tracker.OrganizationID("org_security"), project: tracker.ProjectID("prj_security")}
+	fixtureNow := time.Now().UTC()
 	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: scope.organization, Name: "Example organization", CreatedAt: f.service.config.now()}); err != nil {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: scope.organization, Name: "Example organization", CreatedAt: fixtureNow}); err != nil {
 			return err
 		}
 		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: scope.organization, ProviderID: "org_provider"})
 	}); err != nil {
 		t.Fatal(err)
 	}
+	f := newHostedSecurityFixture(t, func(cfg *Config) {
+		cfg.AccessRepository = repository
+		cfg.TenantRepository = repository
+		cfg.RunDetails = &memoryRunDetails{}
+	})
 	states := append(nativeFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}})
 	project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: scope.project, Name: "Example project", Slug: "example-project", Profile: "native", RequireDependencies: true}, States: states}
 	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.CreateProjectRecord(t.Context(), project)
+		created, err := w.ProjectRecord(t.Context(), scope.project)
+		if err != nil {
+			return err
+		}
+		created.Core.Name, created.Core.Slug, created.Core.RequireDependencies = project.Core.Name, project.Core.Slug, project.Core.RequireDependencies
+		created.States = project.States
+		_, err = w.UpdateProjectRecord(t.Context(), created)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -899,6 +1243,11 @@ func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
 	requireNativeStatus(t, created, http.StatusOK)
 	var original tracker.NativeIssue
 	decodeHubResponse(t, created, &original)
+	identical := f.request(t, owner, http.MethodPost, f.base+"/work-items", request)
+	requireNativeStatus(t, identical, http.StatusOK)
+	if created.Body.String() != identical.Body.String() {
+		t.Fatal("reporter issue replay changed its safe stored response")
+	}
 	retry := request
 	retry.IdempotencyKey = "owner-retry"
 	replayed := f.request(t, owner, http.MethodPost, f.base+"/work-items", retry)
@@ -918,7 +1267,7 @@ func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
 	challenged.IdempotencyKey = "owner-unsupported-challenge"
 	challenged.ChallengeToken = "example-challenge"
 	challenged.NotDuplicateOf = []int{original.Number}
-	requireNativeStatus(t, f.request(t, owner, http.MethodPost, f.base+"/work-items", challenged), http.StatusServiceUnavailable)
+	requireNativeCode(t, f.request(t, owner, http.MethodPost, f.base+"/work-items", challenged), http.StatusUnprocessableEntity, "invalid_request")
 	foreign := request
 	foreign.IdempotencyKey = "other-reporter-file"
 	response := f.request(t, other, http.MethodPost, f.base+"/work-items", foreign)

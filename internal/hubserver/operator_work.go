@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -330,6 +331,9 @@ func operatorNativeConflict(err error) error {
 func safeNativeWorkError(err error) error {
 	if conflict := operatorNativeConflict(err); conflict != nil {
 		return conflict
+	}
+	if errors.Is(err, receiptstore.ErrExpired) {
+		err = commandResponseExpired()
 	}
 	var refusal *nativeError
 	if errors.As(err, &refusal) && refusal.publicMessage {

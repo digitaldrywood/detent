@@ -1,9 +1,11 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,14 +41,118 @@ func duplicateContentHash(request tracker.CreateIssue) (string, error) {
 	return nativeCommandHash(request)
 }
 
-func (s *Service) readWorkItemRecordReceipt(ctx context.Context, scope nativeScope, receipt eventstore.Receipt) (json.RawMessage, error) {
+func decodeWorkItemReceipt(raw json.RawMessage, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var uniqueFields func() error
+	uniqueFields = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		switch token {
+		case json.Delim('{'):
+			fields := map[string]bool{}
+			for decoder.More() {
+				field, err := decoder.Token()
+				name, ok := field.(string)
+				name = strings.ToUpper(strings.ToLower(name))
+				if err != nil || !ok || fields[name] {
+					return receiptstore.ErrExpired
+				}
+				fields[name] = true
+				if err := uniqueFields(); err != nil {
+					return err
+				}
+			}
+			closing, err := decoder.Token()
+			if err != nil || closing != json.Delim('}') {
+				return receiptstore.ErrExpired
+			}
+		case json.Delim('['):
+			for decoder.More() {
+				if err := uniqueFields(); err != nil {
+					return err
+				}
+			}
+			closing, err := decoder.Token()
+			if err != nil || closing != json.Delim(']') {
+				return receiptstore.ErrExpired
+			}
+		}
+		return nil
+	}
+	if err := uniqueFields(); err != nil {
+		return receiptstore.ErrExpired
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return receiptstore.ErrExpired
+	}
+	decoder = json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return receiptstore.ErrExpired
+	}
+	return nil
+}
+
+func validateWorkItemReceiptIssue(scope nativeScope, item string, raw json.RawMessage) error {
+	var issue tracker.NativeIssue
+	if err := decodeWorkItemReceipt(raw, &issue); err != nil {
+		return err
+	}
+	if issue.OrganizationID != scope.organization || issue.ProjectID != scope.project || !validNativeID(string(issue.WorkItemID), "wi") || item != "" && string(issue.WorkItemID) != item ||
+		issue.Number <= 0 || issue.Revision <= 0 || issue.Profile != "native" || issue.Title == "" || issue.State == "" {
+		return receiptstore.ErrExpired
+	}
+	if !scope.reporterOwns(issue.Actor) {
+		return nativeNotFound()
+	}
+	if len(issue.Dependencies) != 0 || len(issue.Blockers) != 0 || len(issue.Dependents) != 0 || len(issue.Related) != 0 ||
+		issue.DependencyReady || issue.BlockedReason != (tracker.DependencyReason{}) || issue.UnblocksReason != (tracker.DependencyReason{}) {
+		return receiptstore.ErrExpired
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return receiptstore.ErrExpired
+	}
+	for name, value := range fields {
+		for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+			if strings.EqualFold(name, field) && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return receiptstore.ErrExpired
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) readWorkItemRecordReceipt(ctx context.Context, scope nativeScope, receipt eventstore.Receipt, input any, item string) (json.RawMessage, error) {
 	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
 	if err != nil {
 		return raw, err
 	}
 	var challenge duplicateChallenge
-	if err := json.Unmarshal(raw, &challenge); err != nil || challenge.ChallengeToken == "" {
-		return raw, err
+	if err := json.Unmarshal(raw, &challenge); err != nil {
+		switch input.(type) {
+		case tracker.CreateComment, tracker.UpdateComment:
+			return raw, err
+		}
+		return nil, receiptstore.ErrExpired
+	}
+	switch input.(type) {
+	case tracker.CreateComment, tracker.UpdateComment:
+		return raw, nil
+	}
+	if challenge.ChallengeToken == "" {
+		if err := validateWorkItemReceiptIssue(scope, item, raw); err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+	if _, create := input.(tracker.CreateIssue); !create {
+		return nil, receiptstore.ErrExpired
+	}
+	if err := decodeWorkItemReceipt(raw, &challenge); err != nil {
+		return nil, err
 	}
 	var stored corestore.DuplicateChallenge
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -434,9 +540,6 @@ type workItemMachinePriority struct {
 }
 
 func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope nativeScope, occurrence workItemRecordPlan, priority *int) (*workItemMachinePriority, error) {
-	if occurrence.issue.Terminal || priority == nil || occurrence.issue.Priority != nil && *priority >= *occurrence.issue.Priority {
-		return nil, nil
-	}
 	if err := requireNativeEdit(occurrence.issue, occurrence.issue.Revision); err != nil {
 		return nil, err
 	}

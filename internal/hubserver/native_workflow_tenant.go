@@ -94,7 +94,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if receipt.ResponseExpired {
 				return nil, commandResponseExpired()
 			}
-			return content.Receipt(ctx, receipt)
+			return s.readWorkItemRecordReceipt(ctx, scope, receipt, request, item)
 		}
 		row, currentVersion, err := s.readWorkItemRecord(ctx, scope, item)
 		if err != nil {
@@ -230,7 +230,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if linkedSource != nil {
 			responseIssue.ExternalReferences = append(slices.Clone(responseIssue.ExternalReferences), tracker.GitHubIssueSourceReference(linkedSource.URL, linkedSource.URL))
 		}
-		responseRaw, err := json.Marshal(responseIssue)
+		responseRaw, err := json.Marshal(relationshipOmittedIssue(responseIssue))
 		if err != nil {
 			return nil, err
 		}

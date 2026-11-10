@@ -233,6 +233,7 @@ export function retainOmittedRelations(previous: NativeIssue, updated: NativeIss
   const omitted = new Set(updated.omitted_fields ?? []);
   return {
     ...updated,
+    dependencies: omitted.has("dependencies") ? previous.dependencies : updated.dependencies,
     blockers: omitted.has("blockers") ? previous.blockers : updated.blockers,
     dependents: omitted.has("dependents") ? previous.dependents : updated.dependents,
     related: omitted.has("related") ? previous.related : updated.related,

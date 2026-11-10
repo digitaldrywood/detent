@@ -1553,19 +1553,35 @@ are generated from names, unique within their scope, and editable by owners
 and admins in settings; earlier slugs remain reserved. The same links are
 returned by MCP, which accepts readable issue URLs as scoped issue references.
 Non-hosted Hubs have no configured public URL
-or conversation app and return an empty string. Replayed mutations and historical
-work-item versions project the link using the serving Hub's current configuration;
-the URL is not immutable content.
+or conversation app and return an empty string. Native issue mutation receipts
+retain the link in their returned representation; identical retries replay those
+bytes. Current issue reads and historical work-item versions project the link
+using the serving Hub's current configuration. The URL does not establish source
+identity.
 
 Collaboration mutations return the committed representation with status 200,
-including identical retries. Idempotency keys are scoped to the authenticated
+including identical retries. Native issue mutation responses declare
+`dependencies`, `blockers`, `dependents`, `related`, `dependency_ready`,
+`blocked_reason` and `unblocks_reason` in `omitted_fields`; their empty arrays,
+absent related list and zero-value readiness/reasons are omitted context, not
+authoritative relationship facts. Read authorized issue relationships for those
+facts. The canonical issue version and relationship mutation remain complete.
+Idempotency keys are scoped to the authenticated
 principal, organization and operation/resource. Reusing a key with different
 content returns 409 `idempotency_conflict`. REST mutation receipts outside
-conversation routes are retained for 24 hours; a retry with the same key after
-that is processed as a new request. Concurrent edits return 409
+conversation routes retain response payloads for 24 hours. An expired or unsafe
+legacy issue response returns 410 `idempotency_expired`: the command completed,
+its stored response is unavailable, and the command will not be repeated.
+Its committed result, original receipt bytes and request hash remain intact.
+Fact-empty legacy issue responses may replay unchanged without omission metadata
+when their typed issue identity and shape validate, all relationship collections
+are empty or absent, readiness is false or absent, and both reasons are empty or
+absent. Unknown, malformed, contradictory or relationship-bearing legacy issue
+responses fail closed after current authorization and input-hash checks. Comment
+and duplicate-challenge replay contracts are unchanged. Concurrent edits return 409
 `revision_conflict` with `current_revision`. Revisions, event sequences and fencing
 tokens are decimal strings on the wire. Mutations, their saved content versions,
-history and retry result commit in one SQLite transaction. Ordinary clients cannot
+history and retry result commit in one PostgreSQL transaction. Ordinary clients cannot
 update or delete history.
 
 Titles are limited to 500 bytes, bodies to 256 KiB, comments to 64 KiB, and requests

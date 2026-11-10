@@ -8,7 +8,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -41,7 +40,7 @@ func (s *Service) workflowCommandReplay(ctx context.Context, scope nativeScope, 
 	if receipt.ResponseExpired {
 		return nil, true, receiptstore.ErrExpired
 	}
-	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
+	raw, err := s.readWorkItemRecordReceipt(ctx, scope, receipt, transition, item)
 	return raw, true, err
 }
 

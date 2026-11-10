@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -163,7 +164,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			membership := auth.Membership{ID: "membership-" + string(org), UserID: user, OrganizationID: "provider_" + string(org), Status: "active"}
 			membership.Role.Slug = "owner"
 			provider.members[membership.ID] = membership
-			service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: org, now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Hosted: &HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "http://example.test", Plans: &plans}, Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }}}
+			service := &Service{echo: echo.New(), notifications: newNotificationBroker(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: org, now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Hosted: &HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "http://example.test", Plans: &plans}, Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }}}
 			service.ready.Store(true)
 			service.registerNativeRoutes(service.echo)
 			service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
@@ -244,6 +245,46 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 					t.Fatalf("create status=%d want=%d body=%s", out.Code, status, out.Body.String())
 				}
 				return out.Body.Bytes()
+			}
+			readDetail := func(id tracker.NativeWorkItemID) tracker.NativeIssue {
+				t.Helper()
+				path := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/work-items/%s", org, project, id)
+				response := performHubAPIRequest(t, service, http.MethodGet, path, token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var issue tracker.NativeIssue
+				decodeHubResponse(t, response, &issue)
+				if issue.OrganizationID != org || issue.ProjectID != project || issue.WorkItemID != id {
+					t.Fatal("authenticated detail returned another issue or tenant")
+				}
+				return issue
+			}
+			requireOmittedRelations := func(raw []byte) {
+				t.Helper()
+				var issue tracker.NativeIssue
+				if err := json.Unmarshal(raw, &issue); err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range []string{"dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+					if !slices.Contains(issue.OmittedFields, field) {
+						t.Fatalf("mutation response did not declare %s omitted", field)
+					}
+				}
+				if len(issue.Dependencies) != 0 || len(issue.Blockers) != 0 || len(issue.Dependents) != 0 || len(issue.Related) != 0 || issue.DependencyReady || issue.BlockedReason != (tracker.DependencyReason{}) || issue.UnblocksReason != (tracker.DependencyReason{}) {
+					t.Fatal("mutation response included omitted relationship facts")
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &fields); err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range []string{"dependencies", "blockers", "dependents", "related"} {
+					value, found := fields[field]
+					if field == "related" && !found {
+						continue
+					}
+					if !bytes.Equal(value, []byte("[]")) {
+						t.Fatalf("mutation %s must be an empty array when present: %s", field, value)
+					}
+				}
 			}
 			refresh()
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-first"}, Title: "Filesystem import loses attachment references", Body: workItemRecordBody, State: "Todo"}
@@ -518,8 +559,13 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			if err := json.Unmarshal(confirmed, &created); err != nil {
 				t.Fatal(err)
 			}
-			if created.Number != 2 || created.Revision != 2 || len(created.Related) != 1 || created.Related[0].ID != issue.WorkItemID {
+			if created.Number != 2 || created.Revision != 2 {
 				t.Fatalf("confirmed issue number=%d revision=%d", created.Number, created.Revision)
+			}
+			requireOmittedRelations(confirmed)
+			createdDetail := readDetail(created.WorkItemID)
+			if len(createdDetail.Related) != 1 || createdDetail.Related[0].ID != issue.WorkItemID {
+				t.Fatal("confirmed issue detail lost related link")
 			}
 			beforeReplay := accounting()
 			if !bytes.Equal(confirmed, call(request, http.StatusOK)) {
@@ -697,10 +743,14 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			if err := json.Unmarshal(entryConfirmed.Body.Bytes(), &entryEnvelope); err != nil {
 				t.Fatal(err)
 			}
-			if entryEnvelope.Data.Number != entryIssue.Number+1 || len(entryEnvelope.Data.Related) != 1 || entryEnvelope.Data.Related[0].ID != entryIssue.WorkItemID {
-				t.Fatal("signed file_issue confirmation lost issue or related link")
+			if entryEnvelope.Data.Number != entryIssue.Number+1 {
+				t.Fatal("signed file_issue confirmation lost issue number")
 			}
-			if related := entryEnvelope.Data.Related[0]; related.Title != entryIssue.Title || related.State != entryIssue.State || !related.Terminal || related.ProjectID != project || related.WebURL != fmt.Sprintf("http://example.test/example-%s/example/issues/%d", strings.TrimPrefix(string(org), "org_"), entryIssue.Number) {
+			entryDetail := readDetail(entryEnvelope.Data.WorkItemID)
+			if len(entryDetail.Related) != 1 || entryDetail.Related[0].ID != entryIssue.WorkItemID {
+				t.Fatal("signed file_issue confirmation detail lost related link")
+			}
+			if related := entryDetail.Related[0]; related.Title != entryIssue.Title || related.State != entryIssue.State || !related.Terminal || related.ProjectID != project || related.WebURL != fmt.Sprintf("http://example.test/example-%s/example/issues/%d", strings.TrimPrefix(string(org), "org_"), entryIssue.Number) {
 				t.Fatalf("confirmation link lost typed candidate fields: %+v", related)
 			}
 			beforeSignedReplay := accounting()
@@ -715,6 +765,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &confirmationResponses[i]); err != nil {
 					t.Fatal(err)
 				}
+				requireOmittedRelations(confirmationResponses[i].Data)
 			}
 			original, replayed := confirmationResponses[0], confirmationResponses[1]
 			if original.ResourceID != replayed.ResourceID || original.Revision != replayed.Revision || original.URL != replayed.URL || !bytes.Equal(original.Data, replayed.Data) {

@@ -13,8 +13,11 @@ import (
 func openHostedPostgresService(t *testing.T, cfg Config) *Service {
 	t.Helper()
 	cfg = hostedPostgresConfig(t, cfg)
-	admin, ok := projectRecordDatabases.Load(cfg.Postgres.Connection.Database)
 	service := openTestService(t, cfg)
+	if service.config.Postgres == nil {
+		t.Fatal("hosted fixture PostgreSQL configuration is unavailable")
+	}
+	admin, ok := projectRecordDatabases.Load(service.config.Postgres.Connection.Database)
 	if ok {
 		projectRecordDatabases.Store(service.config.TenantRepository, admin)
 		t.Cleanup(func() { projectRecordDatabases.Delete(service.config.TenantRepository) })

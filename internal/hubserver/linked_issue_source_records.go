@@ -119,7 +119,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	if found {
-		value, err := content.Receipt(ctx, receipt)
+		value, err := s.readWorkItemRecordReceipt(ctx, scope, receipt, request, string(itemID))
 		if err != nil {
 			return nil, err
 		}
@@ -307,7 +307,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	if stale {
 		issue = originalIssue
 	}
-	response, err := json.Marshal(scope.reporterIssue(issue))
+	response, err := json.Marshal(relationshipOmittedIssue(scope.reporterIssue(issue)))
 	if err != nil {
 		return nil, err
 	}
