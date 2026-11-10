@@ -33,7 +33,7 @@ func (e hostedContextExecutor) credential(ctx context.Context, name, project str
 	if s.config.Hosted == nil {
 		return ctx, apiCredential{}, errHostedContextUnavailable
 	}
-	if s.config.TenantRepository == nil || name != operatortool.AppUpdates && name != operatortool.AppBootstrapPayload {
+	if s.config.TenantRepository == nil || name != operatortool.AppUpdates && name != operatortool.AppBootstrapPayload && name != operatortool.ReleaseNotes {
 		return ctx, apiCredential{}, errHostedContextUnavailable
 	}
 	credential, err := currentHubOperator(ctx)
@@ -83,7 +83,7 @@ func (e hostedContextExecutor) listTools(ctx context.Context) ([]operatortool.De
 			if !allowed {
 				continue
 			}
-		case operatortool.AppBootstrapPayload:
+		case operatortool.AppBootstrapPayload, operatortool.ReleaseNotes:
 		default:
 			continue
 		}
@@ -115,9 +115,14 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 			resultErr = classified
 		}
 	}()
+	var releaseRequest operatortool.ReleaseNotesArguments
 	switch call.Name {
 	case operatortool.AppBootstrapPayload, operatortool.AppUpdates:
 		if err := operatortool.DecodeArguments(call.Arguments, &struct{}{}); err != nil {
+			return result, err
+		}
+	case operatortool.ReleaseNotes:
+		if err := operatortool.DecodeArguments(call.Arguments, &releaseRequest); err != nil {
 			return result, err
 		}
 	default:
@@ -130,6 +135,12 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 	s := e.service
 	var payload any
 	switch call.Name {
+	case operatortool.ReleaseNotes:
+		page, err := s.readReleaseNotes(readCtx, credential, releaseRequest)
+		if err != nil {
+			return result, err
+		}
+		payload = page
 	case operatortool.AppBootstrapPayload:
 		session := auth.Session{}
 		if credential.SessionHash != "" {
@@ -146,13 +157,6 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 		}
 		var bootstrap appBootstrap
 		bootstrap, err = s.readPostgresAppBootstrap(readCtx, credential, session)
-		if err == nil {
-			var seen time.Time
-			seen, err = s.releaseSeenTime(readCtx, credential)
-			if err == nil {
-				bootstrap.HasUnread = s.releasesUnread(seen)
-			}
-		}
 		if err != nil {
 			return result, err
 		}

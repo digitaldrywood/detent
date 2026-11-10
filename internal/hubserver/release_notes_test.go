@@ -8,6 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/releasenotes"
 )
@@ -100,12 +104,21 @@ func TestReleaseNotesPreferences(t *testing.T) {
 	}
 	f.service.config.Version = "1.2.0"
 	requireNativeStatus(t, f.request(t, alice, http.MethodPut, path+"/seen", nil), http.StatusOK)
-	var saved string
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT version FROM hosted_release_preferences WHERE organization_id=? AND user_id=?", "org_security", alice.identity.Subject).Scan(&saved); err != nil || saved != "v1.2.1" {
+	var member accessstore.Member
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		member, err = r.AccessMember(t.Context(), alice.identity.Subject)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	preference, err := f.service.config.AccessRepository.(accountstore.Repository).ReleasePreference(t.Context(), "org_security", alice.identity.Subject, member.MembershipID, member.PrincipalID)
+	saved := preference.Version
+	if err != nil || saved != "v1.2.1" {
 		t.Fatalf("rollback preference=%q error=%v", saved, err)
 	}
 	var count int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_release_preferences").Scan(&count); err != nil || count != 2 {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_release_preferences").Scan(&count); err != nil || count != 2 {
 		t.Fatalf("preferences=%d error=%v", count, err)
 	}
 }
@@ -130,7 +143,16 @@ func TestReleaseNotesMCP(t *testing.T) {
 					t.Fatalf("mcp=%+v browser=%+v", mcpPage, browserPage)
 				}
 				hostedContextData(t, send("tools/call", operatortool.ReleaseNotes, map[string]any{"limit": 101}), true)
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_members SET active=0 WHERE user_id=?", f.user.identity.Subject)
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+					member, err := w.AccessMember(t.Context(), f.user.identity.Subject)
+					if err != nil {
+						return err
+					}
+					member.Active = false
+					return w.UpdateAccessMember(t.Context(), member)
+				}); err != nil {
+					t.Fatal(err)
+				}
 				hostedContextData(t, send("tools/call", operatortool.ReleaseNotes, map[string]any{}), true)
 			})
 		}

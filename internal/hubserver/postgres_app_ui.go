@@ -216,6 +216,11 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential apiCr
 	payload.Feature = s.appBootstrapFeature()
 	payload.Feature.Workspaces = s.config.Workspace != nil && s.config.Workspace.Enabled && !s.config.CredentialMaintenance
 	payload.Preferences = s.postgresAppBootstrapPreferences()
+	seen, err := s.releaseSeenTime(ctx, credential)
+	if err != nil {
+		return appBootstrap{}, err
+	}
+	payload.HasUnread = s.releasesUnread(seen)
 	return payload, nil
 }
 
