@@ -12,10 +12,12 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -40,6 +42,11 @@ type nativeLeaseCommandReader struct {
 	reservationErr   error
 	project          tracker.ProjectID
 	compact          bool
+	policiesLoaded   bool
+	policiesErr      error
+	policyLease      tracker.LeaseID
+	pinnedPolicy     policystore.LeasePolicy
+	monthlyPolicies  []billingstore.MonthlyPolicy
 }
 
 func (s *Service) nativeLeaseReader(r tenantstore.Reader, scope nativeScope) *nativeLeaseCommandReader {
@@ -95,6 +102,46 @@ func (r *nativeLeaseCommandReader) RunnerForLease(ctx context.Context, id string
 		r.runner, r.runnerLease = &row, id
 	}
 	return row, err
+}
+
+func (r *nativeLeaseCommandReader) loadPolicies(ctx context.Context) bool {
+	if !r.compact || r.lease == nil {
+		return false
+	}
+	owner, ok := r.Reader.(interface {
+		LeaseMutationPolicies(context.Context, tracker.ProjectID, tracker.LeaseID) (policystore.LeasePolicy, []billingstore.MonthlyPolicy, error)
+	})
+	if !ok {
+		return false
+	}
+	if !r.policiesLoaded {
+		r.policiesLoaded = true
+		r.policyLease = tracker.LeaseID(r.lease.LeaseID)
+		r.pinnedPolicy, r.monthlyPolicies, r.policiesErr = owner.LeaseMutationPolicies(ctx, r.project, r.policyLease)
+	}
+	return true
+}
+
+func (r *nativeLeaseCommandReader) BillingMonthlyPolicy(ctx context.Context, project tracker.ProjectID) (billingstore.MonthlyPolicy, error) {
+	if project != "" && project != r.project || !r.loadPolicies(ctx) {
+		return r.Reader.BillingMonthlyPolicy(ctx, project)
+	}
+	if r.policiesErr != nil {
+		return billingstore.MonthlyPolicy{}, r.policiesErr
+	}
+	for _, row := range r.monthlyPolicies {
+		if row.ProjectID == project {
+			return row, nil
+		}
+	}
+	return billingstore.MonthlyPolicy{}, corestore.ErrNotFound
+}
+
+func (r *nativeLeaseCommandReader) LeasePolicy(ctx context.Context, lease tracker.LeaseID) (policystore.LeasePolicy, error) {
+	if !r.policiesLoaded || lease != r.policyLease {
+		return r.Reader.LeasePolicy(ctx, lease)
+	}
+	return r.pinnedPolicy, r.policiesErr
 }
 
 func (r *nativeLeaseCommandReader) ProviderReservation(ctx context.Context, id tracker.LeaseID) (claimstore.ProviderReservation, error) {

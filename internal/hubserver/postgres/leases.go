@@ -9,9 +9,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -504,4 +506,49 @@ func (s *session) LeaseMutationReservation(ctx context.Context, id tracker.Lease
 		return claimstore.ProviderReservation{}, corestore.ErrInvalidPage
 	}
 	return claimstore.ProviderReservation{OrganizationID: h.OrganizationID, LeaseID: tracker.LeaseID(h.LeaseID), Reservation: reservation}, nil
+}
+
+func (s *session) LeaseMutationPolicies(ctx context.Context, project tracker.ProjectID, lease tracker.LeaseID) (policystore.LeasePolicy, []billingstore.MonthlyPolicy, error) {
+	const statement = `SELECT pin.organization_id,pin.project_id,pin.lease_id,pin.policy_id,pin.bound_at,
+ policy.organization_id IS NOT NULL,COALESCE(policy.organization_id,''),COALESCE(policy.project_id,''),
+ COALESCE(policy.revision,0),COALESCE(policy.enabled,false),COALESCE(policy.mode,''),
+ policy.luna_micros,policy.runner_micros,policy.sprite_micros,policy.total_micros,COALESCE(policy.actor_id,''),COALESCE(policy.updated_at,pin.bound_at)
+ FROM lease_policy_bindings pin
+ LEFT JOIN LATERAL (
+  SELECT current_policy.* FROM (VALUES (''::text),($3::text)) requested(project_id)
+  CROSS JOIN LATERAL (
+   SELECT * FROM monthly_budget_policies
+   WHERE organization_id=$1 AND project_id=requested.project_id ORDER BY revision DESC LIMIT 1
+  ) current_policy
+ ) policy ON true
+ WHERE pin.organization_id=$1 AND pin.lease_id=$2 AND pin.project_id=$3
+ ORDER BY policy.project_id`
+	rows, err := s.db.Query(ctx, statement, s.organization, lease, project)
+	if err != nil {
+		return policystore.LeasePolicy{}, nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	var pinned policystore.LeasePolicy
+	var policies []billingstore.MonthlyPolicy
+	found := false
+	for rows.Next() {
+		var row billingstore.MonthlyPolicy
+		var present bool
+		if err := rows.Scan(&pinned.OrganizationID, &pinned.ProjectID, &pinned.LeaseID, &pinned.PolicyID, &pinned.BoundAt,
+			&present, &row.OrganizationID, &row.ProjectID, &row.Revision, &row.Policy.Enabled, &row.Policy.Mode,
+			&row.Policy.LunaMicros, &row.Policy.RunnerMicros, &row.Policy.SpriteMicros, &row.Policy.TotalMicros, &row.Actor, &row.UpdatedAt); err != nil {
+			return policystore.LeasePolicy{}, nil, mapError(ctx, err)
+		}
+		found = true
+		if present {
+			policies = append(policies, row)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return policystore.LeasePolicy{}, nil, mapError(ctx, err)
+	}
+	if !found {
+		return policystore.LeasePolicy{}, nil, corestore.ErrNotFound
+	}
+	return pinned, policies, nil
 }

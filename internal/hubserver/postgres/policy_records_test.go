@@ -4,12 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -156,7 +161,9 @@ func TestProjectPolicyRevisionRetainsFrozenLandingGate(t *testing.T) {
 }
 
 func TestLeasePolicyPinSharesClaimTransactionAndTenantScope(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	var statement string
 	organizations := []tracker.OrganizationID{"org_lease_policy_first", "org_lease_policy_second"}
 	now := time.Date(2026, 11, 1, 20, 0, 0, 0, time.UTC)
 	for _, organization := range organizations {
@@ -235,6 +242,96 @@ func TestLeasePolicyPinSharesClaimTransactionAndTenantScope(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		readMutationPolicies := func(want map[tracker.ProjectID]billingstore.MonthlyPolicy) {
+			t.Helper()
+			if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				owner := r.(interface {
+					LeaseMutationPolicies(context.Context, tracker.ProjectID, tracker.LeaseID) (policystore.LeasePolicy, []billingstore.MonthlyPolicy, error)
+				})
+				observed := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
+					if strings.Contains(query, "FROM lease_policy_bindings pin") {
+						statement = query
+					}
+				})
+				pinned, policies, err := owner.LeaseMutationPolicies(observed, "prj_1", tracker.LeaseID(leaseID))
+				if err != nil {
+					return err
+				}
+				if pinned.OrganizationID != organization || pinned.ProjectID != "prj_1" || pinned.LeaseID != tracker.LeaseID(leaseID) || pinned.PolicyID != "policy_claim" || !pinned.BoundAt.Equal(now) {
+					t.Fatalf("mutation pin for %s=%+v", organization, pinned)
+				}
+				if len(policies) != len(want) {
+					t.Fatalf("mutation monthly policies=%+v, want %+v", policies, want)
+				}
+				seen := map[tracker.ProjectID]bool{}
+				for _, row := range policies {
+					expected, ok := want[row.ProjectID]
+					if !ok || seen[row.ProjectID] || row.OrganizationID != organization || row.Revision != expected.Revision || row.Actor != expected.Actor || !row.UpdatedAt.Equal(expected.UpdatedAt) || !reflect.DeepEqual(row.Policy, expected.Policy) {
+						t.Fatalf("mutation monthly policy=%+v, want %+v", row, expected)
+					}
+					seen[row.ProjectID] = true
+				}
+				for _, test := range []struct {
+					project tracker.ProjectID
+					lease   tracker.LeaseID
+				}{{"prj_2", tracker.LeaseID(leaseID)}, {"prj_1", "lease_missing"}} {
+					if _, _, err := owner.LeaseMutationPolicies(t.Context(), test.project, test.lease); !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("foreign/missing mutation policy lookup=%+v error=%v", test, err)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		readMutationPolicies(nil)
+		orgLimit := int64(100)
+		if organization != first {
+			orgLimit = 200
+		}
+		organizationPolicy := billingstore.MonthlyPolicy{OrganizationID: organization, Revision: 1, Policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: new(orgLimit)}, Actor: "fixture", UpdatedAt: now}
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.SetBillingMonthlyPolicy(t.Context(), organizationPolicy, 0)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		readMutationPolicies(map[tracker.ProjectID]billingstore.MonthlyPolicy{"": organizationPolicy})
+		organizationPolicy.Revision = 2
+		organizationPolicy.UpdatedAt = now.Add(time.Minute)
+		organizationPolicy.Policy.TotalMicros = new(orgLimit + 10)
+		projectPolicy := billingstore.MonthlyPolicy{OrganizationID: organization, ProjectID: "prj_1", Revision: 1, Policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.DrainIssue, RunnerMicros: new(orgLimit + 20)}, Actor: "fixture", UpdatedAt: now}
+		foreignPolicy := billingstore.MonthlyPolicy{OrganizationID: organization, ProjectID: "prj_2", Revision: 1, Policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: new(int64(999))}, Actor: "fixture", UpdatedAt: now}
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, value := range []struct {
+				row      billingstore.MonthlyPolicy
+				expected tracker.Revision
+			}{{organizationPolicy, 1}, {projectPolicy, 0}, {foreignPolicy, 0}} {
+				if err := w.SetBillingMonthlyPolicy(t.Context(), value.row, value.expected); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		readMutationPolicies(map[tracker.ProjectID]billingstore.MonthlyPolicy{"": organizationPolicy, "prj_1": projectPolicy})
+		organizationPolicy.Revision, projectPolicy.Revision = 1002, 1002
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, row := range []billingstore.MonthlyPolicy{organizationPolicy, projectPolicy} {
+				if err := w.ImportBillingMonthlyPolicy(t.Context(), row); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO monthly_budget_policies(organization_id,project_id,revision,enabled,mode,actor_id,updated_at)
+ SELECT $1,requested.project_id,revision,false,$2,'fixture_history',$3
+ FROM (VALUES (''::text),('prj_1'::text)) requested(project_id) CROSS JOIN generate_series(3,1001) revision`, organization, budget.DrainIssue, now); err != nil {
+			t.Fatal(err)
+		}
+		readMutationPolicies(map[tracker.ProjectID]billingstore.MonthlyPolicy{"": organizationPolicy, "prj_1": projectPolicy})
 		if organization == first {
 			err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: organization, ProjectID: "prj_1", LeaseID: tracker.LeaseID(leaseID), PolicyID: "policy_claim", BoundAt: now.Add(time.Minute)})
@@ -244,6 +341,55 @@ func TestLeasePolicyPinSharesClaimTransactionAndTenantScope(t *testing.T) {
 			}
 		}
 	}
+	if statement == "" {
+		t.Fatal("lease policy metadata statement was not observed")
+	}
+	if _, err := admin.ExecContext(t.Context(), "ANALYZE monthly_budget_policies"); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := admin.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	tx, err := connection.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", first); err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, first, "lease_1", "prj_1").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var plan []struct{ Plan searchPlanNode }
+	if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
+		t.Fatalf("decode lease policy plan: %v", err)
+	}
+	if !plan[0].Plan.usesIndex("monthly_budget_policies_pkey") {
+		t.Fatalf("latest policy reads did not use default index: %s", raw)
+	}
+	var visits func(searchPlanNode) float64
+	visits = func(node searchPlanNode) float64 {
+		count := 0.0
+		if node.Relation == "monthly_budget_policies" {
+			count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+		}
+		for _, child := range node.Plans {
+			count += visits(child)
+		}
+		return count
+	}
+	if count := visits(plan[0].Plan); count > 2 {
+		t.Fatalf("latest policy reads visited %.0f rows: %s", count, raw)
+	}
+	t.Logf("default runtime-role lease policy plan=%s", raw)
+
 }
 
 func TestPolicyWritesWaitForSharedProjectAuthorityLock(t *testing.T) {

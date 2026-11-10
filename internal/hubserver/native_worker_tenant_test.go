@@ -21,11 +21,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -146,6 +149,9 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 				t.Errorf("renew command wire exchanges=%d, want 1..8 including BEGIN/binding/COMMIT", got)
 			}
 			t.Logf("renew command statements excluding BEGIN/binding=%d wire exchanges=%d", len(statements), exchanges.Load())
+			for index, statement := range statements {
+				t.Logf("renew operation[%d]=%s", index, strings.SplitN(strings.TrimSpace(statement), "\n", 2)[0])
+			}
 
 			if counter.reads != 0 || counter.writes != 1 {
 				t.Fatalf("renewal transactions read=%d write=%d, want 0 and 1", counter.reads, counter.writes)
@@ -154,6 +160,95 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 				t.Fatalf("renewal changed provider snapshot: got=%+v", renewed.ProviderReservation)
 			}
 		})
+	}
+
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: "org_startup", ID: "prj_policy_other", Name: "Example policy project", Profile: "native"}); err != nil {
+			return err
+		}
+		for _, project := range []tracker.ProjectID{"", "prj_runner", "prj_policy_other"} {
+			if err := w.SetBillingMonthlyPolicy(t.Context(), billingstore.MonthlyPolicy{OrganizationID: "org_startup", ProjectID: project, Revision: 1, Policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: new(int64(0))}, Actor: "fixture", UpdatedAt: time.Now().UTC()}, 0); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index, original := range f.leases {
+		var before leasestore.Lease
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			current, err := w.Lease(t.Context(), string(original.ID))
+			if err != nil {
+				return err
+			}
+			item, err := w.WorkItemByID(t.Context(), "prj_runner", current.IssueID)
+			if err != nil {
+				return err
+			}
+			if _, err := w.Release(t.Context(), leasestore.Fence{LeaseID: current.LeaseID, FencingToken: current.FencingToken}, "fixture_replaced"); err != nil {
+				return err
+			}
+			before, err = w.Claim(t.Context(), leasestore.Claim{IssueID: current.IssueID, ExpectedRevision: item.Revision, MachineID: current.MachineID, SessionID: "unbound_" + current.SessionID, LeaseID: "unbound_" + current.LeaseID, TTL: time.Hour})
+			if err != nil {
+				return err
+			}
+			return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: "org_startup", LeaseID: before.LeaseID, RunnerID: f.bindings[index].RunnerID, AssignedAt: before.AcquiredAt})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			for _, project := range []tracker.ProjectID{"", "prj_runner"} {
+				row, err := r.BillingMonthlyPolicy(t.Context(), project)
+				if err != nil || !row.Policy.Enabled || row.Policy.TotalMicros == nil || *row.Policy.TotalMicros != 0 {
+					t.Fatalf("ordinary enabled policy project=%s row=%+v error=%v", project, row, err)
+				}
+				ordinary := &nativeLeaseCommandReader{Reader: r, project: "prj_runner"}
+				if _, err := ordinary.Lease(t.Context(), before.LeaseID); err != nil {
+					return err
+				}
+				if row, err := ordinary.BillingMonthlyPolicy(t.Context(), project); err != nil || !row.Policy.Enabled {
+					t.Fatalf("noncompact policy read project=%s row=%+v error=%v", project, row, err)
+				}
+			}
+			compact := service.nativeLeaseReader(r, nativeScope{project: "prj_runner"})
+			if _, err := compact.Lease(t.Context(), before.LeaseID); err != nil {
+				return err
+			}
+			if row, err := compact.BillingMonthlyPolicy(t.Context(), "prj_policy_other"); err != nil || row.ProjectID != "prj_policy_other" || !row.Policy.Enabled {
+				t.Fatalf("project mismatch did not delegate: row=%+v error=%v", row, err)
+			}
+			if _, err := r.LeasePolicy(t.Context(), tracker.LeaseID(before.LeaseID)); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("unbound lease policy error=%v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		credential, status, err := service.authenticateAccessHash(t.Context(), apikey.HashToken(f.tokens[index]), "", "")
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("authentication: status=%d error=%v", status, err)
+		}
+		response := httptest.NewRecorder()
+		request := newHubAPIRequest(t, http.MethodPost, "/renew", f.tokens[index], tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(before.FencingToken), TTLSeconds: 300})
+		c := echo.New().NewContext(request, response)
+		c.SetParamNames("lease")
+		c.SetParamValues(before.LeaseID)
+		c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+		if err := service.renewNativeLeaseTenant(c); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, response, http.StatusNotFound)
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			after, err := r.Lease(t.Context(), before.LeaseID)
+			if err == nil && !reflect.DeepEqual(after, before) {
+				t.Fatalf("missing policy pin permitted renewal: before=%+v after=%+v", before, after)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("missing_pin_lease=%s enabled_monthly_policies=true renewal_status=%d committed_lease_unchanged=true", before.LeaseID, response.Code)
 	}
 
 }
