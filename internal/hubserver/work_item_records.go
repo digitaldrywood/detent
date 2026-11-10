@@ -430,7 +430,7 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		if err := s.applyScheduledRepairRecord(ctx, scope, &plan.issue); err != nil {
 			return plan, err
 		}
-		if plan.issue.Actor.Kind == "human" && scope.credential.HostedRole != "reporter" && request.Provenance == nil {
+		if nativeHumanFiled(plan.issue) && scope.credential.HostedRole != "reporter" {
 			plan.issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(request.Body)
 		}
 		if plan.issue.Labels == nil {

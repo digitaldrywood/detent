@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -33,7 +35,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func TestPostgresCookieIssueLifecycle(t *testing.T) {
@@ -253,6 +254,9 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			}
 			if issue.WorkItemID == "" || issue.Number != 1 || issue.Body != request.Body || issue.State != "Todo" {
 				t.Fatal("configured create lost issue fields")
+			}
+			if issue.Actor.Kind != "human" || issue.IssueContract == nil || len(issue.IssueContract.ConfirmedSections) == 0 {
+				t.Fatalf("ordinary human filing did not confirm its criteria: actor=%+v contract=%+v", issue.Actor, issue.IssueContract)
 			}
 			if !bytes.Equal(first, call(request, http.StatusOK)) {
 				t.Fatal("create replay changed response")
@@ -721,10 +725,13 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			}
 			t.Run("machine fingerprint occurrence and terminal history", func(t *testing.T) {
 				refresh()
-				machine := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "machine-first"}, Title: "Example machine finding", Body: issueorigin.Stamp("Repeated example backend failure", issueorigin.Origin{Kind: "doctor", Instance: "example-instance", Fingerprint: "example-machine-fingerprint"}), State: "Todo"}
+				machine := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "machine-first"}, Title: "Example machine finding", Body: issueorigin.Stamp(workItemRecordBody+"\n\nRepeated example backend failure", issueorigin.Origin{Kind: "doctor", Instance: "example-instance", Fingerprint: "example-machine-fingerprint"}), State: "Todo"}
 				var original tracker.NativeIssue
 				if err := json.Unmarshal(call(machine, http.StatusOK), &original); err != nil {
 					t.Fatal(err)
+				}
+				if original.Actor.Kind != "human" || original.Body != machine.Body || original.IssueContract == nil || original.IssueContract.Exempt || len(original.IssueContract.ConfirmedSections) != 0 {
+					t.Fatalf("machine origin gained human confirmation or changed source: actor=%+v contract=%+v body_matches=%t", original.Actor, original.IssueContract, original.Body == machine.Body)
 				}
 				refresh()
 				machine.IdempotencyKey = "machine-occurrence"
