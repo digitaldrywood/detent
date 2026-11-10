@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -350,17 +353,13 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				Plan        HostedEntitlement `json:"plan"`
 			}{now, data})
 		case operatortool.BillingUsage:
-			metadata, err := s.database.hostedMetadata(ctx)
-			if err != nil {
-				return result, err
-			}
-			data, err := s.hostedUsage(ctx, metadata)
+			data, err := s.operatorBillingUsage(ctx, now)
 			if err != nil {
 				return result, err
 			}
 			return billingResult(struct {
-				GeneratedAt time.Time         `json:"generated_at"`
-				Usage       hostedUsageReport `json:"usage"`
+				GeneratedAt time.Time                  `json:"generated_at"`
+				Usage       operatorBillingUsageReport `json:"usage"`
 			}{now, data})
 		case operatortool.BillingExport:
 			data, err := s.hostedBillingReport(ctx)
@@ -733,4 +732,135 @@ func (s *Service) billingActionResult(action chat.Action) (operatortool.Result, 
 		CorrelationID string              `json:"correlation_id"`
 		Settings      *creditFundingInput `json:"settings,omitempty"`
 	}{action, action.ID, action.Status, action.IssueID, action.ResourceURL, operatortool.ActionResult, action.Mutation.CorrelationID, settings})
+}
+
+type billingIssuePopulationReader interface {
+	BillingIssuePopulation(context.Context) (int64, int64, bool, error)
+}
+
+type operatorBillingUsageReport struct {
+	Members      *int64     `json:"members"`
+	Projects     *int64     `json:"projects"`
+	Runners      *int64     `json:"runners"`
+	Events       *int64     `json:"events"`
+	LastActivity *time.Time `json:"last_activity"`
+	hostedBillingReport
+	ProviderOrganizationID string                      `json:"provider_organization_id"`
+	CostDrivers            operatorBillingUsageDrivers `json:"cost_drivers"`
+	PlanID                 string                      `json:"plan_id"`
+	StorageQuotaBytes      int64                       `json:"storage_quota_bytes,omitempty"`
+	EventQuota             int64                       `json:"event_quota,omitempty"`
+}
+
+type operatorBillingUsageDrivers struct {
+	ActiveIssues          *int64           `json:"active_issues"`
+	ArchivedIssues        *int64           `json:"archived_issues"`
+	Requests              *int64           `json:"requests"`
+	RequestBytes          *int64           `json:"request_bytes"`
+	ResponseBytes         *int64           `json:"response_bytes"`
+	ArtifactRetainedBytes *int64           `json:"artifact_retained_bytes"`
+	ArtifactReservedBytes *int64           `json:"artifact_reserved_bytes"`
+	RelayBytes            *int64           `json:"relay_bytes"`
+	WindowEndsAt          time.Time        `json:"window_ends_at"`
+	OperatorAI            chatUsageSummary `json:"operator_ai"`
+	OperatorAICostUSD     *float64         `json:"operator_ai_cost_usd"`
+}
+
+func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (operatorBillingUsageReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	report, err := s.hostedBillingReport(ctx)
+	if err != nil {
+		return operatorBillingUsageReport{}, err
+	}
+	out := operatorBillingUsageReport{hostedBillingReport: report, PlanID: report.Entitlement.EffectiveBase.ID, StorageQuotaBytes: report.Entitlement.Allowances["collaboration_bytes"], EventQuota: report.Entitlement.Allowances["ingested_events"]}
+	out.UnavailableUsage = append(out.UnavailableUsage, "events", "last_activity")
+	out.CostDrivers.WindowEndsAt, out.CostDrivers.OperatorAI = report.Entitlement.WindowEndsAt, report.ChatUsage
+	if report.ChatUsage.UnpricedTurns == 0 {
+		out.CostDrivers.OperatorAICostUSD = &out.ChatUsage.CostUSD
+	}
+	window, err := s.database.hostedConsumption(ctx, nil, now, "usage_windows")
+	if err != nil {
+		return operatorBillingUsageReport{}, err
+	}
+	if requests, known := window["http_requests"]; known {
+		out.CostDrivers.Requests = &requests
+		response := window["http_response_bytes"]
+		out.CostDrivers.ResponseBytes = &response
+		if window["http_request_bytes_known"] == requests {
+			bytes := window["http_request_bytes"]
+			out.CostDrivers.RequestBytes = &bytes
+		}
+	}
+	if relay, known := window["relay_bytes"]; known {
+		out.CostDrivers.RelayBytes = &relay
+	}
+	for _, metric := range []struct {
+		name  string
+		value **int64
+	}{
+		{"artifact_retained_bytes", &out.CostDrivers.ArtifactRetainedBytes},
+		{"artifact_reserved_bytes", &out.CostDrivers.ArtifactReservedBytes},
+	} {
+		if used, known := report.Entitlement.Usage[metric.name]; known && !slices.Contains(report.UnavailableUsage, metric.name) {
+			*metric.value = &used
+		}
+	}
+	err = s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Serving, func(reader tenantstore.Reader) error {
+		tenant, err := reader.AccessTenant(ctx)
+		if err != nil {
+			return err
+		}
+		out.ProviderOrganizationID = tenant.ProviderID
+		owner, ok := reader.(billingIssuePopulationReader)
+		if !ok {
+			return ErrBillingUsageUnavailable
+		}
+		active, archived, known, err := owner.BillingIssuePopulation(ctx)
+		if err != nil {
+			return err
+		}
+		if known {
+			out.CostDrivers.ActiveIssues, out.CostDrivers.ArchivedIssues = &active, &archived
+		} else {
+			out.UnavailableUsage = append(out.UnavailableUsage, "active_issues", "archived_issues")
+		}
+		populations, ok := reader.(billingstore.PopulationReader)
+		if !ok {
+			return ErrBillingUsageUnavailable
+		}
+		for _, field := range []struct {
+			name   string
+			metric string
+			value  **int64
+			reuse  bool
+		}{
+			{"members", "active_members", &out.Members, false},
+			{"projects", "projects", &out.Projects, true},
+			{"runners", "unremoved_runners", &out.Runners, false},
+		} {
+			if field.reuse {
+				if slices.Contains(report.UnavailableUsage, field.metric) {
+					continue
+				}
+				if used, known := report.Entitlement.Usage[field.metric]; known {
+					*field.value = &used
+					continue
+				}
+			}
+			count, known, err := populations.BillingPopulation(ctx, field.metric, now, 0)
+			if err != nil {
+				return err
+			}
+			if known {
+				*field.value = &count
+			} else if !slices.Contains(out.UnavailableUsage, field.name) {
+				out.UnavailableUsage = append(out.UnavailableUsage, field.name)
+			}
+		}
+
+		return nil
+	})
+	slices.Sort(out.UnavailableUsage)
+	return out, err
 }

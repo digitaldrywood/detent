@@ -35,26 +35,17 @@ type hostedBillingReport struct {
 func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRequest) (hostedBillingReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if s.config.Hosted == nil || s.config.TenantRepository == nil || s.database == nil || s.database.billingRepository == nil {
+		return hostedBillingReport{}, ErrBillingUsageUnavailable
+	}
 	report := hostedBillingReport{OrganizationID: s.config.Hosted.OrganizationID, Audit: []templates.HostedBillingAudit{}}
 	var err error
 	report.State, err = s.database.readHostedBilling(ctx)
 	if err != nil {
 		return report, err
 	}
-	if s.database.postgres != nil {
-		report.Entitlement, err = s.database.hostedEntitlement(ctx, nil, s.config.now())
-		if err == nil {
-			var usage hostedFleetUsage
-			usage, err = s.hostedFleetUsageTenant(ctx)
-			report.UnavailableUsage = usage.Unavailable
-			report.Entitlement.Usage = make(map[string]int64, len(usage.Allowances))
-			for metric, value := range usage.Allowances {
-				report.Entitlement.Usage[metric] = value.Used
-			}
-		}
-	} else {
-		report.Entitlement, err = s.database.hostedPlanUsage(ctx, s.config.now())
-	}
+	report.Entitlement, err = s.hostedPlanUsageTenant(ctx)
+	report.UnavailableUsage = report.Entitlement.Unavailable
 	if err != nil {
 		return report, err
 	}
