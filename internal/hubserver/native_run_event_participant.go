@@ -230,20 +230,13 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 		return err
 	}
 	now := p.service.config.now().UTC()
-	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) || int64(authority.Request.FencingToken) != lease.FencingToken {
-		return tracker.ErrStaleFencingToken
-	}
-	if human {
-		if err := p.service.authorizeNativeWorkflowScope(ctx, reader, authority.Scope); err != nil {
-			return err
-		}
-	} else {
+	if !human {
 		identity, err := reader.RunnerForLease(ctx, lease.LeaseID)
 		if err != nil {
 			return err
 		}
 		if identity.OrganizationID != authority.Scope.organization || identity.RunnerID == "" || identity.RunnerID != authority.Scope.credential.Runner.RunnerID || identity.TokenID != authority.Scope.credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) {
-			return tracker.ErrStaleFencingToken
+			return tracker.ErrMachineNotFound
 		}
 		allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.Scope.project, now)
 		if err != nil {
@@ -251,6 +244,14 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 		}
 		if !allowed {
 			return tracker.ErrMachineNotFound
+		}
+	}
+	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) || int64(authority.Request.FencingToken) != lease.FencingToken {
+		return tracker.ErrStaleFencingToken
+	}
+	if human {
+		if err := p.service.authorizeNativeWorkflowScope(ctx, reader, authority.Scope); err != nil {
+			return err
 		}
 	}
 	if authority.Operation != "renew" && authority.Operation != "release" {

@@ -166,6 +166,8 @@ func TestReviewTerminalLease(t *testing.T) {
 		expired        bool
 		stale          bool
 		otherLeaseOnly bool
+		foreignOwner   bool
+		clockExpired   bool
 		status         int
 	}{
 		{name: "terminal without landing", status: http.StatusConflict},
@@ -174,6 +176,10 @@ func TestReviewTerminalLease(t *testing.T) {
 		{name: "expired finalization", landed: true, expired: true, status: http.StatusConflict},
 		{name: "landed stale fence", landed: true, stale: true, status: http.StatusConflict},
 		{name: "other lease landing", landed: true, otherLeaseOnly: true, status: http.StatusOK},
+		{name: "foreign owner live", landed: true, foreignOwner: true, status: http.StatusNotFound},
+		{name: "foreign owner stale fence", landed: true, foreignOwner: true, stale: true, status: http.StatusNotFound},
+		{name: "foreign owner expired", landed: true, foreignOwner: true, clockExpired: true, status: http.StatusNotFound},
+		{name: "foreign owner terminal", foreignOwner: true, status: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newRunnerPGFixture(t)
@@ -234,6 +240,17 @@ func TestReviewTerminalLease(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if test.clockExpired {
+					var expires time.Time
+					if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+						renewed, err := w.Renew(t.Context(), leasestore.Fence{LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken)}, time.Minute)
+						expires = renewed.ExpiresAt
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					service.config.now = func() time.Time { return expires }
+				}
 				var before leasestore.Lease
 				if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 					before, err = r.Lease(t.Context(), string(lease.ID))
@@ -241,16 +258,24 @@ func TestReviewTerminalLease(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+				caller, token := credential, f.tokens[index]
+				if test.foreignOwner {
+					token = f.tokens[1-index]
+					caller, status, err = service.authenticateAccessHash(t.Context(), apikey.HashToken(token), "", "")
+					if err != nil || status != http.StatusOK {
+						t.Fatalf("foreign owner authentication: status=%d error=%v", status, err)
+					}
+				}
 				response := httptest.NewRecorder()
 				fence := lease.FencingToken
 				if test.stale {
 					fence++
 				}
-				request := newHubAPIRequest(t, http.MethodPost, "/renew", f.tokens[index], tracker.NativeLeaseMutation{FencingToken: fence, TTLSeconds: 300})
+				request := newHubAPIRequest(t, http.MethodPost, "/renew", token, tracker.NativeLeaseMutation{FencingToken: fence, TTLSeconds: 300})
 				c := echo.New().NewContext(request, response)
 				c.SetParamNames("lease")
 				c.SetParamValues(string(lease.ID))
-				c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+				c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: caller})
 				if err := service.renewNativeLeaseTenant(c); err != nil {
 					t.Fatal(err)
 				}
@@ -274,7 +299,7 @@ func TestReviewTerminalLease(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if !test.expired && (!test.otherLeaseOnly || index == 1) {
+				if !test.expired && !test.clockExpired && (!test.otherLeaseOnly || index == 1) {
 					response = httptest.NewRecorder()
 					request = newHubAPIRequest(t, http.MethodPost, "/release", f.tokens[index], tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled"})
 					c = echo.New().NewContext(request, response)
