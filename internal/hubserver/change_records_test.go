@@ -1280,6 +1280,12 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: now, FinalState: "completed"}); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := sessions.RecordUsageEvent(ctx, store.UsageEvent{IssueID: string(item.WorkItemID), SessionID: id, StartedAt: now, FinishedAt: now, Outcome: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sessions.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{IssueID: string(item.WorkItemID), SessionID: id, StartedAt: now, FinishedAt: now, PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: "completed"}); err != nil {
+			t.Fatal(err)
+		}
 		observation := start
 		observation.Type, observation.Data.Sequence, observation.IdempotencyKey = "run.observed", 4, "audit-runtime"
 		observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", LocalAttemptID: 42, Generation: 1, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 1, SessionID: id}}
