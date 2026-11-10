@@ -125,7 +125,7 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 		}
 	case "get_project_budget":
 		if err = decodeCoordinatorArguments(call.Arguments, &struct{}{}); err == nil {
-			value, err = readMonthlyBudgetSettings(ctx, s.database.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential})
+			value, err = readBillingMonthlySettings(ctx, s.config.TenantRepository, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential})
 		}
 	case "get_project_runners", "get_project_fleet":
 		if err = decodeCoordinatorArguments(call.Arguments, &struct{}{}); err == nil && call.Name == "get_project_runners" {
