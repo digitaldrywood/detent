@@ -1225,7 +1225,7 @@
       "sql_julianday": 6
     },
     "internal/hubserver/native_board_test.go": {
-      "database_path": 3,
+      "database_path": 2,
       "sql_insert_or": 3,
       "sql_julianday": 2
     },

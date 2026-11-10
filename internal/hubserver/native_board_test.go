@@ -902,7 +902,7 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 
 func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 	t.Parallel()
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	service := newPostgresNativeService(t, Config{})
 	type projectCards struct {
 		fixture nativeFixture
 		policy  policy.Descriptor
@@ -939,27 +939,15 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 		cards.policy = cards.policy.WithID()
 		projects = append(projects, cards)
 	}
-	tx, err := service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
 	for _, project := range projects {
-		scope := string(project.fixture.project.OrganizationID) + "/" + string(project.fixture.project.ID)
-		if _, err := service.database.approvePolicyInTx(t.Context(), tx, scope, "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: project.policy}, policyLanding{}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := service.database.commit(t.Context(), tx); err != nil {
-		t.Fatal(err)
+		approveHubTestPolicy(t, service, project.fixture.base+"/policy", project.policy)
 	}
 	drainTestNativeBoard(t, service)
 	for _, project := range projects {
-		scope := nativeScope{organization: project.fixture.project.OrganizationID, project: project.fixture.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-		page, err := service.readBoardIssues(service.runDetailContext(t.Context()), scope, url.Values{"include": {"board"}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		response := performHubAPIRequest(t, service, http.MethodGet, project.fixture.base+"/work-items?include=board", project.fixture.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var page tracker.NativeIssuePage
+		decodeHubResponse(t, response, &page)
 		for index, issue := range project.items {
 			var card tracker.NativeBoardCard
 			for _, candidate := range page.Cards {
@@ -971,9 +959,12 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 			if card.Issue.State != issue.State || card.Change == nil || card.Change.Status != project.want {
 				t.Fatalf("project %s card lane = %s, Change = %+v, want unchanged lane and %s", project.fixture.project.ID, card.Issue.State, card.Change, project.want)
 			}
-			detail, err := readChangeDetail(service.runDetailContext(t.Context()), service.database.reader, scope, string(issue.WorkItemID), project.changes[index].ID, service.config.now())
-			if err != nil || detail.Summary.Status != card.Change.Status {
-				t.Fatalf("card status differs from durable detail: %+v, error %v", detail.Summary, err)
+			response := performHubAPIRequest(t, service, http.MethodGet, project.fixture.base+"/work-items/"+string(issue.WorkItemID)+"/changes/"+project.changes[index].ID, project.fixture.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var detail tracker.ChangeDetail
+			decodeHubResponse(t, response, &detail)
+			if detail.Summary.Status != card.Change.Status {
+				t.Fatalf("card status differs from durable detail: %+v", detail.Summary)
 			}
 		}
 	}
