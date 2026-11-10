@@ -15,6 +15,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -45,7 +50,17 @@ func newVerificationFixture(t *testing.T) verificationFixture {
 	for _, user := range users {
 		v.grant(t, user, true, false)
 	}
-	operatorSQL(t, v.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", v.project)
+	if err := v.service.config.TenantRepository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), v.project)
+		if err != nil {
+			return err
+		}
+		record.Settings.DuplicateChallenge = false
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return v
 }
 
@@ -66,15 +81,22 @@ func (v verificationFixture) issue(t *testing.T, item tracker.NativeWorkItemID) 
 	t.Helper()
 	var issue tracker.NativeIssue
 	r := v.request(t, v.users["member"], http.MethodGet, v.base+"/work-items/"+string(item), nil)
-	requireNativeStatus(t, r, http.StatusOK)
+	if r.Code != http.StatusOK {
+		t.Fatalf("read fixture issue: status=%d response=%s", r.Code, r.Body.String())
+	}
 	decodeHubResponse(t, r, &issue)
+	if issue.WorkItemID != item || issue.ProjectID != v.project {
+		t.Fatalf("fixture detail identity=%s/%s want=%s/%s", issue.ProjectID, issue.WorkItemID, v.project, item)
+	}
 	return issue
 }
 
 func (v verificationFixture) move(t *testing.T, issue tracker.NativeIssue, state string) tracker.NativeIssue {
 	t.Helper()
 	r := v.request(t, v.users["member"], http.MethodPost, v.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "move-" + string(issue.WorkItemID) + "-" + state + "-" + strconv.FormatInt(int64(issue.Revision), 10)}, ExpectedRevision: issue.Revision, State: state, Reason: "user_requested"})
-	requireNativeStatus(t, r, http.StatusOK)
+	if r.Code != http.StatusOK {
+		t.Fatalf("move fixture issue %s revision %d to %s: status=%d response=%s", issue.WorkItemID, issue.Revision, state, r.Code, r.Body.String())
+	}
 	decodeHubResponse(t, r, &issue)
 	return issue
 }
@@ -85,23 +107,81 @@ func (v verificationFixture) file(t *testing.T, filer, key string, actor *tracke
 	r := v.request(t, v.users[filer], http.MethodPost, v.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file-" + key}, Type: "bug", Title: "Verification example " + key, Body: reporterBugSections + issueContractTestSections})
 	requireNativeStatus(t, r, http.StatusOK)
 	decodeHubResponse(t, r, &issue)
-	if actor != nil {
-		raw, err := json.Marshal(actor)
+	r = v.request(t, v.users["member"], http.MethodPatch, v.base+"/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "confirm-" + key}, ExpectedRevision: issue.Revision, Body: &issue.Body})
+	requireNativeStatus(t, r, http.StatusOK)
+	decodeHubResponse(t, r, &issue)
+	if issue.State == "Triage" {
+		issue = v.move(t, issue, "Todo")
+	}
+	if actor != nil || body != "" {
+		plan := workItemRecordPlan{issue: issue, fields: []string{"body", "actor"}}
+		if err := v.service.config.TenantRepository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			plan.current, err = reader.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			plan.project, err = reader.ProjectRecord(t.Context(), issue.ProjectID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if actor != nil {
+			plan.issue.Actor = *actor
+		}
+		if body != "" {
+			plan.issue.Body = body
+		}
+		plan.issue.Revision++
+		fields, err := v.service.prepareWorkItemFields(t.Context(), issue.OrganizationID, plan)
 		if err != nil {
 			t.Fatal(err)
 		}
-		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=? WHERE native_id=?", string(raw), issue.WorkItemID)
-	}
-	if body != "" {
-		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET body=? WHERE native_id=?", body, issue.WorkItemID)
+		raw, err := json.Marshal(plan.issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		version, err := eventstore.NewContent(v.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: v.service.config.now(), Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := eventstore.NewContent(v.service.runDetailStore()).PrepareEvent(t.Context(), issue.OrganizationID, eventRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		document, err := searchstore.NewContent(v.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := v.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+			if err := writeWorkItemRecord(t.Context(), writer, plan, fields); err != nil {
+				return err
+			}
+			if _, err := writer.CreateCollaborationVersion(t.Context(), version); err != nil {
+				return err
+			}
+			if err := writer.PutSearch(t.Context(), document, plan.current.Revision); err != nil {
+				return err
+			}
+			_, err := writer.AppendEvent(t.Context(), event)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		issue = plan.issue
 	}
 	for _, apply := range prepare {
 		apply(issue)
 	}
-	issue = v.issue(t, issue.WorkItemID)
-	if issue.State == "Triage" {
-		issue = v.move(t, issue, "Todo")
+	current := v.issue(t, issue.WorkItemID)
+	if current.Revision != issue.Revision || current.Actor.Kind != issue.Actor.Kind || current.Actor.PrincipalID != issue.Actor.PrincipalID || current.Body != issue.Body {
+		t.Fatalf("fixture read lost accepted source: revision=%d want=%d actor=%+v want=%+v body_matches=%t", current.Revision, issue.Revision, current.Actor, issue.Actor, current.Body == issue.Body)
 	}
+	issue = current
 	return v.move(t, issue, "Done")
 }
 
@@ -131,10 +211,11 @@ func TestNativeIssueVerificationEntersPendingByFiler(t *testing.T) {
 			var prepare []func(tracker.NativeIssue)
 			if test.workspace {
 				prepare = append(prepare, func(issue tracker.NativeIssue) {
-					stamp := formatHubTime(time.Now())
-					workspace := "workspace_verification_example"
-					operatorSQL(t, v.hostedSecurityFixture, `INSERT INTO workspace_sessions(id,organization_id,project_id,subject_work_item_id,ref,state,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at) VALUES(?,'org_security',?,?,'develop','ready',300,?,?,?,?,?)`, workspace, v.project, issue.WorkItemID, stamp, stamp, v.users["member"].identity.Subject, stamp, stamp)
-					operatorSQL(t, v.hostedSecurityFixture, `INSERT INTO workspace_items(work_item_id,workspace_id,organization_id,project_id,created_at) VALUES(?,?,'org_security',?,?)`, issue.WorkItemID, workspace, v.project, stamp)
+					if err := v.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.PutWorkspaceItem(t.Context(), claimstore.WorkspaceItem{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, WorkspaceID: "workspace_" + string(issue.WorkItemID), CreatedAt: v.service.config.now()})
+					}); err != nil {
+						t.Fatal(err)
+					}
 				})
 			}
 			issue := v.file(t, test.filer, "pending-"+test.name, test.actor, test.body, prepare...)
@@ -195,15 +276,19 @@ func TestNativeIssueVerificationAnswers(t *testing.T) {
 					t.Fatalf("verification=%+v", answerer.Verification)
 				}
 				var principal string
-				if err := v.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", v.users[test.answerer].identity.Subject).Scan(&principal); err != nil {
+				if err := v.service.config.TenantRepository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					member, err := r.AccessMember(t.Context(), v.users[test.answerer].identity.Subject)
+					principal = member.PrincipalID
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 				if answerer.Verification.VerifiedBy.PrincipalID != principal {
 					t.Fatalf("verified by %s, want %s", answerer.Verification.VerifiedBy.PrincipalID, principal)
 				}
 			case test.state == "Todo":
-				if after.Verification != nil || after.Terminal || after.Archived {
-					t.Fatalf("reopened verification=%+v terminal=%t archived=%t", after.Verification, after.Terminal, after.Archived)
+				if after.Verification != nil || after.Terminal || after.ClosedAt != nil || after.Archived {
+					t.Fatalf("reopened verification=%+v terminal=%t closed_at=%v archived=%t", after.Verification, after.Terminal, after.ClosedAt, after.Archived)
 				}
 				var comments tracker.Page[tracker.NativeComment]
 				decodeHubResponse(t, v.request(t, v.users["member"], http.MethodGet, v.base+"/work-items/"+string(issue.WorkItemID)+"/comments", nil), &comments)
@@ -212,19 +297,22 @@ func TestNativeIssueVerificationAnswers(t *testing.T) {
 				}
 				requireNativeStatus(t, v.verify(t, test.answerer, issue, "verify-"+test.name, test.result, test.comment), http.StatusOK)
 				requireNativeStatus(t, v.verify(t, test.answerer, after, "again-"+test.name, tracker.VerifyResultVerified, ""), http.StatusUnprocessableEntity)
-				var reopens int
-				if err := v.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' AND json_extract(data_json,'$.from_state')='Done'", issue.WorkItemID).Scan(&reopens); err != nil {
+				quality, err := readAnalyticsQualityEvents(t, v, issue.WorkItemID)
+				if err != nil {
 					t.Fatal(err)
+				}
+				var reopens int
+				for _, event := range quality {
+					if event.Data.FromState == "Done" {
+						reopens++
+					}
 				}
 				if reopens != 1 {
 					t.Fatalf("reopen events=%d, want 1", reopens)
 				}
 				w := operatortool.AnalyticsWindow{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour), Bucket: 2 * time.Hour}
 				landing := nativeAnalyticsLanding{ChangeID: "change_example", WorkItemID: issue.WorkItemID, Landing: tracker.ChangeLanding{VersionID: "version_example", LandedAt: time.Now().Add(-30 * time.Minute)}}
-				quality, err := readAnalyticsQualityEvents(t, v, issue.WorkItemID)
-				if err != nil {
-					t.Fatal(err)
-				}
+
 				summary := summarizeAnalyticsQuality([]nativeAnalyticsLanding{landing}, quality, nil, w)
 				if len(summary.Occurrences.Items) != 1 || summary.Occurrences.Items[0].Kind != "reopened" {
 					t.Fatalf("escapes=%+v", summary.Occurrences.Items)
@@ -240,28 +328,32 @@ func TestNativeIssueVerificationAnswers(t *testing.T) {
 
 func readAnalyticsQualityEvents(t *testing.T, v verificationFixture, item tracker.NativeWorkItemID) ([]qualityHistoryEvent, error) {
 	t.Helper()
-	rows, err := v.service.database.db.QueryContext(t.Context(), "SELECT id,type,recorded_at,data_json FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' ORDER BY sequence", item)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	events := []qualityHistoryEvent{}
-	for rows.Next() {
-		event := qualityHistoryEvent{Item: string(item)}
-		var at, raw string
-		if err := rows.Scan(&event.ID, &event.Kind, &at, &raw); err != nil {
+	var after int64
+	for {
+		var records []eventstore.Event
+		if err := v.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			records, err = r.HistoryEvents(t.Context(), v.project, item, after, 200)
+			return err
+		}); err != nil {
 			return nil, err
 		}
-		if event.At, err = parseTimeValue(at); err != nil {
-			return nil, err
+		for _, record := range records {
+			after = record.Sequence
+			if record.Type != "workflow.transitioned" {
+				continue
+			}
+			payload, err := eventstore.NewContent(v.service.runDetailStore()).Event(t.Context(), record)
+			if err != nil {
+				return nil, err
+			}
+			events = append(events, qualityHistoryEvent{ID: record.ID, Item: string(item), Kind: record.Type, At: record.RecordedAt, Data: payload.Data, ToTerminal: payload.Data.ToState == "Done"})
 		}
-		if err := json.Unmarshal([]byte(raw), &event.Data); err != nil {
-			return nil, err
+		if len(records) < 200 {
+			return events, nil
 		}
-		event.ToTerminal = event.Data.ToState == "Done"
-		events = append(events, event)
 	}
-	return events, rows.Err()
 }
 
 func TestNativeIssueVerificationListAndEmail(t *testing.T) {

@@ -40,6 +40,8 @@ func (s *Service) planVerificationRecord(ctx context.Context, scope nativeScope,
 			return plan, err
 		}
 		plan.issue.State = nativeVerificationReopenState
+		plan.issue.Terminal = false
+		plan.issue.ClosedAt = nil
 		plan.issue.Archived = false
 		plan.issue.Verification = nil
 	}
