@@ -330,15 +330,15 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 			if issuer.HostedRole != "reporter" {
 				t.Fatalf("filer role=%q", issuer.HostedRole)
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			if err := updateNativeProjectStates(t.Context(), tx, scope, nativeFixtureStates(), time.Now()); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), scope.project)
+				if err != nil {
+					return err
+				}
+				project.States = nativeTriageStates(nativeFixtureStates())
+				_, err = w.UpdateProjectRecord(t.Context(), project)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -370,6 +370,7 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 			if personal.State != "Triage" || personal.Actor.Kind != "human" || personal.Actor.PrincipalID != mine.Actor.PrincipalID || personal.Actor.ViaKey != key.ID {
 				t.Fatalf("personal issue=%+v", personal)
 			}
+			drainTestNativeBoard(t, f.service)
 			f.grant(t, user, false, false)
 		}
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?created_by=me", key.Token, nil)
