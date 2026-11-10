@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/changecreation"
+	"github.com/digitaldrywood/detent/internal/hubclient/recovery"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -541,7 +542,11 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 			if !sameCompletionLease(resumed.claim.lease, original) || resumed.CompletionData().Sequence != sequence || resumed.CompletionSnapshot().WorktreeState != "dirty" || resumed.CompletionSnapshot().WorktreeHead != checkpoint.HeadSHA {
 				t.Fatalf("reconnect replaced authority or checkpoint: lease=%s original=%s sequence=%d want=%d", resumed.claim.lease.ID, original.ID, resumed.CompletionData().Sequence, sequence)
 			}
-			if err := resumed.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, HeartbeatAt: time.Now(), Phase: "implementation"}); err != nil {
+			retainedAttempt, found := recovery.ActiveAttempt(resumed.Recovery().Attempts, original)
+			if !found || retainedAttempt.AttemptID != resumed.CompletionData().AttemptID || retainedAttempt.LocalAttemptID != observation.LocalAttemptID {
+				t.Fatalf("reconnect lost retained local attempt identity: attempt=%+v found=%t", retainedAttempt, found)
+			}
+			if err := resumed.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: retainedAttempt.LocalAttemptID, Generation: 2, HeartbeatAt: time.Now(), Phase: "implementation"}); err != nil {
 				t.Fatal(err)
 			}
 			if err := resumed.Start(t.Context(), executionIdentity); err != nil {
@@ -549,6 +554,14 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 			}
 			if err := resumed.Checkpoint(t.Context(), checkpoint); err != nil {
 				t.Fatal(err)
+			}
+			currentRecovery, err := h.admin.Recovery(t.Context(), current.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observed, found := recovery.ActiveAttempt(currentRecovery.Attempts, original)
+			if !found || observed.AttemptID != retainedAttempt.AttemptID || observed.LocalAttemptID != observation.LocalAttemptID || observed.Runtime == nil || observed.Runtime.LocalAttemptID != observation.LocalAttemptID || observed.Runtime.Generation != 2 {
+				t.Fatalf("reconnected generation changed retained identity: attempt=%+v found=%t", observed, found)
 			}
 			if err := resumed.claim.source.UpdateIssueState(t.Context(), issue.ID, "In Review"); err != nil {
 				t.Fatalf("reconnected actor transition: %v", err)

@@ -1,7 +1,6 @@
 package nativechange
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -18,13 +17,19 @@ func TestReconnectPreservesLandingWithoutWorkflowWrites(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			issue := h.createInProgress(t, "Reconnect pending source")
+			item := tracker.NativeWorkItemID(issue.ID)
+			change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Reconnect pending source"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			version := h.publish(t, item, change.ID, nativeChangeFixtureHead("c"))
 			h.claim(t, issue.ID)
 			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 			identity := tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}
 			if err := e.Start(t.Context(), identity); err != nil {
 				t.Fatal(err)
 			}
-			landing := tracker.NativeLandingReceipt{ChangeID: "change_" + strings.Repeat("a", 32), VersionID: "version_" + strings.Repeat("b", 32), HeadSHA: strings.Repeat("c", 40), Waiting: true, FromState: test.from, TargetState: test.target}
+			landing := tracker.NativeLandingReceipt{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Waiting: true, FromState: test.from, TargetState: test.target}
 			e.data.Runtime = &tracker.NativeRuntimeObservation{Landing: &landing}
 			e.reconnecting = true
 			if err := e.Start(t.Context(), identity); err != nil {
