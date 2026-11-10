@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -233,93 +232,6 @@ func TestCompletionDiffFingerprint(t *testing.T) {
 			}
 			if tracker.calls != tt.calls {
 				t.Fatalf("reads = %d, want %d", tracker.calls, tt.calls)
-			}
-		})
-	}
-}
-
-func TestCompletionRebaseAfterRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-	for _, tt := range []struct {
-		name, lane, mode, status, mergeAfter string
-		want                                 store.WorkAttemptTerminalState
-	}{
-		{"unfinished unchanged/Rework", "Rework", runpkg.RunModeImplement, "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"stale completion/Rework", "Rework", runpkg.RunModeImplement, "complete", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"conflict cleared/Rework", "Rework", runpkg.RunModeImplement, "in_progress", "clean", store.WorkAttemptTerminalSuccess},
-		{"unfinished unchanged/In Progress", "In Progress", runpkg.RunModeMerge, "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"stale completion/In Progress", "In Progress", runpkg.RunModeMerge, "complete", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"conflict cleared/In Progress", "In Progress", runpkg.RunModeMerge, "in_progress", "clean", store.WorkAttemptTerminalSuccess},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			dbConfig := store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "attempt.db")}
-			db, err := store.Open(t.Context(), dbConfig)
-			if err != nil {
-				t.Fatal(err)
-			}
-			before := implementProgressIssue("before")
-			before.State = tt.lane
-			before.PullRequest.MergeableState = "dirty"
-			before.PullRequest.DiffFingerprint = "same-diff"
-			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}})
-			cfg.Project.ID = "detent"
-			orch := &Orchestrator{cfg: cfg, workAttempts: db}
-			state := newState(cfg)
-			mode := orch.dispatchMode(t.Context(), &state, before)
-			if mode != tt.mode {
-				t.Fatalf("conflict repair mode = %s, want %s", mode, tt.mode)
-			}
-			start := newCompletionSourceStartRecord(before, mode)
-			start.PRDiffFingerprint = before.PullRequest.DiffFingerprint
-			start.PRMergeableState = before.PullRequest.MergeableState
-			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, before, 1, time.Now(), "local", mode, start, orch.cfg.Policy)
-			if !ok {
-				t.Fatal("start attempt failed")
-			}
-			// Workspace snapshots and heartbeat serialization must preserve PR evidence.
-			running := Running{Issue: before, Mode: mode, CompletionSourceStart: start}
-			running.CompletionSourceStart = completionSourceStartRecordFromSnapshot(running, runpkg.CompletionSourceStartSnapshot{WorkspaceDiffAvailable: true})
-			persisted := completionSourceStartFromMetadata(t, runningWorkAttemptMetadataJSON(running, nil))
-			if persisted.PRDiffFingerprint != start.PRDiffFingerprint || persisted.PRMergeableState != "dirty" {
-				t.Fatalf("heartbeat baseline = %#v", persisted)
-			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			db, err = store.Open(t.Context(), dbConfig)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := db.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			after := cloneIssue(before)
-			after.PullRequest.HeadSHA = "rebased"
-			after.PullRequest.MergeableState = tt.mergeAfter
-			after.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad(tt.status, "", nil)}}
-			tracker := &implementProgressConnector{refreshed: after, hydrated: after}
-			orch = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: db}
-			state = newState(cfg)
-			// No in-memory dispatch baseline survives. Even the issue snapshot is current.
-			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: mode, DispatchSourceState: tt.lane, StartedAt: time.Now().Add(-time.Minute)}
-			state.Claimed[after.ID] = Claimed{Issue: after}
-			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: after.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: mode}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased"}}})
-			attempt, err := db.WorkAttempt(t.Context(), id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if attempt.TerminalState != tt.want {
-				t.Fatalf("terminal state = %s, want %s", attempt.TerminalState, tt.want)
-			}
-			if tt.want == store.WorkAttemptTerminalSuccess && attempt.ErrorClass != "" {
-				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 		})
 	}

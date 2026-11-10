@@ -1542,10 +1542,6 @@
       "backend_sqlite": 3,
       "sqlite_open": 3
     },
-    "internal/orchestrator/completion_classification_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 2
-    },
     "internal/orchestrator/completion_deferral_test.go": {
       "backend_sqlite": 1,
       "sqlite_open": 1
