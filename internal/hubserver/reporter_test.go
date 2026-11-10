@@ -23,6 +23,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/releaseaudit"
@@ -541,7 +543,19 @@ func TestReporterPersonalKeyIntersection(t *testing.T) {
 			if _, err := f.service.createHostedAPIKeyFor(ctx, catalog.credential, hostedKeyRequest{Name: "admin", Scope: apikey.ScopeAdmin, Days: 30}); err == nil {
 				t.Fatal("reporter created admin key")
 			}
-			operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", f.user.identity.Subject)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.LockAccessOrganization(t.Context()); err != nil {
+					return err
+				}
+				member, err := w.AccessMember(t.Context(), f.user.identity.Subject)
+				if err != nil {
+					return err
+				}
+				member.Role = "viewer"
+				return w.UpdateAccessMember(t.Context(), member)
+			}); err != nil {
+				t.Fatal(err)
+			}
 			_, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: string(f.project), Action: operatortool.FileIssue})
 			if err == nil {
 				t.Fatal("stale reporter authority survived local downgrade")
