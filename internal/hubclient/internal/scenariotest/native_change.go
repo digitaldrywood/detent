@@ -1963,6 +1963,12 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					if merge == "" || strings.TrimSpace(string(head)) != merge || change.Landing == nil || !change.Landing.Landed || detail.Change.Landed == nil || detail.Change.Landed.VersionID != expected.Change.CurrentVersion || detail.Change.Landed.MergeSHA != merge || detail.Change.Landed.BaseRef != target || change.VersionError != "" {
 						t.Fatalf("absorbed source lacks authentic landing: change=%+v detail=%+v", change, detail)
 					}
+					quality := detail.Change.Landed.Quality
+					if quality == nil || !slices.ContainsFunc(detail.Versions, func(current tracker.ChangeVersion) bool {
+						return current.ID == detail.Change.CurrentVersion && reflect.DeepEqual(current.LandingQuality, quality)
+					}) {
+						t.Fatal("absorbed source lacks canonical landing quality")
+					}
 					if test.Delivered == "" {
 						if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 							t.Fatal(err)
@@ -3148,6 +3154,7 @@ func versionsWithoutLanding(versions []tracker.ChangeVersion) []tracker.ChangeVe
 	stripped := make([]tracker.ChangeVersion, len(versions))
 	for i, version := range versions {
 		version.Landing = nil
+		version.LandingQuality = nil
 		stripped[i] = version
 	}
 	return stripped
