@@ -41,21 +41,35 @@ INSERT INTO issue_notification_notices(organization_id,work_item_id,user_id,even
 SELECT s.organization_id,s.work_item_id,s.user_id,$4,$5,$6,$7,$8,$9,$10,$11,$12 FROM issue_subscriptions s WHERE s.organization_id=$1 AND s.work_item_id=$2 AND s.user_id=$3 AND NOT s.unsubscribed
 ON CONFLICT DO NOTHING;
 
+-- name: DueNotifications :many
+SELECT n.due_at,n.work_item_id,n.user_id FROM issue_notification_notices n
+WHERE n.organization_id=sqlc.arg(organization_id) AND n.due_at<=sqlc.arg(due_at) AND (n.due_at,n.work_item_id,n.user_id)>(sqlc.arg(after_due)::timestamptz,sqlc.arg(after_item)::text,sqlc.arg(after_user)::text)
+ORDER BY n.due_at,n.work_item_id,n.user_id LIMIT 128;
+
+-- name: NotificationSeek :one
+SELECT notice_seek_due_at,notice_seek_work_item_id,notice_seek_user_id,notice_seek_revision FROM hosted_tenant WHERE organization_id=$1;
+
+-- name: AdvanceNotificationSeek :execrows
+UPDATE hosted_tenant SET notice_seek_due_at=sqlc.arg(due_at),notice_seek_work_item_id=sqlc.arg(work_item_id),notice_seek_user_id=sqlc.arg(user_id),notice_seek_revision=notice_seek_revision+1
+WHERE organization_id=sqlc.arg(organization_id) AND notice_seek_revision=sqlc.arg(expected_revision);
+
+-- name: NotificationStillDue :one
+SELECT EXISTS(SELECT 1 FROM issue_notification_notices n WHERE n.organization_id=sqlc.arg(organization_id) AND n.due_at=sqlc.arg(due_at) AND n.work_item_id=sqlc.arg(work_item_id) AND n.user_id=sqlc.arg(user_id))::boolean;
+
 -- name: LockDueNotification :one
-SELECT s.* FROM issue_subscriptions s WHERE s.organization_id=$1 AND EXISTS(SELECT 1 FROM issue_notification_notices n WHERE n.organization_id=s.organization_id AND n.work_item_id=s.work_item_id AND n.user_id=s.user_id AND n.due_at<=$2)
-ORDER BY s.work_item_id,s.user_id LIMIT 1 FOR UPDATE SKIP LOCKED;
+SELECT s.* FROM issue_subscriptions s WHERE s.organization_id=sqlc.arg(organization_id) AND s.work_item_id=sqlc.arg(work_item_id) AND s.user_id=sqlc.arg(user_id)
+FOR UPDATE SKIP LOCKED;
 
 -- name: TakeIssueNotices :many
-DELETE FROM issue_notification_notices n WHERE n.organization_id=$1 AND n.work_item_id=$2 AND n.user_id=$3 AND (n.source_item,n.event_id) IN (SELECT q.source_item,q.event_id FROM issue_notification_notices q WHERE q.organization_id=$1 AND q.work_item_id=$2 AND q.user_id=$3 ORDER BY q.due_at,q.source_item,q.event_id LIMIT 1000) RETURNING n.*;
+DELETE FROM issue_notification_notices n WHERE n.organization_id=$1 AND n.ctid=ANY(ARRAY(SELECT q.ctid FROM issue_notification_notices q WHERE q.organization_id=$1 AND q.work_item_id=$2 AND q.user_id=$3 ORDER BY q.source_item,q.event_id LIMIT 1000)) RETURNING n.*;
 
 -- name: NotificationRecipient :one
-SELECT m.email,i.title,i.number,s.token,o.slug AS organization_slug,p.slug AS project_slug,coalesce(b.verification_state,'')::text AS verification
+SELECT m.email,i.title,i.number,s.token,o.slug AS organization_slug,p.slug AS project_slug,i.project_id,i.revision
 FROM issue_subscriptions s JOIN hosted_members m ON m.organization_id=s.organization_id AND m.user_id=s.user_id
 JOIN api_tokens t ON t.organization_id=m.organization_id AND t.id=m.principal_id
 JOIN issues i ON i.organization_id=s.organization_id AND i.native_id=s.work_item_id
 JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
 JOIN public.organizations o ON o.organization_id=i.organization_id
-LEFT JOIN native_board_items b ON b.organization_id=i.organization_id AND b.project_id=i.project_id AND b.work_item_id=i.native_id
 WHERE s.organization_id=$1 AND s.work_item_id=$2 AND s.user_id=$3 AND NOT s.unsubscribed AND m.notify_issues AND m.active AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>$4)
 AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=m.organization_id AND g.user_id=m.user_id AND g.project_id=i.project_id);
 

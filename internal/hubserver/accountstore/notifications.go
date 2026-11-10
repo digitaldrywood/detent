@@ -23,13 +23,39 @@ type IssueNotification struct {
 	Notices                                            []IssueNotice
 }
 
+type NotificationCandidate struct {
+	ProjectID  tracker.ProjectID
+	WorkItemID tracker.NativeWorkItemID
+	UserID     string
+	DueAt      time.Time
+	Revision   int64
+	Verify     bool
+}
+
+type NotificationCursor struct {
+	DueAt      time.Time
+	WorkItemID tracker.NativeWorkItemID
+	UserID     string
+	Revision   int64
+}
+
+type NotificationPage struct {
+	Candidate NotificationCandidate
+	Next      NotificationCursor
+	Found     bool
+	More      bool
+}
+
 type NotificationCollector interface {
 	NotificationEvents(context.Context, tracker.OrganizationID) ([]eventstore.Event, error)
 	QueueNotification(context.Context, tracker.OrganizationID, eventstore.Event, IssueNotice, tracker.NativeWorkItemID, bool, int) (bool, int, error)
 }
 
 type NotificationDelivery interface {
-	ClaimNotification(context.Context, tracker.OrganizationID, time.Time) (IssueNotification, bool, error)
+	NotificationSeek(context.Context, tracker.OrganizationID) (NotificationCursor, error)
+	AdvanceNotificationSeek(context.Context, tracker.OrganizationID, NotificationCursor) (bool, error)
+	DueNotification(context.Context, tracker.OrganizationID, time.Time, NotificationCursor, []NotificationCandidate) (NotificationPage, error)
+	ClaimNotification(context.Context, tracker.OrganizationID, time.Time, NotificationCandidate, bool) (IssueNotification, NotificationCandidate, bool, error)
 	UnsubscribeNotification(context.Context, tracker.OrganizationID, string) error
 }
 

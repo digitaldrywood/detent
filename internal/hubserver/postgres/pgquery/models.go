@@ -1660,6 +1660,10 @@ type HostedTenant struct {
 	Deployment           string
 	PublicUrl            string
 	AllocationGeneration int64
+	NoticeSeekDueAt      *time.Time
+	NoticeSeekWorkItemID string
+	NoticeSeekUserID     string
+	NoticeSeekRevision   int64
 }
 
 type HostedTransaction struct {

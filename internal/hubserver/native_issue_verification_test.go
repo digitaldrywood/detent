@@ -364,6 +364,9 @@ func TestNativeIssueVerificationListAndEmail(t *testing.T) {
 		return nil
 	})
 	started := time.Now()
+	stale := v.file(t, "reporter", "list-stale", nil, "")
+	drainTestNativeBoard(t, v.service)
+	requireNativeStatus(t, v.verify(t, "reporter", stale, "list-stale-verify", tracker.VerifyResultVerified, ""), http.StatusOK)
 	pending := v.file(t, "reporter", "list-pending", nil, "")
 	verified := v.file(t, "reporter", "list-verified", nil, "")
 	requireNativeStatus(t, v.verify(t, "reporter", verified, "list-verify", tracker.VerifyResultVerified, ""), http.StatusOK)
@@ -379,6 +382,7 @@ func TestNativeIssueVerificationListAndEmail(t *testing.T) {
 		want  int
 	}{
 		{"reporter", pending, 1},
+		{"reporter", stale, 0},
 		{"reporter", verified, 0},
 		{"tester", other, 1},
 		{"reporter", open, 0},
@@ -397,7 +401,7 @@ func TestNativeIssueVerificationListAndEmail(t *testing.T) {
 			}
 		}
 		if got != test.want {
-			t.Fatalf("%s verification emails for #%d=%d, want %d: %+v", test.user, test.issue.Number, got, test.want, messages)
+			t.Errorf("%s verification emails for #%d=%d, want %d", test.user, test.issue.Number, got, test.want)
 		}
 	}
 	drainTestNativeBoard(t, v.service)

@@ -13,10 +13,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/emailtemplate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-const issueEmailWindow = time.Minute
 
 type issueMailer struct {
 	cancel context.CancelFunc
@@ -73,14 +74,37 @@ func (s *Service) deliverIssueEmails(ctx context.Context, now time.Time) error {
 	if err := s.collectIssueEmails(ctx); err != nil {
 		return err
 	}
+	repository, ok := s.config.AccessRepository.(accountstore.NotificationRepository)
+	if !ok {
+		return errors.New("notification repository unavailable")
+	}
+	seek, err := repository.NotificationSeek(ctx, s.accessOrganization())
+	if err != nil {
+		return err
+	}
 	var failures error
+	cursor, wrapped, examined := seek, false, false
+	var passed []accountstore.NotificationCandidate
 	for range 100 {
-		message, found, err := s.claimIssueEmail(ctx, now)
-		if err != nil {
-			return errors.Join(failures, err)
+		message, page, consumed, err := s.claimIssueEmail(ctx, now, cursor, passed)
+		if !page.Found && !page.More {
+			if err != nil {
+				failures = errors.Join(failures, err)
+				break
+			}
+			if wrapped || seek.DueAt.IsZero() {
+				break
+			}
+			cursor, wrapped = accountstore.NotificationCursor{}, true
+			continue
 		}
-		if !found {
-			break
+		cursor, examined = page.Next, true
+		if page.Found && !consumed {
+			passed = append(passed, page.Candidate)
+		}
+		if err != nil {
+			failures = errors.Join(failures, err)
+			continue
 		}
 		if message.To == "" {
 			continue
@@ -90,6 +114,12 @@ func (s *Service) deliverIssueEmails(ctx context.Context, now time.Time) error {
 		cancel()
 		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("send issue notification: %w", err))
+		}
+	}
+	if examined {
+		cursor.Revision = seek.Revision
+		if _, err := repository.AdvanceNotificationSeek(ctx, s.accessOrganization(), cursor); err != nil {
+			failures = errors.Join(failures, err)
 		}
 	}
 	return failures
@@ -136,18 +166,51 @@ func issueNotice(event issueEmailEvent) (issueEmailNotice, bool) {
 	return issueEmailNotice{}, false
 }
 
-func (s *Service) claimIssueEmail(ctx context.Context, now time.Time) (auth.EmailMessage, bool, error) {
+func (s *Service) claimIssueEmail(ctx context.Context, now time.Time, cursor accountstore.NotificationCursor, passed []accountstore.NotificationCandidate) (auth.EmailMessage, accountstore.NotificationPage, bool, error) {
 	repository, ok := s.config.AccessRepository.(accountstore.NotificationRepository)
 	if !ok {
-		return auth.EmailMessage{}, false, errors.New("notification repository unavailable")
+		return auth.EmailMessage{}, accountstore.NotificationPage{}, false, errors.New("notification repository unavailable")
 	}
-	notice, found, err := repository.ClaimNotification(ctx, s.accessOrganization(), now)
-	if err != nil || !found || notice.Email == "" {
-		return auth.EmailMessage{}, found, err
+	page, err := repository.DueNotification(ctx, s.accessOrganization(), now, cursor, passed)
+	if err != nil || !page.Found {
+		return auth.EmailMessage{}, page, false, err
+	}
+	notice, unresolved, claimed, err := repository.ClaimNotification(ctx, s.accessOrganization(), now, page.Candidate, false)
+	if err == nil && !claimed && unresolved.Verify {
+		var pending bool
+		pending, unresolved.Revision, err = s.issueVerificationPending(ctx, unresolved.ProjectID, unresolved.WorkItemID)
+		if err == nil {
+			notice, _, claimed, err = repository.ClaimNotification(ctx, s.accessOrganization(), now, unresolved, pending)
+		}
+	}
+	if err != nil || !claimed || notice.Email == "" {
+		return auth.EmailMessage{}, page, err == nil && claimed, err
 	}
 	link := strings.TrimRight(s.config.Hosted.PublicURL, "/") + issueBrowserPath(notice.OrganizationSlug, notice.ProjectSlug, notice.Number)
 	message, err := s.renderIssueEmail(notice.Email, link, notice.Title, notice.Number, notice.Token, notice.Notices)
-	return message, true, err
+	return message, page, true, err
+}
+
+func (s *Service) issueVerificationPending(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (bool, int64, error) {
+	var row corestore.WorkItem
+	var version eventstore.CollaborationVersion
+	err := s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Background, func(r tenantstore.Reader) error {
+		var err error
+		row, err = r.WorkItem(ctx, project, item)
+		if err != nil {
+			return err
+		}
+		version, err = r.CollaborationVersion(ctx, string(item), row.Revision)
+		return err
+	})
+	if err != nil {
+		return false, 0, fmt.Errorf("read notification work item: %w", err)
+	}
+	issue, err := s.hydrateCanonicalWorkItemRecord(ctx, row, version)
+	if err != nil {
+		return false, 0, fmt.Errorf("read notification verification: %w", err)
+	}
+	return issue.Verification != nil && issue.Verification.State == tracker.VerificationPending, row.Revision, nil
 }
 
 func (s *Service) renderIssueEmail(to, link, title string, number int, token string, notices []issueEmailNotice) (auth.EmailMessage, error) {

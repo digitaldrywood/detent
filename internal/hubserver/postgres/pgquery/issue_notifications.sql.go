@@ -50,6 +50,33 @@ func (q *Queries) AdvanceNotificationProject(ctx context.Context, arg AdvanceNot
 	return err
 }
 
+const advanceNotificationSeek = `-- name: AdvanceNotificationSeek :execrows
+UPDATE hosted_tenant SET notice_seek_due_at=$1,notice_seek_work_item_id=$2,notice_seek_user_id=$3,notice_seek_revision=notice_seek_revision+1
+WHERE organization_id=$4 AND notice_seek_revision=$5
+`
+
+type AdvanceNotificationSeekParams struct {
+	DueAt            *time.Time
+	WorkItemID       string
+	UserID           string
+	OrganizationID   tracker.OrganizationID
+	ExpectedRevision int64
+}
+
+func (q *Queries) AdvanceNotificationSeek(ctx context.Context, arg AdvanceNotificationSeekParams) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceNotificationSeek,
+		arg.DueAt,
+		arg.WorkItemID,
+		arg.UserID,
+		arg.OrganizationID,
+		arg.ExpectedRevision,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const appendIssueNotification = `-- name: AppendIssueNotification :exec
 INSERT INTO issue_notification_notices(organization_id,work_item_id,user_id,event_id,due_at,state_from,state_to,author,comment_id,related,verify,source_item)
 SELECT s.organization_id,s.work_item_id,s.user_id,$4,$5,$6,$7,$8,$9,$10,$11,$12 FROM issue_subscriptions s WHERE s.organization_id=$1 AND s.work_item_id=$2 AND s.user_id=$3 AND NOT s.unsubscribed
@@ -89,6 +116,52 @@ func (q *Queries) AppendIssueNotification(ctx context.Context, arg AppendIssueNo
 	return err
 }
 
+const dueNotifications = `-- name: DueNotifications :many
+SELECT n.due_at,n.work_item_id,n.user_id FROM issue_notification_notices n
+WHERE n.organization_id=$1 AND n.due_at<=$2 AND (n.due_at,n.work_item_id,n.user_id)>($3::timestamptz,$4::text,$5::text)
+ORDER BY n.due_at,n.work_item_id,n.user_id LIMIT 128
+`
+
+type DueNotificationsParams struct {
+	OrganizationID tracker.OrganizationID
+	DueAt          time.Time
+	AfterDue       time.Time
+	AfterItem      string
+	AfterUser      string
+}
+
+type DueNotificationsRow struct {
+	DueAt      time.Time
+	WorkItemID string
+	UserID     string
+}
+
+func (q *Queries) DueNotifications(ctx context.Context, arg DueNotificationsParams) ([]DueNotificationsRow, error) {
+	rows, err := q.db.Query(ctx, dueNotifications,
+		arg.OrganizationID,
+		arg.DueAt,
+		arg.AfterDue,
+		arg.AfterItem,
+		arg.AfterUser,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DueNotificationsRow{}
+	for rows.Next() {
+		var i DueNotificationsRow
+		if err := rows.Scan(&i.DueAt, &i.WorkItemID, &i.UserID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ensureIssueSubscription = `-- name: EnsureIssueSubscription :exec
 INSERT INTO issue_subscriptions(organization_id,work_item_id,user_id,token) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,work_item_id,user_id) DO NOTHING
 `
@@ -125,17 +198,18 @@ func (q *Queries) EnsureNotificationCursor(ctx context.Context, arg EnsureNotifi
 }
 
 const lockDueNotification = `-- name: LockDueNotification :one
-SELECT s.organization_id, s.work_item_id, s.user_id, s.token, s.unsubscribed FROM issue_subscriptions s WHERE s.organization_id=$1 AND EXISTS(SELECT 1 FROM issue_notification_notices n WHERE n.organization_id=s.organization_id AND n.work_item_id=s.work_item_id AND n.user_id=s.user_id AND n.due_at<=$2)
-ORDER BY s.work_item_id,s.user_id LIMIT 1 FOR UPDATE SKIP LOCKED
+SELECT s.organization_id, s.work_item_id, s.user_id, s.token, s.unsubscribed FROM issue_subscriptions s WHERE s.organization_id=$1 AND s.work_item_id=$2 AND s.user_id=$3
+FOR UPDATE SKIP LOCKED
 `
 
 type LockDueNotificationParams struct {
 	OrganizationID tracker.OrganizationID
-	DueAt          time.Time
+	WorkItemID     string
+	UserID         string
 }
 
 func (q *Queries) LockDueNotification(ctx context.Context, arg LockDueNotificationParams) (IssueSubscription, error) {
-	row := q.db.QueryRow(ctx, lockDueNotification, arg.OrganizationID, arg.DueAt)
+	row := q.db.QueryRow(ctx, lockDueNotification, arg.OrganizationID, arg.WorkItemID, arg.UserID)
 	var i IssueSubscription
 	err := row.Scan(
 		&i.OrganizationID,
@@ -309,13 +383,12 @@ func (q *Queries) NotificationEvents(ctx context.Context, arg NotificationEvents
 }
 
 const notificationRecipient = `-- name: NotificationRecipient :one
-SELECT m.email,i.title,i.number,s.token,o.slug AS organization_slug,p.slug AS project_slug,coalesce(b.verification_state,'')::text AS verification
+SELECT m.email,i.title,i.number,s.token,o.slug AS organization_slug,p.slug AS project_slug,i.project_id,i.revision
 FROM issue_subscriptions s JOIN hosted_members m ON m.organization_id=s.organization_id AND m.user_id=s.user_id
 JOIN api_tokens t ON t.organization_id=m.organization_id AND t.id=m.principal_id
 JOIN issues i ON i.organization_id=s.organization_id AND i.native_id=s.work_item_id
 JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
 JOIN public.organizations o ON o.organization_id=i.organization_id
-LEFT JOIN native_board_items b ON b.organization_id=i.organization_id AND b.project_id=i.project_id AND b.work_item_id=i.native_id
 WHERE s.organization_id=$1 AND s.work_item_id=$2 AND s.user_id=$3 AND NOT s.unsubscribed AND m.notify_issues AND m.active AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>$4)
 AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=m.organization_id AND g.user_id=m.user_id AND g.project_id=i.project_id)
 `
@@ -334,7 +407,8 @@ type NotificationRecipientRow struct {
 	Token            string
 	OrganizationSlug string
 	ProjectSlug      string
-	Verification     string
+	ProjectID        tracker.ProjectID
+	Revision         int64
 }
 
 func (q *Queries) NotificationRecipient(ctx context.Context, arg NotificationRecipientParams) (NotificationRecipientRow, error) {
@@ -352,7 +426,8 @@ func (q *Queries) NotificationRecipient(ctx context.Context, arg NotificationRec
 		&i.Token,
 		&i.OrganizationSlug,
 		&i.ProjectSlug,
-		&i.Verification,
+		&i.ProjectID,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -416,8 +491,54 @@ func (q *Queries) NotificationRecipients(ctx context.Context, arg NotificationRe
 	return items, nil
 }
 
+const notificationSeek = `-- name: NotificationSeek :one
+SELECT notice_seek_due_at,notice_seek_work_item_id,notice_seek_user_id,notice_seek_revision FROM hosted_tenant WHERE organization_id=$1
+`
+
+type NotificationSeekRow struct {
+	NoticeSeekDueAt      *time.Time
+	NoticeSeekWorkItemID string
+	NoticeSeekUserID     string
+	NoticeSeekRevision   int64
+}
+
+func (q *Queries) NotificationSeek(ctx context.Context, organizationID tracker.OrganizationID) (NotificationSeekRow, error) {
+	row := q.db.QueryRow(ctx, notificationSeek, organizationID)
+	var i NotificationSeekRow
+	err := row.Scan(
+		&i.NoticeSeekDueAt,
+		&i.NoticeSeekWorkItemID,
+		&i.NoticeSeekUserID,
+		&i.NoticeSeekRevision,
+	)
+	return i, err
+}
+
+const notificationStillDue = `-- name: NotificationStillDue :one
+SELECT EXISTS(SELECT 1 FROM issue_notification_notices n WHERE n.organization_id=$1 AND n.due_at=$2 AND n.work_item_id=$3 AND n.user_id=$4)::boolean
+`
+
+type NotificationStillDueParams struct {
+	OrganizationID tracker.OrganizationID
+	DueAt          time.Time
+	WorkItemID     string
+	UserID         string
+}
+
+func (q *Queries) NotificationStillDue(ctx context.Context, arg NotificationStillDueParams) (bool, error) {
+	row := q.db.QueryRow(ctx, notificationStillDue,
+		arg.OrganizationID,
+		arg.DueAt,
+		arg.WorkItemID,
+		arg.UserID,
+	)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const takeIssueNotices = `-- name: TakeIssueNotices :many
-DELETE FROM issue_notification_notices n WHERE n.organization_id=$1 AND n.work_item_id=$2 AND n.user_id=$3 AND (n.source_item,n.event_id) IN (SELECT q.source_item,q.event_id FROM issue_notification_notices q WHERE q.organization_id=$1 AND q.work_item_id=$2 AND q.user_id=$3 ORDER BY q.due_at,q.source_item,q.event_id LIMIT 1000) RETURNING n.organization_id, n.work_item_id, n.user_id, n.event_id, n.source_item, n.due_at, n.state_from, n.state_to, n.author, n.comment_id, n.related, n.verify
+DELETE FROM issue_notification_notices n WHERE n.organization_id=$1 AND n.ctid=ANY(ARRAY(SELECT q.ctid FROM issue_notification_notices q WHERE q.organization_id=$1 AND q.work_item_id=$2 AND q.user_id=$3 ORDER BY q.source_item,q.event_id LIMIT 1000)) RETURNING n.organization_id, n.work_item_id, n.user_id, n.event_id, n.source_item, n.due_at, n.state_from, n.state_to, n.author, n.comment_id, n.related, n.verify
 `
 
 type TakeIssueNoticesParams struct {

@@ -74,7 +74,7 @@ func TestNotificationRecipientsRespectParticipationAndOptOut(t *testing.T) {
 			}
 			got := []string{}
 			for range 3 {
-				notice, found, err := delivery.ClaimNotification(t.Context(), org, historyAt().Add(2*time.Minute))
+				notice, found, err := claimDueNotification(t, delivery, org, historyAt().Add(2*time.Minute))
 				if err != nil {
 					t.Fatal(err)
 				}

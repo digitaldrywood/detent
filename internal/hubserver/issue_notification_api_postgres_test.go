@@ -8,34 +8,23 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func TestPostgresIssueNotificationPreferenceReadWrite(t *testing.T) {
-	repository := projectRecordPostgres(t)
-	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.TenantRepository = repository
-	})
+	f := newHostedSecurityFixture(t)
+	repository := f.service.database.postgres
 	now := time.Now().UTC()
-	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", CreatedAt: now}); err != nil {
-			return err
-		}
-		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_security", ProviderID: "org_provider"})
-	}); err != nil {
-		t.Fatal(err)
-	}
 	user := f.user(t, "preference", "member", "preference@example.test", "", "")
 	other := f.user(t, "other_preference", "member", "other-preference@example.test", "", "")
-	disableLegacyPostgresTestHandles(t, f.service, repository)
 	if err := f.service.collectIssueEmails(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := f.service.claimIssueEmail(t.Context(), now); err != nil || found {
-		t.Fatalf("empty delivery found=%v error=%v", found, err)
+	if _, page, _, err := f.service.claimIssueEmail(t.Context(), now, accountstore.NotificationCursor{}, nil); err != nil || page.Found {
+		t.Fatalf("empty delivery found=%v error=%v", page.Found, err)
 	}
 	path := "/api/v2/organizations/org_security/issue-notification-preference"
 	var preference issueNotificationPreference
