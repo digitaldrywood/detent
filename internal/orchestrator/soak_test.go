@@ -18,11 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-const soakEnvironment = "DETENT_RUN_SOAK_TESTS"
-
 func TestSoakHistoricalNoPRIncidentReplay(t *testing.T) {
-	requireSoak(t)
-
 	fixture := loadNoPRIncidentFixture(t)
 	for _, incident := range fixture.Incidents {
 		t.Run(incident.Identifier, func(t *testing.T) {
@@ -113,13 +109,6 @@ func TestSoakHistoricalNoPRIncidentReplay(t *testing.T) {
 				t.Fatalf("machine attempts entered %q", got)
 			}
 		})
-	}
-}
-
-func requireSoak(t *testing.T) {
-	t.Helper()
-	if os.Getenv(soakEnvironment) != "1" {
-		t.Skip("set DETENT_RUN_SOAK_TESTS=1 to run local orchestrator soak tests")
 	}
 }
 

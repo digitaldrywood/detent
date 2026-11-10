@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
@@ -76,8 +77,6 @@ func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
 }
 
 func TestDispatchParityAdversarialFixtures(t *testing.T) {
-	requireSoak(t)
-
 	fixture := loadDispatchParityFixture(t)
 	if len(fixture.AdversarialCases) == 0 {
 		t.Fatal("dispatch parity fixture contains no adversarial cases")
@@ -159,6 +158,18 @@ func runRateLimitStormParityCase(t *testing.T, tt dispatchParityAdversarialCase)
 		t.Fatalf("New() error = %v", err)
 	}
 	state := newState(orch.cfg)
+	state.RateLimits = &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{
+		Consumer:            telemetry.RESTConsumerSharedPool,
+		CredentialIdentity:  "github-rest:worker",
+		EndpointFamily:      "shared credential pool",
+		Resource:            "core",
+		Limit:               5_000,
+		Used:                5_000,
+		Remaining:           0,
+		MinRemainingReserve: 1_000,
+		ResetAt:             &tracker.resetAt,
+		ObservedAt:          &now,
+	}}}
 	for range tt.SimulatedTicks {
 		orch.tick(t.Context(), &state, clock.Advance(time.Second))
 	}
