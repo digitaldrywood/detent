@@ -1,8 +1,15 @@
 package postgres_test
 
 import (
+	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -95,6 +102,126 @@ func TestSearchNativeRepresentationIsolation(t *testing.T) {
 }
 
 func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
+	t.Run("populated conversion family upgrade", func(t *testing.T) {
+		db, fixture := migrationDatabaseAtVersion(t, 20261109184650)
+		seedCore(t, db)
+		families := []string{"runs", "versions", "evidence", "core-work-events"}
+		for _, org := range []string{"org_first", "org_second"} {
+			for _, family := range families {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO storage_conversion_cursors(organization_id,family,turn,positioned,key_1,key_2,key_3,key_4,sequence,examined_rows,examined_bytes,oversized_rows) VALUES($1,$2,7,true,$1,'project','aggregate','record',17,3,128,1)`, org, family); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,converted_rows,converted_bytes) VALUES($1,'prj_shared',$2,'41',2,64)`, org, family); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		snapshot := func() []string {
+			t.Helper()
+			var result []string
+			for _, table := range []string{"storage_conversion_cursors", "storage_conversion_progress"} {
+				rows, err := db.QueryContext(t.Context(), `SELECT * FROM `+table+` ORDER BY organization_id,family`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				columns, err := rows.Columns()
+				if err != nil {
+					rows.Close()
+					t.Fatal(err)
+				}
+				for rows.Next() {
+					values := make([]any, len(columns))
+					pointers := make([]any, len(columns))
+					for i := range values {
+						pointers[i] = &values[i]
+					}
+					if err := rows.Scan(pointers...); err != nil {
+						rows.Close()
+						t.Fatal(err)
+					}
+					result = append(result, table+fmt.Sprint(values))
+				}
+				if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return result
+		}
+		constraint := func() string {
+			t.Helper()
+			var value string
+			if err := db.QueryRowContext(t.Context(), `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='storage_conversion_progress'::regclass AND conname='storage_conversion_progress_family_check'`).Scan(&value); err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+		before, progressConstraint := snapshot(), constraint()
+		provider, err := migrationProvider(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.Up(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if after := snapshot(); !reflect.DeepEqual(before, after) {
+			t.Fatal("family repair changed populated cursor or progress rows")
+		}
+		if constraint() != progressConstraint {
+			t.Fatal("cursor repair changed progress family contract")
+		}
+		repository, pool := coreWorkEventRepository(t, db, fixture)
+		orgs := []tracker.OrganizationID{"org_first", "org_second"}
+		objects := newHistoryObjects()
+		search := searchFixture{repository: repository, content: searchstore.NewContent(objects), objects: objects, admin: db, pool: pool}
+		for _, org := range orgs {
+			document := searchIssue(org, "wi_shared")
+			document.ProjectID = "prj_shared"
+			search.put(t, document, searchstore.Text{Title: "sentinel"}, 0)
+			search.drain(t, org)
+		}
+		for index, org := range orgs {
+			owner := postgres.NewConversionStorage(repository, org, newHistoryObjects(), convertPayload)
+			if _, err := owner.Start(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.Update(t.Context(), storageconversion.FamilyCursor{Family: "core-work-events"}, storageconversion.Reserve, storageconversion.Usage{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.Update(t.Context(), storageconversion.FamilyCursor{Family: "core-work-events"}, storageconversion.Record, storageconversion.Usage{Rows: 1, Bytes: 16}); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := repository.QueueSearchBackfill(t.Context(), org, 1); err != nil || n != 1 {
+				t.Fatalf("search cursor operation: n=%d error=%v", n, err)
+			}
+			for otherIndex, other := range orgs {
+				var turn, examined, bytes int
+				var search int
+				if err := db.QueryRowContext(t.Context(), `SELECT turn,examined_rows,examined_bytes FROM storage_conversion_cursors WHERE organization_id=$1 AND family='core-work-events'`, other).Scan(&turn, &examined, &bytes); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM storage_conversion_cursors WHERE organization_id=$1 AND family='search'`, other).Scan(&search); err != nil {
+					t.Fatal(err)
+				}
+				wantTurn, wantRows, wantBytes, wantSearch := 7, 3, 128, 0
+				if otherIndex <= index {
+					wantTurn, wantRows, wantBytes, wantSearch = 8, 4, 144, 1
+				}
+				if turn != wantTurn || examined != wantRows || bytes != wantBytes || search != wantSearch {
+					t.Fatalf("tenant cursor operation leaked or failed: org=%s turn=%d rows=%d bytes=%d search=%d", other, turn, examined, bytes, search)
+				}
+			}
+		}
+		for _, tc := range []struct{ name, statement, constraint string }{
+			{"unsupported cursor", `INSERT INTO storage_conversion_cursors(organization_id,family) VALUES('org_first','unsupported')`, "storage_conversion_cursors_family_check"},
+			{"unsupported search progress", `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,converted_rows,converted_bytes) VALUES('org_first','prj_shared','search','41',1,1)`, "storage_conversion_progress_family_check"},
+		} {
+			_, err := db.ExecContext(t.Context(), tc.statement)
+			var rejected *pgconn.PgError
+			if !errors.As(err, &rejected) || rejected.Code != "23514" || rejected.ConstraintName != tc.constraint {
+				t.Fatalf("%s did not retain family fence: %v", tc.name, err)
+			}
+		}
+	})
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, item := range []string{"wi_first_1", "wi_first_2"} {

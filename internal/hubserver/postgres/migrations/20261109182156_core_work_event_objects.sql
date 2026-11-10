@@ -16,7 +16,7 @@ ALTER TABLE core_work_events ADD CONSTRAINT core_work_events_object_writes CHECK
 CREATE INDEX core_work_events_payload_idx ON core_work_events (organization_id,payload_object_key) WHERE payload_object_key IS NOT NULL;
 CREATE INDEX core_work_events_conversion_idx ON core_work_events (organization_id,source_id) WHERE payload_json IS NOT NULL;
 ALTER TABLE storage_conversion_cursors DROP CONSTRAINT storage_conversion_cursors_family_check;
-ALTER TABLE storage_conversion_cursors ADD CONSTRAINT storage_conversion_cursors_family_check CHECK (family IN ('runs','versions','evidence','core-work-events'));
+ALTER TABLE storage_conversion_cursors ADD CONSTRAINT storage_conversion_cursors_family_check CHECK (family IN ('runs','versions','evidence','search','core-work-events'));
 ALTER TABLE storage_conversion_progress DROP CONSTRAINT storage_conversion_progress_family_check;
 ALTER TABLE storage_conversion_progress ADD CONSTRAINT storage_conversion_progress_family_check CHECK (family IN ('runs','versions','evidence','core-work-events'));
 
