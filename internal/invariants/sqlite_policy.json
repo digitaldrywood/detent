@@ -1564,9 +1564,6 @@
     "internal/orchestrator/merge_queue_test.go": {
       "sqlite_open": 2
     },
-    "internal/orchestrator/merge_required_checks_test.go": {
-      "sqlite_open": 1
-    },
     "internal/orchestrator/rework_gate_wait_test.go": {
       "backend_sqlite": 2,
       "sqlite_open": 2
