@@ -304,15 +304,22 @@ func (s *Service) coordinatorScreenReport(ctx context.Context, record conversati
 		}
 		w = operatortool.AnalyticsWindow{From: window.From, To: window.To, Bucket: time.Hour}
 	}
+	if call.Name == "get_project_reports" {
+		report, readable, err := s.readProjectReport(ctx, credential, string(record.ProjectID), w, reportsFilter{})
+		if err != nil {
+			return nil, err
+		}
+		if !readable {
+			return nil, operatortool.ErrAccessDenied
+		}
+		return report, nil
+	}
 	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: string(record.ProjectID), Limit: maxAnalyticsPopulation}, w)
 	if err != nil {
 		return nil, err
 	}
 	if len(analytics.Projects) != 1 {
 		return nil, operatortool.ErrAccessDenied
-	}
-	if call.Name == "get_project_reports" {
-		return s.readHostedReports(ctx, analytics)
 	}
 	return s.readHostedDiagnostics(ctx, analytics)
 }

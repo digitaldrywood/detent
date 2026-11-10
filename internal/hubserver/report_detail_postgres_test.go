@@ -1,11 +1,14 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -14,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/usagecost"
 )
@@ -270,7 +274,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: state, Dispatchable: true}}}); err != nil {
 				return err
 			}
-			item, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: "wi_partial", Number: 1, Title: string(organization), WorkflowStateName: &state, CreatedAt: now})
+			item, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: "wi_partial", Number: 1, Title: string(organization), WorkflowStateName: &state, ActorKind: new("human"), ActorPrincipalID: new("reporter_partial"), CreatedAt: now})
 			if err != nil {
 				return err
 			}
@@ -313,6 +317,139 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 				if filtered.OpenWork.Count != 0 || len(filtered.OpenWork.Items) != 0 {
 					t.Fatalf("open work escaped report filter %+v: %+v", filter, filtered.OpenWork)
 				}
+			}
+		})
+	}
+	for _, organization := range []tracker.OrganizationID{"org_partial_first", "org_partial_second"} {
+		t.Run(string(organization)+"/reporter entry points", func(t *testing.T) {
+			const principal = "reporter_partial"
+			const user = "user_partial"
+			payload, err := objects.StoreDetail(t.Context(), string(organization), []byte(`{"attempt_id":"attempt_private"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: principal, Name: "Reporter", Hash: apikey.HashToken(string(organization) + principal), Scope: "operator", Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: user, PrincipalID: principal, MembershipID: "membership_partial", Email: "reporter@example.test", Role: "reporter", Active: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: user, ProjectID: project}); err != nil {
+					return err
+				}
+				if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: principal, ProjectID: project}); err != nil {
+					return err
+				}
+				if err := w.SetWorkItemLabels(t.Context(), project, "wi_partial", []string{"own-label"}); err != nil {
+					return err
+				}
+				private, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: "wi_private", Number: 2, Title: "Private", WorkflowStateName: &state, ActorKind: new("human"), ActorPrincipalID: new("another_reporter"), CreatedAt: now})
+				if err != nil {
+					return err
+				}
+				if err := w.SetWorkItemLabels(t.Context(), project, "wi_private", []string{"private-label"}); err != nil {
+					return err
+				}
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "machine_private", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+					return err
+				}
+				lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: private.ID, ExpectedRevision: private.Revision, MachineID: "machine_private", SessionID: "session_private", LeaseID: "lease_private", TTL: time.Hour})
+				if err != nil {
+					return err
+				}
+				_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt_private", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run_private", Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: payload.Key})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}}
+			credential := apiCredential{Hosted: &auth.HostedIdentity{Subject: user}, HostedRole: "reporter", HostedPrincipal: principal, ID: principal, Scope: apiScopeOperator}
+			identity := operatortool.Identity{PrincipalID: principal, OrganizationID: string(organization), CredentialID: principal}
+			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
+				return operatortool.Authority{Identity: identity, Check: func(_ context.Context, requirement operatortool.Requirement) error {
+					if requirement.ProjectID != string(project) {
+						return operatortool.ErrAccessDenied
+					}
+					return nil
+				}}, nil
+			}})
+			window := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
+			assertReport := func(t *testing.T, report hostedReportsReport) {
+				t.Helper()
+				if report.Analytics.Quality.WorkedItems != 1 || report.OpenWork.Count != 1 || report.Titles["wi_partial"] != string(organization) {
+					t.Fatalf("reporter tenant population: worked=%d open=%+v titles=%v", report.Analytics.Quality.WorkedItems, report.OpenWork, report.Titles)
+				}
+				if len(report.OpenWork.Items) != 0 || !slices.Contains(report.Unavailable, "current_open_work_age_partial") {
+					t.Fatalf("missing-history age was presented as known: open=%+v unavailable=%v", report.OpenWork, report.Unavailable)
+				}
+				if _, exists := report.Titles["wi_private"]; exists {
+					t.Fatal("reporter report includes another reporter's work item")
+				}
+			}
+			for _, test := range []struct {
+				name string
+				read func(*testing.T)
+			}{
+				{"project report", func(t *testing.T) {
+					report, readable, err := service.readProjectReport(ctx, credential, string(project), window, reportsFilter{})
+					if err != nil || !readable {
+						t.Fatalf("report readable=%t error=%v", readable, err)
+					}
+					assertReport(t, report)
+				}},
+				{"missing report owner", func(t *testing.T) {
+					unavailable := &Service{database: &database{}, config: Config{Hosted: service.config.Hosted}}
+					if _, readable, err := unavailable.readProjectReport(ctx, credential, string(project), window, reportsFilter{}); err == nil || readable {
+						t.Fatalf("missing report owner readable=%t error=%v", readable, err)
+					}
+				}},
+				{"missing facet owner", func(t *testing.T) {
+					unavailable := &Service{database: &database{}, config: Config{Hosted: service.config.Hosted}}
+					if _, err := unavailable.readReportsFacets(ctx, []string{string(project)}, window); err == nil {
+						t.Fatal("missing facet owner served a report")
+					}
+				}},
+				{"missing coordinator report owner", func(t *testing.T) {
+					unavailable := &Service{database: &database{}, config: Config{Hosted: service.config.Hosted, now: func() time.Time { return now }}}
+					if _, err := unavailable.coordinatorScreenReport(ctx, conversationRecord{ProjectID: project}, credential, runner.AgentToolCall{Name: "get_project_reports", Arguments: json.RawMessage(`{"range":"24h"}`)}); err == nil {
+						t.Fatal("missing coordinator report owner served a report")
+					}
+				}},
+				{"unreadable project", func(t *testing.T) {
+					_, readable, err := service.readProjectReport(ctx, credential, "project_ungranted", window, reportsFilter{})
+					if err != nil || readable {
+						t.Fatalf("ungranted report readable=%t error=%v", readable, err)
+					}
+				}},
+				{"report facets", func(t *testing.T) {
+					scope := nativeScope{organization: organization, project: project, credential: credential}
+					facets, err := service.readReportsFacets(reporterReadContext(ctx, scope), []string{string(project)}, window)
+					if err != nil || len(facets.Labels) != 1 || facets.Labels[0] != "own-label" || len(facets.FiledBy) != 1 || facets.FiledBy[0].ID != principal {
+						t.Fatalf("reporter facets=%+v error=%v", facets, err)
+					}
+				}},
+				{"coordinator report", func(t *testing.T) {
+					coordinator := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now.Add(3 * time.Hour) }}}
+					value, err := coordinator.coordinatorScreenReport(ctx, conversationRecord{ProjectID: project}, credential, runner.AgentToolCall{Name: "get_project_reports", Arguments: json.RawMessage(`{"range":"24h"}`)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					report, ok := value.(hostedReportsReport)
+					if !ok {
+						t.Fatalf("coordinator report type=%T", value)
+					}
+					assertReport(t, report)
+				}},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					defer func() {
+						if recovered := recover(); recovered != nil {
+							t.Errorf("report read panicked: %v", recovered)
+						}
+					}()
+					test.read(t)
+				})
 			}
 		})
 	}

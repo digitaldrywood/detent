@@ -7,39 +7,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-type reportsQualityInputsKey struct{}
-
-type reportsQualityRead struct {
-	current, prior operatortool.AnalyticsWindow
-	inputs         *analyticsQualityInputs
-	read           bool
-}
-
-func withReportsQualityInputs(ctx context.Context, w operatortool.AnalyticsWindow) context.Context {
-	prior := operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}
-	return context.WithValue(ctx, reportsQualityInputsKey{}, &reportsQualityRead{current: w, prior: prior})
-}
-
 func reportsQualityInputs(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) (analyticsQualityInputs, error) {
-	read, ok := ctx.Value(reportsQualityInputsKey{}).(*reportsQualityRead)
-	if !ok || w != read.current && w != read.prior {
-		return loadAnalyticsQualityInputs(ctx, q, scope, w)
-	}
-	if !read.read {
-		combined := operatortool.AnalyticsWindow{From: read.prior.From, To: read.current.To, Bucket: w.Bucket}
-		inputs, err := loadAnalyticsQualityInputs(context.WithValue(ctx, analyticsPagingKey{}, nil), q, scope, combined)
-		if err != nil {
-			return analyticsQualityInputs{}, err
-		}
-		read.read = true
-		if !inputs.partial {
-			read.inputs = &inputs
-		}
-	}
-	if read.inputs == nil {
-		return loadAnalyticsQualityInputs(ctx, q, scope, w)
-	}
-	return qualityInputsInWindow(*read.inputs, w), nil
+	return loadAnalyticsQualityInputs(ctx, q, scope, w)
 }
 
 func qualityInputsInWindow(in analyticsQualityInputs, w operatortool.AnalyticsWindow) analyticsQualityInputs {

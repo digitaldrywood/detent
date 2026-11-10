@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"slices"
 	"strings"
 	"time"
@@ -91,25 +90,4 @@ func reportsOpenWorkFor(in reportsInputs, lanes []operatortool.AnalyticsLaneDura
 	}
 	out.PreviousStuck = &previous
 	return out
-}
-
-// reportsPriorQuality reads the rework rate and infrastructure returns of the
-// window before w through the same rollup reader as the analytics read.
-func (s *Service) reportsPriorQuality(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, out *reportsPrior) error {
-	q, err := analyticsProjectReader(ctx, analyticsRollupReader{s.database.reader}, scope)
-	if err != nil {
-		return err
-	}
-	prior := operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}
-	quality, err := readAnalyticsQuality(ctx, q, scope, operatortool.AnalyticsRequest{ProjectID: string(scope.project), Limit: maxAnalyticsPopulation}, prior)
-	if err != nil {
-		return err
-	}
-	out.ReworkPercent = quality.ReworkPercent
-	out.rework = reportsRatio{quality.ReworkedItems, quality.WorkedItems}
-	if !quality.Partial {
-		returns := quality.InfraReturns
-		out.InfrastructureReturns = &returns
-	}
-	return nil
 }

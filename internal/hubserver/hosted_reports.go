@@ -277,37 +277,15 @@ func (s *Service) hostedReportOptions(c echo.Context) error {
 // readProjectReport reads one project's report, narrowed by the filter. A
 // project the credential cannot read returns false.
 func (s *Service) readProjectReport(ctx context.Context, credential apiCredential, project string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, bool, error) {
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
-	ctx, reporterErr := prepareReporterReadContext(ctx, s.database.reader, scope)
-	if reporterErr != nil {
-		return hostedReportsReport{}, false, reporterErr
+	if s.config.TenantRepository == nil {
+		return hostedReportsReport{}, false, errors.New("PostgreSQL report reader is unavailable")
 	}
-	ctx, err := withReportsScope(ctx, scope, filter, w.From.Add(-w.To.Sub(w.From)), w.To)
-	if err != nil {
+	projects, err := s.analyticsReadableProjects(ctx, credential, operatortool.AnalyticsRequest{ProjectID: project})
+	if err != nil || len(projects) != 1 {
 		return hostedReportsReport{}, false, err
 	}
-	ctx = withReportsQualityInputs(ctx, w)
-	done := timeSpan(ctx, "reports_analytics")
-	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: project, Limit: maxAnalyticsPopulation}, w)
-	done()
-	if err != nil {
-		return hostedReportsReport{}, false, fmt.Errorf("read analytics: %w", err)
-	}
-	if len(analytics.Projects) != 1 {
-		return hostedReportsReport{}, false, nil
-	}
-	report, err := s.readHostedReports(ctx, analytics)
-	if err != nil {
-		return report, false, fmt.Errorf("read report: %w", err)
-	}
-	done = timeSpan(ctx, "reports_prior_quality")
-	err = s.reportsPriorQuality(ctx, scope, analytics.Window, &report.Prior)
-	done()
-	if err != nil {
-		return report, false, fmt.Errorf("read prior quality: %w", err)
-	}
-	report.PriorRecorded = report.PriorCost != nil || report.PriorFirst != nil || report.Previous.Done+report.Previous.Cancelled > 0 || report.PriorFailed != nil && *report.PriorFailed > 0
-	return report, true, nil
+	report, err := s.readPostgresHostedReport(ctx, credential, projects, w, filter, true)
+	return report, err == nil, err
 }
 
 func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyticsReport) (hostedReportsReport, error) {

@@ -313,9 +313,6 @@
     "internal/hubserver/hosted_reports.go": {
       "sql_julianday": 8
     },
-    "internal/hubserver/hosted_reports_filters.go": {
-      "sql_julianday": 18
-    },
     "internal/hubserver/hosted_review_lane_migration_test.go": {
       "sql_pragma": 1,
       "sqlite_open": 1

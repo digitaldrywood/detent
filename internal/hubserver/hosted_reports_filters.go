@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -34,10 +36,6 @@ type reportsFilter struct {
 	Runners    []string
 	Models     []string
 	Stages     []string
-}
-
-func (f reportsFilter) issues() bool {
-	return len(f.Labels)+len(f.Priorities)+len(f.Types)+len(f.FiledBy)+len(f.Runners) > 0
 }
 
 func (f reportsFilter) attempts() bool {
@@ -151,32 +149,6 @@ type reportsScope struct {
 	attempts          reportsFilter
 }
 
-// withReportsScope narrows the window reads under ctx to the filter. The
-// issue dimensions become one subquery over the project's issues that were
-// open, closed or worked during [from, to), joined into each read, so no
-// issue list leaves the database.
-func withReportsScope(ctx context.Context, scope nativeScope, f reportsFilter, from, to time.Time) (context.Context, error) {
-	out := reportsScope{attempts: reportsFilter{Runners: f.Runners, Models: f.Models, Stages: f.Stages}}
-	if parent, ok := reportsScopeFrom(ctx); ok && parent.reporterPrincipal != "" {
-		out.issues, out.issueArgs, out.reporterPrincipal = parent.issues, parent.issueArgs, parent.reporterPrincipal
-	}
-	if f.issues() {
-		statement, args, err := reportsIssueSubquery(scope, f, from, to)
-		if err != nil {
-			return ctx, err
-		}
-		if out.issues != "" {
-			statement += " AND ri.native_id IN (" + out.issues + ")"
-			args = append(args, out.issueArgs...)
-		}
-		out.issues, out.issueArgs = statement, args
-	}
-	if out.issues == "" && !f.attempts() {
-		return ctx, nil
-	}
-	return context.WithValue(ctx, reportsScopeKey{}, out), nil
-}
-
 func reportsScopeFrom(ctx context.Context) (reportsScope, bool) {
 	scope, ok := ctx.Value(reportsScopeKey{}).(reportsScope)
 	return scope, ok
@@ -230,46 +202,6 @@ func reportsScopedClause(ctx context.Context, alias string) (string, []any, erro
 	return issue + attempt, append(issueArgs, attemptArgs...), err
 }
 
-// reportsIssueSubquery selects the project's issues that match the issue
-// dimensions of a filter and were open, closed or worked during [from, to).
-// Runners select the issues with an attempt on one of them in that window.
-// It names main.issues because the rollup reader rewrites a bare issues
-// table to its narrow projection.
-func reportsIssueSubquery(scope nativeScope, f reportsFilter, from, to time.Time) (string, []any, error) {
-	var statement strings.Builder
-	statement.WriteString(`SELECT ri.native_id FROM main.issues ri LEFT JOIN workflow_states rws ON rws.id=ri.workflow_state_id
- WHERE ri.organization_id=? AND ri.project_id=? AND ri.native_id IS NOT NULL AND julianday(ri.created_at)<julianday(?)
- AND (coalesce(rws.terminal,0)=0 OR julianday(ri.updated_at)>=julianday(?) OR EXISTS (SELECT 1 FROM report_attempts rwa WHERE rwa.organization_id=ri.organization_id AND rwa.project_id=ri.project_id AND rwa.work_item_id=ri.native_id AND julianday(rwa.updated_at)>=julianday(?)))`)
-	args := []any{scope.organization, scope.project, formatHubTime(to), formatHubTime(from), formatHubTime(from)}
-	for _, filter := range []struct {
-		values []string
-		clause string
-		window bool
-	}{
-		{f.Labels, "EXISTS (SELECT 1 FROM native_issue_page_filter_values rl WHERE rl.issue_id=ri.id AND rl.kind='label' AND rl.value IN (SELECT value FROM sql_rows(?)))", false},
-		{f.Types, "ri.issue_type IN (SELECT value FROM sql_rows(?))", false},
-		{f.FiledBy, nativeIssuePrincipal("ri") + " IN (SELECT value FROM sql_rows(?))", false},
-		{f.Priorities, "EXISTS (SELECT 1 FROM queue_entries rq WHERE rq.issue_id=ri.id AND CAST(rq.priority_override AS TEXT) IN (SELECT value FROM sql_rows(?)))", false},
-		{f.Runners, `EXISTS (SELECT 1 FROM report_attempts ra WHERE ra.organization_id=ri.organization_id AND ra.project_id=ri.project_id AND ra.work_item_id=ri.native_id
- AND julianday(ra.started_at)<julianday(?) AND julianday(ra.updated_at)>=julianday(?)
- AND coalesce((SELECT rlr.runner_id FROM lease_runners rlr WHERE rlr.lease_id=ra.lease_id),ra.runner_id,'') IN (SELECT value FROM sql_rows(?)))`, true},
-	} {
-		if len(filter.values) == 0 {
-			continue
-		}
-		encoded, err := sqlList(filter.values)
-		if err != nil {
-			return "", nil, fmt.Errorf("encode report issue filter: %w", err)
-		}
-		statement.WriteString(" AND " + filter.clause)
-		if filter.window {
-			args = append(args, formatHubTime(to), formatHubTime(from))
-		}
-		args = append(args, encoded)
-	}
-	return bindSQLParameters(statement.String(), args)
-}
-
 type reportsFacet struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -290,82 +222,22 @@ func (s *Service) readReportsFacets(ctx context.Context, projects []string, w op
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	out := reportsFacets{Labels: []string{}, FiledBy: []reportsFacet{}, Runners: []reportsFacet{}, Models: []string{}, Stages: []string{}}
-	encoded, err := sqlList(projects)
-	if err != nil {
-		return out, fmt.Errorf("encode report projects: %w", err)
+	if s.config.TenantRepository == nil {
+		return out, errors.New("PostgreSQL report reader is unavailable")
 	}
-	organization := s.config.Hosted.OrganizationID
-	q, err := prepareReportsQuery(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(organization)}, "report_attempts", "native_issue_actors", "native_issue_page_filter_values")
-	if err != nil {
-		return out, err
-	}
-	read := func(statement string, scan func(values ...string), args ...any) error {
-		if ownership, ok := reportsScopeFrom(ctx); ok && ownership.reporterPrincipal != "" {
-			column := "a.work_item_id"
-			if strings.Contains(statement, "FROM issues i") {
-				column = "i.native_id"
-			}
-			visibility, visibilityArgs := reportsIssueClause(ctx, column)
-			split := strings.Index(statement, " ORDER BY")
-			if split < 0 {
-				split = strings.Index(statement, " LIMIT")
-			}
-			if column == "i.native_id" && strings.Contains(statement, ") f ORDER BY") {
-				split = strings.Index(statement, ") f ORDER BY")
-			}
-			statement = statement[:split] + visibility + statement[split:]
-			scopedArgs := append([]any{}, args[:len(args)-1]...)
-			scopedArgs = append(scopedArgs, visibilityArgs...)
-			args = append(scopedArgs, args[len(args)-1])
+	ownership, _ := reportsScopeFrom(ctx)
+	var facets reportstore.Facets
+	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.appOrganizationID()), corestore.Serving, func(reader tenantstore.Reader) error {
+		store, ok := reader.(reportstore.Reader)
+		if !ok {
+			return errors.New("PostgreSQL report reader is unavailable")
 		}
-		rows, err := querySQL(ctx, q, statement, args...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id, name string
-			if err := rows.Scan(&id, &name); err != nil {
-				return err
-			}
-			scan(id, name)
-		}
-		return errors.Join(rows.Err(), rows.Close())
-	}
-	if err := read(`SELECT DISTINCT l.value,'' FROM issues i JOIN native_issue_page_filter_values l ON l.issue_id=i.id AND l.kind='label' WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM sql_rows(?)) ORDER BY l.value LIMIT ?`,
-		func(values ...string) { out.Labels = append(out.Labels, values[0]) }, organization, encoded, reportsFacetLimit); err != nil {
-		return out, fmt.Errorf("read report label facets: %w", err)
-	}
-	if err := read(`SELECT f.principal,`+nativeActorDisplayName("f.principal", "?")+` FROM (SELECT DISTINCT `+nativeIssuePrincipal("i")+` AS principal FROM issues i WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM sql_rows(?)) AND coalesce(`+nativeIssuePrincipal("i")+`,'')<>'') f ORDER BY 2,1 LIMIT ?`,
-		func(values ...string) { out.FiledBy = append(out.FiledBy, reportsFacet{values[0], values[1]}) }, organization, organization, encoded, reportsFacetLimit); err != nil {
-		return out, fmt.Errorf("read report filer facets: %w", err)
-	}
-	models, stages, runners := map[string]bool{}, map[string]bool{}, map[string]reportsFacet{}
-	for _, project := range projects {
-		if err := read(`SELECT DISTINCT `+reportModelColumn("a")+`,`+reportRoleColumn("a")+`
-FROM report_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.updated_at)>=julianday(?) AND julianday(a.started_at)<julianday(?) LIMIT ?`,
-			func(values ...string) { models[values[0]], stages[values[1]] = true, true }, organization, project, formatHubTime(w.From), formatHubTime(w.To), reportsFacetLimit); err != nil {
-			return out, fmt.Errorf("read report attempt facets: %w", err)
-		}
-		if err := read(`SELECT DISTINCT r.id,coalesce(r.display_name,'') FROM report_attempts a JOIN lease_runners lr ON lr.lease_id=a.lease_id JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id
-WHERE a.organization_id=? AND a.project_id=? AND julianday(a.updated_at)>=julianday(?) AND julianday(a.started_at)<julianday(?) LIMIT ?`,
-			func(values ...string) { runners[values[0]] = reportsFacet{values[0], values[1]} }, organization, project, formatHubTime(w.From), formatHubTime(w.To), reportsFacetLimit); err != nil {
-			return out, fmt.Errorf("read report runner facets: %w", err)
-		}
-	}
-	for _, runner := range runners {
-		out.Runners = append(out.Runners, runner)
-	}
-	slices.SortFunc(out.Runners, func(a, b reportsFacet) int {
-		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.ID, b.ID))
+		var err error
+		facets, err = store.ReadFacets(ctx, projectIDs(projects), w.From, w.To, ownership.reporterPrincipal, reportsFacetLimit)
+		return err
 	})
-	for model := range models {
-		out.Models = append(out.Models, model)
+	if err != nil {
+		return out, fmt.Errorf("read PostgreSQL report facets: %w", err)
 	}
-	for stage := range stages {
-		out.Stages = append(out.Stages, stage)
-	}
-	slices.Sort(out.Models)
-	slices.Sort(out.Stages)
-	return out, nil
+	return reportsFacets{Labels: facets.Labels, FiledBy: convertReportFacets(facets.FiledBy), Runners: convertReportFacets(facets.Runners), Models: facets.Models, Stages: facets.Stages}, nil
 }

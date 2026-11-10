@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -128,7 +129,7 @@ func (s *Service) hostedReportOptionsPostgres(c echo.Context) error {
 	err = s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
 		reportReader, ok := reader.(reportstore.Reader)
 		if !ok {
-			return fmt.Errorf("PostgreSQL report reader is unavailable")
+			return errors.New("PostgreSQL report reader is unavailable")
 		}
 		var err error
 		facets, err = reportReader.ReadFacets(ctx, projectIDs(projects), w.From, w.To, principal, reportsFacetLimit)
@@ -182,7 +183,7 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
 		store, ok := reader.(reportstore.Reader)
 		if !ok {
-			return fmt.Errorf("PostgreSQL report reader is unavailable")
+			return errors.New("PostgreSQL report reader is unavailable")
 		}
 		var err error
 		priorRecorded, err = store.HasPriorData(ctx, projectIDsTyped, prior.To, query.Principal)
@@ -340,7 +341,7 @@ func reportPrincipal(credential apiCredential) string {
 	if credential.HostedRole != "reporter" {
 		return ""
 	}
-	return credential.Hosted.Subject
+	return operatorIdentity(credential, "").PrincipalID
 }
 
 func projectIDs(projects []string) []tracker.ProjectID {
@@ -360,6 +361,9 @@ func convertReportFacets(facets []reportstore.Facet) []reportsFacet {
 }
 
 func mustAtoi(value string) int {
-	valueInt, _ := strconv.Atoi(value)
+	valueInt, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
 	return valueInt
 }
