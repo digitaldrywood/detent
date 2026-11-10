@@ -229,6 +229,19 @@ export function toWorkItemView(
   };
 }
 
+export function retainOmittedRelations(previous: NativeIssue, updated: NativeIssue): NativeIssue {
+  const omitted = new Set(updated.omitted_fields ?? []);
+  return {
+    ...updated,
+    blockers: omitted.has("blockers") ? previous.blockers : updated.blockers,
+    dependents: omitted.has("dependents") ? previous.dependents : updated.dependents,
+    related: omitted.has("related") ? previous.related : updated.related,
+    dependency_ready: omitted.has("dependency_ready") ? previous.dependency_ready : updated.dependency_ready,
+    blocked_reason: omitted.has("blocked_reason") ? previous.blocked_reason : updated.blocked_reason,
+    unblocks_reason: omitted.has("unblocks_reason") ? previous.unblocks_reason : updated.unblocks_reason,
+  };
+}
+
 export function toBoardCardView(card: NativeBoardCard, projectName: string): WorkItemView {
   const item = toWorkItemView(card.issue, projectName, { observations: { worker: "known", change: "known" } });
   const attempt = card.attempt;

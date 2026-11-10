@@ -62,7 +62,7 @@ import { IssueDiagnostics, IssueDetailTabs } from "./components/IssueDiagnostics
 import { SourceRecoveryControls } from "./components/SourceRecoveryControls.tsx";
 import { VerificationControls, type VerificationResult } from "./components/VerificationControls.tsx";
 import { mergeActivity, runnerLabel, type ActivityRow } from "./lib/activity.ts";
-import { toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts";
+import { retainOmittedRelations, toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts";
 import { elapsedLabel, issueNumber } from "./lib/format.ts";
 import type { WorkItemView } from "./lib/model.ts";
 import { useRunnerNames } from "./lib/runnerNames.ts";
@@ -562,7 +562,7 @@ function IssueSurface({
       setSaving(true);
       try {
         const updated = await run(data.issue.revision);
-        apply((current) => (current === null ? current : { ...current, issue: updated }));
+        apply((current) => (current === null ? current : { ...current, issue: retainOmittedRelations(current.issue, updated) }));
         reload();
       } catch (cause) {
         apply(before);

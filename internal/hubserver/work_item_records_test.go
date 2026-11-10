@@ -441,6 +441,14 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	if linked.Revision != 3 || !slices.Equal(linked.Dependencies, []tracker.NativeWorkItemID{target.WorkItemID}) {
 		t.Fatalf("dependency mutation=%+v", linked)
 	}
+	for _, field := range []string{"blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+		if !slices.Contains(linked.OmittedFields, field) {
+			t.Fatalf("dependency mutation response does not declare %s omitted: %+v", field, linked.OmittedFields)
+		}
+	}
+	if linked.Blockers == nil || len(linked.Blockers) != 0 || linked.Dependents == nil || len(linked.Dependents) != 0 || linked.DependencyReady {
+		t.Fatalf("dependency mutation response carries relationship facts it declares omitted: %+v", linked)
+	}
 	var sourceRead tracker.NativeIssue
 	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &sourceRead)
 	if !slices.Equal(sourceRead.Dependencies, []tracker.NativeWorkItemID{target.WorkItemID}) || len(sourceRead.Blockers) != 1 || sourceRead.Blockers[0].ID != target.WorkItemID || sourceRead.DependencyReady {
@@ -549,6 +557,18 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	}
 	if len(sourceAfterRemove.Dependencies) != 0 || len(sourceAfterRemove.Blockers) != 0 || !sourceAfterRemove.DependencyReady {
 		t.Fatalf("source relationship removal=%+v", sourceAfterRemove)
+	}
+	replayAfterRemove := performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, dependency)
+	requireNativeStatus(t, replayAfterRemove, http.StatusOK)
+	if response.Body.String() != replayAfterRemove.Body.String() {
+		t.Fatal("dependency replay after a later removal changed the original response")
+	}
+	afterReplay, err := service.readWorkItemSourcePage(t.Context(), scope, string(source.WorkItemID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterReplay.Revision != sourceAfterRemove.Revision || len(afterReplay.Dependencies) != 0 || len(afterReplay.Blockers) != 0 {
+		t.Fatalf("dependency replay wrote a new mutation: before=%d after=%+v", sourceAfterRemove.Revision, afterReplay)
 	}
 	reverse := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "reverse-dependency"}, ExpectedRevision: 2, RelatedWorkItemID: source.WorkItemID, Operation: "add"}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, targetPath+"/dependencies", testHubAdminToken, reverse), http.StatusOK)

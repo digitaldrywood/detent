@@ -218,6 +218,7 @@ export const NativeIssue = Schema.Struct({
   blocked_reason: Schema.optional(DependencyReason),
   unblocks_reason: Schema.optional(DependencyReason),
   external_references: Schema.Array(ExternalReference),
+  omitted_fields: Schema.optional(Schema.Array(Schema.String)),
 });
 export type NativeIssue = typeof NativeIssue.Type;
 

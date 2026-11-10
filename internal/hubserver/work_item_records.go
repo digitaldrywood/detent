@@ -702,6 +702,18 @@ func (s *Service) prepareWorkItemFields(ctx context.Context, organization tracke
 	return fields, nil
 }
 
+func relationshipOmittedIssue(issue tracker.NativeIssue) tracker.NativeIssue {
+	issue.Blockers, issue.Dependents, issue.Related = []tracker.NativeDependency{}, []tracker.NativeDependency{}, nil
+	issue.DependencyReady, issue.BlockedReason, issue.UnblocksReason = false, tracker.DependencyReason{}, tracker.DependencyReason{}
+	issue.OmittedFields = slices.Clone(issue.OmittedFields)
+	for _, field := range []string{"blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"} {
+		if !slices.Contains(issue.OmittedFields, field) {
+			issue.OmittedFields = append(issue.OmittedFields, field)
+		}
+	}
+	return issue
+}
+
 func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, commentID string) (json.RawMessage, error) {
 	raw, err := s.executeWorkItemRecordMutationWithConversationLink(ctx, scope, options, command, input, commentID, nil)
 	if err != nil || commentID != "" {
@@ -896,6 +908,9 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			issue := plan.issue
 			if len(duplicateLinks) > 0 {
 				issue = duplicateLinks[len(duplicateLinks)-1].issue
+			}
+			if _, relationship := input.(tracker.DependencyMutation); relationship {
+				issue = relationshipOmittedIssue(issue)
 			}
 			value = scope.reporterIssue(issue)
 		}

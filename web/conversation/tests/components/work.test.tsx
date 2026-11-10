@@ -28,7 +28,7 @@ import { WorkTopBar } from "../../src/app/work/components/WorkTopBar.tsx";
 import { WorkToolbar } from "../../src/app/work/components/WorkToolbar.tsx";
 import { CompletedCounter } from "../../src/app/work/components/CompletedCounter.tsx";
 import { LiveCounter } from "../../src/app/work/components/LiveCounter.tsx";
-import { toAttemptView, toBoardCardView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
+import { retainOmittedRelations, toAttemptView, toBoardCardView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
 import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../../src/app/work/lib/model.ts";
 
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
@@ -266,6 +266,22 @@ describe("the board card", () => {
   ])("names only open blockers: $expected", ({ blockers, expected }) => {
     const view = toWorkItemView({ ...itemFixture as unknown as NativeIssue, blockers }, "Example");
     expect(statusPill(view)?.label ?? null).toBe(expected);
+  });
+
+  it("keeps known relations and readiness when a mutation response declares them omitted", () => {
+    const blocker = { work_item_id: "wi_one", project_id: "prj_example", number: 7, title: "Foundation", state: "Todo", terminal: false };
+    const previous = { ...itemFixture as unknown as NativeIssue, blockers: [blocker], dependents: [blocker], related: [blocker], dependency_ready: undefined };
+    const response = { ...previous, blockers: [], dependents: [], related: undefined, dependency_ready: false, omitted_fields: ["blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason"] } as unknown as NativeIssue;
+    const kept = retainOmittedRelations(previous as unknown as NativeIssue, response);
+    expect(kept.blockers).toEqual([blocker]);
+    expect(kept.dependents).toEqual([blocker]);
+    expect(kept.related).toEqual([blocker]);
+    expect(kept.dependency_ready).toBeUndefined();
+    expect(statusPill(toWorkItemView(kept, "Example"))?.label ?? null).toBe("Waiting on #7");
+    const authoritative = retainOmittedRelations(previous as unknown as NativeIssue, { ...response, omitted_fields: undefined } as unknown as NativeIssue);
+    expect(authoritative.blockers).toEqual([]);
+    expect(authoritative.dependency_ready).toBe(false);
+    expect(statusPill(toWorkItemView(authoritative, "Example"))?.label ?? null).toBeNull();
   });
 
   it("keeps the dependency popover open while live chips update", async () => {
