@@ -40,7 +40,81 @@ type NativeRunEventAuthority struct {
 	Publication        *preparedNativePRPublication
 	UsageCosts         []billingstore.CostObservation
 	UsageFacts         *runnerUsageFacts
+	Landing            *nativeLandingAuthority
 	Event              tracker.NativeRunEvent
+}
+
+type nativeLandingAuthority struct {
+	change eventstore.Change
+	method string
+}
+
+func nativeLandingClaim(event tracker.NativeRunEvent) *tracker.NativeLandingReceipt {
+	if event.Data.Runtime == nil || event.Data.Runtime.Landing == nil || event.Data.Runtime.Landing.ChangeID == "" {
+		return nil
+	}
+	return event.Data.Runtime.Landing
+}
+
+func validateNativeLandingAuthority(ctx context.Context, reader tenantstore.Reader, authority *NativeRunEventAuthority, item corestore.WorkItem, l *tracker.NativeLandingReceipt) error {
+	change, err := reader.Change(ctx, l.ChangeID)
+	if err != nil {
+		return err
+	}
+	if change.ProjectID != authority.ProjectID || change.WorkItemID != item.NativeID {
+		return corestore.ErrNotFound
+	}
+	if l.VersionID != "" {
+		version, err := reader.Version(ctx, change.ID, l.VersionID)
+		if err != nil {
+			return err
+		}
+		if version.HeadSHA != l.HeadSHA {
+			return nativeRejection(nativeInvalid("Landing evidence must name its immutable version head"), "owner_validation", "data.runtime.landing")
+		}
+	}
+	if !l.Landed {
+		return nil
+	}
+	unrecorded := nativeRejection(nativeInvalid("Landing evidence requires the recorded Change landing authority"), "owner_validation", "data.runtime.landing")
+	if change.LandedVersionID == nil || change.LandedHeadSHA == nil || change.LandedMergeSHA == nil || change.LandedBaseRef == nil || *change.LandedVersionID != l.VersionID || *change.LandedHeadSHA != l.HeadSHA || *change.LandedMergeSHA != l.MergeSHA || *change.LandedBaseRef != l.BaseRef {
+		return unrecorded
+	}
+	proof := authority.Landing
+	if proof == nil || proof.change.ID != change.ID || proof.change.PayloadObjectKey != change.PayloadObjectKey || proof.change.PayloadSHA256 != change.PayloadSHA256 || proof.change.PayloadBytes != change.PayloadBytes || proof.change.PayloadContentBytes != change.PayloadContentBytes {
+		return corestore.ErrSerializationFailure
+	}
+	if proof.method != l.Method {
+		return unrecorded
+	}
+	return nil
+}
+
+func (s *Service) prepareNativeLandingAuthority(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, content *eventstore.Content, changeID string) (nativeLandingAuthority, bool, error) {
+	var change eventstore.Change
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		change, err = r.Change(ctx, changeID)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		return nativeLandingAuthority{}, false, nil
+	}
+	if err != nil {
+		return nativeLandingAuthority{}, false, err
+	}
+	if change.ProjectID != scope.project || change.WorkItemID != item || change.LandedVersionID == nil {
+		return nativeLandingAuthority{}, false, nil
+	}
+	value, err := content.Change(ctx, change)
+	if err != nil {
+		return nativeLandingAuthority{}, false, err
+	}
+	landed := value.Landed
+	if landed == nil || change.LandedHeadSHA == nil || change.LandedMergeSHA == nil || change.LandedBaseRef == nil || landed.VersionID != *change.LandedVersionID || landed.HeadSHA != *change.LandedHeadSHA || landed.MergeSHA != *change.LandedMergeSHA || landed.BaseRef != *change.LandedBaseRef {
+		return nativeLandingAuthority{}, false, artifact.ErrIntegrity
+	}
+	return nativeLandingAuthority{change: change, method: landed.Method}, true, nil
 }
 
 type NativeRunEventParticipant interface {
@@ -402,6 +476,24 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			return nil, nativePublicInvalid("Execution identity must match the authenticated lease owner")
 		}
 		event.Data.MachineID, event.Data.SessionID, event.Data.RunnerID = tracker.MachineID(lease.MachineID), lease.SessionID, scope.credential.Runner.RunnerID
+		var landingProof *nativeLandingAuthority
+		if l := nativeLandingClaim(event); !termination && l != nil && l.Landed {
+			for _, previous := range prepared {
+				if proof := previous.authority.Landing; proof != nil && proof.change.ID == l.ChangeID {
+					landingProof = proof
+					break
+				}
+			}
+			if landingProof == nil {
+				proof, found, err := s.prepareNativeLandingAuthority(ctx, scope, tracker.NativeWorkItemID(item), content, l.ChangeID)
+				if err != nil {
+					return nil, err
+				}
+				if found {
+					landingProof = &proof
+				}
+			}
+		}
 		var dependencies *preparedRunnerDependencies
 		if !termination && (i != len(events)-1 || !usageCorrection) {
 			prepared, present, err := s.prepareRunnerDependencies(ctx, scope, workItem, event)
@@ -510,6 +602,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		}
 		history.HistoryHidden = i == len(events)-1 && usageCorrection || event.Type == "run.observed" && predecessor != nil && !nativeRuntimeHistoryChanged(predecessor.Runtime, event.Data.Runtime)
 		authority := NativeRunEventAuthority{BatchThrough: events[len(events)-1].Data.Sequence, Termination: termination, Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event}
+		authority.Landing = landingProof
 		if i == len(events)-1 && usageFactsFound && !termination {
 			facts := usageFacts
 			authority.UsageFacts = &facts
@@ -650,6 +743,11 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 			if err := s.config.NativeRunEvents.ValidateNativeRunEvent(ctx, w, &authority); err != nil {
 				return err
+			}
+			if l := nativeLandingClaim(authority.Event); !authority.Termination && l != nil {
+				if err := validateNativeLandingAuthority(ctx, w, &authority, workItem, l); err != nil {
+					return err
+				}
 			}
 			attemptEvent := event.attempt
 			attemptEvent.DispatchGeneration = authority.DispatchGeneration

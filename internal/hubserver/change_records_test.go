@@ -799,8 +799,30 @@ func TestChangeReviewPolicyRechecksDemotedAdminInTenantWriter(t *testing.T) {
 }
 
 func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *testing.T) {
-	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 4)
-	testChangeVersionRecordPublication(t, false, repository, f, owner, admin)
+	repository, admin := projectRecordPostgresWithAdmin(t, 4)
+	details := &memoryRunDetails{}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(organization), func(t *testing.T) {
+			f, owner := newChangePolicyPostgresTenantFixture(t, repository, organization, details)
+			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.project)
+				if err != nil {
+					return err
+				}
+				states := make([]tracker.NativeState, 0, len(project.States)+1)
+				for _, state := range project.States {
+					state.Transitions = append(slices.Clone(state.Transitions), "Cancelled")
+					states = append(states, state)
+				}
+				project.States = append(states, tracker.NativeState{Name: "Cancelled", Terminal: true, Transitions: []string{"Todo"}})
+				_, err = w.UpdateProjectRecord(t.Context(), project)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			testChangeVersionRecordPublication(t, false, repository, f, owner, admin, details)
+		})
+	}
 }
 
 func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
@@ -811,14 +833,14 @@ func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
 			for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 				t.Run(string(organization), func(t *testing.T) {
 					f, owner := newChangePolicyPostgresTenantFixture(t, repository, organization, details)
-					testChangeVersionRecordPublication(t, true, repository, f, owner, admin, mode)
+					testChangeVersionRecordPublication(t, true, repository, f, owner, admin, details, mode)
 				})
 			}
 		})
 	}
 }
 
-func testChangeVersionRecordPublication(t *testing.T, running bool, repository tenantstore.Repository, f hostedSecurityFixture, owner hostedSecurityUser, admin *sql.DB, reviewModes ...string) {
+func testChangeVersionRecordPublication(t *testing.T, running bool, repository tenantstore.Repository, f hostedSecurityFixture, owner hostedSecurityUser, admin *sql.DB, details *memoryRunDetails, reviewModes ...string) {
 	t.Helper()
 	service := f.service
 	originalPostgres, originalAccess, originalTenant := service.database.postgres, service.config.AccessRepository, service.config.TenantRepository
@@ -1719,6 +1741,50 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}); err != nil {
 		t.Fatal(err)
 	}
+	eventsPath := f.base + "/work-items/" + string(item.WorkItemID) + "/events"
+	landingEvent := func(key string, sequence int64, landing tracker.NativeLandingReceipt) tracker.NativeRunEvent {
+		event := landingStart
+		event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", key, sequence
+		event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: service.config.now().UTC(), Landing: &landing}
+		return event
+	}
+	requireStep := func(operation, key string, sequence int64, response *httptest.ResponseRecorder) {
+		t.Helper()
+		if response.Code != http.StatusOK {
+			var refusal struct{ Code string }
+			_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+			t.Fatalf("%s %s at sequence %d: status = %d, want 200, code=%s", operation, key, sequence, response.Code, refusal.Code)
+		}
+	}
+	landedClaim := tracker.NativeLandingReceipt{Landed: true, ChangeID: change.ID, VersionID: nextVersion.ID, HeadSHA: nextVersion.HeadSHA, MergeSHA: mergeSHA, BaseRef: "main", Method: "squash"}
+	foreignItemResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-foreign-item"}, Title: "Foreign version issue", Body: workItemRecordBody, State: "Todo"})
+	requireNativeStatus(t, foreignItemResponse, http.StatusOK)
+	var foreignItem tracker.NativeIssue
+	decodeHubResponse(t, foreignItemResponse, &foreignItem)
+	foreignChangeResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(foreignItem.WorkItemID)+"/changes", tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "create-foreign-change"}, Title: "Foreign change", Body: "Other source history"})
+	requireNativeStatus(t, foreignChangeResponse, http.StatusOK)
+	var foreignChange tracker.ChangeRequest
+	decodeHubResponse(t, foreignChangeResponse, &foreignChange)
+	waitingClaim := tracker.NativeLandingReceipt{Waiting: true, ChangeID: change.ID, VersionID: nextVersion.ID, HeadSHA: nextVersion.HeadSHA}
+	for _, test := range []struct {
+		name   string
+		status int
+		claim  tracker.NativeLandingReceipt
+		edit   func(*tracker.NativeLandingReceipt)
+	}{
+		{"unknown Change", http.StatusNotFound, landedClaim, func(l *tracker.NativeLandingReceipt) { l.ChangeID = newNativeID("change") }},
+		{"Change of another work item", http.StatusNotFound, landedClaim, func(l *tracker.NativeLandingReceipt) { l.ChangeID = foreignChange.ID }},
+		{"unknown version", http.StatusNotFound, landedClaim, func(l *tracker.NativeLandingReceipt) { l.VersionID = newNativeID("version") }},
+		{"waiting on another head", http.StatusUnprocessableEntity, waitingClaim, func(l *tracker.NativeLandingReceipt) { l.HeadSHA = strings.Repeat("e", 40) }},
+		{"landed before the landing owner recorded it", http.StatusUnprocessableEntity, landedClaim, func(*tracker.NativeLandingReceipt) {}},
+	} {
+		claim := test.claim
+		test.edit(&claim)
+		if response := performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, landingEvent("unrecorded "+test.name, 2, claim)); response.Code != test.status {
+			t.Fatalf("%s before landing: status=%d body=%s", test.name, response.Code, response.Body.String())
+		}
+	}
+	requireStep("run event", "landing-waiting", 2, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, landingEvent("landing-waiting", 2, waitingClaim)))
 	landedResponse := performHubAPIRequest(t, service, http.MethodPost, landingPath, workerToken, landingRequest)
 	requireNativeStatus(t, landedResponse, http.StatusOK)
 	landedReplay := performHubAPIRequest(t, service, http.MethodPost, landingPath, workerToken, landingRequest)
@@ -1726,6 +1792,205 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	if landedReplay.Body.String() != landedResponse.Body.String() {
 		t.Fatal("landing retry changed the archived response")
 	}
+	var originalReceipt eventstore.LandingReceipt
+	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		originalReceipt, err = r.LandingReceipt(t.Context(), landingStart.Data.AttemptID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if originalReceipt.VersionID != nextVersion.ID || originalReceipt.MergeSHA != mergeSHA {
+		t.Fatalf("original landing receipt = %+v", originalReceipt)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*tracker.NativeLandingReceipt)
+	}{
+		{"method", func(l *tracker.NativeLandingReceipt) { l.Method = "merge" }},
+		{"merge commit", func(l *tracker.NativeLandingReceipt) { l.MergeSHA = strings.Repeat("e", 40) }},
+		{"base ref", func(l *tracker.NativeLandingReceipt) { l.BaseRef = "develop" }},
+		{"version", func(l *tracker.NativeLandingReceipt) { l.VersionID, l.HeadSHA = version.ID, version.HeadSHA }},
+	} {
+		claim := landedClaim
+		test.edit(&claim)
+		if response := performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, landingEvent("recorded other "+test.name, 3, claim)); response.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("landed claim with another %s: status=%d body=%s", test.name, response.Code, response.Body.String())
+		}
+	}
+	for sequence := int64(3); sequence <= 4; sequence++ {
+		requireStep("run event", fmt.Sprintf("landing-recorded-%d", sequence), sequence, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, landingEvent(fmt.Sprintf("landing-recorded-%d", sequence), sequence, landedClaim)))
+	}
+	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+		attempt, err := r.Attempt(t.Context(), landingStart.Data.AttemptID)
+		if err == nil && attempt.Sequence != 4 {
+			t.Fatalf("refused landing claims consumed the attempt sequence: %+v", attempt)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	landingRows := func() (rows [5]int64) {
+		t.Helper()
+		if err := admin.QueryRowContext(t.Context(), `SELECT
+ (SELECT count(*) FROM collaboration_events WHERE organization_id=$1),
+ (SELECT count(*) FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2),
+ (SELECT count(*) FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2),
+ (SELECT count(*) FROM cost_sources WHERE organization_id=$1),
+ (SELECT sequence FROM native_attempts WHERE organization_id=$1 AND id=$2)`, string(orgID), landingStart.Data.AttemptID).Scan(&rows[0], &rows[1], &rows[2], &rows[3], &rows[4]); err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	settled := landingRows()
+	requireUnchanged := func(name string) {
+		t.Helper()
+		if rows := landingRows(); rows != settled {
+			t.Fatalf("%s changed history, attempt receipts, token usage, costs or sequence: before=%v after=%v", name, settled, rows)
+		}
+	}
+	otherMethod := landedClaim
+	otherMethod.Method = "merge"
+	validPrefix := landingEvent("landing-batch-prefix", 5, landedClaim)
+	refusedBatch := landingEvent("landing-batch-other-method", 6, otherMethod)
+	refusedBatch.PriorEvents = []tracker.NativeRunEvent{validPrefix}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, refusedBatch), http.StatusUnprocessableEntity)
+	requireUnchanged("valid landed prefix with another method suffix")
+	var canonical eventstore.Change
+	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		canonical, err = r.Change(t.Context(), change.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	details.mu.Lock()
+	canonicalPayload := details.data[canonical.PayloadObjectKey]
+	delete(details.data, canonical.PayloadObjectKey)
+	details.mu.Unlock()
+	if canonicalPayload == nil {
+		t.Fatal("canonical Change payload is not in the fixture detail store")
+	}
+	missingResponse := performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, landingEvent("landing-missing-payload", 5, landedClaim))
+	var missingFailure struct{ Code string }
+	requireNativeStatus(t, missingResponse, http.StatusInternalServerError)
+	decodeHubResponse(t, missingResponse, &missingFailure)
+	if missingFailure.Code != "native_operation_failed" {
+		t.Fatalf("landed claim without its canonical Change payload = %s", missingResponse.Body.String())
+	}
+	details.mu.Lock()
+	details.data[canonical.PayloadObjectKey] = canonicalPayload
+	details.mu.Unlock()
+	requireUnchanged("missing canonical Change payload")
+	moved := false
+	details.afterStore = func(attachment.ArchiveReference) {
+		if moved {
+			return
+		}
+		moved = true
+		content := eventstore.NewContent(details)
+		current, err := content.Change(t.Context(), canonical)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		current.Revision++
+		current.UpdatedAt = current.UpdatedAt.Add(time.Microsecond)
+		raw, err := json.Marshal(current)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		record, err := content.PrepareChange(t.Context(), orgID, raw)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		record.Revision = canonical.Revision
+		if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.UpdateChange(t.Context(), record)
+			return err
+		}); err != nil {
+			t.Error(err)
+		}
+	}
+	movedClaim := landingEvent("landing-moved-payload", 5, landedClaim)
+	movedResponse := performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, movedClaim)
+	details.afterStore = nil
+	if !moved {
+		t.Fatal("canonical Change payload did not move during the landed claim")
+	}
+	var unavailable struct{ Code string }
+	requireNativeStatus(t, movedResponse, http.StatusServiceUnavailable)
+	decodeHubResponse(t, movedResponse, &unavailable)
+	if unavailable.Code != "service_unavailable" {
+		t.Fatalf("moved canonical Change payload refusal = %s", movedResponse.Body.String())
+	}
+	requireUnchanged("canonical Change payload moved after its proof was read")
+	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.Change(t.Context(), change.ID)
+		if err != nil {
+			return err
+		}
+		if current.Revision != canonical.Revision+1 || current.PayloadSHA256 == canonical.PayloadSHA256 || current.LandedMergeSHA == nil || *current.LandedMergeSHA != mergeSHA {
+			t.Fatalf("canonical Change payload did not move with its landing intact: before=%+v after=%+v", canonical, current)
+		}
+		if _, err := r.Receipt(t.Context(), workerID, "POST "+eventsPath, movedClaim.IdempotencyKey); !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("refused landed claim retained a command receipt: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requireStep("run event", movedClaim.IdempotencyKey, movedClaim.Data.Sequence, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, movedClaim))
+	var echoes []tracker.NativeRunEvent
+	for sequence := int64(6); sequence < 13; sequence++ {
+		echoes = append(echoes, landingEvent(fmt.Sprintf("landing-full-batch-%d", sequence), sequence, landedClaim))
+	}
+	fullBatch := landingEvent("landing-full-batch", 13, landedClaim)
+	fullBatch.PriorEvents = echoes
+	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		canonical, err = r.Change(t.Context(), change.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	canonicalReads := func(reset map[string]int) int {
+		details.mu.Lock()
+		defer details.mu.Unlock()
+		count := details.keyReads[canonical.PayloadObjectKey]
+		details.keyReads = reset
+		return count
+	}
+	service.workerCancel()
+	<-service.workerDone
+	<-service.secretRewrapDone
+	t.Cleanup(func() {
+		details.mu.Lock()
+		details.keyReads = nil
+		details.mu.Unlock()
+	})
+	canonicalReads(map[string]int{})
+	requireStep("run event batch", fullBatch.IdempotencyKey, fullBatch.Data.Sequence, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, fullBatch))
+	if reads := canonicalReads(map[string]int{}); reads != 1 {
+		t.Fatalf("eight landed echoes read the canonical Change payload %d times", reads)
+	}
+	settled = landingRows()
+	if settled[4] != 13 {
+		t.Fatalf("eight landed echoes left the attempt at sequence %d", settled[4])
+	}
+	echoes = nil
+	for sequence := int64(14); sequence < 22; sequence++ {
+		echoes = append(echoes, landingEvent(fmt.Sprintf("landing-overfull-batch-%d", sequence), sequence, landedClaim))
+	}
+	overfullBatch := landingEvent("landing-overfull-batch", 22, landedClaim)
+	overfullBatch.PriorEvents = echoes
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, overfullBatch), http.StatusUnprocessableEntity)
+	if reads := canonicalReads(nil); reads != 0 {
+		t.Fatalf("nine landed echoes read the canonical Change payload %d times before refusal", reads)
+	}
+	requireUnchanged("nine landed echoes in one request")
 	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
 		stored, err := r.LandingReceipt(t.Context(), landingStart.Data.AttemptID)
 		if err != nil {
@@ -1762,4 +2027,107 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}); err != nil {
 		t.Fatal(err)
 	}
+	laterInput := changeTestInput()
+	laterInput.AttemptID, laterInput.RunID = landingStart.Data.AttemptID, landingStart.Data.RunID
+	laterBundle := changeTestSource(t, &laterInput)
+	laterRequest := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-after-landing", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, ExpectedVersionID: nextVersion.ID, ChangeVersionInput: laterInput, SourceBundle: laterBundle}
+	laterDiff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: landingStart.Data.AttemptID, RunnerID: runnerID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: laterInput.BaseSHA, HeadSHA: laterInput.HeadSHA}
+	if response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/attempts/"+landingStart.Data.AttemptID+"/diff", workerToken, laterDiff); response.Code != http.StatusAccepted {
+		var refusal struct{ Code string }
+		_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+		t.Fatalf("attempt diff for the landing attempt: status = %d, want 202, code=%s", response.Code, refusal.Code)
+	}
+	laterResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, laterRequest)
+	requireStep("publish version", laterRequest.IdempotencyKey, 0, laterResponse)
+	var laterVersion tracker.ChangeVersion
+	decodeHubResponse(t, laterResponse, &laterVersion)
+	if laterVersion.ID == nextVersion.ID {
+		t.Fatalf("later immutable version = %+v", laterVersion)
+	}
+	laterEcho := landingEvent("landing-after-later-version", 14, landedClaim)
+	requireStep("run event", laterEcho.IdempotencyKey, laterEcho.Data.Sequence, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, laterEcho))
+	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.Change(t.Context(), change.ID)
+		if err != nil {
+			return err
+		}
+		if current.CurrentVersionID == nil || *current.CurrentVersionID != laterVersion.ID || current.LandedVersionID == nil || *current.LandedVersionID != nextVersion.ID || current.LandedHeadSHA == nil || *current.LandedHeadSHA != nextVersion.HeadSHA || current.LandedMergeSHA == nil || *current.LandedMergeSHA != mergeSHA || current.LandedBaseRef == nil || *current.LandedBaseRef != "main" {
+			t.Fatalf("later version changed the recorded landing: %+v", current)
+		}
+		stored, err := r.LandingReceipt(t.Context(), landingStart.Data.AttemptID)
+		if err != nil {
+			return err
+		}
+		if stored.VersionID != nextVersion.ID || stored.MergeSHA != mergeSHA || stored != originalReceipt {
+			t.Fatalf("later version changed the landing receipt: before=%+v after=%+v", originalReceipt, stored)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requireLanding := func(name, attemptID string, sequence int64) {
+		t.Helper()
+		if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+			attempt, err := r.Attempt(t.Context(), attemptID)
+			if err != nil {
+				return err
+			}
+			if attempt.Status != "cancelled" || attempt.Sequence != sequence {
+				t.Fatalf("%s: attempt status=%s sequence=%d, want cancelled at %d", name, attempt.Status, attempt.Sequence, sequence)
+			}
+			current, err := r.Change(t.Context(), change.ID)
+			if err != nil {
+				return err
+			}
+			if current.CurrentVersionID == nil || *current.CurrentVersionID != laterVersion.ID || current.LandedVersionID == nil || *current.LandedVersionID != nextVersion.ID || current.LandedHeadSHA == nil || *current.LandedHeadSHA != nextVersion.HeadSHA || current.LandedMergeSHA == nil || *current.LandedMergeSHA != mergeSHA || current.LandedBaseRef == nil || *current.LandedBaseRef != "main" {
+				t.Fatalf("%s changed the recorded landing or current version: %+v", name, current)
+			}
+			stored, err := r.LandingReceipt(t.Context(), landingStart.Data.AttemptID)
+			if err != nil {
+				return err
+			}
+			if stored.VersionID != nextVersion.ID || stored.MergeSHA != mergeSHA || stored != originalReceipt {
+				t.Fatalf("%s changed the original landing receipt: before=%+v after=%+v", name, originalReceipt, stored)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+lease.LeaseID+"/release", workerToken, tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(lease.FencingToken), Reason: "cancelled", CancelAttempt: true}); response.Code != http.StatusNoContent {
+		var refusal struct{ Code string }
+		_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+		t.Fatalf("release lease landing lease after landed echo at sequence 15: status = %d, want 204, code=%s", response.Code, refusal.Code)
+	}
+	requireLanding("worker release after landed echo", landingStart.Data.AttemptID, 15)
+	var cancelLease leasestore.Lease
+	var cancelRevision tracker.Revision
+	if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
+		workItem, err := w.WorkItem(t.Context(), projectID, item.WorkItemID)
+		if err != nil {
+			return err
+		}
+		cancelRevision = tracker.Revision(workItem.Revision)
+		cancelLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "cancel-session", LeaseID: newNativeID("lease"), TTL: time.Hour})
+		if err != nil {
+			return err
+		}
+		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: orgID, LeaseID: cancelLease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
+			return err
+		}
+		return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: orgID, ProjectID: projectID, LeaseID: tracker.LeaseID(cancelLease.LeaseID), PolicyID: descriptor.ID, BoundAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cancelStart := landingStart
+	cancelStart.IdempotencyKey = "cancel-run-start"
+	cancelStart.Data.AttemptID, cancelStart.Data.RunID = newNativeID("attempt"), newNativeID("run")
+	cancelStart.Data.LeaseID, cancelStart.Data.FencingToken = tracker.LeaseID(cancelLease.LeaseID), tracker.FencingToken(cancelLease.FencingToken)
+	requireStep("run event", cancelStart.IdempotencyKey, 1, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, cancelStart))
+	cancelEcho := cancelStart
+	cancelEcho.Type, cancelEcho.IdempotencyKey, cancelEcho.Data.Sequence = "run.observed", "cancel-run-landed-echo", 2
+	cancelEcho.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: service.config.now().UTC(), Landing: &landedClaim}
+	requireStep("run event", cancelEcho.IdempotencyKey, 2, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, cancelEcho))
+	requireStep("workflow transition", "landed-echo-operator-cancel", 0, f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "landed-echo-operator-cancel", LeaseID: tracker.LeaseID(cancelLease.LeaseID), FencingToken: tracker.FencingToken(cancelLease.FencingToken)}, ExpectedRevision: cancelRevision, State: "Cancelled", Reason: "user_requested"}))
+	requireLanding("operator cancel after landed echo", cancelStart.Data.AttemptID, 3)
 }

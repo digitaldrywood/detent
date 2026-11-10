@@ -44,6 +44,7 @@ type memoryRunDetails struct {
 	fail        bool
 	uploads     int
 	reads       int
+	keyReads    map[string]int
 	writerReads int
 	afterStore  func(attachment.ArchiveReference)
 	beforeRead  func(context.Context) error
@@ -86,6 +87,9 @@ func (m *memoryRunDetails) ReadDetail(ctx context.Context, organization string, 
 		return nil, attachment.ErrInvalid
 	}
 	m.reads++
+	if m.keyReads != nil {
+		m.keyReads[ref.Key]++
+	}
 	if claimWriting(ctx) {
 		m.writerReads++
 		return nil, errors.New("detail read while claim writer is held")
