@@ -665,3 +665,12 @@ func (s *session) UpdateOrganizationLogo(ctx context.Context, logo accessstore.L
 	}
 	return err
 }
+
+func (s *session) LatestAccessSessionCreatedAt(ctx context.Context) (*time.Time, error) {
+	var created time.Time
+	if err := s.db.QueryRow(ctx, `SELECT created_at FROM hosted_sessions WHERE organization_id=$1 ORDER BY created_at DESC,token_hash DESC LIMIT 1`, s.organization).Scan(&created); err != nil {
+		return nil, mapError(ctx, err)
+	}
+	created = created.UTC()
+	return &created, nil
+}

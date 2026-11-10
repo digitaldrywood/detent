@@ -241,6 +241,7 @@ type ProjectAccessCleaner interface {
 }
 
 type Reader interface {
+	LatestAccessSessionCreatedAt(context.Context) (*time.Time, error)
 	AccessPublicNames(context.Context, []string) (map[string]string, error)
 	OperatorSession(context.Context, string, time.Time) (OperatorSession, error)
 	AccessCredentialHasMember(context.Context, string) (bool, error)

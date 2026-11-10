@@ -863,3 +863,13 @@ func replayEventActor(requested, previous eventstore.Event) eventstore.Event {
 	}
 	return requested
 }
+
+func (s *session) LatestEventRecordedAt(ctx context.Context) (*time.Time, error) {
+	var recorded time.Time
+	err := s.db.QueryRow(ctx, `SELECT recorded_at FROM collaboration_events WHERE organization_id=$1 ORDER BY recorded_at DESC,id DESC LIMIT 1`, s.organization).Scan(&recorded)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	recorded = recorded.UTC()
+	return &recorded, nil
+}

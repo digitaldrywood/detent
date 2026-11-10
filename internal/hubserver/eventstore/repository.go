@@ -258,6 +258,7 @@ type LinkedSource struct {
 type Receipt = receiptstore.Record
 
 type Reader interface {
+	LatestEventRecordedAt(context.Context) (*time.Time, error)
 	HistoryReader
 	PRPublication(context.Context, string) (NativePRPublication, error)
 	ReleaseDelivery(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (ReleaseDelivery, error)

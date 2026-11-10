@@ -774,7 +774,6 @@ func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (oper
 		return operatorBillingUsageReport{}, err
 	}
 	out := operatorBillingUsageReport{hostedBillingReport: report, PlanID: report.Entitlement.EffectiveBase.ID, StorageQuotaBytes: report.Entitlement.Allowances["collaboration_bytes"], EventQuota: report.Entitlement.Allowances["ingested_events"]}
-	out.UnavailableUsage = append(out.UnavailableUsage, "events", "last_activity")
 	out.CostDrivers.WindowEndsAt, out.CostDrivers.OperatorAI = report.Entitlement.WindowEndsAt, report.ChatUsage
 	if report.ChatUsage.UnpricedTurns == 0 {
 		out.CostDrivers.OperatorAICostUSD = &out.ChatUsage.CostUSD
@@ -806,7 +805,11 @@ func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (oper
 			*metric.value = &used
 		}
 	}
-	err = s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Serving, func(reader tenantstore.Reader) error {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return operatorBillingUsageReport{}, ErrBillingUsageUnavailable
+	}
+	err = repository.ReadTenantSnapshot(ctx, s.accessOrganization(), corestore.Serving, func(reader tenantstore.Reader) error {
 		tenant, err := reader.AccessTenant(ctx)
 		if err != nil {
 			return err
@@ -857,6 +860,28 @@ func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (oper
 			} else if !slices.Contains(out.UnavailableUsage, field.name) {
 				out.UnavailableUsage = append(out.UnavailableUsage, field.name)
 			}
+		}
+
+		count, known, err := populations.BillingPopulation(ctx, "retained_collaboration_events", now, 0)
+		if err != nil {
+			return err
+		}
+		if known {
+			out.Events = &count
+		} else if !slices.Contains(out.UnavailableUsage, "events") {
+			out.UnavailableUsage = append(out.UnavailableUsage, "events")
+		}
+		eventAt, err := reader.LatestEventRecordedAt(ctx)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		sessionAt, err := reader.LatestAccessSessionCreatedAt(ctx)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		out.LastActivity = eventAt
+		if sessionAt != nil && (out.LastActivity == nil || sessionAt.After(*out.LastActivity)) {
+			out.LastActivity = sessionAt
 		}
 
 		return nil

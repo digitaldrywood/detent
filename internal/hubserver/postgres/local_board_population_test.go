@@ -4,17 +4,257 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestLocalBoardBillingActivityIndexesRecoverInterruptedBuild(t *testing.T) {
+	const version = 20261110042737
+	const name = "20261110042737_billing_activity_timestamp_indexes.sql"
+	admin, _ := migrationDatabaseAtVersion(t, version-1)
+	admin.SetMaxOpenConns(1)
+	admin.SetMaxIdleConns(1)
+	body, err := os.ReadFile("migrations/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := strings.Replace(string(body), "DROP INDEX CONCURRENTLY IF EXISTS hosted_sessions_tenant_created_idx;", "SELECT 1/0;\nDROP INDEX CONCURRENTLY IF EXISTS hosted_sessions_tenant_created_idx;", 1)
+	interrupted, err := goose.NewProvider(goose.DialectPostgres, admin, postgres.RoleMigrations(fstest.MapFS{name: &fstest.MapFile{Data: []byte(broken)}}), goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := interrupted.UpTo(t.Context(), version); err == nil || !strings.Contains(err.Error(), "division by zero") {
+		t.Fatalf("index interruption=%v", err)
+	}
+	var first, second bool
+	if err := admin.QueryRowContext(t.Context(), `SELECT to_regclass('collaboration_events_tenant_recorded_idx') IS NOT NULL,to_regclass('hosted_sessions_tenant_created_idx') IS NOT NULL`).Scan(&first, &second); err != nil || !first || second {
+		t.Fatalf("interrupted index artifacts=%t/%t: %v", first, second, err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `CREATE TABLE fixture_activity_index_retry(value integer); INSERT INTO fixture_activity_index_retry VALUES(1),(1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `CREATE UNIQUE INDEX CONCURRENTLY hosted_sessions_tenant_created_idx ON fixture_activity_index_retry(value)`); err == nil {
+		t.Fatal("invalid index fixture did not fail")
+	}
+	provider, err := migrationProvider(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(t.Context(), version); err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []struct{ name, table string }{
+		{"collaboration_events_tenant_recorded_idx", "collaboration_events"}, {"hosted_sessions_tenant_created_idx", "hosted_sessions"},
+	} {
+		var ready bool
+		var relation string
+		if err := admin.QueryRowContext(t.Context(), `SELECT indisvalid AND indisready,indrelid::regclass::text FROM pg_index WHERE indexrelid=to_regclass($1)`, index.name).Scan(&ready, &relation); err != nil || !ready || relation != index.table {
+			t.Fatalf("recovered %s ready=%t source=%s: %v", index.name, ready, relation, err)
+		}
+	}
+}
+
+func TestLocalBoardRetainedEventsInitializeSnapshotDelta(t *testing.T) {
+	const activationVersion = 20261110042748
+	const initializationVersion = 20261110042758
+	admin, fixture := migrationDatabaseAtVersion(t, 20261110042736)
+	seedCore(t, admin)
+	insert := `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,schema_version,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+VALUES($1,'prj_shared','wi_shared',$2,$3,1,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1)`
+	for index, org := range []string{"org_first", "org_second"} {
+		for n := 0; n <= index; n++ {
+			if _, err := admin.ExecContext(t.Context(), insert, org, fmt.Sprintf("before_%d", n), n+1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'retained_collaboration_events',999)`, org); err != nil {
+			t.Fatal(err)
+		}
+	}
+	admin.SetMaxOpenConns(1)
+	admin.SetMaxIdleConns(1)
+	provider, err := migrationProvider(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(t.Context(), activationVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `RESET ROLE`); err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []string{"org_first", "org_second"} {
+		var value int64
+		var ready bool
+		if err := admin.QueryRowContext(t.Context(), `SELECT value,initialized FROM hosted_usage_counters WHERE organization_id=$1 AND name='retained_collaboration_events'`, org).Scan(&value, &ready); err != nil || value != 0 || ready {
+			t.Fatalf("activation trusted old generic counter %s=%d/%t: %v", org, value, ready, err)
+		}
+	}
+	var database string
+	if err := admin.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&database); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `ALTER DATABASE `+pgx.Identifier{database}.Sanitize()+` CONNECTION LIMIT 10`); err != nil {
+		t.Fatal(err)
+	}
+	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	admin.SetMaxIdleConns(1)
+	listener, err := pgx.ConnectConfig(t.Context(), pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		deadline, _ := t.Deadline()
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		if err := listener.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := listener.Exec(t.Context(), `LISTEN retained_event_snapshot`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION reject_retained_initialization() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.name='retained_collaboration_events' AND NEW.organization_id='org_second' AND NEW.initialized AND NOT OLD.initialized THEN RAISE EXCEPTION 'injected retained publication failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_retained_initialization BEFORE UPDATE ON hosted_usage_counters FOR EACH ROW EXECUTE FUNCTION reject_retained_initialization()`); err != nil {
+		t.Fatal(err)
+	}
+	pending := map[string]pgx.Tx{}
+	var done chan error
+	joined := false
+	defer func() {
+		deadline, _ := t.Deadline()
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		for _, tx := range pending {
+			if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+				t.Error(err)
+			}
+		}
+		if done != nil && !joined {
+			<-done
+		}
+	}()
+	for _, org := range []string{"org_first", "org_second"} {
+		tx, err := pool.Begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending[org] = tx
+		if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, org); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(t.Context(), insert, org, "during_snapshot", 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	source := os.DirFS("migrations")
+	files, err := fs.Glob(source, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := fstest.MapFS{}
+	for _, name := range files {
+		data, err := fs.ReadFile(source, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == "20261110042758_initialize_retained_event_population.sql" {
+			needle := "IF baseline IS NULL THEN RAISE EXCEPTION 'retained event population baseline unavailable'; END IF;\n  COMMIT;"
+			if strings.Count(string(data), needle) != 1 {
+				t.Fatal("missing baseline publication boundary")
+			}
+			data = []byte(strings.Replace(string(data), needle, needle+"\n  PERFORM pg_notify('retained_event_snapshot',org);\n  COMMIT;", 1))
+		}
+		overlay[name] = &fstest.MapFile{Data: data}
+	}
+	interleaved, err := goose.NewProvider(goose.DialectPostgres, admin, postgres.RoleMigrations(overlay), goose.WithGoMigrations(postgres.ConversationMigrations(overlay)...), goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
+		t.Fatal(err)
+	}
+	var current string
+	var superuser bool
+	if err := admin.QueryRowContext(t.Context(), `SELECT current_user,rolsuper FROM pg_roles WHERE rolname=current_user`).Scan(&current, &superuser); err != nil || current != postgres.MigrationRoleName || superuser {
+		t.Fatalf("initializer role=%s superuser=%t error=%v", current, superuser, err)
+	}
+	notifyContext, stopNotifications := context.WithCancel(t.Context())
+	defer stopNotifications()
+	done = make(chan error, 1)
+	go func() {
+		_, err := interleaved.UpTo(t.Context(), initializationVersion)
+		done <- err
+		stopNotifications()
+	}()
+
+	for _, org := range []string{"org_first", "org_second"} {
+		notification, err := listener.WaitForNotification(notifyContext)
+		if err != nil {
+			initializationError := <-done
+			joined = true
+			t.Fatalf("snapshot notification=%v, initializer=%v", err, initializationError)
+		}
+		if notification.Payload != org {
+			t.Fatalf("snapshot order=%s, want%s", notification.Payload, org)
+		}
+		if err := pending[org].Commit(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = <-done
+	joined = true
+	if err == nil || !strings.Contains(err.Error(), "injected retained publication failure") {
+		t.Fatalf("initializer interruption=%v", err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `RESET ROLE; DROP TRIGGER reject_retained_initialization ON hosted_usage_counters; DROP FUNCTION reject_retained_initialization()`); err != nil {
+		t.Fatal(err)
+	}
+	for index, org := range []string{"org_first", "org_second"} {
+		var value, history int64
+		var ready bool
+		if err := admin.QueryRowContext(t.Context(), `SELECT c.value,c.initialized,h.value FROM hosted_usage_counters c JOIN hosted_usage_counters h USING(organization_id) WHERE c.organization_id=$1 AND c.name='retained_collaboration_events' AND h.name='history_records'`, org).Scan(&value, &ready, &history); err != nil || ready != (index == 0) || value != int64(2-index) || history != int64(index+2) {
+			t.Fatalf("interrupted %s=%d/%t history%d error%v", org, value, ready, history, err)
+		}
+		if _, err := admin.ExecContext(t.Context(), insert, org, "after_interruption", 101); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(t.Context(), initializationVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `RESET ROLE`); err != nil {
+		t.Fatal(err)
+	}
+	for index, org := range []string{"org_first", "org_second"} {
+		var value, history int64
+		var ready bool
+		if err := admin.QueryRowContext(t.Context(), `SELECT c.value,c.initialized,h.value FROM hosted_usage_counters c JOIN hosted_usage_counters h USING(organization_id) WHERE c.organization_id=$1 AND c.name='retained_collaboration_events' AND h.name='history_records'`, org).Scan(&value, &ready, &history); err != nil || !ready || value != int64(index+3) || history != value {
+			t.Fatalf("resumed %s=%d/%t history%d error%v", org, value, ready, history, err)
+		}
+	}
+}
 
 func TestLocalBoardPopulationResumesWithoutLosingConcurrentSource(t *testing.T) {
 	admin, fixture := migrationDatabaseAtVersion(t, 20261109030623)
@@ -250,6 +490,10 @@ FROM issues CROSS JOIN generate_series(1,2) n`, 40, 2, "23505"},
 				var history, writes int64
 				if err := admin.QueryRowContext(t.Context(), `SELECT c.value,u.writes FROM hosted_usage_counters c JOIN fixture_history_counter_updates u USING(organization_id) WHERE c.organization_id=$1 AND c.name='history_records'`, org).Scan(&history, &writes); err != nil {
 					t.Fatal(err)
+				}
+				var retained int64
+				if err := admin.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='retained_collaboration_events'`, org).Scan(&retained); err != nil || retained != 20 {
+					t.Fatalf("retained batch count=%d error=%v", retained, err)
 				}
 				if history != test.history || writes != test.writes {
 					t.Errorf("%s history=%d counter writes=%d, want %d/%d", org, history, writes, test.history, test.writes)

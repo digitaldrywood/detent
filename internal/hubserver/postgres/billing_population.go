@@ -2,12 +2,33 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 )
 
 func (s *session) BillingPopulation(ctx context.Context, metric string, now time.Time, connected time.Duration) (int64, bool, error) {
+	if metric == "retained_collaboration_events" {
+		var count int64
+		var initialized bool
+		err := s.db.QueryRow(ctx, `SELECT value,initialized FROM hosted_usage_counters WHERE organization_id=$1 AND name='retained_collaboration_events'`, s.organization).Scan(&count, &initialized)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		if err != nil {
+			return 0, false, mapError(ctx, err)
+		}
+		if !initialized {
+			return 0, false, nil
+		}
+		if count < 0 {
+			return 0, false, errors.New("retained event population is negative")
+		}
+		return count, true, nil
+	}
 	const limit = 10001
 	statements := map[string]string{
 		"active_members": `WITH candidates AS MATERIALIZED (SELECT active FROM hosted_members WHERE organization_id=$1 ORDER BY user_id LIMIT $3)

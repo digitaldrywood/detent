@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	hubpostgres "github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -33,12 +34,20 @@ type operatorBillingUsageReadRepository struct {
 	accountError error
 	reads        int
 	issueReads   int
+	snapshots    int
 	projectReads int
 	known        *bool
 }
 
 func (r *operatorBillingUsageReadRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(operatorBillingUsageReader{Reader: reader, repository: r})
+	})
+}
+
+func (r *operatorBillingUsageReadRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	r.snapshots++
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
 		return read(operatorBillingUsageReader{Reader: reader, repository: r})
 	})
 }
@@ -60,7 +69,7 @@ func (r operatorBillingUsageReader) BillingPopulation(ctx context.Context, metri
 	if metric == "projects" {
 		r.repository.projectReads++
 	}
-	if r.repository.known != nil && (metric == "active_members" || metric == "unremoved_runners" || metric == "projects") {
+	if r.repository.known != nil && (metric == "active_members" || metric == "unremoved_runners" || metric == "projects" || metric == "retained_collaboration_events") {
 		return 0, *r.repository.known, nil
 	}
 
@@ -69,6 +78,19 @@ func (r operatorBillingUsageReader) BillingPopulation(ctx context.Context, metri
 		return 0, false, ErrBillingUsageUnavailable
 	}
 	return owner.BillingPopulation(ctx, metric, now, connected)
+}
+
+func (r operatorBillingUsageReader) LatestEventRecordedAt(ctx context.Context) (*time.Time, error) {
+	if r.repository.known != nil {
+		return nil, corestore.ErrNotFound
+	}
+	return r.Reader.LatestEventRecordedAt(ctx)
+}
+func (r operatorBillingUsageReader) LatestAccessSessionCreatedAt(ctx context.Context) (*time.Time, error) {
+	if r.repository.known != nil {
+		return nil, corestore.ErrNotFound
+	}
+	return r.Reader.LatestAccessSessionCreatedAt(ctx)
 }
 
 func (r operatorBillingUsageReader) BillingIssuePopulation(ctx context.Context) (int64, int64, bool, error) {
@@ -112,6 +134,19 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 				row, err := w.WorkItem(t.Context(), f.project, id)
 				if err != nil {
 					return err
+				}
+				if number == 1 {
+					for n := 0; n < index+2; n++ {
+						event := eventstore.Event{OrganizationID: organization, ProjectID: f.project, WorkItemID: id, ID: fmt.Sprintf("billing_%s_%d", organization, n), Sequence: int64(100 + n), Type: "issue.edited", SchemaVersion: 1, ActorKind: "human", ActorPrincipalID: "example", RecordedAt: now.Add(time.Hour - time.Duration(index)*2*time.Hour), HistoryHidden: n == 0, PayloadObjectKey: "orgs/" + string(organization) + "/blobs/sha256/aa/" + strings.Repeat("a", 64), PayloadSHA256: strings.Repeat("a", 64), PayloadBytes: 1, PayloadContentBytes: 1}
+						if _, err := w.AppendEvent(t.Context(), event); err != nil {
+							return err
+						}
+					}
+					created := now.Add(-2*time.Hour + time.Duration(index)*4*time.Hour)
+					session := accessstore.Session{OrganizationID: organization, Hash: "billing_" + string(organization), Subject: "example", CreatedAt: created, ExpiresAt: created.Add(time.Hour), IdentityCreatedAt: created, IdentityExpiresAt: created.Add(time.Hour)}
+					if err := w.CreateAccessSession(t.Context(), session); err != nil {
+						return err
+					}
 				}
 				row.Archived = number > 2+index
 				if number == 1 {
@@ -219,8 +254,8 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 					t.Fatalf("supported %s count=%v, want%d: %s", name, value, 2+index, raw)
 				}
 			}
-			if usage.Events != nil || usage.LastActivity != nil || !slices.Contains(usage.UnavailableUsage, "events") || !slices.Contains(usage.UnavailableUsage, "last_activity") {
-				t.Fatalf("missing semantic owner became fabricated metadata: %s", raw)
+			if usage.Events == nil || *usage.Events != int64(index+2) || usage.LastActivity == nil || !usage.LastActivity.Equal(now.Add(time.Duration(index+1)*time.Hour)) || slices.Contains(usage.UnavailableUsage, "events") || slices.Contains(usage.UnavailableUsage, "last_activity") {
+				t.Fatalf("retained events/activity missing or crossed tenant: %s", raw)
 			}
 			if value, known := usage.Entitlement.Usage["members"]; known && value != int64(3+index) {
 				t.Fatalf("member quota lost reserved seat: %s", raw)
@@ -292,6 +327,9 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 				if probe.projectReads != callIndex+1 {
 					t.Fatalf("project population reads=%d, want%d", probe.projectReads, callIndex+1)
 				}
+				if probe.snapshots != callIndex+1 {
+					t.Fatalf("metadata snapshots=%d, want%d", probe.snapshots, callIndex+1)
+				}
 				if probe.issueReads != callIndex+1 {
 					t.Fatalf("population scans=%d, want%d", probe.issueReads, callIndex+1)
 				}
@@ -301,11 +339,13 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 				}
 				var result struct {
 					Usage struct {
-						Members     *int64   `json:"members"`
-						Projects    *int64   `json:"projects"`
-						Runners     *int64   `json:"runners"`
-						Unavailable []string `json:"unavailable_usage"`
-						CostDrivers struct {
+						Members      *int64     `json:"members"`
+						Projects     *int64     `json:"projects"`
+						Runners      *int64     `json:"runners"`
+						Events       *int64     `json:"events"`
+						LastActivity *time.Time `json:"last_activity"`
+						Unavailable  []string   `json:"unavailable_usage"`
+						CostDrivers  struct {
 							ActiveIssues   *int64 `json:"active_issues"`
 							ArchivedIssues *int64 `json:"archived_issues"`
 						} `json:"cost_drivers"`
@@ -314,7 +354,10 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 				if err := json.Unmarshal(raw, &result); err != nil {
 					t.Fatal(err)
 				}
-				for name, value := range map[string]*int64{"members": result.Usage.Members, "projects": result.Usage.Projects, "runners": result.Usage.Runners} {
+				if result.Usage.LastActivity != nil || slices.Contains(result.Usage.Unavailable, "last_activity") {
+					t.Fatalf("empty activity was unavailable or invented: %s", raw)
+				}
+				for name, value := range map[string]*int64{"members": result.Usage.Members, "projects": result.Usage.Projects, "runners": result.Usage.Runners, "events": result.Usage.Events} {
 					if (value != nil) != known || value != nil && *value != 0 || !known && !slices.Contains(result.Usage.Unavailable, name) {
 						t.Fatalf("supported counter availability changed: known=%t name=%s value=%v", known, name, value)
 					}
@@ -489,15 +532,18 @@ SELECT CASE WHEN count(*)=$3 THEN $3 ELSE count(*) FILTER (WHERE active) END FRO
 			})
 		}
 	})
-	for _, missing := range []string{"tenant", "billing"} {
+	for _, missing := range []string{"tenant", "billing", "snapshot"} {
 		t.Run("missing_"+missing+"_owner", func(t *testing.T) {
 			probeService := operatorBillingUsageService(first.service, first.service.config.TenantRepository)
-			if missing == "tenant" {
+			switch missing {
+			case "tenant":
 				probeService.config.TenantRepository = nil
-			} else {
+			case "billing":
 				probeService.database.billingRepository = nil
+			default:
+				probeService.config.TenantRepository = struct{ tenantstore.Repository }{first.service.config.TenantRepository}
 			}
-			if _, err := probeService.hostedBillingReport(t.Context()); !errors.Is(err, ErrBillingUsageUnavailable) {
+			if _, err := probeService.operatorBillingUsage(t.Context(), now); !errors.Is(err, ErrBillingUsageUnavailable) {
 				t.Fatalf("missing typed owner error = %v", err)
 			}
 		})
