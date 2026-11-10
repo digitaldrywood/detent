@@ -387,7 +387,7 @@ func TestListHonoursGitignoreUnlessTheReaderAsksForIt(t *testing.T) {
 	for _, argv := range [][]string{{"init"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "Test"}} {
 		command := exec.CommandContext(t.Context(), "git", append([]string{"-C", worktree}, argv...)...)
 		if output, err := command.CombinedOutput(); err != nil {
-			t.Skipf("git %v: %v: %s", argv, err, output)
+			t.Fatalf("git %v: %v: %s", argv, err, output)
 		}
 	}
 	hidden, err := service.List(t.Context(), workspacesession.FilesRequest{})
@@ -547,7 +547,7 @@ func TestStatReportsWhetherGitIgnoresThePath(t *testing.T) {
 	}
 	command := exec.CommandContext(t.Context(), "git", "-C", worktree, "init", "-q")
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Skipf("git init: %v: %s", err, output)
+		t.Fatalf("git init: %v: %s", err, output)
 	}
 	tests := []struct {
 		name string
