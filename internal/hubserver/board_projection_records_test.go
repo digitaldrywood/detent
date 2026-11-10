@@ -216,6 +216,66 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	}
 	assertPage("org_first", 0)
 	assertPage("org_second", 33)
+	for _, test := range []struct {
+		name    string
+		pending bool
+	}{
+		{name: "drain settled fixture beyond one batch"},
+		{name: "drain materializes pending fixture row", pending: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service.localOrganization = "org_second"
+			if err := service.refreshBoardRecord(t.Context(), "org_second", viewstore.BoardCandidate{ProjectID: "example", WorkItemID: "wi_33"}, now); err != nil {
+				t.Fatal(err)
+			}
+			if test.pending {
+				if err := repository.WriteTenant(t.Context(), "org_second", corestore.Serving, func(w tenantstore.Writer) error {
+					row, err := w.BoardItem(t.Context(), "example", "wi_33")
+					if err != nil {
+						return err
+					}
+					row.Display.Ready = false
+					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !test.pending {
+				service.config.TenantRepository = settledBoardDrainRepository{Repository: repository}
+				defer func() { service.config.TenantRepository = repository }()
+			}
+			drainTestNativeBoard(t, service)
+			assertPage("org_first", 0)
+			assertPage("org_second", 34)
+			if err := repository.ReadTenant(t.Context(), "org_second", corestore.Serving, func(r tenantstore.Reader) error {
+				item, err := r.WorkItem(t.Context(), "example", "wi_33")
+				if err != nil {
+					return err
+				}
+				row, err := r.BoardItem(t.Context(), "example", item.NativeID)
+				if err != nil {
+					return err
+				}
+				if !row.Display.Ready || row.PageIssue == nil || row.ListIssue == nil || row.SourceRevision != item.Revision || row.SourceEventSequence != item.EventSequence {
+					t.Fatal("fixture drain left the expected board row unmaterialized or stale")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+type settledBoardDrainRepository struct {
+	tenantstore.Repository
+}
+
+func (r settledBoardDrainRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	if workload == corestore.Background {
+		return errors.New("settled fixture requested background maintenance")
+	}
+	return r.Repository.ReadTenant(ctx, organization, workload, read)
 }
 
 type boardHistoricalDetailStore struct {

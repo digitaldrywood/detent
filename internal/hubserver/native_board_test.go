@@ -21,6 +21,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -1055,13 +1058,57 @@ func normalizeTestDashboardWatermark(t *testing.T, before, after map[string]any)
 
 func drainTestNativeBoard(t *testing.T, service *Service) {
 	t.Helper()
+	organization := tracker.OrganizationID(service.appOrganizationID())
+	var current []tracker.NativeWorkItemID
 	for {
+		var candidate viewstore.BoardCandidate
+		var pending bool
+		err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			candidate, err = r.NextBoardCandidate(t.Context(), "", current...)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			item, err := r.WorkItem(t.Context(), candidate.ProjectID, candidate.WorkItemID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			expected := err == nil
+			project, err := r.Project(t.Context(), candidate.ProjectID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			expected = expected && err == nil && project.DeletedAt == nil && project.Profile == "native"
+			row, err := r.BoardItem(t.Context(), candidate.ProjectID, candidate.WorkItemID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				pending = expected || candidate.Required
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			pending = !expected || candidate.Required || !row.Display.Ready || row.PageIssue == nil || row.ListIssue == nil ||
+				row.SourceRevision != item.Revision || row.SourceEventSequence != item.EventSequence ||
+				row.SourceProjectRevision != project.ContentSettingsRevision || row.RefreshAfter != nil && !row.RefreshAfter.After(service.config.now())
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if candidate.WorkItemID == "" {
+			return
+		}
+		if !pending {
+			current = append(current, candidate.WorkItemID)
+			continue
+		}
 		if err := service.maintainBoardRecords(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if service.boardRefreshCursor == "" {
-			return
-		}
+		current = current[:0]
 	}
 }
 
