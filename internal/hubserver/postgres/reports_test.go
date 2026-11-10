@@ -28,7 +28,7 @@ import (
 
 func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 	const processEvidenceVersion = 20261109184650
-	admin, fixture := migrationDatabaseAtVersion(t, processEvidenceVersion)
+	admin, fixture := migrationDatabaseAtVersion(t, 20261109182156)
 	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
 	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
 	if err != nil {
@@ -114,12 +114,29 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			return err
 		}
 		for _, event := range append(events, runEvent) {
+			event.Report = nil
 			if _, err := w.AppendEvent(ctx, event); err != nil {
 				return err
 			}
 		}
 		return nil
 	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range append(events, runEvent) {
+		if event.Report == nil {
+			continue
+		}
+		p := event.Report
+		if _, err := admin.ExecContext(ctx, `INSERT INTO report_event_facts
+(organization_id,event_id,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, organization, event.ID, p.RunSequence, p.RunStatus, p.Role, p.Model, p.Effort, p.Failed, p.FailureClass, p.FailureKind, p.LandingReceipt, p.Landed, p.LandingChangeID, p.ReworkClass, p.ReworkKind, p.DurationSeconds); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := admin.ExecContext(ctx, `INSERT INTO report_attempt_facts
+(organization_id,attempt_id,first_event_id,latest_event_id,outcome_event_id)
+VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,7 +147,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 	if _, err := admin.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(ctx, 20261109180410); err != nil {
+	if _, err := provider.UpTo(ctx, processEvidenceVersion); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.Up(ctx); err != nil {

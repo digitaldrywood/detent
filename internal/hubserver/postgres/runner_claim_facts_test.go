@@ -38,6 +38,9 @@ func TestRunnerClaimFactsUpgradeRetainsUnresolvedTenantAttempts(t *testing.T) {
 	if _, err := provider.UpTo(t.Context(), 20261109092607); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.ExecContext(t.Context(), `RESET ROLE`); err != nil {
 		t.Fatal(err)
 	}
