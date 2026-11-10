@@ -246,9 +246,19 @@ func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
 	scope := <-contexts
 	scope.organization, scope.project = "org_security", v.project
 	drainTestNativeBoard(t, v.service)
-	frame, err := readNativeBoardFrame(t.Context(), v.service.database.reader, scope, 0)
-	if err != nil {
+	subscription := &dashboardSubscription{initial: true, params: url.Values{}, frames: make(chan dashboardFrame, 1), done: make(chan struct{})}
+	delivery := &dashboardDelivery{config: dashboardDeliveryConfig{pageSize: 100}}
+	if _, err := v.service.dashboardBoardRecordPage(t.Context(), delivery, subscription, scope); err != nil {
 		t.Fatal(err)
+	}
+	var frame tracker.NativeBoardFrame
+	select {
+	case result := <-subscription.frames:
+		if err := json.Unmarshal([]byte(result.data), &frame); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("reporter board frame was not delivered")
 	}
 	raw, err := json.Marshal(frame)
 	if err != nil {

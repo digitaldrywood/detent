@@ -11,40 +11,61 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/displayorder"
 	"github.com/digitaldrywood/detent/internal/displayorder/testfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeWorkListOrder(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "list-order")
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		record.Settings.DuplicateChallenge = false
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for index, test := range testfixture.Comparisons() {
 		t.Run(test.Name, func(t *testing.T) {
 			needle := fmt.Sprintf("ordercase%02d", index)
-			left := f.create(t, needle+"-left")
-			right := f.create(t, needle+"-right")
 			state := "Todo"
 			if test.Terminal {
 				state = "Done"
 			}
+			var issues []tracker.NativeIssue
 			for _, pair := range []struct {
-				issue tracker.NativeIssue
-				item  displayorder.Item
-			}{{left, test.Left}, {right, test.Right}} {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET
- workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?), last_activity_at = ? WHERE native_id = ?`,
-					f.project.ID, state, formatHubTime(pair.item.LastActivityAt), pair.issue.WorkItemID); err != nil {
+				name string
+				item displayorder.Item
+			}{{"left", test.Left}, {"right", test.Right}} {
+				priority := pair.item.Priority
+				if priority != nil && (*priority < displayorder.PriorityUrgent || *priority > displayorder.PriorityLow) {
+					priority = nil
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: needle + pair.name}, Title: needle + "-" + pair.name, Body: issueContractTestSections, State: state, Priority: priority, Labels: []string{needle}})
+				requireNativeStatus(t, response, http.StatusOK)
+				var issue tracker.NativeIssue
+				decodeHubResponse(t, response, &issue)
+				if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE issues SET last_activity_at=$1 WHERE organization_id=$2 AND project_id=$3 AND native_id=$4", pair.item.LastActivityAt, f.project.OrganizationID, f.project.ID, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = ? WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", pair.item.Priority, pair.issue.WorkItemID); err != nil {
+				if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}, f.service.config.now()); err != nil {
 					t.Fatal(err)
 				}
+				issues = append(issues, issue)
 			}
+			left, right := issues[0], issues[1]
 			test.Left.Identifier = string(f.project.ID) + "#" + strconv.Itoa(left.Number)
 			test.Right.Identifier = string(f.project.ID) + "#" + strconv.Itoa(right.Number)
 			want := []tracker.NativeWorkItemID{left.WorkItemID, right.WorkItemID}
 			if displayorder.Compare(test.Terminal, test.Left, test.Right) > 0 {
 				slices.Reverse(want)
 			}
-			params := url.Values{"q": {needle}, "limit": {"1"}}
+			params := url.Values{"label": {needle}, "limit": {"1"}}
 			for index, id := range want {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
