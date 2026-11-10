@@ -802,36 +802,40 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		var machineReused bool
 		var machinePriority *workItemMachinePriority
 		if request, ok := plannedInput.(tracker.CreateIssue); ok && !plan.existing && request.GitHubIssueURL == "" && scope.credential.HostedRole != "reporter" {
-			if _, machine := issueorigin.Parse(request.Body); machine {
+			if origin, machine := issueorigin.Parse(request.Body); machine {
 				machineSearch, err = s.prepareWorkItemDuplicates(ctx, scope, request, true)
 				if err != nil {
 					return nil, err
 				}
 				if len(machineSearch.matches) > 0 {
 					candidate := machineSearch.matches[0]
-					plan, err = s.loadWorkItemPlan(ctx, scope, string(candidate.WorkItemID), "", tracker.CreateComment{})
+					matched, err := s.loadWorkItemPlan(ctx, scope, string(candidate.WorkItemID), "", tracker.CreateComment{})
 					if err != nil {
 						return nil, err
 					}
-					if plan.issue.Revision != candidate.revision || plan.issue.Archived {
-						return nil, nativeConflict(plan.issue.Revision)
+					if matched.issue.Revision != candidate.revision || matched.issue.Archived {
+						return nil, nativeConflict(matched.issue.Revision)
 					}
-					if plan.issue.Terminal {
-						plan.existing = true
-					} else {
-						plan, err = s.planWorkItemRecord(ctx, scope, plan, tracker.CreateComment{Body: issueorigin.Occurrence(request.Body)})
+					terminalRepair := matched.issue.Terminal && origin.Kind == "doctor" && origin.Instance == "github-actions" && scope.credential.Scope != apiScopeWorker && matched.issue.State != "Cancelled" && !strings.Contains(strings.ToLower(matched.issue.Body), "detent:no-dispatch")
+					if !terminalRepair {
+						plan = matched
+						if plan.issue.Terminal {
+							plan.existing = true
+						} else {
+							plan, err = s.planWorkItemRecord(ctx, scope, plan, tracker.CreateComment{Body: issueorigin.Occurrence(request.Body)})
+							if err != nil {
+								return nil, err
+							}
+						}
+						machinePriority, err = s.prepareWorkItemMachinePriority(ctx, scope, plan, request.Priority)
 						if err != nil {
 							return nil, err
 						}
+						if machinePriority != nil {
+							plan.issue = machinePriority.plan.issue
+						}
+						machineReused = true
 					}
-					machinePriority, err = s.prepareWorkItemMachinePriority(ctx, scope, plan, request.Priority)
-					if err != nil {
-						return nil, err
-					}
-					if machinePriority != nil {
-						plan.issue = machinePriority.plan.issue
-					}
-					machineReused = true
 				}
 			}
 		}
@@ -1070,12 +1074,13 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 					return err
 				}
 			}
-			if machineReused {
-				current, err := w.LockWorkItem(ctx, scope.project, plan.issue.WorkItemID)
+			if machineSearch != nil && len(machineSearch.matches) > 0 {
+				candidate := machineSearch.matches[0]
+				current, err := w.LockWorkItem(ctx, scope.project, candidate.WorkItemID)
 				if err != nil {
 					return err
 				}
-				if current.Revision != plan.current.Revision || current.Archived {
+				if current.Revision != int64(candidate.revision) || current.Archived {
 					return nativeConflict(tracker.Revision(current.Revision))
 				}
 			}
