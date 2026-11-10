@@ -1362,9 +1362,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				freshChanges, err := filepath.Glob(filepath.Join(freshRoot, "*", "CHANGE.md"))
 				wantWorkspaces := 1
-				if freshSourceReview || test.Validator != "" {
-					wantWorkspaces++
-				}
 				if err != nil || len(freshChanges) != wantWorkspaces {
 					t.Fatalf("resume did not restore source into a fresh workspace: paths=%v error=%v", freshChanges, err)
 				}
