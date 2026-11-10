@@ -149,6 +149,9 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 			}
 			for _, transport := range []string{"web-session", "MCP-key"} {
 				for _, test := range cases {
+					if deployment == "dedicated" && test.name == operatortool.DeleteAttachment {
+						continue
+					}
 					t.Run(transport+"/"+test.name, func(t *testing.T) {
 						arguments := map[string]any{}
 						for name, value := range test.arguments {
@@ -160,9 +163,6 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 						raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": test.name, "arguments": arguments, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]string{"name": "Reporter test", "version": "1"}}}})
 						if err != nil {
 							t.Fatal(err)
-						}
-						if deployment == "dedicated" && test.name == operatortool.DeleteAttachment {
-							return
 						}
 						response := send(t, transport, http.MethodPost, "/api/v2/organizations/org_security/mcp", raw, map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": test.name})
 
@@ -215,10 +215,10 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 					{operatortool.CredentialRotate, http.MethodPost, "/api/v1/tokens/example/rotate", nil},
 					{operatortool.CredentialGrant, http.MethodPost, "/api/v2/tokens/example/grants", map[string]any{"organization_id": "org_security", "project_id": f.project}},
 				} {
+					if deployment == "dedicated" && test.name == operatortool.DeleteAttachment {
+						continue
+					}
 					t.Run(transport+"/REST/"+test.name, func(t *testing.T) {
-						if deployment == "dedicated" && test.name == operatortool.DeleteAttachment {
-							return
-						}
 						raw, err := json.Marshal(test.body)
 						if err != nil {
 							t.Fatal(err)
