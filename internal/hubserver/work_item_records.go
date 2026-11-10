@@ -1093,6 +1093,16 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 					return corestore.ErrNotFound
 				}
 			}
+			project, err := w.ProjectRecord(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			if project.Core.DeletedAt != nil {
+				return corestore.ErrNotFound
+			}
+			if !sameWorkItemProjectPlan(plan.project, project) {
+				return corestore.ErrSerializationFailure
+			}
 			if duplicateSearch != nil && duplicateSearch.available {
 				if err := lockWorkItemDuplicateSource(ctx, w, scope.project, duplicateSearch.sequence); err != nil {
 					return err
@@ -1123,16 +1133,6 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, now); err != nil {
 					return err
 				}
-			}
-			project, err := w.ProjectRecord(ctx, scope.project)
-			if err != nil {
-				return err
-			}
-			if project.Core.DeletedAt != nil {
-				return corestore.ErrNotFound
-			}
-			if !sameWorkItemProjectPlan(plan.project, project) {
-				return corestore.ErrSerializationFailure
 			}
 			if plan.requiresIssueContract() && !plan.existing {
 				currentPolicy, err := w.ProjectPolicy(ctx, scope.project)

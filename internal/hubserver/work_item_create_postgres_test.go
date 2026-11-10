@@ -374,6 +374,8 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			var workflowHook *projectUpdateBeforeWriteRepository
+			var workflowErr error
 			for _, test := range []struct {
 				name   string
 				mutate func()
@@ -384,6 +386,21 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				}},
 				{name: "archived candidate", status: http.StatusConflict, mutate: func() {
 					changeCandidate(true)
+				}},
+				{name: "project workflow", status: http.StatusConflict, mutate: func() {
+					workflowHook = &projectUpdateBeforeWriteRepository{Repository: repository, before: func() error {
+						workflowErr = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+							record, err := w.ProjectRecord(t.Context(), project)
+							if err != nil {
+								return err
+							}
+							record.Core.RequireDependencies = !record.Core.RequireDependencies
+							_, err = w.UpdateProjectRecord(t.Context(), record)
+							return err
+						})
+						return workflowErr
+					}}
+					service.config.TenantRepository = workflowHook
 				}},
 			} {
 				t.Run(test.name, func(t *testing.T) {
@@ -396,6 +413,36 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 					confirmation := request
 					confirmation.ChallengeToken, confirmation.NotDuplicateOf = challenge.ChallengeToken, []int{issue.Number}
 					call(confirmation, test.status)
+					service.config.TenantRepository = repository
+					if test.name == "project workflow" {
+						if workflowErr != nil {
+							t.Fatalf("update project workflow: %v", workflowErr)
+						}
+						if workflowHook.before != nil {
+							t.Fatal("project update did not run before the confirmation write")
+						}
+					}
+					if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+						if _, err := r.WorkItemByNumber(t.Context(), project, 2); !errors.Is(err, corestore.ErrNotFound) {
+							t.Fatalf("refused confirmation created issue: %v", err)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if test.name == "project workflow" {
+						if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+							record, err := w.ProjectRecord(t.Context(), project)
+							if err != nil {
+								return err
+							}
+							record.Core.RequireDependencies = !record.Core.RequireDependencies
+							_, err = w.UpdateProjectRecord(t.Context(), record)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
 					if issue.Archived {
 						changeCandidate(false)
 					}
