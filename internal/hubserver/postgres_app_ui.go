@@ -42,6 +42,7 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 		e.POST(hostedOrganizationBase+"/api-keys", s.createHostedAPIKey)
 		e.DELETE(hostedOrganizationBase+"/api-keys/:key", s.revokeHostedAPIKey)
 		e.GET(hostedOrganizationBase+"/plan", s.hostedPlanJSON, s.hostedSessionOnly)
+		e.POST(hostedOrganizationBase+"/switch", s.switchHostedOrganizationJSON, s.hostedSessionOnly)
 		e.GET(hostedOrganizationBase+"/billing", s.hostedBillingJSON)
 		e.POST(hostedOrganizationBase+"/billing/checkout", s.hostedBillingCheckout)
 		e.POST(hostedOrganizationBase+"/billing/portal", s.hostedBillingPortal)

@@ -10,8 +10,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func reporterAdministrationArguments(t *testing.T, definition operatortool.Definition) map[string]any {
@@ -221,6 +224,15 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 							t.Fatal(err)
 						}
 						response := send(t, transport, test.method, test.path, raw, nil)
+						if deployment == "dedicated" && transport == "REST-key" && strings.HasPrefix(test.path, "/api/v1/") {
+							requireNativeStatus(t, response, http.StatusForbidden)
+							var refusal apiErrorResponse
+							decodeHubResponse(t, response, &refusal)
+							if refusal.Code != "invalid_csrf" {
+								t.Fatalf("bearer-only reserved route refusal = %s", refusal.Code)
+							}
+							response = send(t, "web-session", test.method, test.path, raw, map[string]string{"Authorization": "Bearer " + key.Token})
+						}
 
 						wantStatus := http.StatusForbidden
 						if test.name == operatortool.EditItem || test.name == operatortool.MoveItem {
@@ -271,7 +283,14 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 				})
 			}
 			var title string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT title FROM issues WHERE native_id=?", item).Scan(&title); err != nil {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+				current, err := r.WorkItemByNativeID(t.Context(), tracker.NativeWorkItemID(item))
+				if err != nil {
+					return err
+				}
+				title = current.Title
+				return nil
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if title != "private-issue-sentinel" {
