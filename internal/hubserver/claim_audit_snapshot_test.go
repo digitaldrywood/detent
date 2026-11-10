@@ -17,13 +17,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -509,6 +512,82 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 						})
 					}
 				}()
+				if index == 99 {
+					t.Run(string(org)+"/pending landing intent", func(t *testing.T) {
+						current := scan.plans[0]
+						if current.candidate.WorkItemID != "wi_000" || !current.latestAttemptFound || !current.latestRunEventFound || !current.latestRunEvent.LandingWaiting || current.latestAttempt.WorkItemRevision != current.item.Revision || current.latestAttempt.DispatchGeneration != current.item.DispatchGeneration || !current.landingPending {
+							t.Fatalf("current waiting landing is not pending: item=%s attempt_revision=%d item_revision=%d pending=%t", current.candidate.WorkItemID, current.latestAttempt.WorkItemRevision, current.item.Revision, current.landingPending)
+						}
+						merging, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, current, &descriptor)
+						if err != nil {
+							t.Fatal(err)
+						}
+						waiting := current
+						waiting.candidate.State = "Todo"
+						continuation, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, waiting, &descriptor)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !continuation.landingPending || continuation.changeReady != merging.changeReady || continuation.landingRequired != merging.landingRequired {
+							t.Fatalf("waiting continuation left the canonical landing path: pending=%t ready=%t want=%t capacity=%t want=%t", continuation.landingPending, continuation.changeReady, merging.changeReady, continuation.landingRequired, merging.landingRequired)
+						}
+						edited := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_000", Number: 1, Revision: tracker.Revision(current.item.Revision + 1)}, Title: "Edited example", State: "Merging", Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, CreatedAt: now, UpdatedAt: now}
+						raw, err := json.Marshal(edited)
+						if err != nil {
+							t.Fatal(err)
+						}
+						version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_000", RecordID: "wi_000", Revision: current.item.Revision + 1}, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+							item, err := w.WorkItem(t.Context(), "example", "wi_000")
+							if err != nil {
+								return err
+							}
+							item.Title = edited.Title
+							if _, err := w.UpdateWorkItem(t.Context(), item); err != nil {
+								return err
+							}
+							_, err = w.CreateCollaborationVersion(t.Context(), version)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						rescan, err := service.readNativeClaimCandidates(t.Context(), scope, request, now)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var stale nativeClaimPlan
+						for _, plan := range rescan.plans {
+							if plan.candidate.WorkItemID == "wi_000" {
+								stale = plan
+							}
+						}
+						if stale.item.Revision != current.item.Revision+1 || stale.latestAttempt.ID != current.latestAttempt.ID || stale.latestAttempt.WorkItemRevision != current.latestAttempt.WorkItemRevision || stale.latestRunEvent.ID != current.latestRunEvent.ID || !stale.latestRunEvent.LandingWaiting {
+							t.Fatalf("edit did not leave the recorded waiting attempt behind the item: item_revision=%d attempt=%s attempt_revision=%d event=%s", stale.item.Revision, stale.latestAttempt.ID, stale.latestAttempt.WorkItemRevision, stale.latestRunEvent.ID)
+						}
+						if stale.landingPending {
+							t.Fatalf("waiting receipt of attempt revision %d is still pending for item revision %d", stale.latestAttempt.WorkItemRevision, stale.item.Revision)
+						}
+						canonical, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, stale, &descriptor)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if canonical.landingPending || canonical.changeReady != merging.changeReady || canonical.landingRequired != merging.landingRequired {
+							t.Fatalf("stale waiting receipt changed the Merging path: pending=%t ready=%t want=%t capacity=%t want=%t", canonical.landingPending, canonical.changeReady, merging.changeReady, canonical.landingRequired, merging.landingRequired)
+						}
+						outside := stale
+						outside.candidate.State = "Todo"
+						dispatched, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, outside, &descriptor)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if dispatched.landingPending || dispatched.changeReady || dispatched.landingRequired {
+							t.Fatalf("stale waiting receipt routed the edited item to landing: pending=%t ready=%t capacity=%t", dispatched.landingPending, dispatched.changeReady, dispatched.landingRequired)
+						}
+					})
+				}
 			}
 			t.Logf("tenant=%s candidates=%d statements=%d exchanges=%d", org, index+1, statements, got)
 			if baselineExchanges == 0 {
@@ -727,6 +806,229 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				if row.Request != requests[i] || row.Publication == nil || row.Publication.VersionID != reference.VersionID {
 					t.Fatalf("request %d lost publication or identity: %+v", i, row)
 				}
+			}
+		})
+		t.Run(string(org)+"/waiting landing dispatch", func(t *testing.T) {
+			binding := runnerauth.NewBinding()
+			credentialID, enrollmentID := "credential_"+binding.RunnerID, "enrollment_"+binding.RunnerID
+			tokenHash := apikey.HashToken("example_runner_" + string(org))
+			operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}
+			expires := now.Add(time.Hour)
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credentialID, ProjectID: "example"}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: enrollmentID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("example_enrollment_" + string(org)), Scope: "projects", ProjectIDs: []tracker.ProjectID{"example"}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+					return err
+				}
+				if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, binding.RunnerID, binding.MachineID, now); err != nil {
+					return err
+				}
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: string(binding.MachineID), Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: operations, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{"example"}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+					return err
+				}
+				return w.UpdateRunnerCapacityConfig(t.Context(), binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			runner := nativeScope{organization: org, project: "example", credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: binding, OrganizationID: org}}}
+			for index, seed := range []struct {
+				name                      string
+				blocked, edit, redispatch bool
+				pending, ready, claimed   bool
+			}{
+				{name: "ready current", pending: true, ready: true, claimed: true},
+				{name: "blocked current", blocked: true, pending: true},
+				{name: "blocked edited", blocked: true, edit: true, claimed: true},
+				{name: "blocked redispatched", blocked: true, redispatch: true, claimed: true},
+			} {
+				t.Run(seed.name, func(t *testing.T) {
+					id := tracker.NativeWorkItemID(fmt.Sprintf("wi_intent_%d", index))
+					changeID, versionID := fmt.Sprintf("change_intent_%d", index), fmt.Sprintf("version_intent_%d", index)
+					attemptID, leaseID := fmt.Sprintf("intent-attempt-%d", index), fmt.Sprintf("intent-lease-%d", index)
+					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: id, Number: 200 + index, Revision: 1}, Title: "Example", State: "In Progress", Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, CreatedAt: now, UpdatedAt: now}
+					raw, err := json.Marshal(issue)
+					if err != nil {
+						t.Fatal(err)
+					}
+					collaboration, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					change := tracker.ChangeRequest{ID: changeID, OrganizationID: org, ProjectID: "example", WorkItemID: id, LinkedIssues: []tracker.NativeWorkItemID{id}, Title: "Example", Revision: 1, CurrentVersion: versionID, CreatedAt: now, UpdatedAt: now}
+					raw, err = json.Marshal(change)
+					if err != nil {
+						t.Fatal(err)
+					}
+					changeRow, err := content.PrepareChange(t.Context(), org, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					published := changeTestInput()
+					published.PolicyID = descriptor.ID
+					version := tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, ChangeVersionInput: published, Policy: descriptor, ReviewPolicy: defaultChangeReviewPolicy(descriptor), Actor: issue.Actor, CreatedAt: now}
+					raw, err = json.Marshal(version)
+					if err != nil {
+						t.Fatal(err)
+					}
+					versionRow, err := content.PrepareVersion(t.Context(), org, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var evidence eventstore.Evidence
+					if seed.blocked {
+						run := securityaudit.Run{ID: int64(9000 + index), ProjectID: "example", Repository: published.Repository, BaseSHA: published.BaseSHA, HeadSHA: published.HeadSHA, Findings: []securityaudit.Finding{{ID: "finding", Body: "Example", Certainty: securityaudit.CertaintyConfirmed}}}
+						review := tracker.ChangeReview{ID: "review", VersionID: versionID, Decision: "changes_requested", Actor: issue.Actor, CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{SessionID: run.ID, Run: run, VersionID: versionID}}
+						raw, err = json.Marshal(review)
+						if err != nil {
+							t.Fatal(err)
+						}
+						evidence, err = content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: changeID, VersionID: &versionID, Kind: "review", CreatedAt: now}, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					waiting := tracker.NativeRunData{AttemptID: attemptID, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Waiting: true, ChangeID: changeID, VersionID: versionID, HeadSHA: published.HeadSHA}}}
+					raw, err = json.Marshal(waiting)
+					if err != nil {
+						t.Fatal(err)
+					}
+					payload, err := details.StoreDetail(t.Context(), string(org), raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					raw, err = json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("intent-observed-%d", index), OrganizationID: org, ProjectID: "example", AggregateID: id, Type: "run.observed", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: now, Data: tracker.CollaborationData{Revision: 1, Run: &waiting}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					observed, err := content.PrepareEvent(t.Context(), org, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(200 + index), Title: issue.Title, Revision: 1, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
+							return err
+						}
+						if err := w.PutWorkItemFacts(t.Context(), claimstore.WorkItemFacts{OrganizationID: org, ProjectID: "example", WorkItemID: id}); err != nil {
+							return err
+						}
+						if err := w.PutQueueEntry(t.Context(), claimstore.QueueEntry{OrganizationID: org, ProjectID: "example", WorkItemID: id, Scope: "example", State: "In Progress", CreatedAt: now, UpdatedAt: now}); err != nil {
+							return err
+						}
+						if _, err := w.CreateCollaborationVersion(t.Context(), collaboration); err != nil {
+							return err
+						}
+						if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
+							return err
+						}
+						if _, err := w.CreateVersion(t.Context(), versionRow); err != nil {
+							return err
+						}
+						if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: id, ChangeID: changeID, CreatedAt: now}); err != nil {
+							return err
+						}
+						if seed.blocked {
+							if _, err := w.AppendEvidence(t.Context(), evidence); err != nil {
+								return err
+							}
+						}
+						item, err := w.WorkItem(t.Context(), "example", id)
+						if err != nil {
+							return err
+						}
+						lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: "publication-machine", SessionID: fmt.Sprintf("intent-session-%d", index), LeaseID: leaseID, TTL: time.Minute})
+						if err != nil {
+							return err
+						}
+						if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: fmt.Sprintf("intent-run-%d", index), Sequence: 1, Status: "succeeded", StartedAt: now, PayloadObjectKey: payload.Key, PayloadReference: payload}); err != nil {
+							return err
+						}
+						if err := w.SetAttemptClaimFacts(t.Context(), leasestore.AttemptClaimFacts{AttemptID: attemptID, Sequence: 1, Status: "succeeded", PayloadObjectKey: payload.Key, Disposition: "progress"}); err != nil {
+							return err
+						}
+						if _, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "intent-complete"); err != nil {
+							return err
+						}
+						_, err = w.AppendEvent(t.Context(), observed)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if seed.edit {
+						issue.Revision, issue.Title = 2, "Edited example"
+						raw, err = json.Marshal(issue)
+						if err != nil {
+							t.Fatal(err)
+						}
+						edited, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 2}, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+							item, err := w.WorkItem(t.Context(), "example", id)
+							if err != nil {
+								return err
+							}
+							item.Title = issue.Title
+							if _, err := w.UpdateWorkItem(t.Context(), item); err != nil {
+								return err
+							}
+							_, err = w.CreateCollaborationVersion(t.Context(), edited)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if seed.redispatch {
+						if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+							item, err := w.WorkItem(t.Context(), "example", id)
+							if err != nil {
+								return err
+							}
+							attempt, err := w.LatestAttempt(t.Context(), item.ID)
+							if err != nil {
+								return err
+							}
+							dispatch, ok := w.(tenantstore.DispatchWriter)
+							if !ok {
+								return errors.New("dispatch owner is unavailable")
+							}
+							return dispatch.RequestIssueDispatch(t.Context(), "example", id, leasestore.Fence{LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, now)
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: id, MachineID: binding.MachineID, SessionID: fmt.Sprintf("intent-claim-%d", index), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, WorkflowStates: []string{"In Progress"}, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+					plan, err := service.readNativeClaimPlan(t.Context(), runner, claim, now)
+					if err != nil {
+						t.Fatalf("read persisted claim plan: %v", err)
+					}
+					if plan.candidate.State != "in progress" || !plan.latestRunEvent.LandingWaiting || plan.landingPending != seed.pending || plan.changeReady != seed.ready {
+						t.Errorf("persisted plan state=%q waiting=%t pending=%t ready=%t item_revision=%d item_generation=%d attempt_revision=%d attempt_generation=%d, want pending=%t ready=%t", plan.candidate.State, plan.latestRunEvent.LandingWaiting, plan.landingPending, plan.changeReady, plan.item.Revision, plan.item.DispatchGeneration, plan.latestAttempt.WorkItemRevision, plan.latestAttempt.DispatchGeneration, seed.pending, seed.ready)
+					}
+					lease, err := service.claimNativeIssueTenantWithPlan(t.Context(), runner, claim, 5*time.Minute, now, plan, nil)
+					if !seed.claimed {
+						if !errors.Is(err, ErrNoClaimableWork) {
+							t.Fatalf("claim of a waiting landing that is not ready: lease=%q error=%v, want no claimable work", lease.LeaseID, err)
+						}
+						return
+					}
+					if err != nil || lease.LeaseID == "" {
+						t.Fatalf("claim refused: lease=%q error=%v", lease.LeaseID, err)
+					}
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "intent-claimed")
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
 			}
 		})
 

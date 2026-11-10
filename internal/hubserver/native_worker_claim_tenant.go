@@ -1140,6 +1140,9 @@ func nativeClaimPendingLanding(plan nativeClaimPlan) bool {
 	if stringsEqualFold(plan.candidate.State, "Rework") || !plan.latestAttemptFound || !plan.latestRunEventFound || !plan.latestRunEvent.LandingWaiting || plan.changeRecord.ID == "" || plan.changeRecord.CurrentVersionID == nil {
 		return false
 	}
+	if plan.latestAttempt.WorkItemRevision < plan.item.Revision || plan.latestAttempt.DispatchGeneration < plan.item.DispatchGeneration {
+		return false
+	}
 	return plan.latestRunEvent.LandingChangeID == plan.changeRecord.ID && plan.latestRunEvent.LandingVersionID == plan.changeVersion.ID && plan.latestRunEvent.LandingHeadSHA == plan.changeVersion.HeadSHA && plan.changeVersion.ID == *plan.changeRecord.CurrentVersionID
 }
 

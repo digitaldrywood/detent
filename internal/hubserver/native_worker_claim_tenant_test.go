@@ -990,6 +990,8 @@ func TestNativeClaimPendingLandingRequiresLatestMatchingVersionReceipt(t *testin
 	base := nativeClaimPlan{
 		changeRecord:        eventstore.Change{ID: "change_example", CurrentVersionID: new("version_example")},
 		changeVersion:       eventstore.Version{ID: "version_example", HeadSHA: "head_example"},
+		item:                corestore.WorkItem{Revision: 4, DispatchGeneration: 2},
+		latestAttempt:       leasestore.Attempt{WorkItemRevision: 4, DispatchGeneration: 2},
 		latestAttemptFound:  true,
 		latestRunEventFound: true,
 		latestRunEvent:      eventstore.Event{LandingWaiting: true, LandingChangeID: "change_example", LandingVersionID: "version_example", LandingHeadSHA: "head_example"},
@@ -1007,6 +1009,13 @@ func TestNativeClaimPendingLandingRequiresLatestMatchingVersionReceipt(t *testin
 		{name: "historical version", mutate: func(plan *nativeClaimPlan) { plan.changeRecord.CurrentVersionID = new("version_new") }},
 		{name: "missing attempt", mutate: func(plan *nativeClaimPlan) { plan.latestAttemptFound = false }},
 		{name: "missing event", mutate: func(plan *nativeClaimPlan) { plan.latestRunEventFound = false }},
+		{name: "item revision advanced after the attempt", mutate: func(plan *nativeClaimPlan) { plan.item.Revision++ }},
+		{name: "dispatch generation advanced after the attempt", mutate: func(plan *nativeClaimPlan) { plan.item.DispatchGeneration++ }},
+		{name: "item revision and dispatch generation advanced after the attempt", mutate: func(plan *nativeClaimPlan) {
+			plan.item.Revision++
+			plan.item.DispatchGeneration++
+		}},
+		{name: "rework", mutate: func(plan *nativeClaimPlan) { plan.candidate.State = "Rework" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plan := base
