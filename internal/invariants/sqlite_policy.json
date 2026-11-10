@@ -1499,9 +1499,6 @@
     "internal/hubserver/usage_costs_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/work_item_records_test.go": {
-      "database_path": 5
-    },
     "internal/hubserver/workflow_lanes_migration_test.go": {
       "sqlite_open": 2
     },

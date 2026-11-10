@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -325,7 +324,7 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 
 func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openLocalPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
+	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 	if err := service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -1055,7 +1054,7 @@ func (r *projectUpdateBeforeWriteRepository) WriteTenant(ctx context.Context, or
 func TestWorkItemCreationReplansAfterProjectWorkflowChanges(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
+	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
 	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(id), func(t *testing.T) {
 			service.config.Hosted = nil
@@ -1266,7 +1265,7 @@ func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
 
 func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openLocalPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
+	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 	organization := nativeOrganization{ID: "org_example", Name: "Example organization", Slug: "example-organization"}
 	seedWorkItemRecordOrganization(t, repository, service, organization)
 	projects := "/api/v2/organizations/" + string(organization.ID) + "/projects"
@@ -1367,7 +1366,7 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
+	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
 	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(id), func(t *testing.T) {
 			organization := nativeOrganization{ID: id, Name: string(id), Slug: string(id)}
@@ -1588,7 +1587,7 @@ func (r rejectedWorkItemRepository) WriteTenant(ctx context.Context, org tracker
 func TestWorkItemRecordRollback(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
+	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
 	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(id), func(t *testing.T) {
 			service.config.Hosted = nil
