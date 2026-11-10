@@ -7,20 +7,16 @@ import (
 )
 
 func TestInsertsNeverWriteConstantUniqueKeys(t *testing.T) {
-	db, err := openDatabase(t.Context(), hostedStorageConfig(t).normalized())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	violations, err := testenv.ConstantUniqueInserts(t.Context(), db.db, ".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, violation := range violations {
-		t.Error(violation)
+	db := postgresStartupTemplate.Database(t)
+	for _, dir := range []string{".", "postgres"} {
+		t.Run(dir, func(t *testing.T) {
+			violations, err := testenv.ConstantUniquePostgresInserts(t.Context(), db, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, violation := range violations {
+				t.Error(violation)
+			}
+		})
 	}
 }

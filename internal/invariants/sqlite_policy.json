@@ -1935,20 +1935,9 @@
     "internal/store/worker_generations_test.go": {
       "backend_sqlite": 1
     },
-    "internal/testenv/sqlite_inventory.go": {
-      "sql_pragma_table": 5,
-      "sql_schema": 1
-    },
-    "internal/testenv/sqlite_inventory_test.go": {
-      "sql_pragma": 1,
-      "sqlite_open": 1
-    },
     "internal/testenv/unique_inserts.go": {
       "sql_pragma_table": 2,
       "sql_schema": 1
-    },
-    "internal/testenv/unique_inserts_test.go": {
-      "driver_import": 1
     },
     "internal/web/api_benchmark_test.go": {
       "backend_sqlite": 1,
