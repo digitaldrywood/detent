@@ -54,12 +54,8 @@ func (s missingDetailReferenceStore) ReadDetail(ctx context.Context, organizatio
 func TestWorkItemRecordBackendParity(t *testing.T) {
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) {
-			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")}
-			var repository tenantstore.Repository
-			if backend == "postgres" {
-				repository = projectRecordPostgres(t)
-				cfg.TenantRepository = repository
-			}
+			repository := projectRecordPostgres(t)
+			cfg := Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")}
 			service := openTestService(t, cfg)
 			for _, name := range []string{"First organization", "Second organization"} {
 				t.Run(name, func(t *testing.T) {
@@ -74,22 +70,16 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusCreated)
 					var project tracker.NativeProject
 					decodeHubResponse(t, response, &project)
-					if repository == nil {
-						if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project.ID); err != nil {
-							t.Fatal(err)
-						}
-					} else {
-						if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
-							record, err := w.ProjectRecord(t.Context(), project.ID)
-							if err != nil {
-								return err
-							}
-							record.Settings.DuplicateChallenge = false
-							_, err = w.UpdateProjectRecord(t.Context(), record)
+					if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+						record, err := w.ProjectRecord(t.Context(), project.ID)
+						if err != nil {
 							return err
-						}); err != nil {
-							t.Fatal(err)
 						}
+						record.Settings.DuplicateChallenge = false
+						_, err = w.UpdateProjectRecord(t.Context(), record)
+						return err
+					}); err != nil {
+						t.Fatal(err)
 					}
 					base := projectBase + "/" + string(project.ID) + "/work-items"
 					input := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key + "issue"}, Title: "Example issue", Body: workItemRecordBody, Labels: []string{"example"}, Assignees: []string{"example-user"}}
