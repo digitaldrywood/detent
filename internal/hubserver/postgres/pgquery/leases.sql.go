@@ -28,6 +28,7 @@ AND fencing_token=$14::bigint AND run_id=$15
 AND ($2::bigint=0 OR local_attempt_id IS NULL OR local_attempt_id=$2)
 AND dispatch_generation=$16 AND sequence=$1-1
 AND (status='running' OR status='interrupted' AND $7='running' OR $6::boolean AND status=$7 OR $4::boolean AND status IN ('interrupted','cancelled') AND $7='cancelled')
+AND (NOT $17::boolean OR CASE WHEN $6::boolean THEN status ELSE $7 END NOT IN ('running','interrupted') OR runtime_heartbeat_at IS NULL OR $3>=runtime_heartbeat_at)
 RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded
 `
 
@@ -48,6 +49,7 @@ type AdvanceLeaseAttemptParams struct {
 	FencingToken        int64
 	RunID               string
 	DispatchGeneration  int64
+	RuntimeOrdered      bool
 }
 
 func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttemptParams) (NativeAttempt, error) {
@@ -68,6 +70,7 @@ func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttem
 		arg.FencingToken,
 		arg.RunID,
 		arg.DispatchGeneration,
+		arg.RuntimeOrdered,
 	)
 	var i NativeAttempt
 	err := row.Scan(

@@ -186,6 +186,7 @@ type AttemptDiff struct {
 type AttemptEvent struct {
 	LocalAttemptID      int64                       `json:"-"`
 	RuntimeHeartbeatAt  *time.Time                  `json:"-"`
+	RuntimeOrdered      bool                        `json:"-"`
 	CheckpointReference attachment.ArchiveReference `json:"-"`
 	Termination         bool                        `json:"termination,omitempty"`
 	PayloadReference    attachment.ArchiveReference `json:"-"`

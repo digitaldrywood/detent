@@ -88,7 +88,7 @@ func (*nativeRunEventParticipantFixture) NativeLeaseResponse(ctx context.Context
 }
 
 func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	participant := &nativeRunEventParticipantFixture{}
 	keys := secretTestKeys(t, "1", "1")
 	service := openPostgresHubTestService(t, repository, Config{
@@ -332,6 +332,46 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	observation.Data.Sequence = 2
 	observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.now().UTC()}
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), observation); err != nil {
+		t.Fatal(err)
+	}
+	validPrefix := observation
+	validPrefix.IdempotencyKey = "valid-prefix"
+	validPrefix.Data.Sequence = 3
+	validPrefix.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: observation.Data.Runtime.HeartbeatAt.Add(time.Second)}
+	staleSuffix := observation
+	staleSuffix.IdempotencyKey = "stale-suffix"
+	staleSuffix.Data.Sequence = 4
+	staleSuffix.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: observation.Data.Runtime.HeartbeatAt.Add(-time.Second)}
+	staleSuffix.PriorEvents = []tracker.NativeRunEvent{validPrefix}
+	runRows := func() (rows [4]int64) {
+		t.Helper()
+		if err := admin.QueryRowContext(t.Context(), `SELECT
+ (SELECT count(*) FROM collaboration_events WHERE organization_id=$1),
+ (SELECT count(*) FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2),
+ (SELECT count(*) FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2),
+ (SELECT count(*) FROM cost_sources WHERE organization_id=$1)`, string(organization.ID), secondStart.Data.AttemptID).Scan(&rows[0], &rows[1], &rows[2], &rows[3]); err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	rowsBefore := runRows()
+	var orderRefusal *nativeError
+	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), staleSuffix); !errors.As(err, &orderRefusal) || orderRefusal.Code != "run_sequence_conflict" {
+		t.Fatalf("older heartbeat after a valid batch prefix: %v", err)
+	}
+	if rowsAfter := runRows(); rowsAfter != rowsBefore {
+		t.Fatalf("refused batch changed history, attempt receipts, token usage or costs: before=%v after=%v", rowsBefore, rowsAfter)
+	}
+	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if _, err := r.Receipt(t.Context(), "test_hub_admin", "POST /api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items/"+string(secondIssue.WorkItemID)+"/events", "stale-suffix"); !errors.Is(err, corestore.ErrNotFound) {
+			t.Errorf("refused batch receipt=%v", err)
+		}
+		attempt, err := r.Attempt(t.Context(), secondStart.Data.AttemptID)
+		if err == nil && (attempt.Sequence != 2 || attempt.RuntimeSummarySequence != 2 || attempt.RuntimeHeartbeatAt == nil || !attempt.RuntimeHeartbeatAt.Equal(observation.Data.Runtime.HeartbeatAt.Truncate(time.Microsecond))) {
+			t.Fatalf("refused batch changed the attempt: %+v", attempt)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	laterObservation := observation

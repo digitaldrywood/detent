@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -71,6 +72,13 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 	} else if f.attempt.err != nil || old.ID != e.ID || old.LeaseID != l.LeaseID || old.FencingToken != l.FencingToken || old.RunID != e.RunID || old.DispatchGeneration != e.DispatchGeneration || old.Sequence != e.Sequence-1 || (old.Status != "running" && (old.Status != "interrupted" || e.Status != "running") && (!e.UsageCorrection || old.Status != e.Status) && (!e.Termination || old.Status != "cancelled" && old.Status != "interrupted")) {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
+	status := e.Status
+	if e.UsageCorrection {
+		status = old.Status
+	}
+	if e.RuntimeOrdered && old.RuntimeHeartbeatAt != nil && (status == "running" || status == "interrupted") && (e.RuntimeHeartbeatAt == nil || e.RuntimeHeartbeatAt.Truncate(time.Microsecond).Before(old.RuntimeHeartbeatAt.Truncate(time.Microsecond))) {
+		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
+	}
 	if old.LocalAttemptID.Valid && e.LocalAttemptID != 0 && old.LocalAttemptID.Int64 != e.LocalAttemptID {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
@@ -83,7 +91,7 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 			return leasestore.Attempt{}, false, err
 		}
 	} else {
-		if _, err := q.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, LocalAttemptID: e.LocalAttemptID, UsageCorrection: e.UsageCorrection, Termination: e.Termination, Now: &f.now}); err != nil {
+		if _, err := pgquery.New(runEventAdvanceQueue{runEventQueue{f.pending}}).AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, LocalAttemptID: e.LocalAttemptID, UsageCorrection: e.UsageCorrection, Termination: e.Termination, RuntimeOrdered: e.RuntimeOrdered, Now: &f.now}); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
 	}

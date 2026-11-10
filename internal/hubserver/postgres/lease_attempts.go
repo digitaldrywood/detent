@@ -121,7 +121,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 			OrganizationID: s.organization, ID: event.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken,
 			RunID: event.RunID, NextSequence: event.Sequence, Status: event.Status, DispatchGeneration: event.DispatchGeneration,
 			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt, LocalAttemptID: event.LocalAttemptID,
-			UsageCorrection: event.UsageCorrection, Termination: event.Termination, Now: &now,
+			UsageCorrection: event.UsageCorrection, Termination: event.Termination, RuntimeOrdered: event.RuntimeOrdered, Now: &now,
 		})
 	}
 	if errors.Is(err, pgx.ErrNoRows) {

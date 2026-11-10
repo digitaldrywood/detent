@@ -441,7 +441,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			ID:    event.Data.AttemptID,
 			Fence: leasestore.Fence{LeaseID: string(event.Data.LeaseID), FencingToken: int64(event.Data.FencingToken)},
 			RunID: event.Data.RunID, Sequence: event.Data.Sequence, Status: status,
-			DispatchGeneration: 0, PayloadObjectKey: ref.Key, PayloadReference: ref, UsageCorrection: i == len(events)-1 && usageCorrection, Termination: termination,
+			DispatchGeneration: 0, PayloadObjectKey: ref.Key, PayloadReference: ref, UsageCorrection: i == len(events)-1 && usageCorrection, Termination: termination, RuntimeOrdered: true,
 		}
 		if event.Data.Runtime != nil {
 			attemptEvent.LocalAttemptID = event.Data.Runtime.LocalAttemptID

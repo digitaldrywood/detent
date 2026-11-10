@@ -111,6 +111,7 @@ AND fencing_token=sqlc.arg(fencing_token)::bigint AND run_id=sqlc.arg(run_id)
 AND (sqlc.arg(local_attempt_id)::bigint=0 OR local_attempt_id IS NULL OR local_attempt_id=sqlc.arg(local_attempt_id))
 AND dispatch_generation=sqlc.arg(dispatch_generation) AND sequence=sqlc.arg(next_sequence)-1
 AND (status='running' OR status='interrupted' AND sqlc.arg(status)='running' OR sqlc.arg(usage_correction)::boolean AND status=sqlc.arg(status) OR sqlc.arg(termination)::boolean AND status IN ('interrupted','cancelled') AND sqlc.arg(status)='cancelled')
+AND (NOT sqlc.arg(runtime_ordered)::boolean OR CASE WHEN sqlc.arg(usage_correction)::boolean THEN status ELSE sqlc.arg(status) END NOT IN ('running','interrupted') OR runtime_heartbeat_at IS NULL OR sqlc.narg(runtime_heartbeat_at)>=runtime_heartbeat_at)
 RETURNING *;
 
 -- name: InsertAttemptReceipt :exec
