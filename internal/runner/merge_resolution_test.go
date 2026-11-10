@@ -26,6 +26,24 @@ type resolutionExecution struct {
 	published   *NativeChange
 }
 
+func (e *resolutionExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) error {
+	if e.identity.Role != "" && e.identity != identity {
+		return errors.New("native execution identity changed during an attempt")
+	}
+	return e.testExecution.Start(ctx, identity)
+}
+
+func (e *resolutionExecution) StartLanding(ctx context.Context, localAttempt int64, generation uint64) error {
+	identity := e.identity
+	if identity.Role == "" {
+		identity = tracker.NativeExecutionIdentity{Role: RoleMerge, Backend: "git", Model: "none"}
+	}
+	if err := e.Start(ctx, identity); err != nil {
+		return err
+	}
+	return e.landingRunExecution.StartLanding(ctx, localAttempt, generation)
+}
+
 func (e *resolutionExecution) PrepareMergeResolution() error { e.publication = true; return nil }
 func (e *resolutionExecution) RecordSourceValidation(_ context.Context, receipt gate.CommandResult) error {
 	e.validation = receipt
@@ -102,8 +120,10 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 	for _, test := range []struct {
 		name, content, effort                                        string
 		changed, failed, outside, shifted, gateFailure, budgetDenied bool
+		incorporated                                                 bool
 	}{
 		{name: "unchanged reviewed diff retains review and lands", content: "first\nreviewed\nbase\n"},
+		{name: "pending conflict incorporated before next attempt lands without provider", content: "first\nreviewed\nthird\n", incorporated: true},
 		{name: "merge identity retains project effort", content: "first\nreviewed\nbase\n", effort: "low"},
 		{name: "base line shifts retain equivalent reviewed diff", content: "prefix\nfirst\nreviewed\nbase\n", shifted: true},
 		{name: "nonconflicting hunk edits return to implementation", content: "other\nreviewed\nbase\n", failed: true},
@@ -182,7 +202,18 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			if err != nil || first.NativeLanding == nil || first.NativeLanding.Path != "merge_resolution_pending" || first.NativeLanding.RefusalKind != workspace.LandRefusalConflict || provider.calls != 0 {
 				t.Fatalf("initial conflict did not request merge resolution: %#v, %v, calls %d", first, err, provider.calls)
 			}
-			execution.target.RebaseRequired, execution.target.MergeResolution = true, true
+			if test.incorporated {
+				write(filepath.Join(source, "feature.txt"), test.content)
+				write(filepath.Join(source, "UPSTREAM.md"), "target-only update\n")
+				runRunnerGit(t, source, "add", "feature.txt", "UPSTREAM.md")
+				runRunnerGit(t, source, "commit", "-am", "incorporate reviewed source")
+				runRunnerGit(t, source, "push", "origin", "main")
+				base = strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+			}
+			target := execution.target
+			target.RebaseRequired, target.MergeResolution = true, true
+			execution = &resolutionExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: target}}}
+			req.Execution = execution
 			var result RunResult
 			if test.changed {
 				result, err = r.Run(t.Context(), req)
@@ -191,6 +222,19 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.incorporated {
+				landing := result.NativeLanding
+				if landing == nil || !landing.Landed || landing.VersionID != target.VersionID || landing.HeadSHA != head || landing.MergeSHA != base || landing.Incorporation == nil || landing.Incorporation.TargetHeadSHA != base || landing.Gate == nil || landing.Gate.Command != command || landing.Gate.HeadSHA != head || landing.Gate.ExitCode != 0 || provider.calls != 0 || permits != 0 || result.TurnStarted || execution.identity != (tracker.NativeExecutionIdentity{Role: RoleMerge, Backend: "git", Model: "none"}) || len(execution.recorded) != 1 || execution.publication || strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", "refs/heads/main")) != base {
+					t.Fatalf("incorporated source bypassed identity/gate/proof/receipt ownership: result=%+v execution=%+v provider=%+v", result, execution, provider)
+				}
+				if content := runRunnerGit(t, remote, "show", "refs/heads/main:feature.txt"); content != test.content {
+					t.Fatalf("incorporation lost reviewed content: %q", content)
+				}
+				if content := runRunnerGit(t, remote, "show", "refs/heads/main:UPSTREAM.md"); content != "target-only update\n" {
+					t.Fatalf("incorporation lost independent target content: %q", content)
+				}
+				return
 			}
 			if test.budgetDenied {
 				if result.BudgetRefusal == nil || result.NativeLanding != nil || provider.calls != 0 || permits != 0 || execution.publication || strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", "refs/heads/main")) != base {

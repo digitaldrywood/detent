@@ -2575,6 +2575,14 @@ type committingAgent struct {
 	duringLiveTurn   func(runner.AgentTurnRequest, runner.AgentUpdateHandler)
 	afterTurn        func()
 	duringValidation func(runner.AgentTurnRequest)
+	verifyResume     func(runner.AgentProcessRequest, runner.AgentResume) error
+}
+
+func (a *committingAgent) VerifyResume(_ context.Context, process runner.AgentProcessRequest, resume runner.AgentResume) error {
+	if a.verifyResume == nil {
+		return runner.ErrAgentResumeUnsupported
+	}
+	return a.verifyResume(process, resume)
 }
 
 func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Response, error) {

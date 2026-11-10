@@ -28,7 +28,82 @@ type LandingResolution struct {
 }
 
 type LandingConflictResolver interface {
+	InspectLandingConflict(context.Context, Info, Issue, LandOptions) (string, bool, error)
 	ResolveLandingConflict(context.Context, Info, Issue, LandOptions, func(context.Context, string, []string) error) (LandingResolution, error)
+}
+
+func (l *LocalGit) InspectLandingConflict(ctx context.Context, info Info, issue Issue, opts LandOptions) (string, bool, error) {
+	info, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return "", false, err
+	}
+	if opts.Authorize != nil {
+		if err := opts.Authorize(ctx); err != nil {
+			return "", false, err
+		}
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	defer release()
+	if err := l.verifyLandingWorktree(ctx, info, issue, opts); err != nil {
+		return "", false, err
+	}
+	head, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return "", false, err
+	}
+	if strings.TrimSpace(head) != opts.HeadSHA {
+		return "", false, refuse(LandRefusalHeadMoved, "landing inspection requires the reviewed head")
+	}
+	remote := opts.Remote
+	if remote == "" {
+		remote = defaultGitRemote
+	}
+	target := opts.TargetBranch
+	if target == "" {
+		target, err = remoteDefaultBranch(ctx, info.Path, remote)
+		if err != nil {
+			return "", false, err
+		}
+	}
+	base, exists, err := remoteBranchHead(ctx, info.Path, remote, target)
+	if err != nil {
+		return "", false, err
+	}
+	if !exists {
+		return "", false, refuse(LandRefusalMissingHead, "the integration branch is unavailable")
+	}
+	if _, err := runGitAt(ctx, info.Path, "fetch", "--no-tags", "--no-write-fetch-head", remote, base); err != nil {
+		return "", false, err
+	}
+	method := opts.Method
+	if method == "" {
+		method = "squash"
+	}
+	if method != "squash" && method != "merge" && method != "rebase" {
+		return base, false, fmt.Errorf("unsupported merge method %q", method)
+	}
+	delivered, err := deliveredLanding(ctx, info.Path, opts, base, target, method)
+	if err != nil || delivered.MergeSHA != "" {
+		return base, false, err
+	}
+	_, err = runGitAt(ctx, info.Path, "merge-tree", "--write-tree", base, opts.HeadSHA)
+	if err == nil {
+		return base, false, nil
+	}
+	if ctx.Err() != nil {
+		return base, false, ctx.Err()
+	}
+	var command *CommandError
+	if errors.As(err, &command) && command.ExitCode == 1 {
+		tree, _, _ := strings.Cut(command.Output, "\n")
+		if validLandingHead(strings.TrimSpace(tree)) {
+			return base, true, nil
+		}
+	}
+	return base, false, err
 }
 
 func (l *LocalGit) ResolveLandingConflict(ctx context.Context, info Info, issue Issue, opts LandOptions, resolve func(context.Context, string, []string) error) (result LandingResolution, resultErr error) {
@@ -81,6 +156,9 @@ func (l *LocalGit) ResolveLandingConflict(ctx context.Context, info Info, issue 
 		return result, err
 	}
 	result.BaseSHA = strings.TrimSpace(base)
+	if opts.ExpectedBaseSHA != "" && result.BaseSHA != opts.ExpectedBaseSHA {
+		return result, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: result.BaseSHA, TargetBranch: target, Reason: "the integration base changed after conflict inspection"}
+	}
 	path := filepath.Join(l.root, "resolution-"+info.Key)
 	if _, err := runGitAt(ctx, info.Path, "worktree", "add", "--detach", path, result.BaseSHA); err != nil {
 		return result, err

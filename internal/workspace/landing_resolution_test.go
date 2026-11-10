@@ -19,8 +19,10 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 		wantError           bool
 		validationCommand   string
 		wantAttribution     string
+		baseMoved           bool
 	}{
 		{name: "symlink conflict uses Git entries", before: "symlink", after: "symlink", wantCalls: 1},
+		{name: "inspected base advancement stops before provider", baseMoved: true},
 		{name: "gate failure reproduces on integration base", before: "symlink", after: "symlink", wantCalls: 1, validationCommand: "printf 'landing validation failed\\n'; exit 1", wantAttribution: failureattribution.Independent},
 		{name: "gate failure introduced by resolution", before: "symlink", after: "symlink", wantCalls: 1, validationCommand: "if [ \"$(readlink feature.txt)\" = missing-resolved-target ]; then printf 'landing validation failed\\n'; exit 1; fi", wantAttribution: failureattribution.Change},
 		{name: "oversized original stops before provider", before: "oversized", wantError: true},
@@ -74,13 +76,23 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 				fixture.head = strings.TrimSpace(runGit(t, fixture.info.Path, "rev-parse", "HEAD"))
 			}
 			base := fixture.remoteMain(t)
+			expectedBase := ""
+			if test.baseMoved {
+				observed, conflicted, err := fixture.backend.InspectLandingConflict(t.Context(), fixture.info, fixture.issue, LandOptions{HeadSHA: fixture.head, TargetBranch: "main"})
+				if err != nil || !conflicted || observed != base || fixture.remoteMain(t) != base || strings.TrimSpace(runGit(t, fixture.info.Path, "rev-parse", "HEAD")) != fixture.head {
+					t.Fatalf("read-only inspection lost current conflict/source: base=%s conflicted=%t error=%v", observed, conflicted, err)
+				}
+				expectedBase = observed
+				fixture.advanceMain(t, "ADVANCED.md", "advanced target\n")
+				base = fixture.remoteMain(t)
+			}
 			calls := 0
 			command := test.validationCommand
 			if command == "" {
 				command = "git diff --check HEAD^ HEAD"
 			}
 			result, err := fixture.backend.ResolveLandingConflict(t.Context(), fixture.info, fixture.issue, LandOptions{
-				HeadSHA: fixture.head, TargetBranch: "main", Message: "resolved change", ValidationCommand: command,
+				HeadSHA: fixture.head, TargetBranch: "main", Message: "resolved change", ValidationCommand: command, ExpectedBaseSHA: expectedBase,
 			}, func(ctx context.Context, path string, files []string) error {
 				calls++
 				if len(files) != 1 || files[0] != "feature.txt" {
@@ -99,6 +111,20 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 				_, err := runGitAt(ctx, path, "add", "feature.txt")
 				return err
 			})
+			if test.baseMoved {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != base || calls != 0 || result.HeadSHA != "" || result.Gate.Command != "" || fixture.remoteMain(t) != base || strings.TrimSpace(runGit(t, fixture.info.Path, "rev-parse", "HEAD")) != fixture.head {
+					t.Fatalf("base advancement bypassed inspection fence: result=%+v error=%v calls=%d", result, err, calls)
+				}
+				path, err := landingRecordPath(t.Context(), fixture.info.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unexecuted resolution created a landing receipt: %v", err)
+				}
+				return
+			}
 			if test.wantAttribution != "" {
 				var validationErr *ValidationError
 				if !errors.As(err, &validationErr) || validationErr.Stage != ValidationStageLanding {

@@ -15,14 +15,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type nativeCompletionRunner struct {
 	*runner.Runner
-	prepared  *runner.RunResult
-	completed chan nativeCompletionRun
-	calls     atomic.Int32
-	gate      gate.Config
+	prepared             *runner.RunResult
+	completed            chan nativeCompletionRun
+	calls                atomic.Int32
+	gate                 gate.Config
+	expectPendingLanding bool
 }
 
 func runNativeCompletionOrchestrator(t *testing.T, h *nativeChangeHub, agent *runner.Runner, request runner.RunRequest, targets ...string) (runner.RunResult, error) {
@@ -49,7 +51,7 @@ type nativeCompletionRun struct {
 
 func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativeCompletionRunner, request runner.RunRequest, target string) (runner.RunResult, connector.Issue, error) {
 	t.Helper()
-	if state := h.state(t, request.Issue.ID); state != "Rework" && state != "In Progress" {
+	if state := h.state(t, request.Issue.ID); state != "Rework" && state != "In Progress" && state != "Merging" {
 		t.Fatalf("no-change settlement must start from active work: %s", state)
 	}
 	for _, change := range h.changes(t, request.Issue.ID) {
@@ -62,7 +64,7 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	orch, err := orchestrator.New(orchestrator.Config{
 		Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor,
 		PollInterval: time.Hour, MaxConcurrentAgents: 1,
-		ActiveStates: []string{"Rework", "In Progress"}, TerminalStates: []string{"Done"},
+		ActiveStates: []string{"Rework", "In Progress", "Merging"}, TerminalStates: []string{"Done"},
 		AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false), Gate: backend.gate},
 	}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
@@ -100,7 +102,7 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	state, err := orch.State(t.Context())
 	landed := false
 	wantRetries := 0
-	if target == "Rework" {
+	if target == "Rework" || backend.expectPendingLanding {
 		wantRetries = 1
 	}
 	for _, event := range state.RecentEvents {
@@ -116,6 +118,31 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	}
 	if completed.err != nil || target == "Done" && ((!noChange && (landing == nil || !landing.Landed)) || len(state.Blocked) != 0) || backend.calls.Load() != 1 {
 		t.Fatalf("no-change settlement did not reconcile delivery: landing=%+v calls=%d error=%v", landing, backend.calls.Load(), completed.err)
+	}
+	if backend.expectPendingLanding {
+		waiting := false
+		for _, event := range state.RecentEvents {
+			waiting = waiting || event.Event == "merge_worker_waiting"
+		}
+		recovery, recoveryErr := h.admin.Recovery(t.Context(), request.Execution.Recovery().Issue.WorkItemID)
+		if target != "Merging" || landing == nil || landing.Landed || landing.Path != "merge_resolution_pending" || landing.RefusalKind != workspace.LandRefusalConflict || len(landing.ConflictFiles) == 0 || !waiting || noChange || len(state.Blocked) != 0 || state.Retry[request.Issue.ID].Issue.State != "Merging" || recoveryErr != nil || recovery.Change == nil || recovery.ChangeDetail == nil || recovery.ChangeDetail.Change.CurrentLanding() != nil || recovery.Change.ChangeID != landing.ChangeID || recovery.Change.VersionID != landing.VersionID || recovery.Change.HeadSHA != landing.HeadSHA {
+			t.Fatalf("pending landing lost its automatic retry/source authority: landing=%+v recovery=%+v error=%v", landing, recovery, recoveryErr)
+		}
+		found := false
+		for _, version := range recovery.ChangeDetail.Versions {
+			if version.ID == landing.VersionID {
+				receipt := version.Landing
+				found = receipt != nil && !receipt.Landed && receipt.Path == landing.Path && receipt.RefusalKind == landing.RefusalKind && receipt.ChangeID == landing.ChangeID && receipt.VersionID == landing.VersionID && receipt.HeadSHA == landing.HeadSHA
+			}
+		}
+		if !found {
+			t.Fatal("pending landing did not retain its matching conflict receipt")
+		}
+		for _, attempt := range recovery.Attempts {
+			if attempt.Runtime != nil && attempt.Runtime.Completion != nil && attempt.Runtime.Completion.AcceptanceRecorded {
+				t.Fatalf("pending landing recorded acceptance: %+v", attempt)
+			}
+		}
 	}
 	return completed.result, state.Retry[request.Issue.ID].Issue, completed.err
 }

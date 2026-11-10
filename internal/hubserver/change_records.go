@@ -919,6 +919,9 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 		if err != nil {
 			return tracker.ChangeDetail{}, err
 		}
+		if landed := change.CurrentLanding(); landed != nil && landed.Quality != nil && version.ChangeID == change.ID && landed.VersionID == version.ID && landed.HeadSHA == version.HeadSHA {
+			version.LandingQuality = landed.Quality
+		}
 		result.Versions = append(result.Versions, version)
 	}
 	for _, row := range evidence {
@@ -1045,6 +1048,9 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 	version, err := s.hydrateChangeVersionWithRows(ctx, scope, item, *versionRecord, observations)
 	if err != nil {
 		return tracker.ChangeDetail{}, err
+	}
+	if landed := change.CurrentLanding(); landed != nil && landed.Quality != nil && version.ChangeID == change.ID && landed.VersionID == version.ID && landed.HeadSHA == version.HeadSHA {
+		version.LandingQuality = landed.Quality
 	}
 	var evidence []eventstore.Evidence
 	if facts != nil {
