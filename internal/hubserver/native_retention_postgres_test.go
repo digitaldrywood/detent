@@ -2,26 +2,33 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	admin.SetMaxOpenConns(2)
 	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-90 * 24 * time.Hour)
 	objects := &memoryRunDetails{}
@@ -193,4 +200,219 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 			}
 		})
 	}
+
+	t.Run("lease recovery during retention", func(t *testing.T) {
+		type ownership struct {
+			leases     map[string]leasestore.Lease
+			attempts   map[string]leasestore.Attempt
+			checkpoint attachment.ArchiveReference
+		}
+		owners := make(map[tracker.OrganizationID]ownership)
+		for _, org := range organizations {
+			checkpoint, err := content.PreparePayload(t.Context(), org, encode(nativeTestCheckpoint()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := ownership{leases: make(map[string]leasestore.Lease), attempts: make(map[string]leasestore.Attempt), checkpoint: checkpoint}
+			for index, kind := range []string{"live", "orphan", "recoverable"} {
+				var work corestore.WorkItem
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					var err error
+					state := "Todo"
+					work, err = w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project, NativeID: tracker.NativeWorkItemID("wi_" + kind), Number: int64(index + 2), Title: kind, WorkflowStateName: &state})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+					machine := leasestore.Machine{OrganizationID: org, ID: "machine_" + kind, Hostname: "example", Capacity: 1, Version: "test"}
+					if err := w.RegisterMachine(t.Context(), machine); err != nil {
+						return err
+					}
+					lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: work.ID, ExpectedRevision: work.Revision, MachineID: machine.ID, SessionID: "session_" + kind, LeaseID: "lease_" + kind, TTL: time.Hour})
+					if err != nil {
+						return err
+					}
+					status := "running"
+					if kind == "recoverable" {
+						status = "interrupted"
+					}
+					body := encode(tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: "attempt_" + kind, RunID: "run_" + kind, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1}, Status: status, StartedAt: lease.AcquiredAt, UpdatedAt: lease.AcquiredAt, Checkpoint: nativeTestCheckpoint()})
+					payload, err := content.PreparePayload(t.Context(), org, body)
+					if err != nil {
+						return err
+					}
+					fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
+					attempt, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt_" + kind, RunID: "run_" + kind, Fence: fence, Sequence: 1, Status: status, PayloadObjectKey: payload.Key, PayloadReference: payload, CheckpointObjectKey: &checkpoint.Key, CheckpointReference: checkpoint})
+					if err != nil {
+						return err
+					}
+					if kind == "recoverable" {
+						lease, err = w.Release(t.Context(), fence, "service_restart")
+					}
+					owner.leases[kind], owner.attempts[kind] = lease, attempt
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET acquired_at=clock_timestamp()-interval '2 hours',renewed_at=clock_timestamp()-interval '1 hour',expires_at=clock_timestamp()-interval '1 second' WHERE organization_id=$1 AND lease_id=$2`, org, owner.leases["orphan"].LeaseID); err != nil {
+				t.Fatal(err)
+			}
+			owners[org] = owner
+		}
+		for index, org := range organizations {
+			t.Run(string(org), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
+				blocker, err := admin.BeginTx(ctx, nil)
+				if err != nil {
+					cancel()
+					t.Fatal(err)
+				}
+				var workers sync.WaitGroup
+				t.Cleanup(func() { cancel(); _ = blocker.Rollback(); workers.Wait() })
+				var blockerPID int
+				if err := blocker.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&blockerPID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_duplicate_challenges IN SHARE MODE"); err != nil {
+					t.Fatal(err)
+				}
+				service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}}}
+				retained := make(chan error, 1)
+				workers.Go(func() { retained <- service.expireNativeRecords(ctx, now.Add(2*time.Hour)) })
+				testenv.WaitUntil(t, testenv.WaitContext(t, ctx), func() error {
+					select {
+					case err := <-retained:
+						t.Fatalf("retention returned before lock barrier: %v", err)
+					default:
+					}
+					var waiting bool
+					if err := admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))`, blockerPID).Scan(&waiting); err != nil {
+						return err
+					}
+					if !waiting {
+						return fmt.Errorf("retention has not reached challenge lock")
+					}
+					return nil
+				})
+				foreign := organizations[1-index]
+				var foreignLease leasestore.Lease
+				var foreignAttempt leasestore.Attempt
+				if err := repository.ReadLeases(ctx, foreign, corestore.Serving, func(r leasestore.Reader) error {
+					var err error
+					foreignLease, err = r.Lease(ctx, owners[foreign].leases["orphan"].LeaseID)
+					if err != nil {
+						return err
+					}
+					foreignAttempt, err = r.Attempt(ctx, owners[foreign].attempts["orphan"].ID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				owner := owners[org]
+				heartbeatAt := time.Now().UTC().Truncate(time.Microsecond)
+				progress := make(chan error, 1)
+				workers.Go(func() {
+					progress <- repository.WriteLeases(ctx, org, corestore.Serving, func(w leasestore.Writer) error {
+						live, orphan := owner.leases["live"], owner.leases["orphan"]
+						if err := w.HeartbeatMachine(ctx, leasestore.Machine{OrganizationID: org, ID: live.MachineID, Hostname: "example", Capacity: 1, Version: "test"}, heartbeatAt); err != nil {
+							return err
+						}
+						if _, err := w.Renew(ctx, leasestore.Fence{LeaseID: live.LeaseID, FencingToken: live.FencingToken}, 2*time.Hour); err != nil {
+							return err
+						}
+						_, err := w.Expire(ctx, leasestore.Fence{LeaseID: orphan.LeaseID, FencingToken: orphan.FencingToken})
+						return err
+					})
+				})
+				select {
+				case err := <-progress:
+					if err != nil {
+						t.Fatalf("lease progress during retention: %v", err)
+					}
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				select {
+				case err := <-retained:
+					t.Fatalf("retention returned before blocker released: %v", err)
+				default:
+				}
+				if err := blocker.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-retained:
+					if err != nil {
+						t.Fatalf("retention after lease progress: %v", err)
+					}
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				if err := repository.ReadLeases(ctx, org, corestore.Serving, func(r leasestore.Reader) error {
+					for _, kind := range []string{"live", "orphan", "recoverable"} {
+						lease, err := r.Lease(ctx, owner.leases[kind].LeaseID)
+						if err != nil {
+							return err
+						}
+						attempt, err := r.Attempt(ctx, owner.attempts[kind].ID)
+						if err != nil {
+							return err
+						}
+						switch kind {
+						case "live":
+							if lease.ReleasedAt != nil || !lease.ExpiresAt.After(owner.leases[kind].ExpiresAt) || attempt.Status != "running" {
+								t.Fatalf("renewed live ownership changed: lease=%+v attempt=%+v", lease, attempt)
+							}
+						case "orphan":
+							if lease.ReleasedAt == nil || lease.ReleaseReason != "expired" || attempt.Status != "cancelled" || attempt.Sequence != 2 {
+								t.Fatalf("expired orphan was not recovered: lease=%+v attempt=%+v", lease, attempt)
+							}
+						case "recoverable":
+							if !reflect.DeepEqual(lease, owner.leases[kind]) || !reflect.DeepEqual(attempt, owner.attempts[kind]) {
+								t.Fatalf("recoverable history changed: lease=%+v attempt=%+v", lease, attempt)
+							}
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.ReadLeases(ctx, foreign, corestore.Serving, func(r leasestore.Reader) error {
+					lease, err := r.Lease(ctx, foreignLease.LeaseID)
+					if err != nil {
+						return err
+					}
+					attempt, err := r.Attempt(ctx, foreignAttempt.ID)
+					if err != nil {
+						return err
+					}
+					if !reflect.DeepEqual(lease, foreignLease) || !reflect.DeepEqual(attempt, foreignAttempt) {
+						t.Fatalf("foreign tenant ownership changed: lease=%+v attempt=%+v", lease, attempt)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				var heartbeat time.Time
+				if err := admin.QueryRowContext(ctx, "SELECT last_heartbeat_at FROM machines WHERE organization_id=$1 AND id=$2", org, owner.leases["live"].MachineID).Scan(&heartbeat); err != nil || heartbeat.Before(heartbeatAt) {
+					t.Fatalf("heartbeat did not persist: at=%v error=%v", heartbeat, err)
+				}
+				checkpoint, err := objects.ReadDetail(ctx, string(org), owner.checkpoint)
+				if err != nil || !bytes.Equal(checkpoint, encode(nativeTestCheckpoint())) {
+					t.Fatalf("recoverable checkpoint lost: error=%v", err)
+				}
+				if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+					history, err := r.Events(ctx, project, item, pending, corestore.MaxPageSize)
+					if err != nil || len(history) != 1 || history[0].Sequence != pending+1 {
+						t.Fatalf("authoritative historical tail changed: history=%+v error=%v", history, err)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	})
 }

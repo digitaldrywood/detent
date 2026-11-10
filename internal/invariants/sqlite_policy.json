@@ -1557,11 +1557,6 @@
       "backend_sqlite": 1,
       "sqlite_open": 1
     },
-    "internal/orchestrator/history_retention_test.go": {
-      "backend_sqlite": 1,
-      "driver_import": 1,
-      "sqlite_open": 2
-    },
     "internal/orchestrator/implement_dependency_deferral_test.go": {
       "sqlite_open": 4
     },
