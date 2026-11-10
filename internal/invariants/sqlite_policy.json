@@ -1293,9 +1293,6 @@
     "internal/hubserver/native_work_search_tokenizer.go": {
       "driver_import": 1
     },
-    "internal/hubserver/native_worker_test.go": {
-      "database_path": 2
-    },
     "internal/hubserver/onboarding_issue_intake.go": {
       "sql_julianday": 4
     },

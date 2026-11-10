@@ -1996,6 +1996,64 @@ func (q *Queries) RecordLatestCheckpointEvents(ctx context.Context, arg RecordLa
 	return items, nil
 }
 
+const recordLatestClaimedSchedulerDecision = `-- name: RecordLatestClaimedSchedulerDecision :one
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, history_hidden, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='scheduler.decision' AND scheduler_outcome='claimed' ORDER BY sequence DESC LIMIT 1
+`
+
+type RecordLatestClaimedSchedulerDecisionParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+}
+
+func (q *Queries) RecordLatestClaimedSchedulerDecision(ctx context.Context, arg RecordLatestClaimedSchedulerDecisionParams) (CollaborationEvent, error) {
+	row := q.db.QueryRow(ctx, recordLatestClaimedSchedulerDecision, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	var i CollaborationEvent
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.WorkItemID,
+		&i.ID,
+		&i.Sequence,
+		&i.Type,
+		&i.SchemaVersion,
+		&i.ActorKind,
+		&i.ActorPrincipalID,
+		&i.EventRevision,
+		&i.ChangeID,
+		&i.VersionID,
+		&i.HeadSHA,
+		&i.RunID,
+		&i.AttemptID,
+		&i.FromState,
+		&i.ToState,
+		&i.RecordedAt,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
+		&i.LandingWaiting,
+		&i.LandingChangeID,
+		&i.LandingVersionID,
+		&i.LandingHeadSHA,
+		&i.ProjectSequence,
+		&i.PushKnown,
+		&i.PushChangeID,
+		&i.PushVersionID,
+		&i.PushHeadSha,
+		&i.PushExternalEffect,
+		&i.PushEffectState,
+		&i.HistoryHidden,
+		&i.SchedulerOutcome,
+		&i.ActorEnvelopeKnown,
+		&i.ActorViaKey,
+		&i.ActorDisplayName,
+		&i.ActorAgent,
+	)
+	return i, err
+}
+
 const recordLatestRunEvent = `-- name: RecordLatestRunEvent :one
 SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, history_hidden, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events
 WHERE organization_id=$1 AND project_id=$2

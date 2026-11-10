@@ -71,6 +71,7 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 	if s.config.TenantRepository == nil || s.config.NativeRunEvents == nil || scope.credential.Runner.RunnerID == "" {
 		return leasestore.Lease{}, nativeRunEventStorageUnavailable()
 	}
+	explicitItem := request.WorkItemID != ""
 	if request.WorkItemID == "" && len(request.ProviderCandidates) == 1 {
 		request.WorkItemID = request.ProviderCandidates[0].WorkItemID
 	}
@@ -132,9 +133,153 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 	}
 	plan, err := s.readNativeClaimPlan(ctx, scope, request, now)
 	if err != nil {
+		if errors.Is(err, ErrNoClaimableWork) && explicitItem {
+			if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now); recordErr != nil {
+				return leasestore.Lease{}, recordErr
+			}
+		}
 		return leasestore.Lease{}, err
 	}
 	return s.claimNativeIssueTenantWithPlan(ctx, scope, request, ttl, now, plan, nil)
+}
+
+type requestedClaimRefusal struct {
+	item            corestore.WorkItem
+	change          tracker.NativeChangeReference
+	claimedSequence int64
+	eventID         string
+	recorded        bool
+}
+
+func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.Reader, scope nativeScope, request tracker.NativeClaim, now time.Time) (requestedClaimRefusal, error) {
+	var result requestedClaimRefusal
+	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+		return result, err
+	}
+	identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+	if err != nil {
+		return result, err
+	}
+	if !runnerIdentityCanClaim(identity, scope, request.MachineID, now) {
+		return result, tracker.ErrMachineNotFound
+	}
+	currentPolicy, err := r.ProjectPolicy(ctx, scope.project)
+	if err != nil {
+		return result, err
+	}
+	if currentPolicy.PolicyID != request.PolicyID {
+		return result, policyMismatch("Claim configuration changed; load the current project policy before claiming")
+	}
+	result.item, err = r.WorkItem(ctx, scope.project, request.WorkItemID)
+	if err != nil {
+		return result, err
+	}
+	page, err := r.CandidatePage(ctx, nativeTenantCandidateQuery(scope, request, request.WorkItemID, now))
+	if err != nil {
+		return result, err
+	}
+	if len(page.Items) != 0 {
+		return result, corestore.ErrRevisionConflict
+	}
+	change, err := r.LatestChange(ctx, scope.project, request.WorkItemID)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return result, err
+	}
+	if err == nil {
+		result.change.ChangeID = change.ID
+		if change.CurrentVersionID != nil {
+			version, err := r.Version(ctx, change.ID, *change.CurrentVersionID)
+			if err != nil {
+				return result, err
+			}
+			result.change.VersionID, result.change.HeadSHA = version.ID, version.HeadSHA
+		}
+	}
+	owner, ok := r.(eventstore.SchedulerDecisionReader)
+	if !ok {
+		return result, nativeRunEventStorageUnavailable()
+	}
+	claimed, err := owner.LatestClaimedSchedulerDecision(ctx, scope.project, request.WorkItemID)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return result, err
+	}
+	if err == nil {
+		result.claimedSequence = claimed.Sequence
+	}
+	key, err := json.Marshal(struct {
+		Organization tracker.OrganizationID
+		Project      tracker.ProjectID
+		Item         tracker.NativeWorkItemID
+		Runner       string
+		Revision     int64
+		Change       tracker.NativeChangeReference
+		Reason       string
+		Claimed      int64
+	}{scope.organization, scope.project, request.WorkItemID, identity.RunnerID, result.item.Revision, result.change, "no_claimable_work", result.claimedSequence})
+	if err != nil {
+		return result, err
+	}
+	result.eventID = "evt_refusal_" + policy.Digest(key)
+	previous, err := owner.SchedulerDecision(ctx, scope.project, request.WorkItemID, result.eventID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return result, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	actor := scope.actor()
+	if previous.SchedulerOutcome != "skipped" || previous.ActorKind != actor.Kind || previous.ActorPrincipalID != actor.PrincipalID || previous.EventRevision != result.item.Revision || previous.ChangeID != result.change.ChangeID || previous.VersionID != result.change.VersionID || previous.HeadSHA != result.change.HeadSHA {
+		return result, artifact.ErrIntegrity
+	}
+	result.recorded = true
+	return result, nil
+}
+
+func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time) error {
+	var refusal requestedClaimRefusal
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nativeRunEventStorageUnavailable()
+	}
+	if err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		refusal, err = s.readRequestedClaimRefusal(ctx, r, scope, request, now)
+		return err
+	}); err != nil || refusal.recorded {
+		return err
+	}
+	decision := tracker.CollaborationEvent{ID: refusal.eventID, OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: request.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: tracker.Revision(refusal.item.Revision), Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.credential.Runner.RunnerID, Source: "native_claim_eligibility", Outcome: "skipped", Reason: "no_claimable_work", At: now, WorkItemRevision: tracker.Revision(refusal.item.Revision)}}}
+	if refusal.change.ChangeID != "" {
+		decision.Data.Change = &refusal.change
+	}
+	raw, err := json.Marshal(decision)
+	if err != nil {
+		return err
+	}
+	row, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).PrepareEvent(ctx, scope.organization, raw)
+	if err != nil {
+		return err
+	}
+	return s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
+		if err := w.LockRelationshipGraph(ctx); err != nil {
+			return err
+		}
+		if _, err := w.LockWorkItem(ctx, scope.project, request.WorkItemID); err != nil {
+			return err
+		}
+		current, err := s.readRequestedClaimRefusal(ctx, w, scope, request, s.config.now().UTC())
+		if err != nil {
+			return err
+		}
+		if current.item.Revision != refusal.item.Revision || current.change != refusal.change || current.claimedSequence != refusal.claimedSequence {
+			return corestore.ErrRevisionConflict
+		}
+		if current.recorded {
+			return nil
+		}
+		_, err = w.AppendEvent(ctx, row)
+		return err
+	})
 }
 
 func (s *Service) readNativeClaimCandidates(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimCandidateScan, error) {

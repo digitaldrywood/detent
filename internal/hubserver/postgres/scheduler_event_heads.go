@@ -9,6 +9,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func (s *session) SchedulerDecision(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) (eventstore.Event, error) {
+	row, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, ID: id})
+	if err != nil {
+		return eventstore.Event{}, mapError(ctx, err)
+	}
+	event := eventRecord(row)
+	if event.Type != "scheduler.decision" {
+		return eventstore.Event{}, artifact.ErrIntegrity
+	}
+	return event, nil
+}
+
+func (s *session) LatestClaimedSchedulerDecision(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.Event, error) {
+	row, err := s.queries.RecordLatestClaimedSchedulerDecision(ctx, pgquery.RecordLatestClaimedSchedulerDecisionParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item})
+	return eventRecord(row), mapError(ctx, err)
+}
+
 func (s *session) SchedulerDecisions(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.SchedulerDecisionRows, error) {
 	rows, err := s.queries.SchedulerEventHeads(ctx, pgquery.SchedulerEventHeadsParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: string(item)})
 	if err != nil {

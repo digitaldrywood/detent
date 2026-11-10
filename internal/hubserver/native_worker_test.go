@@ -1,18 +1,27 @@
 package hubserver
 
 import (
+	"context"
+	"errors"
 	"net/http"
-	"path/filepath"
+	"net/http/httptest"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -46,7 +55,7 @@ func (f nativeFixture) worker(t *testing.T, name string) string {
 		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: f.project.OrganizationID, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: f.service.config.Version}); err != nil {
 			return err
 		}
-		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: f.project.OrganizationID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", MachineUse: "dedicated", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: projects, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
+		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: f.project.OrganizationID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", DisplayName: name, MachineUse: "dedicated", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: projects, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -59,37 +68,82 @@ func (f nativeFixture) worker(t *testing.T, name string) string {
 
 func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }, Version: "v0.117.50"}
-	f := newNativeFixture(t, openTestService(t, config), "", "claims")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	config := Config{now: func() time.Time { return now }, Version: "v0.117.50"}
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, config), "", "claims")
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.Core.RequireDependencies = true
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	descriptor := hubTestPolicy()
-	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 	issue := f.create(t, "work")
 	blocker := f.create(t, "blocker")
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "block"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}), http.StatusOK)
 	worker := f.worker(t, "worker")
 	otherWorker := f.worker(t, "other-worker")
-	machine := map[string]any{"id": "native-machine", "hostname": "runner", "display_name": "Runner", "version": "v0.117.50", "capacity": 1}
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("worker authentication status=%d: %v", status, err)
+	}
+	machineID := credential.Runner.MachineID
+	machine := map[string]any{"id": machineID, "hostname": "runner", "display_name": "Runner", "version": "v0.117.50", "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, machine), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", otherWorker, machine), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, machine), http.StatusNotFound)
-	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: "native-machine", SessionID: "native-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+	heartbeat := func(version string) {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machineID)+"/heartbeat", worker, map[string]any{"display_name": "Runner", "version": version, "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now}})
+		requireNativeStatus(t, response, http.StatusOK)
+		var snapshot runnerauth.RoutingSnapshot
+		decodeHubResponse(t, response, &snapshot)
+		if snapshot.RunnerID != credential.Runner.RunnerID || snapshot.Revision < 1 {
+			t.Fatalf("heartbeat routing=%+v", snapshot)
+		}
+	}
+	heartbeat("v0.117.50")
+	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "native-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	drainTestNativeBoard(t, f.service)
-	beforeRefusal, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, 0)
-	if err != nil {
+	var beforeRefusal viewstore.BoardSequence
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		beforeRefusal, err = r.BoardSequence(t.Context(), f.project.ID)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Second)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusConflict)
+	refusal := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request)
+	requireNativeStatus(t, refusal, http.StatusConflict)
 	drainTestNativeBoard(t, f.service)
-	afterRefusal, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, beforeRefusal.Sequence)
-	if err != nil || afterRefusal.Gap || len(afterRefusal.Deltas) != 1 {
-		t.Fatalf("claim refusal frame=%#v err=%v", afterRefusal, err)
+	var afterRefusal viewstore.BoardSequence
+	var deltas []viewstore.BoardDelta
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		afterRefusal, err = r.BoardSequence(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		deltas, err = r.BoardDeltas(t.Context(), f.project.ID, beforeRefusal.Sequence, 2)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
-	card := afterRefusal.Deltas[0].Current
-	if card == nil || card.Issue.WorkItemID != issue.WorkItemID || !card.Issue.LastActivityAt.Equal(now) {
+	if afterRefusal.ReplayFloor > beforeRefusal.Sequence || afterRefusal.Sequence != beforeRefusal.Sequence+1 || len(deltas) != 1 || deltas[0].Current == nil {
+		t.Fatalf("claim refusal sequence=%#v deltas=%#v response=%s", afterRefusal, deltas, refusal.Body.String())
+	}
+	card, err := viewstore.NewContent(f.service.runDetailStore()).Board(t.Context(), f.project.OrganizationID, *deltas[0].Current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Issue.WorkItemID != issue.WorkItemID || !card.Issue.LastActivityAt.Equal(now) {
 		t.Fatalf("claim refusal did not refresh card activity: %#v", card)
 	}
 
@@ -104,12 +158,14 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 		t.Fatal("claim retry changed the lease")
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", otherWorker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusNotFound)
-	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "run-start"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: newNativeID("run"), AttemptID: newNativeID("attempt"), PolicyID: descriptor.ID}}
+	event := nativeStartedEvent(lease)
 	f.service.config.Version = "v0.117.60"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+	upgradeIssue := f.create(t, "upgrade-check")
 	newClaim := request
 	newClaim.SessionID = "new-session"
+	newClaim.WorkItemID = upgradeIssue.WorkItemID
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, newClaim), http.StatusUpgradeRequired)
 	for range 3 {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
@@ -130,12 +186,32 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	config.Version = "v0.117.60"
-	f.service = openTestService(t, config)
+	f.service = reopenPostgresNativeService(t, f.service)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, worker, nil), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 	now = now.Add(91 * time.Second)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/native-machine/heartbeat", worker, map[string]any{"version": "v0.117.60", "capacity": 1}), http.StatusNoContent)
+	heartbeat("v0.117.60")
+	readAuthority := func(t *testing.T) (leasestore.Lease, leasestore.Attempt) {
+		t.Helper()
+		var current leasestore.Lease
+		var attempt leasestore.Attempt
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			current, err = r.Lease(t.Context(), string(lease.ID))
+			if err != nil {
+				return err
+			}
+			attempt, err = r.Attempt(t.Context(), event.Data.AttemptID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return current, attempt
+	}
+	expiredLease, expiredAttempt := readAuthority(t)
+	if expiredLease.ExpiresAt.After(now) || expiredLease.ReleasedAt != nil || expiredAttempt.Status != "running" {
+		t.Fatalf("expected expired unreleased authority before reclaim: lease=%+v attempt=%+v", expiredLease, expiredAttempt)
+	}
 	for _, test := range []struct {
 		name       string
 		credential string
@@ -144,32 +220,63 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	}{
 		{name: "another owner cannot renew expired lease", credential: otherWorker, fence: lease.FencingToken, status: http.StatusNotFound},
 		{name: "wrong token cannot renew expired lease", credential: worker, fence: lease.FencingToken + 1, status: http.StatusConflict},
-		{name: "original owner resumes expired lease", credential: worker, fence: lease.FencingToken, status: http.StatusOK},
+		{name: "original owner cannot renew expired lease", credential: worker, fence: lease.FencingToken, status: http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", test.credential, tracker.NativeLeaseMutation{FencingToken: test.fence, TTLSeconds: 90})
 			requireNativeStatus(t, response, test.status)
-			if test.status == http.StatusOK {
-				var renewed tracker.NativeLease
-				decodeHubResponse(t, response, &renewed)
-				if renewed.ID != lease.ID || renewed.FencingToken != lease.FencingToken || renewed.SessionID != lease.SessionID || !renewed.ExpiresAt.After(now) {
-					t.Fatalf("reconnect replaced original authority: %+v", renewed)
-				}
+			current, attempt := readAuthority(t)
+			if !reflect.DeepEqual(current, expiredLease) || !reflect.DeepEqual(attempt, expiredAttempt) {
+				t.Fatalf("refused expired renewal changed authority: lease=%+v attempt=%+v", current, attempt)
 			}
 		})
 	}
-	now = now.Add(91 * time.Second)
 	request.SessionID = "replacement-session"
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request)
 	requireNativeStatus(t, response, http.StatusOK)
 	var replacement tracker.NativeLease
 	decodeHubResponse(t, response, &replacement)
-	if replacement.FencingToken <= lease.FencingToken {
-		t.Fatal("reclaim did not advance fencing")
+	if replacement.ID == lease.ID || replacement.FencingToken <= lease.FencingToken || replacement.SessionID != request.SessionID || replacement.MachineID != machineID || !replacement.ExpiresAt.After(now) {
+		t.Fatalf("reclaim did not grant fresh authority: original=%+v replacement=%+v", lease, replacement)
 	}
+	retiredLease, retiredAttempt := readAuthority(t)
+	if retiredLease.ReleasedAt == nil || retiredLease.ReleaseReason != "expired" || retiredLease.FencingToken != expiredLease.FencingToken || retiredAttempt.Status != "cancelled" || retiredAttempt.LeaseID != string(lease.ID) || retiredAttempt.FencingToken != int64(lease.FencingToken) {
+		t.Fatalf("reclaim did not retire expired authority: lease=%+v attempt=%+v", retiredLease, retiredAttempt)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, TTLSeconds: 90}), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusConflict)
 	event.IdempotencyKey = "stale-new-event"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusConflict)
+	lateFinish := event
+	lateFinish.IdempotencyKey, lateFinish.Type, lateFinish.Data.Outcome = "stale-finish", "run.finished", "succeeded"
+	lateFinish.Data.Sequence = event.Data.Sequence + 1
+	lateFinish.Data.MachineID, lateFinish.Data.RunnerID, lateFinish.Data.SessionID = machineID, credential.Runner.RunnerID, lease.SessionID
+	refusedFinish := performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, lateFinish)
+	requireNativeStatus(t, refusedFinish, http.StatusConflict)
+	var finishError apiErrorResponse
+	decodeHubResponse(t, refusedFinish, &finishError)
+	if finishError.Code != "run_sequence_conflict" {
+		t.Fatalf("late completion refusal=%+v", finishError)
+	}
+	if err := f.service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.service = reopenPostgresNativeService(t, f.service)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, worker, nil), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, TTLSeconds: 90}), http.StatusOK)
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.Lease(t.Context(), string(replacement.ID))
+		if err == nil && (current.LeaseID != string(replacement.ID) || current.FencingToken != int64(replacement.FencingToken) || current.SessionID != replacement.SessionID || current.ReleasedAt != nil || !current.ExpiresAt.After(now)) {
+			t.Fatalf("restart lost reclaimed authority: %+v", current)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	currentRetiredLease, currentRetiredAttempt := readAuthority(t)
+	if !reflect.DeepEqual(currentRetiredLease, retiredLease) || !reflect.DeepEqual(currentRetiredAttempt, retiredAttempt) {
+		t.Fatalf("late commands or restart changed retired authority: lease=%+v attempt=%+v", currentRetiredLease, currentRetiredAttempt)
+	}
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", worker, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var history tracker.Page[tracker.CollaborationEvent]
@@ -195,19 +302,29 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	}
 	f.service.config.Version = "v0.117.61"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, Reason: "completed"}), http.StatusNoContent)
-	var aliases, outbox int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE github_node_id IS NOT NULL").Scan(&aliases); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		for _, item := range []tracker.NativeWorkItemID{issue.WorkItemID, blocker.WorkItemID, upgradeIssue.WorkItemID} {
+			if _, err := r.LinkedSource(t.Context(), f.project.ID, item); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("native work acquired a linked GitHub source: item=%s error=%v", item, err)
+			}
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&outbox); err != nil {
+	admin := nativeAttemptTestDatabase(t, f)
+	var outbox int
+	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbound WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&outbox); err != nil {
 		t.Fatal(err)
 	}
-	if aliases != 0 || outbox != 0 {
-		t.Fatalf("native work acquired GitHub identities or outbox: %d %d", aliases, outbox)
+	if outbox != 0 {
+		t.Fatalf("native work acquired GitHub outbox: %d", outbox)
 	}
 	for _, table := range []string{"collaboration_events", "collaboration_versions"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM "+table); err == nil {
-			t.Errorf("%s allowed ordinary deletion", table)
+		_, err := admin.ExecContext(t.Context(), "DELETE FROM "+table+" WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID)
+		var postgresError *pgconn.PgError
+		if !errors.As(err, &postgresError) || postgresError.Code != "23514" {
+			t.Errorf("%s ordinary deletion error=%v, want immutable-record refusal", table, err)
 		}
 	}
 }
@@ -231,21 +348,39 @@ func TestNativeRunnerMinimumVersion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Version: test.hub}), "", "minimum")
+			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Version: test.hub}), "", "minimum")
 			descriptor := hubTestPolicy()
-			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			issue := f.create(t, "work")
 			worker := f.worker(t, "worker")
-			capabilities := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/capabilities", worker, nil)
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("worker authentication status=%d: %v", status, err)
+			}
+			machineID := credential.Runner.MachineID
+			capabilitiesRequest := newHubAPIRequest(t, http.MethodGet, "/api/v2/capabilities", worker, nil)
+			capabilitiesRequest.Header.Set("X-Detent-Organization", string(f.project.OrganizationID))
+			capabilities := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(capabilities, capabilitiesRequest)
 			requireNativeStatus(t, capabilities, http.StatusOK)
 			var published nativeCapabilitiesResponse
 			decodeHubResponse(t, capabilities, &published)
 			if published.MinimumRunnerVersion != test.minimum {
 				t.Fatalf("published minimum = %q, want %q", published.MinimumRunnerVersion, test.minimum)
 			}
-			machine := map[string]any{"id": "native-machine", "hostname": "runner", "version": test.runner, "capacity": 1}
+			machine := map[string]any{"id": machineID, "hostname": "runner", "display_name": "Runner", "version": test.runner, "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, machine), http.StatusOK)
-			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: "native-machine", SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			heartbeat := func(version string) {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machineID)+"/heartbeat", worker, map[string]any{"display_name": "Runner", "version": version, "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.now()}})
+				requireNativeStatus(t, response, http.StatusOK)
+				var snapshot runnerauth.RoutingSnapshot
+				decodeHubResponse(t, response, &snapshot)
+				if snapshot.RunnerID != credential.Runner.RunnerID || snapshot.Revision < 1 {
+					t.Fatalf("heartbeat routing=%+v", snapshot)
+				}
+			}
+			heartbeat(test.runner)
+			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request)
 			wantStatus := http.StatusOK
 			if test.refused {
@@ -259,15 +394,194 @@ func TestNativeRunnerMinimumVersion(t *testing.T) {
 					t.Fatalf("claim refusal = %#v", failure)
 				}
 				var count int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&count); err != nil {
+				if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM leases WHERE organization_id=$1", f.project.OrganizationID).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count != 0 {
 					t.Fatalf("refused runner acquired %d leases", count)
 				}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/native-machine/heartbeat", worker, map[string]any{"version": test.minimum, "capacity": 1}), http.StatusNoContent)
+				heartbeat(test.minimum)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusOK)
 			}
 		})
 	}
+}
+
+func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }, Version: "v0.117.60"})
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		t.Run(string(organization), func(t *testing.T) {
+			now = time.Now().UTC().Truncate(time.Microsecond)
+			service := service
+			if organization != "org_first" {
+				service = reopenPostgresNativeService(t, service)
+				service.database.hostedOrganization = organization
+				service.localOrganization = string(organization)
+				service.requestMetrics.organization = organization
+			}
+			f := newNativeFixture(t, service, organization, "refusals")
+			perform := func(method, path, token string, payload any) *httptest.ResponseRecorder {
+				request := newHubAPIRequest(t, method, path, token, payload)
+				request.Header.Set("X-Detent-Organization", string(organization))
+				response := httptest.NewRecorder()
+				service.Handler().ServeHTTP(response, request)
+				return response
+			}
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.project.ID)
+				if err != nil {
+					return err
+				}
+				project.Core.RequireDependencies = true
+				_, err = w.UpdateProjectRecord(t.Context(), project)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			issue, blocker := f.create(t, "work"), f.create(t, "blocker")
+			path := f.base + "/work-items/" + string(issue.WorkItemID)
+			requireNativeStatus(t, perform(http.MethodPost, path+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "block"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}), http.StatusOK)
+			workers := []string{f.worker(t, "first"), f.worker(t, "second")}
+			requests := make([]tracker.NativeClaim, len(workers))
+			for i, worker := range workers {
+				credential, status, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(worker), "", "")
+				if err != nil || status != http.StatusOK {
+					t.Fatalf("worker authentication status=%d: %v", status, err)
+				}
+				machine := credential.Runner.MachineID
+				report := map[string]any{"id": machine, "hostname": "example", "display_name": "Example runner", "version": "v0.117.60", "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
+				requireNativeStatus(t, perform(http.MethodPost, f.base+"/machines/register", worker, report), http.StatusOK)
+				report["capacity_configuration"] = runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now}
+				requireNativeStatus(t, perform(http.MethodPost, f.base+"/machines/"+string(machine)+"/heartbeat", worker, report), http.StatusOK)
+				requests[i] = tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: machine, SessionID: "session_" + credential.Runner.RunnerID, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+			}
+			type state struct {
+				revision, sequence, board int64
+				leases, attempts          int
+				activity                  time.Time
+			}
+			read := func() state {
+				t.Helper()
+				drainTestNativeBoard(t, service)
+				var value state
+				if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					item, err := r.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
+					if err != nil {
+						return err
+					}
+					board, err := r.BoardSequence(t.Context(), f.project.ID)
+					value.revision, value.sequence, value.board, value.activity = item.Revision, item.EventSequence, board.Sequence, item.LastActivityAt
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				admin := nativeAttemptTestDatabase(t, f)
+				for _, query := range []struct {
+					sql   string
+					count *int
+				}{
+					{"SELECT count(*) FROM leases WHERE organization_id=$1", &value.leases},
+					{"SELECT count(*) FROM native_attempts WHERE organization_id=$1", &value.attempts},
+				} {
+					if err := admin.QueryRowContext(t.Context(), query.sql, organization).Scan(query.count); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return value
+			}
+			refuse := func(i int) {
+				t.Helper()
+				response := perform(http.MethodPost, f.base+"/claims", workers[i], requests[i])
+				requireNativeStatus(t, response, http.StatusConflict)
+				if !strings.Contains(response.Body.String(), `"code":"no_claimable_work"`) {
+					t.Fatalf("refusal=%s", response.Body.String())
+				}
+			}
+			before := read()
+			now = now.Add(time.Second)
+			refuse(0)
+			after := read()
+			if after.revision != before.revision || after.sequence != before.sequence+1 || after.board != before.board+1 || !after.activity.Equal(now) || after.leases != 0 || after.attempts != 0 {
+				t.Fatalf("first refusal before=%+v after=%+v", before, after)
+			}
+			response := perform(http.MethodGet, path+"/history", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var history tracker.Page[tracker.CollaborationEvent]
+			decodeHubResponse(t, response, &history)
+			decision := history.Items[len(history.Items)-1].Data.Decision
+			if decision == nil || decision.Outcome != "skipped" || decision.Source != "native_claim_eligibility" || decision.Reason != "no_claimable_work" || int64(decision.WorkItemRevision) != after.revision {
+				t.Fatalf("refusal decision=%+v", decision)
+			}
+			assertDuplicate := func() {
+				t.Helper()
+				before := read()
+				original := service.config.TenantRepository
+				counted := &nativeClaimWriteCounter{Repository: original.(*postgres.Repository)}
+				func() {
+					service.config.TenantRepository = counted
+					defer func() { service.config.TenantRepository = original }()
+					for range 3 {
+						refuse(0)
+					}
+				}()
+				if counted.writes != 0 {
+					t.Fatalf("identical polls opened %d write transactions", counted.writes)
+				}
+				if after := read(); after != before {
+					t.Fatalf("identical polls mutated durable state: before=%+v after=%+v", before, after)
+				}
+				t.Logf("tenant=%s identical_polls=3 write_transactions=%d durable_state_unchanged=true", organization, counted.writes)
+			}
+			assertDuplicate()
+			now = now.Add(time.Second)
+			refuse(1)
+			interleaved := read()
+			if interleaved.sequence != after.sequence+1 || interleaved.board != after.board+1 || interleaved.revision != after.revision || interleaved.leases != 0 || interleaved.attempts != 0 {
+				t.Fatalf("second runner refusal=%+v", interleaved)
+			}
+			assertDuplicate()
+			requireNativeStatus(t, perform(http.MethodPost, f.base+"/work-items/"+string(blocker.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "unblock"}, ExpectedRevision: 1, State: "Done", Reason: "user_requested"}), http.StatusOK)
+			claimed := perform(http.MethodPost, f.base+"/claims", workers[0], requests[0])
+			requireNativeStatus(t, claimed, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, claimed, &lease)
+			requireNativeStatus(t, perform(http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", workers[0], tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
+			requireNativeStatus(t, perform(http.MethodPost, f.base+"/work-items/"+string(blocker.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "block-again"}, ExpectedRevision: 2, State: "Todo", Reason: "user_requested"}), http.StatusOK)
+			requests[0].SessionID += "_after_claim"
+			beforeReset := read()
+			now = now.Add(time.Second)
+			refuse(0)
+			afterReset := read()
+			if afterReset.revision != before.revision || afterReset.sequence != beforeReset.sequence+1 || afterReset.board != beforeReset.board+1 || afterReset.leases != beforeReset.leases || afterReset.attempts != beforeReset.attempts || !afterReset.activity.Equal(now) {
+				t.Fatalf("committed claim did not reset refusal dedup: before=%+v after=%+v", beforeReset, afterReset)
+			}
+			assertDuplicate()
+			title := "Updated required work"
+			requireNativeStatus(t, perform(http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "new-source-revision"}, ExpectedRevision: tracker.Revision(afterReset.revision), Title: &title}), http.StatusOK)
+			beforeRevision := read()
+			now = now.Add(time.Second)
+			refuse(0)
+			afterRevision := read()
+			if afterRevision.revision != afterReset.revision+1 || afterRevision.sequence != beforeRevision.sequence+1 || afterRevision.board != beforeRevision.board+1 || afterRevision.leases != beforeRevision.leases || afterRevision.attempts != beforeRevision.attempts || !afterRevision.activity.Equal(now) {
+				t.Fatalf("new item revision did not fence refusal dedup: before=%+v after=%+v", beforeRevision, afterRevision)
+			}
+			assertDuplicate()
+		})
+	}
+}
+
+type nativeClaimWriteCounter struct {
+	*postgres.Repository
+	writes int
+}
+
+func (r *nativeClaimWriteCounter) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	r.writes++
+	return r.Repository.WriteTenant(ctx, org, workload, write)
+}
+
+func (r *nativeClaimWriteCounter) WriteRunnerCommand(ctx context.Context, org tracker.OrganizationID, credential, runner string, write func(context.Context, tenantstore.Writer) error) error {
+	r.writes++
+	return r.Repository.WriteRunnerCommand(ctx, org, credential, runner, write)
 }

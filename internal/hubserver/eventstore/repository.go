@@ -346,4 +346,6 @@ type SchedulerDecisionRows struct {
 }
 type SchedulerDecisionReader interface {
 	SchedulerDecisions(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (SchedulerDecisionRows, error)
+	SchedulerDecision(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Event, error)
+	LatestClaimedSchedulerDecision(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
 }

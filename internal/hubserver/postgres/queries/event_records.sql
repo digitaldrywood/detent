@@ -403,6 +403,9 @@ ON CONFLICT (organization_id,version_id) DO NOTHING;
 -- name: RecordLatestSchedulerDecision :one
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND type='scheduler.decision' ORDER BY sequence DESC LIMIT 1;
 
+-- name: RecordLatestClaimedSchedulerDecision :one
+SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND type='scheduler.decision' AND scheduler_outcome='claimed' ORDER BY sequence DESC LIMIT 1;
+
 -- name: RecordGetVersionWorkItemID :one
 SELECT i.id FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
 WHERE v.organization_id=sqlc.arg(organization_id) AND v.id=sqlc.arg(id);

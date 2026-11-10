@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -396,4 +397,126 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 
 		}
 	}
+}
+
+func TestSchedulerClaimDecisionLookupIsScopedAndIndexed(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	content := eventstore.NewContent(newHistoryObjects())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, repository, org)
+		for _, item := range []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"} {
+			prepare := func(sequence int64, outcome string) eventstore.Event {
+				t.Helper()
+				value := tracker.CollaborationEvent{ID: fmt.Sprintf("%s_%d", item, sequence), OrganizationID: org, ProjectID: "prj_first", AggregateID: item, AggregateSequence: sequence, Type: "scheduler.decision", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: outcome}}}
+				row, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return row
+			}
+			rows := []eventstore.Event{prepare(1, "claimed")}
+			for sequence := int64(2); sequence <= 1001; sequence++ {
+				rows = append(rows, prepare(sequence, "skipped"))
+			}
+			rows = append(rows, prepare(2000, "claimed"), prepare(3000, "skipped"))
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, row := range rows {
+					if _, err := w.AppendEvent(t.Context(), row); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			rollback := errors.New("example claim rollback")
+			uncommitted := prepare(4000, "claimed")
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.AppendEvent(t.Context(), uncommitted); err != nil {
+					return err
+				}
+				return rollback
+			}); !errors.Is(err, rollback) {
+				t.Fatalf("rollback error=%v", err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				owner := r.(eventstore.SchedulerDecisionReader)
+				claimed, err := owner.LatestClaimedSchedulerDecision(t.Context(), "prj_first", item)
+				if err != nil || claimed.OrganizationID != org || claimed.WorkItemID != item || claimed.Sequence != 2000 || claimed.SchedulerOutcome != "claimed" {
+					t.Fatalf("latest committed claim=%+v error=%v", claimed, err)
+				}
+				skip, err := owner.SchedulerDecision(t.Context(), "prj_first", item, fmt.Sprintf("%s_3000", item))
+				if err != nil || skip.OrganizationID != org || skip.WorkItemID != item || skip.Sequence != 3000 || skip.SchedulerOutcome != "skipped" {
+					t.Fatalf("item decision=%+v error=%v", skip, err)
+				}
+				if _, err := owner.SchedulerDecision(t.Context(), "prj_missing", item, skip.ID); !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("foreign project decision error=%v", err)
+				}
+				if _, err := owner.SchedulerDecision(t.Context(), "prj_first", item, uncommitted.ID); !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("uncommitted decision error=%v", err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			owner := r.(eventstore.SchedulerDecisionReader)
+			if _, err := owner.SchedulerDecision(t.Context(), "prj_first", "wi_first_1", "wi_first_2_3000"); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("sibling item decision error=%v", err)
+			}
+			if _, err := owner.LatestClaimedSchedulerDecision(t.Context(), "prj_first", "wi_missing"); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("missing item claim error=%v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := admin.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	tx, err := connection.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id','org_first',true)"); err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='scheduler.decision' AND scheduler_outcome='claimed' ORDER BY sequence DESC LIMIT 1", "org_first", "prj_first", "wi_first_1").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var plan []struct{ Plan searchPlanNode }
+	if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
+		t.Fatalf("decode default plan: %v", err)
+	}
+	if !plan[0].Plan.usesIndex("collaboration_events_claimed_decision_idx") {
+		t.Fatalf("claimed lookup did not use bounded index: %s", raw)
+	}
+	var visits func(searchPlanNode) float64
+	visits = func(node searchPlanNode) float64 {
+		count := 0.0
+		if node.Relation == "collaboration_events" {
+			count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+		}
+		for _, child := range node.Plans {
+			count += visits(child)
+		}
+		return count
+	}
+	if count := visits(plan[0].Plan); count > 1 {
+		t.Fatalf("claimed lookup visited %.0f rows: %s", count, raw)
+	}
+	t.Logf("default runtime-role claimed lookup plan=%s", raw)
 }
