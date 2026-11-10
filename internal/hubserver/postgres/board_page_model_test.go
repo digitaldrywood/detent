@@ -110,6 +110,32 @@ func TestBoardPageRetainsTypedIssueContract(t *testing.T) {
 				if err != nil {
 					return err
 				}
+				if replay.ActorDisplayName == nil {
+					t.Fatal("board read did not load derived actor name")
+				}
+				actorDisplayName := *replay.ActorDisplayName
+				wantActorName := ""
+				if index == 0 || index == 3 {
+					wantActorName = "first@example.com"
+				}
+				if actorDisplayName != wantActorName {
+					t.Fatalf("tenant=%s variant=%d actor name=%q, want %q", org, index, actorDisplayName, wantActorName)
+				}
+				if index%2 == 0 {
+					replay.ActorDisplayName = nil
+				} else {
+					replay.ActorDisplayName = new("Projection-local alias")
+				}
+				summary := w.(interface {
+					BoardSummaryModel(context.Context, viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error)
+				})
+				var summaries []viewstore.BoardSummaryRecord
+				if index < 2 {
+					summaries, err = summary.BoardSummaryModel(ctx, viewstore.BoardSelection{ProjectID: record.ProjectID})
+					if err != nil {
+						return err
+					}
+				}
 				replay.ProjectedAt = at.Add(time.Minute)
 				if replay.PageIssue != nil {
 					replay.PageIssue.CreatedAt = replay.PageIssue.CreatedAt.Add(123 * time.Nanosecond).In(time.FixedZone("example", 3600))
@@ -128,7 +154,19 @@ func TestBoardPageRetainsTypedIssueContract(t *testing.T) {
 				if after != before {
 					t.Errorf("tenant=%s variant=%d replay advanced sequence: before=%+v after=%+v", org, index, before, after)
 				}
+				if index < 2 {
+					updated, err := summary.BoardSummaryModel(ctx, viewstore.BoardSelection{ProjectID: record.ProjectID})
+					if err != nil {
+						return err
+					}
+					if !reflect.DeepEqual(updated, summaries) {
+						t.Errorf("tenant=%s variant=%d replay changed summaries: before=%+v after=%+v", org, index, summaries, updated)
+					}
+				}
 				got, err := w.BoardItem(ctx, record.ProjectID, id)
+				if err == nil && (got.ActorDisplayName == nil || *got.ActorDisplayName != actorDisplayName) {
+					t.Errorf("replay changed actor name hydration: got=%v want=%q", got.ActorDisplayName, actorDisplayName)
+				}
 				if err == nil && !got.ProjectedAt.Equal(replay.ProjectedAt) {
 					t.Errorf("replay did not refresh projection checkpoint: got=%v want=%v", got.ProjectedAt, replay.ProjectedAt)
 				}

@@ -164,6 +164,7 @@ func sameBoardContent(a, b *viewstore.BoardRecord) bool {
 	left.PageIssue, right.PageIssue = nil, nil
 	left.ListIssue, right.ListIssue = nil, nil
 	left.ReporterRelations, right.ReporterRelations = nil, nil
+	left.ActorDisplayName, right.ActorDisplayName = nil, nil
 	left.ProjectedAt, right.ProjectedAt = time.Time{}, time.Time{}
 	left.RefreshAfter, right.RefreshAfter = nil, nil
 	left.SourceRevision, left.SourceEventSequence, left.SourceProjectRevision = 0, 0, 0
