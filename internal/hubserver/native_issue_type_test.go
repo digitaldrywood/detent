@@ -12,10 +12,18 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -102,10 +110,56 @@ func TestNativeIssueTypes(t *testing.T) {
 	}) {
 		t.Fatalf("type edit missing from history: %#v", history)
 	}
-	for _, test := range []struct{ name, token string }{{"member", f.token}, {"worker", f.worker(t, "issue-types-worker")}} {
+	actors := []struct{ name, token string }{{"member", f.token}, {"worker", f.worker(t, "issue-types-worker")}, {"other-worker", f.worker(t, "issue-types-other-worker")}}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.States = append(project.States, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range actors {
+		var lease leasestore.Lease
+		if test.name != "member" {
+			item := f.create(t, "Classification source "+test.name)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				credential, err := w.CredentialByHash(t.Context(), apikey.HashToken(test.token))
+				if err != nil {
+					return err
+				}
+				runner, err := w.RunnerIdentityByCredential(t.Context(), credential.ID)
+				if err != nil {
+					return err
+				}
+				row, err := w.WorkItem(t.Context(), f.project.ID, item.WorkItemID)
+				if err != nil {
+					return err
+				}
+				lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: string(runner.MachineID), SessionID: test.name + "-session", LeaseID: newNativeID("lease"), TTL: time.Minute})
+				if err != nil {
+					return err
+				}
+				if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: f.project.OrganizationID, LeaseID: lease.LeaseID, RunnerID: runner.RunnerID, AssignedAt: lease.AcquiredAt}); err != nil {
+					return err
+				}
+				return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: hubTestPolicy().ID, BoundAt: lease.AcquiredAt})
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		for _, issueType := range []string{"", "bug", "change_request", "question"} {
 			t.Run(test.name+"/"+issueType, func(t *testing.T) {
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", test.token, tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: test.name + "-" + issueType}, Type: issueType, Title: "API classification"})
+				request := tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: test.name + "-" + issueType}, Type: issueType, Title: "API classification"}
+				if lease.LeaseID != "" {
+					request.Body = issueorigin.Stamp(request.Body, issueorigin.Origin{Kind: "worker", Fingerprint: test.name + "-" + issueType})
+					request.State = "Backlog"
+					request.LeaseID, request.FencingToken = tracker.LeaseID(lease.LeaseID), tracker.FencingToken(lease.FencingToken)
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", test.token, request)
 				if issueType == "question" {
 					requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 					return
@@ -113,13 +167,22 @@ func TestNativeIssueTypes(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				var created tracker.NativeIssue
 				decodeHubResponse(t, response, &created)
-				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(created.WorkItemID), test.token, nil), &created)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(created.WorkItemID), test.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &created)
 				if created.Type != issueType {
 					t.Fatalf("type=%q, want %q", created.Type, issueType)
 				}
 			})
 		}
 	}
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "ungranted-worker-project")
+	for _, test := range actors[1:] {
+		t.Run(test.name+"/project isolation", func(t *testing.T) {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/work-items", test.token, nil), http.StatusForbidden)
+		})
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items", actors[1].token+"invalid", nil), http.StatusUnauthorized)
 	for _, target := range []string{f.base + "/work-items?type=question", path} {
 		method, body := http.MethodGet, any(nil)
 		if target == path {

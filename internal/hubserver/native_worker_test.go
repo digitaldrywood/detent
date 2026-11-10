@@ -3,21 +3,58 @@ package hubserver
 import (
 	"net/http"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (f nativeFixture) worker(t *testing.T, name string) string {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": name, "scope": "worker"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var token tokenResponse
-	decodeHubResponse(t, response, &token)
-	response = performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID})
-	requireNativeStatus(t, response, http.StatusNoContent)
-	return token.Token
+	token, err := apikey.GenerateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := runnerauth.NewBinding()
+	credentialID, enrollmentID := "credential_"+binding.RunnerID, "enrollment_"+binding.RunnerID
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	expires := now.Add(runnerauth.CredentialTTL)
+	operations := []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}
+	projects := []tracker.ProjectID{f.project.ID}
+	hash := apikey.HashToken(token)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: credentialID, Name: name, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: credentialID, ProjectID: f.project.ID}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: f.project.OrganizationID, ID: enrollmentID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken(newNativeID("enrollment")), Scope: "projects", ProjectIDs: projects, Operations: operations, CreatedAt: now, ExpiresAt: now.Add(runnerauth.MaxEnrollmentTTL), CreatedBy: "test_hub_admin"}); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, binding.RunnerID, binding.MachineID, now); err != nil {
+			return err
+		}
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: f.project.OrganizationID, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: f.service.config.Version}); err != nil {
+			return err
+		}
+		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: f.project.OrganizationID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", MachineUse: "dedicated", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: projects, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, hash, "", "")
+	if err != nil || status != http.StatusOK || credential.Scope != apiScopeWorker || credential.HostedKeyKind != "service" || credential.Runner.Binding != binding || credential.Runner.Scope != "projects" || !slices.Equal(credential.Runner.ProjectIDs, projects) {
+		t.Fatalf("fixture worker authority status=%d: %v", status, err)
+	}
+	return token
 }
 
 func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
