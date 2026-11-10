@@ -229,16 +229,10 @@
     "internal/hubserver/content_settings_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/conversation_failure_test.go": {
-      "database_path": 2
-    },
     "internal/hubserver/conversation_logging_test.go": {
       "database_path": 3
     },
     "internal/hubserver/conversation_preferences_test.go": {
-      "database_path": 1
-    },
-    "internal/hubserver/conversation_stream_test.go": {
       "database_path": 1
     },
     "internal/hubserver/conversation_worker_test.go": {

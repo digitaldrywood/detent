@@ -22,6 +22,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -35,6 +39,7 @@ type conversationWorkerFixture struct {
 	mu        sync.Mutex
 	now       time.Time
 	chat      *conversationService
+	runner    runnerFixture
 	worker    string
 	principal string
 	issue     tracker.NativeIssue
@@ -48,7 +53,7 @@ type conversationWorkerFixture struct {
 func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveContentStore) *conversationWorkerFixture {
 	t.Helper()
 	fixture := &conversationWorkerFixture{now: time.Now().UTC().Truncate(time.Second)}
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time {
+	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &verifiedAttemptDetails{}, Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time {
 		fixture.mu.Lock()
 		defer fixture.mu.Unlock()
 		return fixture.now
@@ -64,7 +69,8 @@ func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveCo
 	if len(contents) > 0 {
 		config.Conversation.ArchiveContents = contents[0]
 	}
-	f := newNativeFixture(t, openTestService(t, config), "", "conversation-worker")
+	f := newDefaultNativeFixture(t, config)
+	f.service.registerConversationRoutes(f.service.echo)
 	fixture.nativeFixture = f
 	fixture.chat = f.service.conversations
 	if fixture.chat == nil {
@@ -74,12 +80,9 @@ func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveCo
 	approveHubTestPolicy(t, f.service, f.base+"/policy", policy)
 	fixture.policy = policy.ID
 	fixture.issue = f.create(t, "conversation-work")
-	fixture.worker = f.worker(t, "conversation-worker")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", fixture.worker, map[string]any{"id": "conversation-machine", "hostname": "fixture", "display_name": "Fixture", "version": "test", "capacity": 1}), http.StatusOK)
-	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "conversation-owner", "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var token tokenResponse
-	decodeHubResponse(t, response, &token)
+	fixture.runner = conversationWorkerRunner(t, f)
+	fixture.worker = fixture.runner.redemption.Credential
+	token := conversationFixturePrincipal(t, f, "Example conversation owner")
 	fixture.principal = token.ID
 	linked := fixture.now
 	record := conversationRecord{
@@ -89,12 +92,12 @@ func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveCo
 		Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: fixture.now},
 		CreatedAt: fixture.now, UpdatedAt: fixture.now,
 	}
-	ctx := prepareTestConversationRecord(t, fixture.chat.store, record)
-	tx := fixture.tx(t)
-	if err := fixture.chat.store.createConversation(ctx, tx, &record); err != nil {
-		t.Fatalf("createConversation() error = %v", err)
-	}
-	if err := tx.Commit(); err != nil {
+	record.Origin, record.Revision, record.Preferences = conversationOriginUser, 1, conversation.DefaultPreferences()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		stored, err := w.CreateConversation(t.Context(), conversationRecordToStore(record))
+		record = conversationRecordFromStore(stored)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	fixture.record = record
@@ -112,7 +115,7 @@ func (f *conversationWorkerFixture) tx(t *testing.T) *sql.Tx {
 	t.Helper()
 	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 	if err != nil {
-		t.Fatalf("BeginTx() error = %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback() })
 	return tx
@@ -121,9 +124,16 @@ func (f *conversationWorkerFixture) tx(t *testing.T) *sql.Tx {
 // claim claims a fresh lease for the issue and starts a new attempt on it.
 func (f *conversationWorkerFixture) claim(t *testing.T, start ...bool) {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
-	requireNativeStatus(t, response, http.StatusOK)
-	decodeHubResponse(t, response, &f.lease)
+	if f.lease.ID != "" && !f.lease.ExpiresAt.After(f.now) {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3 AND released_at IS NULL", f.now.Add(-time.Microsecond), f.project.OrganizationID, f.lease.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.lease = nativeAttemptFixtureLease(t, f.runner, f.issue, newNativeID("session"))
+	f.lease.ExpiresAt = f.now.Add(10 * time.Minute)
+	if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$1,renewed_at=$1,expires_at=$2 WHERE organization_id=$3 AND lease_id=$4", f.now, f.lease.ExpiresAt, f.project.OrganizationID, f.lease.ID); err != nil {
+		t.Fatal(err)
+	}
 	f.attempt = newNativeID("attempt")
 	f.run = newNativeID("run")
 	if len(start) == 0 || start[0] {
@@ -207,10 +217,7 @@ func (f *conversationWorkerFixture) awaitControlSubscribers(t *testing.T, want i
 func (f *conversationWorkerFixture) queue(t *testing.T, kind conversation.MessageKind, key, text string, data map[string]any) conversationMessageRecord {
 	t.Helper()
 	ctx := t.Context()
-	record, err := f.chat.store.readConversation(ctx, f.chat.store.reader, f.record.OrganizationID, f.record.ProjectID, f.record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	record := f.load(t)
 	commandKind := map[conversation.MessageKind]conversation.CommandKind{conversation.MessageText: conversation.CommandMessage, conversation.MessageAnswer: conversation.CommandAnswer, conversation.MessageInterrupt: conversation.CommandInterrupt, conversation.MessageContinue: conversation.CommandContinue}[kind]
 	now := f.service.config.now()
 	encoded, err := json.Marshal(data)
@@ -218,7 +225,7 @@ func (f *conversationWorkerFixture) queue(t *testing.T, kind conversation.Messag
 		t.Fatal(err)
 	}
 	message := conversationMessageRecord{Role: conversation.RoleUser, Kind: kind, Text: text, Data: encoded, Delivery: conversation.DeliveryQueued, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.principal}, CommandKey: key}
-	plan := &conversationPublicationPlan{service: f.chat, record: record, original: record, now: now}
+	plan := &conversationPublicationPlan{service: f.chat, record: record, original: record, now: now, coordinator: true}
 	if err := plan.appendMessage(t.Context(), &message); err != nil {
 		t.Fatal(err)
 	}
@@ -239,43 +246,57 @@ func (f *conversationWorkerFixture) queue(t *testing.T, kind conversation.Messag
 	if err := plan.prepareValue(t.Context(), initial); err != nil {
 		t.Fatal(err)
 	}
+	for _, body := range plan.events {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := plan.prepareValue(t.Context(), raw); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx = plan.context(t.Context())
-	tx := f.tx(t)
-	if _, _, err := f.chat.store.reserveCommand(ctx, tx, record.ID, key, commandKind, "hash-"+key, now); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.chat.appendMessage(ctx, tx, &record, &message, now); err != nil {
-		t.Fatalf("appendMessage() error = %v", err)
-	}
-	receipt := conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliveryQueued, MessageID: message.ID}
-	if data != nil {
-		receipt.QuestionID, _ = data["question_id"].(string)
-	}
-	if err := f.chat.recordReceipt(ctx, tx, record.ID, record.Execution.Owner.AttemptID, receipt, now); err != nil {
-		t.Fatalf("recordReceipt() error = %v", err)
-	}
-	if err := f.chat.saveConversation(ctx, tx, &record, now); err != nil {
-		t.Fatalf("saveConversation() error = %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	coordinator := f.chat.coordinator.(*conversationTurnCoordinator)
+	f.writeTenant(t, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.project.OrganizationID, plan.prepared, now); err != nil {
+			return err
+		}
+		if _, _, err := w.ReserveCommand(ctx, conversationstore.Command{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, Key: key, Kind: commandKind, RequestHash: "hash-" + key, Receipt: conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		if err := coordinator.appendMessage(ctx, w, &record, &message, now); err != nil {
+			return err
+		}
+		receipt := conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliveryQueued, MessageID: message.ID, UpdatedAt: now}
+		if data != nil {
+			receipt.QuestionID, _ = data["question_id"].(string)
+		}
+		if err := w.UpdateCommand(ctx, conversationstore.Command{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, Key: key, Kind: commandKind, RequestHash: "hash-" + key, Receipt: receipt, UpdatedAt: now}); err != nil {
+			return err
+		}
+		if err := appendCoordinatorEvent(ctx, w, f.project.OrganizationID, record.ID, conversation.EventCommandReceipt, receipt, now); err != nil {
+			return err
+		}
+		return coordinator.saveConversation(ctx, w, &record, now)
+	})
 	f.chat.committed(record)
 	return message
 }
 
 func (f *conversationWorkerFixture) load(t *testing.T) conversationRecord {
 	t.Helper()
-	record, err := f.chat.store.readConversation(t.Context(), f.service.database.db, f.record.OrganizationID, f.record.ProjectID, f.record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var record conversationRecord
+	f.readTenant(t, func(r tenantstore.Reader) error {
+		stored, err := r.Conversation(t.Context(), f.project.ID, f.record.ID)
+		record = conversationRecordFromStore(stored)
+		return err
+	})
 	return record
 }
 
 func (f *conversationWorkerFixture) messages(t *testing.T) map[string]conversationMessageRecord {
 	t.Helper()
-	list, err := f.chat.store.listMessages(t.Context(), f.service.database.db, f.record.ID, 0, 500)
+	list, err := f.chat.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: f.record.ID, Limit: 200})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,50 +309,61 @@ func (f *conversationWorkerFixture) messages(t *testing.T) map[string]conversati
 
 func (f *conversationWorkerFixture) receipt(t *testing.T, key string) conversation.Receipt {
 	t.Helper()
-	receipt, found, err := f.chat.readReceipt(t.Context(), f.chat.store.reader, f.record.ID, key)
-	if err != nil || !found {
-		t.Fatalf("read receipt: found=%v error=%v", found, err)
-	}
+	var receipt conversation.Receipt
+	f.readTenant(t, func(r tenantstore.Reader) error {
+		command, found, err := r.Command(t.Context(), f.record.ID, key)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("missing command receipt")
+		}
+		receipt = command.Receipt
+		return nil
+	})
 	return receipt
 }
 
 func (f *conversationWorkerFixture) questions(t *testing.T) []conversationQuestionRecord {
 	t.Helper()
-	rows, err := f.service.database.db.QueryContext(t.Context(), "SELECT "+conversationQuestionColumns+" FROM conversation_questions WHERE conversation_id = ? ORDER BY created_at, id", f.record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rows.Close() }()
 	records := []conversationQuestionRecord{}
-	for rows.Next() {
-		record, err := scanConversationQuestion(rows)
-		if err != nil {
-			t.Fatal(err)
+	f.readTenant(t, func(r tenantstore.Reader) error {
+		questions, err := r.Questions(t.Context(), f.record.ID, "", 200)
+		for _, question := range questions {
+			records = append(records, conversationQuestionRecord{Question: question.Question, RequestID: question.RequestID, ContentID: question.ContentReference})
 		}
-		records = append(records, record)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		t.Fatal(err)
-	}
-	for i := range records {
-		if err := f.chat.store.resolveQuestion(t.Context(), f.chat.store.reader, &records[i]); err != nil {
-			t.Fatal(err)
-		}
-	}
+		return err
+	})
 	return records
 }
 
 func (f *conversationWorkerFixture) eventTypes(t *testing.T, after int64) []string {
 	t.Helper()
-	events, err := f.chat.store.listEvents(t.Context(), f.service.database.db, f.record.ID, after, 1000)
+	events, err := f.replay(t)
 	if err != nil {
 		t.Fatal(err)
 	}
-	types := make([]string, 0, len(events))
+	types := []string{}
 	for _, event := range events {
-		types = append(types, string(event.Type))
+		if event.Seq > after {
+			types = append(types, string(event.Type))
+		}
 	}
 	return types
+}
+
+func (f *conversationWorkerFixture) readTenant(t *testing.T, fn func(tenantstore.Reader) error) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, fn); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *conversationWorkerFixture) writeTenant(t *testing.T, fn func(tenantstore.Writer) error) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, fn); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type workerControlEnvelope struct {
@@ -363,6 +395,38 @@ type workerControlsResponse struct {
 	Cursor   int64                   `json:"cursor"`
 }
 
+type conversationStartupInterleaveRepository struct {
+	tenantstore.Repository
+	afterMissing func()
+	latest       *leasestore.Attempt
+}
+
+func (r conversationStartupInterleaveRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(conversationStartupInterleaveReader{Reader: reader, afterMissing: r.afterMissing, latest: r.latest})
+	})
+}
+
+type conversationStartupInterleaveReader struct {
+	tenantstore.Reader
+	afterMissing func()
+	latest       *leasestore.Attempt
+}
+
+func (w conversationStartupInterleaveReader) Attempt(ctx context.Context, id string) (leasestore.Attempt, error) {
+	attempt, err := w.Reader.Attempt(ctx, id)
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		w.afterMissing()
+	}
+	return attempt, err
+}
+
+func (w conversationStartupInterleaveReader) LatestAttempt(ctx context.Context, id int64) (leasestore.Attempt, error) {
+	attempt, err := w.Reader.LatestAttempt(ctx, id)
+	*w.latest = attempt
+	return attempt, err
+}
+
 func requireConversationErrorCode(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 	requireNativeStatus(t, response, status)
@@ -377,13 +441,100 @@ func requireConversationErrorCode(t *testing.T, response *httptest.ResponseRecor
 
 func TestConversationWorkerBind(t *testing.T) {
 	t.Parallel()
+	t.Run("startup commits between reconciliation reads", func(t *testing.T) {
+		for _, test := range []struct {
+			name       string
+			different  string
+			terminal   string
+			wantActive bool
+		}{
+			{name: "exact running owner", wantActive: true},
+			{name: "different attempt", different: "attempt_id"},
+			{name: "different run", different: "run_id"},
+			{name: "succeeded owner", terminal: "succeeded"},
+			{name: "failed owner", terminal: "failed"},
+			{name: "cancelled owner", terminal: "cancelled"},
+			{name: "interrupted owner", terminal: "interrupted"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				f := newConversationWorkerFixture(t)
+				f.release(t)
+				f.claim(t, false)
+				body := f.bindBody()
+				if test.different != "" {
+					body[test.different] = newNativeID(strings.TrimSuffix(test.different, "_id"))
+				}
+				requireNativeStatus(t, f.bind(t, body), http.StatusOK)
+				before := f.load(t)
+				started := 0
+				var latest leasestore.Attempt
+				repository := conversationStartupInterleaveRepository{
+					Repository: f.service.config.TenantRepository,
+					afterMissing: func() {
+						started++
+						f.startAttempt(t, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model"})
+						if test.terminal != "" {
+							if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE native_attempts SET status=$1 WHERE organization_id=$2 AND id=$3", test.terminal, f.project.OrganizationID, f.attempt); err != nil {
+								t.Fatal(err)
+							}
+						}
+					},
+					latest: &latest,
+				}
+				if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Background, func(reader tenantstore.Reader) error {
+					current, err := conversationLeaseCurrentPG(t.Context(), reader, before, f.now)
+					if err == nil && current != test.wantActive {
+						t.Fatalf("interleaved startup ownership=%t, want %t", current, test.wantActive)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				reconciler := &conversationService{server: &Service{config: f.service.config}}
+				changed, err := reconciler.reconcileExecutionPG(t.Context(), f.project.OrganizationID, conversationRecordToStore(before))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if started != 1 || latest.ID != f.attempt || latest.LeaseID != string(f.lease.ID) || latest.RunID != f.run {
+					t.Fatalf("startup interleave: starts=%d latest=%+v", started, latest)
+				}
+				after := f.load(t)
+				if test.wantActive {
+					if changed || after.Execution != before.Execution || after.Revision != before.Revision || after.EventSeq != before.EventSeq {
+						t.Fatalf("live startup reconciled: changed=%t execution=%+v revision=%d events=%d", changed, after.Execution, after.Revision, after.EventSeq)
+					}
+				} else if !changed || after.Execution.Status != conversation.ExecutionInterrupted || !after.Execution.Settled {
+					t.Fatalf("stale startup remained live: changed=%t execution=%+v", changed, after.Execution)
+				}
+			})
+		}
+	})
 	t.Run("failed setup unbinds before provider start", func(t *testing.T) {
 		f := newConversationWorkerFixture(t)
 		f.release(t)
 		f.claim(t, false)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
+		body := f.identity()
+		body["batch_key"] = "setup-status"
+		body["events"] = []map[string]any{{"type": "execution_status", "status": conversation.ExecutionStarting}}
+		publish := func() *httptest.ResponseRecorder {
+			return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/turn-events", f.worker, body)
+		}
+		first := publish()
+		requireNativeStatus(t, first, http.StatusAccepted)
+		var receipt conversationTurnEventsResponse
+		decodeHubResponse(t, first, &receipt)
+		replayed := publish()
+		requireNativeStatus(t, replayed, http.StatusAccepted)
+		var replay conversationTurnEventsResponse
+		decodeHubResponse(t, replayed, &replay)
+		if replay.EventSeq != receipt.EventSeq {
+			t.Fatalf("pre-start replay sequence = %d, want %d", replay.EventSeq, receipt.EventSeq)
+		}
 		requireNativeStatus(t, f.unbind(t, "failed"), http.StatusOK)
+		requireNativeStatus(t, f.unbind(t, "failed"), http.StatusOK)
+		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
 		if record := f.load(t); record.Execution.Status != conversation.ExecutionFailed || !record.Execution.Settled {
 			t.Fatalf("pre-start binding did not settle: %+v", record.Execution)
 		}
@@ -407,13 +558,9 @@ func TestConversationWorkerBind(t *testing.T) {
 		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
 		identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model", ReasoningEffort: "high"}
 		f.startAttempt(t, identity)
-		var data tracker.NativeRunData
-		var raw string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id = ?", f.attempt).Scan(&raw); err != nil {
-			t.Fatal(err)
-		}
-		if err := decodeRunDetail(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &data); err != nil || data.Identity == nil || *data.Identity != identity {
-			t.Fatalf("started identity = %+v, error = %v", data.Identity, err)
+		data, err := f.service.readNativeAttemptTenant(t.Context(), nativeAttemptListingScope(t, f.nativeFixture), string(f.issue.WorkItemID), f.attempt)
+		if err != nil || data.Identity == nil || *data.Identity != identity {
+			t.Fatalf("started identity=%+v, error=%v", data.Identity, err)
 		}
 		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
 		body = f.bindBody()
@@ -426,13 +573,13 @@ func TestConversationWorkerBind(t *testing.T) {
 			f := newConversationWorkerFixture(t)
 			bind := func() *httptest.ResponseRecorder {
 				if test.legacy {
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_events SET query_metadata_version=0,message_role=NULL,message_kind=NULL,attempt_id=NULL,execution_status=NULL WHERE conversation_id=?`, f.record.ID); err != nil {
+					if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), `UPDATE conversation_events SET query_metadata_version=0,message_role=NULL,message_kind=NULL,attempt_id=NULL,execution_status=NULL WHERE conversation_id=$1`, f.record.ID); err != nil {
 						t.Fatal(err)
 					}
 				}
 				return f.bind(t, nil)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
+			if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM conversations WHERE id = $1", f.record.ID); err != nil {
 				t.Fatal(err)
 			}
 			var bound workerBindResponse
@@ -533,14 +680,14 @@ func TestConversationWorkerBind(t *testing.T) {
 	}
 	t.Run("ordinary issue", func(t *testing.T) {
 		f := newConversationWorkerFixture(t)
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM conversations WHERE id = $1", f.record.ID); err != nil {
 			t.Fatal(err)
 		}
 		body := f.bindBody()
 		body["fencing_token"] = f.lease.FencingToken + 1
 		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
 		var count int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 0 {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 0 {
 			t.Fatalf("stale owner created conversation: %d, %v", count, err)
 		}
 		response := f.bind(t, nil)
@@ -556,28 +703,28 @@ func TestConversationWorkerBind(t *testing.T) {
 			t.Fatalf("ordinary binding = %#v, pending = %#v", record, bound.Pending)
 		}
 		requireConversationErrorCode(t, f.bind(t, nil), http.StatusConflict, "stale_execution")
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 1 {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 1 {
 			t.Fatalf("duplicate conversations: %d, %v", count, err)
 		}
 		before := f.load(t)
 		if before.Execution.Owner != record.Execution.Owner || before.EventSeq != record.EventSeq {
 			t.Fatal("repeated binding changed the selected execution")
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET visibility = 'private' WHERE id = ?", f.record.ID); err != nil {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversations SET visibility = 'private' WHERE id = $1", f.record.ID); err != nil {
 			t.Fatal(err)
 		}
 		requireNativeStatus(t, f.bind(t, nil), http.StatusNotFound)
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 1 {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 1 {
 			t.Fatalf("private history replaced: %d, %v", count, err)
 		}
 	})
 
 	t.Run("imported issue with integration actor", func(t *testing.T) {
 		f := newConversationWorkerFixture(t)
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM conversations WHERE id = $1", f.record.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET actor_json = '{"kind":"integration","principal_id":"github"}' WHERE native_id = ?`, f.issue.WorkItemID); err != nil {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET actor_kind='integration',actor_principal_id='github' WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, f.issue.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
 		response := f.bind(t, nil)
@@ -586,7 +733,7 @@ func TestConversationWorkerBind(t *testing.T) {
 		decodeHubResponse(t, response, &bound)
 		f.record.ID = bound.ConversationID
 		var tokens int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM api_tokens WHERE id = ?", f.load(t).OwnerPrincipalID).Scan(&tokens); err != nil || tokens != 1 {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM api_tokens WHERE id = $1", f.load(t).OwnerPrincipalID).Scan(&tokens); err != nil || tokens != 1 {
 			t.Fatalf("integration-authored binding owner is not a token: %d, %v", tokens, err)
 		}
 	})
@@ -615,7 +762,7 @@ func TestConversationWorkerBind(t *testing.T) {
 	if record.Origin != conversationOriginUser {
 		t.Fatalf("linked user conversation origin = %q, want user", record.Origin)
 	}
-	if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Owner.AttemptID != f.attempt || record.Execution.Owner.LeaseID != string(f.lease.ID) || record.Execution.Owner.FencingToken != int64(f.lease.FencingToken) || record.Execution.Owner.RunID != f.run || record.Execution.Owner.MachineID != "conversation-machine" {
+	if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Owner.AttemptID != f.attempt || record.Execution.Owner.LeaseID != string(f.lease.ID) || record.Execution.Owner.FencingToken != int64(f.lease.FencingToken) || record.Execution.Owner.RunID != f.run || record.Execution.Owner.MachineID != string(f.runner.binding.MachineID) {
 		t.Fatalf("execution = %#v", record.Execution)
 	}
 	if !record.Execution.Capabilities.Steer || !record.Execution.Capabilities.Answer {
@@ -657,8 +804,9 @@ func TestConversationWorkerBind(t *testing.T) {
 	})
 	t.Run("foreign project worker", func(t *testing.T) {
 		foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-project")
-		token := foreign.worker(t, "foreign-worker")
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/conversation/bind", token, f.bindBody()), http.StatusNotFound)
+		token := conversationWorkerRunner(t, foreign).redemption.Credential
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/conversation/bind", token, f.bindBody()), http.StatusForbidden)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreign.base+"/work-items/"+string(f.issue.WorkItemID)+"/conversation/bind", token, f.bindBody()), http.StatusNotFound)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreign.base+"/conversations/"+f.record.ID+"/turn-events", token, map[string]any{"lease_id": f.lease.ID, "fencing_token": f.lease.FencingToken, "attempt_id": f.attempt, "events": []map[string]any{}}), http.StatusNotFound)
 	})
 }
@@ -707,15 +855,20 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 	})
 
 	t.Run("waits for a queued control", func(t *testing.T) {
-		writer, err := f.chat.store.db.Conn(t.Context())
+		admin := conversationTestAdmin(t, f.service)
+		admin.SetMaxOpenConns(2)
+		writer, err := admin.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		waiters := f.chat.store.db.Stats().WaitCount
+		var revision int64
+		if err := writer.QueryRowContext(t.Context(), "SELECT revision FROM conversations WHERE organization_id=$1 AND id=$2 FOR UPDATE", f.project.OrganizationID, f.record.ID).Scan(&revision); err != nil {
+			t.Fatal(err)
+		}
 		done := make(chan *httptest.ResponseRecorder, 1)
 		exited := make(chan struct{})
 		t.Cleanup(func() {
-			writer.Close()
+			_ = writer.Rollback()
 			<-exited
 		})
 		go func() {
@@ -724,15 +877,19 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 		}()
 		f.awaitControlSubscribers(t, 1)
 		testenv.WaitUntil(t, t.Context(), func() error {
-			if f.chat.store.db.Stats().WaitCount > waiters {
+			var waiting bool
+			if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND pid<>pg_backend_pid())`).Scan(&waiting); err != nil {
+				return err
+			}
+			if waiting {
 				return nil
 			}
 			return errors.New("control preparation has not reached the writer")
 		})
-		if _, err := writer.ExecContext(t.Context(), "UPDATE conversations SET revision=revision+1 WHERE id=?", f.record.ID); err != nil {
+		if _, err := writer.ExecContext(t.Context(), "UPDATE conversations SET revision=revision+1 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, f.record.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := writer.Close(); err != nil {
+		if err := writer.Commit(); err != nil {
 			t.Fatal(err)
 		}
 		started := time.Now()
@@ -830,22 +987,16 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 			f := newConversationWorkerFixture(t)
 			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-legacy", "turn_id": "turn-legacy"}), http.StatusAccepted)
-			legacy := conversationFixture{store: f.chat.store}
-			tx, err := f.chat.store.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			for range 101 {
-				message := conversationMessageRecord{ConversationID: f.record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: "historical tool output", Data: json.RawMessage(`{"tool":"example","item_id":"item","status":"completed"}`), Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: f.now, UpdatedAt: f.now}
-				if err := legacy.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
-					t.Fatal(err)
+			f.writeTenant(t, func(w tenantstore.Writer) error {
+				for range 101 {
+					_, err := w.CreateMessage(t.Context(), conversationstore.Message{OrganizationID: f.project.OrganizationID, ConversationID: f.record.ID, ID: conversation.NewMessageID(), Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: "historical tool output", Data: json.RawMessage(`{"tool":"example","item_id":"item","status":"completed"}`), Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, Revision: 1, CreatedAt: f.now, UpdatedAt: f.now})
+					if err != nil {
+						return err
+					}
 				}
-			}
-			if _, err := tx.ExecContext(t.Context(), "UPDATE conversation_messages SET query_metadata_version=? WHERE conversation_id=?", metadataVersion, f.record.ID); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
+				return nil
+			})
+			if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversation_messages SET query_metadata_version=$1 WHERE organization_id=$2 AND conversation_id=$3", metadataVersion, f.project.OrganizationID, f.record.ID); err != nil {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, f.turnEvents(t,
@@ -860,11 +1011,11 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 				t.Fatalf("execution did not complete: %s", record.Execution.Status)
 			}
 			var untouched int
-			if err := f.chat.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND kind='tool' AND content_attachment_id='' AND revision=1", f.record.ID).Scan(&untouched); err != nil || untouched != 101 {
+			if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=$1 AND kind='tool' AND content_attachment_id='' AND revision=1", f.record.ID).Scan(&untouched); err != nil || untouched != 101 {
 				t.Fatalf("unrelated legacy messages changed: untouched=%d err=%v", untouched, err)
 			}
 			var inline int
-			if err := f.chat.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND role='assistant' AND (content_attachment_id='' OR text<>'' OR data_json<>'{}' OR actor_json<>'{}')", f.record.ID).Scan(&inline); err != nil || inline != 0 {
+			if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=$1 AND role='assistant' AND (content_attachment_id='' OR text<>'' OR data_json<>'{}' OR actor_json<>'{}')", f.record.ID).Scan(&inline); err != nil || inline != 0 {
 				t.Fatalf("new assistant payload stayed inline: count=%d err=%v", inline, err)
 			}
 		})
@@ -873,6 +1024,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		objects := &conversationContentFixture{}
 		f := newConversationWorkerFixture(t, objects)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+		f.advance(123 * time.Nanosecond)
 		var logs bytes.Buffer
 		f.service.config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 		user := f.queue(t, conversation.MessageText, "inline-user", "user text", nil)
@@ -899,7 +1051,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("turn response=%d logs=%s", response.Code, logs.String())
 		}
-		messages, err := f.chat.store.listMessages(t.Context(), f.service.database.reader, f.record.ID, 0, 500)
+		messages, err := f.chat.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: f.record.ID, Limit: 200})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -912,19 +1064,39 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 			}
 		}
 		var largeEvents, bodyCopies, inlineTools int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND length(CAST(body_json AS BLOB))+length(conversation_id)+length(type)+length(created_at)+8>2048`, f.record.ID).Scan(&largeEvents); err != nil {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=$1 AND octet_length(body_json::text)+octet_length(conversation_id)+octet_length(type)+octet_length(created_at::text)+8>2048`, f.record.ID).Scan(&largeEvents); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND (json_type(body_json,'$.text') IS NOT NULL OR json_type(body_json,'$.data') IS NOT NULL)`, f.record.ID).Scan(&bodyCopies); err != nil {
+		rows, err := conversationTestAdmin(t, f.service).QueryContext(t.Context(), "SELECT body_json FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2", f.project.OrganizationID, f.record.ID)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND role='system' AND (length(text)>256 OR data_json<>'{}' OR content_attachment_id='')`, f.record.ID).Scan(&inlineTools); err != nil {
+		for rows.Next() {
+			var raw []byte
+			if err := rows.Scan(&raw); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &body); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			if body["text"] != nil || body["data"] != nil {
+				bodyCopies++
+			}
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_messages WHERE conversation_id=$1 AND role='system' AND (length(text)>256 OR data_json<>'{}' OR content_attachment_id='')`, f.record.ID).Scan(&inlineTools); err != nil {
 			t.Fatal(err)
 		}
 		if largeEvents != 0 || bodyCopies != 0 || inlineTools != 0 {
 			t.Fatalf("large events=%d body copies=%d inline tools=%d", largeEvents, bodyCopies, inlineTools)
 		}
-		replay, err := f.chat.store.replayEvents(t.Context(), f.service.database.reader, f.record.ID, 0)
+		replay, err := f.replay(t)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1004,18 +1176,36 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		output := httptest.NewRecorder()
 		stream := &conversationStream{response: echo.NewResponse(output, echo.New())}
 		head := f.load(t).EventSeq
-		cursor, err := stream.replay(t.Context(), f.chat.store, f.service.database.reader, f.record.ID, 0, head)
+		cursor, err := f.service.replayPGConversationEvents(t.Context(), nativeAttemptListingScope(t, f.nativeFixture), stream, f.record.ID, 0, head)
 		if err != nil || cursor != head || !strings.Contains(output.Body.String(), toolText) || !strings.Contains(output.Body.String(), second) {
 			t.Fatalf("SSE replay lost content: cursor=%d head=%d error=%v", cursor, head, err)
 		}
 
 	})
 
+	t.Run("message page spans typed reader batches", checkPGWorkerMessagePage)
+	t.Run("completion ignores unrelated assistant history", checkPGWorkerCompletionHistory)
+
 	t.Run("registered runner middleware and fencing", func(t *testing.T) {
 		f := newConversationWorkerFixture(t)
 		f.release(t)
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+			if err := f.service.config.ConversationDispatch.RequestDispatch(t.Context(), writer, f.project.ID, string(f.issue.WorkItemID), leasestore.Fence{}, f.now); err != nil {
+				return err
+			}
+			item, err := writer.WorkItem(t.Context(), f.project.ID, f.issue.WorkItemID)
+			f.issue.Revision = tracker.Revision(item.Revision)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 		r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events)
 		r.enroll(t)
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+			return writer.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.now})
+		}); err != nil {
+			t.Fatal(err)
+		}
 		publishCapacity(t, f.nativeFixture, r, capacityReport(f.now))
 		f.worker = r.redemption.Credential
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, providerClaim(r, f.issue, "conversation-registered"))
@@ -1026,16 +1216,19 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 		foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-registered")
-		other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Events)
+		foreignRunner := prepareRunner(t, foreign, runnerauth.Read, runnerauth.Collaborate, runnerauth.Events)
+		foreignRunner.enroll(t)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreign.base+"/conversations/"+f.record.ID+"/turn-events", f.worker, map[string]any{"lease_id": f.lease.ID, "fencing_token": f.lease.FencingToken, "attempt_id": f.attempt, "events": []map[string]any{}}), http.StatusForbidden)
+		other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Collaborate, runnerauth.Events)
 		other.enroll(t)
-		unpermitted := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate)
+		unpermitted := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Collaborate)
 		unpermitted.enroll(t)
 		for _, test := range []struct {
 			name, base, token string
 			change            func(map[string]any)
 			status            int
 		}{
-			{name: "wrong project", base: foreign.base, token: f.worker, status: http.StatusNotFound},
+			{name: "wrong project", base: foreign.base, token: foreignRunner.redemption.Credential, status: http.StatusNotFound},
 			{name: "wrong runner", token: other.redemption.Credential, status: http.StatusNotFound},
 			{name: "missing events operation", token: unpermitted.redemption.Credential, status: http.StatusForbidden},
 			{name: "wrong lease", change: func(body map[string]any) { body["lease_id"] = newNativeID("lease") }, status: http.StatusConflict},
@@ -1075,7 +1268,12 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		if !found {
 			t.Fatal("registered event did not persist authentic transcript")
 		}
+		oldExpiry := f.lease.ExpiresAt
+		renewConversationFixtureLease(t, f, 1800)
 		f.advance(11 * time.Minute)
+		if !f.now.After(oldExpiry) {
+			t.Fatal("fixture did not cross the original registered lease expiry")
+		}
 		publishCapacity(t, f.nativeFixture, r, capacityReport(f.now))
 		before := f.load(t)
 		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
@@ -1093,7 +1291,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		}
 		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-registered", "text": " after restart"}), http.StatusAccepted)
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = (SELECT token_id FROM runner_identities WHERE id = ?)", formatHubTime(f.now), r.binding.RunnerID); err != nil {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2 AND id=(SELECT token_id FROM runner_identities WHERE organization_id=$2 AND runner_id=$3)", f.now, f.project.OrganizationID, r.binding.RunnerID); err != nil {
 			t.Fatal(err)
 		}
 		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusUnauthorized)
@@ -1325,13 +1523,14 @@ func TestConversationWorkerUnbind(t *testing.T) {
 			requireNativeStatus(t, f.unbind(t, test.outcome), http.StatusOK)
 			requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-1", "text": "late"}), http.StatusConflict, "stale_execution")
 			if test.outcome == "succeeded" {
-				// A finishing worker may release its lease before unbinding.
 				g := newConversationWorkerFixture(t)
 				requireNativeStatus(t, g.bind(t, nil), http.StatusOK)
+				requireNativeStatus(t, g.turnEvents(t,
+					map[string]any{"type": "turn_started", "thread_id": "thread-finished", "turn_id": "turn-finished"},
+					map[string]any{"type": "turn_completed", "turn_id": "turn-finished", "status": "completed"},
+				), http.StatusAccepted)
+				requireNativeStatus(t, g.unbind(t, "succeeded"), http.StatusOK)
 				g.release(t)
-				if record := g.load(t); record.Execution.Status != conversation.ExecutionInterrupted || record.Execution.Error != "runner lease lost" {
-					t.Fatalf("execution after release = %#v", record.Execution)
-				}
 				requireNativeStatus(t, g.unbind(t, "succeeded"), http.StatusOK)
 				if record := g.load(t); record.Execution.Status != conversation.ExecutionCompleted || record.Execution.Error != "" {
 					t.Fatalf("execution after late unbind = %#v", record.Execution)
@@ -1346,6 +1545,45 @@ func TestConversationWorkerUnbind(t *testing.T) {
 }
 
 func TestConversationReconcileLeaseLoss(t *testing.T) {
+	t.Run("expired and released owners cannot execute", func(t *testing.T) {
+		for _, released := range []bool{false, true} {
+			t.Run(strconv.FormatBool(released), func(t *testing.T) {
+				f := newConversationWorkerFixture(t)
+				requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+				if released {
+					f.release(t)
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+						attempt, err := reader.Attempt(t.Context(), f.attempt)
+						if err == nil && (attempt.Status != "cancelled" || attempt.LeaseID != string(f.lease.ID) || attempt.FencingToken != int64(f.lease.FencingToken)) {
+							t.Fatalf("release did not durably cancel the exact attempt: %+v", attempt)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if record := f.load(t); record.Execution.Status != conversation.ExecutionInterrupted || record.Execution.Error != "runner lease lost" {
+						t.Fatalf("execution after release = %#v", record.Execution)
+					}
+				} else {
+					f.advance(11 * time.Minute)
+				}
+				before := f.load(t)
+				requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
+				requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "expired-item", "text": "refused"}), http.StatusConflict, "stale_execution")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 90}), http.StatusConflict)
+				if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq || after.Revision != before.Revision {
+					t.Fatalf("refused owner changed execution: %+v", after.Execution)
+				}
+				if released {
+					requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+					requireNativeStatus(t, f.unbind(t, "failed"), http.StatusOK)
+					if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq || after.Revision != before.Revision {
+						t.Fatalf("cancelled owner cleanup changed terminal result: %+v", after.Execution)
+					}
+				}
+			})
+		}
+	})
 	t.Parallel()
 	for _, test := range []struct {
 		name         string
@@ -1363,9 +1601,16 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-budget", "turn_id": "turn-budget"}), http.StatusAccepted)
 			before := f.load(t)
-			setMonthlyBudgetFixture(t, f.nativeFixture, test.organization, budget.MonthlyPolicy{Enabled: true, Mode: test.mode, RunnerMicros: new(int64)})
+			f.monthlyBudget(t, test.organization, budget.MonthlyPolicy{Enabled: true, Mode: test.mode, RunnerMicros: new(int64)})
 			if test.expired {
+				oldExpiry := f.lease.ExpiresAt
+				if test.mode == budget.DrainIssue {
+					renewConversationFixtureLease(t, f, 1800)
+				}
 				f.advance(11 * time.Minute)
+				if !f.now.After(oldExpiry) {
+					t.Fatal("fixture did not cross the original lease expiry")
+				}
 			}
 			renewalStatus, controlStatus, eventStatus := http.StatusOK, http.StatusOK, http.StatusAccepted
 			if test.mode == budget.HardStop {
@@ -1410,7 +1655,12 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq {
 			t.Fatalf("failed observation changed the live execution: %+v", after.Execution)
 		}
+		oldExpiry := f.lease.ExpiresAt
+		renewConversationFixtureLease(t, f, 1800)
 		f.advance(11 * time.Minute)
+		if !f.now.After(oldExpiry) {
+			t.Fatal("fixture did not cross the original lease expiry")
+		}
 		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -1423,11 +1673,15 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		requireConversationDelivery(t, f, handed, "renew-control", conversation.DeliverySending)
 		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-renew", "text": "during expiry"}), http.StatusAccepted)
+		var databaseNow time.Time
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT clock_timestamp()").Scan(&databaseNow); err != nil {
+			t.Fatal(err)
+		}
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 90})
 		requireNativeStatus(t, response, http.StatusOK)
 		var renewed tracker.NativeLease
 		decodeHubResponse(t, response, &renewed)
-		if renewed.ID != f.lease.ID || renewed.FencingToken != f.lease.FencingToken || !renewed.ExpiresAt.After(f.now) {
+		if renewed.ID != f.lease.ID || renewed.FencingToken != f.lease.FencingToken || !renewed.ExpiresAt.After(databaseNow) {
 			t.Fatalf("renewed authority = %+v", renewed)
 		}
 		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
@@ -1436,7 +1690,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 			t.Fatalf("renewal changed the live execution: %+v", after.Execution)
 		}
 		var attempts int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE work_item_id = ?", f.issue.WorkItemID).Scan(&attempts); err != nil || attempts != 1 {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=$1 AND i.native_id=$2", f.project.OrganizationID, f.issue.WorkItemID).Scan(&attempts); err != nil || attempts != 1 {
 			t.Fatalf("renewal created another attempt: count=%d err=%v", attempts, err)
 		}
 		oldLease, oldAttempt, oldRun := f.lease, f.attempt, f.run
@@ -1466,7 +1720,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 	waiting := f.queue(t, conversation.MessageText, "text-2", "And this one", nil)
 
 	t.Run("released lease is reconciled", func(t *testing.T) {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at = ? WHERE lease_id = ?", formatHubTime(f.now), f.lease.ID); err != nil {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET released_at = $1 WHERE lease_id = $2", formatHubTime(f.now), f.lease.ID); err != nil {
 			t.Fatal(err)
 		}
 		f.advance(11 * time.Minute)
@@ -1587,7 +1841,7 @@ func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 	if questions[0].Prompts[1].Question != strings.Repeat("Details? ", 400) {
 		t.Fatal("pending prompt was truncated")
 	}
-	replay, err := f.chat.store.replayEvents(t.Context(), f.service.database.reader, f.record.ID, 0)
+	replay, err := f.replay(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1631,7 +1885,7 @@ func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 		answer := strings.Repeat("Detailed answer ", 200)
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", f.token, conversation.Command{Key: "answer-1", Kind: conversation.CommandAnswer, QuestionID: question.ID, Answers: map[string][]string{"surfaces": {"Checkout lock"}, "notes": {answer}}, Expected: conversation.Expected{AttemptID: f.attempt}})
 		requireNativeStatus(t, response, http.StatusOK)
-		if err := f.service.maintainNativeRetention(t.Context(), f.now); err != nil {
+		if err := f.service.expireNativeRecords(t.Context(), f.now); err != nil {
 			t.Fatal(err)
 		}
 		controls := f.controls(t, 0, 0)
@@ -1652,29 +1906,32 @@ func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 		}
 
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "control_result", "key": "answer-1", "status": "delivered"}), http.StatusAccepted)
-		ctx := t.Context()
-		db := f.service.database.db
-		pending, err := f.chat.store.listPendingQuestions(ctx, db, f.record.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(pending) != 0 {
-			t.Fatalf("pending questions = %#v, want none once answered", pending)
-		}
-		snapshot, err := f.chat.store.listSnapshotQuestions(ctx, db, f.record.ID, f.attempt, conversationSnapshotQuestions)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(snapshot) != 1 || snapshot[0].ID != question.ID || snapshot[0].Status != conversation.QuestionAnswered {
-			t.Fatalf("snapshot questions = %#v", snapshot)
-		}
-		other, err := f.chat.store.listSnapshotQuestions(ctx, db, f.record.ID, "att_other", conversationSnapshotQuestions)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(other) != 0 {
-			t.Fatalf("settled questions of another attempt = %#v, want none", other)
-		}
+		f.readTenant(t, func(r tenantstore.Reader) error {
+			pending, err := r.Questions(t.Context(), f.record.ID, "", conversationSnapshotQuestions)
+			if err != nil {
+				return err
+			}
+			for _, q := range pending {
+				if q.Status == conversation.QuestionPending || q.Status == conversation.QuestionSending || q.Status == conversation.QuestionSent {
+					t.Fatalf("pending question=%#v", q)
+				}
+			}
+			snapshot, err := r.Questions(t.Context(), f.record.ID, f.attempt, conversationSnapshotQuestions)
+			if err != nil {
+				return err
+			}
+			if len(snapshot) != 1 || snapshot[0].ID != question.ID || snapshot[0].Status != conversation.QuestionAnswered {
+				t.Fatalf("snapshot questions=%#v", snapshot)
+			}
+			other, err := r.Questions(t.Context(), f.record.ID, "att_other", conversationSnapshotQuestions)
+			if err != nil {
+				return err
+			}
+			if len(other) != 0 {
+				t.Fatalf("settled questions of another attempt=%#v, want none", other)
+			}
+			return nil
+		})
 	})
 }
 
@@ -1709,11 +1966,11 @@ func TestConversationBindReportsResume(t *testing.T) {
 
 			// The hub forgets which runner produced the thread, which is what a
 			// hub-side coordinator turn looks like to the next runner.
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET provider_thread_runner_id = 'rnr_elsewhere' WHERE id = ?", f.record.ID); err != nil {
+			if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversations SET provider_thread_runner_id = 'rnr_elsewhere' WHERE id = $1", f.record.ID); err != nil {
 				t.Fatal(err)
 			}
 			if protected {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET read_audience='protected-screen-audience' WHERE id=?", f.record.ID); err != nil {
+				if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversations SET read_audience='protected-screen-audience' WHERE id=$1", f.record.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1905,11 +2162,11 @@ func TestConversationTurnEventBatchIsIdempotent(t *testing.T) {
 	t.Run("retired receipts reject late batches", func(t *testing.T) {
 		requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
 		f.release(t)
-		if err := f.service.maintainNativeRetention(t.Context(), f.now); err != nil {
+		if err := f.service.expireNativeRecords(t.Context(), f.now); err != nil {
 			t.Fatal(err)
 		}
 		var remaining int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_turn_batches WHERE attempt_id=?", f.attempt).Scan(&remaining); err != nil {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_turn_batches WHERE attempt_id=$1", f.attempt).Scan(&remaining); err != nil {
 			t.Fatal(err)
 		}
 		if remaining != 0 {
@@ -1941,7 +2198,7 @@ func TestConversationReconcileSettlesTerminalTurnAfterLeaseLoss(t *testing.T) {
 	handed := f.queue(t, conversation.MessageText, "text-1", "Handed over", nil)
 	requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
 	requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "execution_status", "status": "failed", "error": "provider crashed"}), http.StatusAccepted)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at = ? WHERE lease_id = ?", formatHubTime(f.now), f.lease.ID); err != nil {
+	if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET released_at = $1 WHERE lease_id = $2", formatHubTime(f.now), f.lease.ID); err != nil {
 		t.Fatal(err)
 	}
 	if record := f.load(t); record.Execution.Status != conversation.ExecutionFailed || record.Execution.Settled {
@@ -1985,7 +2242,7 @@ func TestConversationAnswerRefusesExpiredQuestion(t *testing.T) {
 		})
 	}
 	setExpiry := func(at time.Time) {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_questions SET expires_at = ? WHERE id = ?", conversationTime(at), question.ID); err != nil {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversation_questions SET expires_at = $1 WHERE id = $2", conversationTime(at), question.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2003,7 +2260,7 @@ func TestConversationControlRejectionDoesNotPublish(t *testing.T) {
 		{name: "unknown lease", invalidate: func(t *testing.T, f *conversationWorkerFixture) { f.lease.ID = "lease_unknown" }},
 		{name: "stale fencing token", invalidate: func(t *testing.T, f *conversationWorkerFixture) { f.lease.FencingToken++ }},
 		{name: "wrong runner", invalidate: func(t *testing.T, f *conversationWorkerFixture) {
-			f.worker = f.nativeFixture.worker(t, "another-worker")
+			f.worker = conversationWorkerRunner(t, f.nativeFixture).redemption.Credential
 		}},
 	} {
 		for _, acknowledge := range []bool{false, true} {
@@ -2019,7 +2276,7 @@ func TestConversationControlRejectionDoesNotPublish(t *testing.T) {
 				var after int64
 				if acknowledge {
 					requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT seq FROM conversation_messages WHERE id=?", receipt.MessageID).Scan(&after); err != nil {
+					if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT seq FROM conversation_messages WHERE id=$1", receipt.MessageID).Scan(&after); err != nil {
 						t.Fatal(err)
 					}
 				}

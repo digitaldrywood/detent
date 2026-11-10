@@ -653,42 +653,46 @@ type CollaborationVersion struct {
 }
 
 type Conversation struct {
-	OrganizationID         tracker.OrganizationID
-	ID                     string
-	CreationKey            string
-	CreationHash           string
-	ProjectID              tracker.ProjectID
-	OwnerPrincipalID       string
-	OwnerSubject           string
-	Origin                 string
-	Title                  string
-	Visibility             string
-	Status                 string
-	SubjectWorkItemID      *string
-	WorkItemID             *string
-	LinkedAt               *time.Time
-	Revision               int64
-	ProviderThreadID       string
-	ProviderThreadRunnerID string
-	ProviderThreadOrigin   string
-	ExecutionJson          json.RawMessage
-	EventSeq               int64
-	PreferencesJson        json.RawMessage
-	QueryMetadataVersion   int32
-	ExecutionStatus        *string
-	ExecutionLeaseID       *string
-	ExecutionSettled       pgtype.Bool
-	ReadAudience           string
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
-	LastMessageAt          *time.Time
-	SettledAt              *time.Time
-	Archived               bool
-	ContentAttachmentID    string
-	ConversionState        int16
-	DeletedAt              *time.Time
-	MessageCount           int64
-	ExecutionContinuation  bool
+	OrganizationID                   tracker.OrganizationID
+	ID                               string
+	CreationKey                      string
+	CreationHash                     string
+	ProjectID                        tracker.ProjectID
+	OwnerPrincipalID                 string
+	OwnerSubject                     string
+	Origin                           string
+	Title                            string
+	Visibility                       string
+	Status                           string
+	SubjectWorkItemID                *string
+	WorkItemID                       *string
+	LinkedAt                         *time.Time
+	Revision                         int64
+	ProviderThreadID                 string
+	ProviderThreadRunnerID           string
+	ProviderThreadOrigin             string
+	ExecutionJson                    json.RawMessage
+	EventSeq                         int64
+	PreferencesJson                  json.RawMessage
+	QueryMetadataVersion             int32
+	ExecutionStatus                  *string
+	ExecutionLeaseID                 *string
+	ExecutionSettled                 pgtype.Bool
+	ReadAudience                     string
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
+	LastMessageAt                    *time.Time
+	SettledAt                        *time.Time
+	Archived                         bool
+	ContentAttachmentID              string
+	ConversionState                  int16
+	DeletedAt                        *time.Time
+	MessageCount                     int64
+	ExecutionContinuation            bool
+	CompactionThroughSequence        int64
+	CompactionScannedSequence        int64
+	CompactionContentScannedSequence int64
+	CompactionContentID              string
 }
 
 type ConversationAttachment struct {
@@ -793,6 +797,7 @@ type ConversationEvent struct {
 	DeltaOffset               pgtype.Int8
 	DeltaBytes                pgtype.Int8
 	MessageRevision           pgtype.Int8
+	CompactionGroupKey        *string
 }
 
 type ConversationHistoryImport struct {

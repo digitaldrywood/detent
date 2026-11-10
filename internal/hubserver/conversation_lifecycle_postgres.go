@@ -5,14 +5,17 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -241,6 +244,15 @@ func (c *conversationService) reconcileExecutionPG(ctx context.Context, organiza
 		if !ok {
 			return nativeRunEventStorageUnavailable()
 		}
+		runner, runnerErr := writer.RunnerForLease(ctx, candidate.Execution.Owner.LeaseID)
+		if runnerErr != nil && !errors.Is(runnerErr, corestore.ErrNotFound) {
+			return runnerErr
+		}
+		if runnerErr == nil {
+			if _, err := writer.AccessCredential(ctx, runner.TokenID); err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+		}
 		if _, err := writer.LockWorkItem(ctx, candidate.ProjectID, tracker.NativeWorkItemID(candidate.WorkItemID)); err != nil && !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -272,6 +284,7 @@ func (c *conversationService) reconcileExecutionPG(ctx context.Context, organiza
 		status := record.Execution.Status
 		if !status.Terminal() {
 			status = conversation.ExecutionInterrupted
+			record.Execution.Error = conversationLeaseLostError
 		}
 		processed, moreMessages, err := settlePGWorkerMessagesBatch(ctx, writer, &record, status, now, conversationLifecycleBatchSize)
 		if err != nil {
@@ -295,7 +308,7 @@ func (c *conversationService) reconcileExecutionPG(ctx context.Context, organiza
 			}
 			moreQuestions = questions.Next != ""
 		}
-		record.Execution.Status, record.Execution.Error = status, ""
+		record.Execution.Status = status
 		record.Execution.Settled = !moreMessages && !moreQuestions
 		record.Execution.Capabilities, record.Execution.UpdatedAt = conversation.Capabilities{}, now
 		currentRecord, err := writer.Conversation(ctx, record.ProjectID, record.ID)
@@ -340,6 +353,38 @@ func conversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, 
 	if lease.OrganizationID != record.OrganizationID || lease.IssueID != item.ID || lease.FencingToken != owner.FencingToken || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || lease.RenewedAt.After(now) {
 		return false, nil
 	}
+	runner, err := reader.RunnerForLease(ctx, lease.LeaseID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if runner.RunnerID != owner.RunnerID || string(runner.MachineID) != owner.MachineID || string(runner.MachineID) != lease.MachineID {
+		return false, nil
+	}
+	credential, err := reader.AccessCredential(ctx, runner.TokenID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	identity := runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runner.RunnerID, MachineID: runner.MachineID}, OrganizationID: runner.OrganizationID, Scope: runner.Scope, Operations: runner.Operations, ExpiresAt: runner.ExpiresAt}
+	authority := tenantRunnerAuthority{now: func() time.Time { return now }}
+	if err := authority.VerifyConversationWorker(ctx, reader, ConversationWorkerIdentity{Credential: credential, Runner: identity, Organization: record.OrganizationID, Project: record.ProjectID}); err != nil {
+		var refusal *nativeError
+		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) || errors.As(err, &refusal) && refusal.status == http.StatusNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := checkMonthlyLeasePG(ctx, reader, record.ProjectID, lease.LeaseID, now); err != nil {
+		if errors.Is(err, tracker.ErrLeaseConflict) {
+			return false, nil
+		}
+		return false, err
+	}
 	attempt, err := reader.Attempt(ctx, owner.AttemptID)
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 		if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Settled || !validNativeID(owner.AttemptID, "attempt") || !validNativeID(owner.RunID, "run") {
@@ -352,12 +397,15 @@ func conversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, 
 		if latestErr != nil {
 			return false, latestErr
 		}
-		return latest.LeaseID != lease.LeaseID, nil
+		if latest.LeaseID != lease.LeaseID {
+			return true, nil
+		}
+		attempt, err = latest, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return attempt.OrganizationID == record.OrganizationID && attempt.IssueID == item.ID && attempt.LeaseID == lease.LeaseID && attempt.FencingToken == owner.FencingToken && attempt.RunID == owner.RunID && attempt.Status == "running", nil
+	return attempt.ID == owner.AttemptID && attempt.OrganizationID == record.OrganizationID && attempt.IssueID == item.ID && attempt.LeaseID == lease.LeaseID && attempt.FencingToken == owner.FencingToken && attempt.RunID == owner.RunID && attempt.Status == "running", nil
 }
 
 func (c *conversationService) settleIdleConversationsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {

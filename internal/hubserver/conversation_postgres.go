@@ -26,6 +26,10 @@ func conversationDispatchUnavailable() error {
 	return &nativeError{Code: "unavailable", Message: "Conversation dispatch authority is unavailable", status: 503}
 }
 
+func conversationSnapshotUnavailable() error {
+	return &nativeError{Code: "unavailable", Message: "Conversation storage is unavailable", status: 503}
+}
+
 func (s *Service) conversationRecordsSelected() bool {
 	return s.config.TenantRepository != nil
 }
@@ -42,14 +46,14 @@ func (s *Service) requireConversationFeaturePG(ctx context.Context, organization
 	})
 }
 
-func (s *Service) authorizeConversationWorkerPG(ctx context.Context, reader tenantstore.Reader, scope nativeScope, record conversationRecord, identity conversationWorkerIdentity, runID string, allowReleased bool) (leasestore.Lease, error) {
+func (s *Service) authorizeConversationWorkerPG(ctx context.Context, reader tenantstore.Reader, scope nativeScope, record conversationRecord, identity conversationWorkerIdentity, runID string, allowReleased, allowUnstarted bool) (leasestore.Lease, error) {
 	if err := requireConversationRecordOwner(record, identity, allowReleased); err != nil {
 		return leasestore.Lease{}, err
 	}
 	if runID == "" {
 		runID = record.Execution.Owner.RunID
 	}
-	lease, attempt, err := s.authorizeConversationWorkerLeasePG(ctx, reader, scope, record.WorkItemID, identity, runID, allowReleased, record.Execution.Status == conversation.ExecutionStarting)
+	lease, attempt, err := s.authorizeConversationWorkerLeasePG(ctx, reader, scope, record.WorkItemID, identity, runID, allowReleased, allowUnstarted && record.Execution.Status == conversation.ExecutionStarting)
 	if err != nil {
 		return leasestore.Lease{}, err
 	}
@@ -88,11 +92,19 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 	if err != nil {
 		return leasestore.Lease{}, leasestore.Attempt{}, err
 	}
-	if lease.OrganizationID != scope.organization || lease.MachineID != string(scope.credential.Runner.MachineID) || lease.IssueID != item.ID || lease.FencingToken != int64(identity.FencingToken) {
+	if lease.IssueID != item.ID || lease.MachineID != string(scope.credential.Runner.MachineID) {
+		return leasestore.Lease{}, leasestore.Attempt{}, nativeNotFound()
+	}
+	if lease.OrganizationID != scope.organization || lease.FencingToken != int64(identity.FencingToken) {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease does not belong to this worker and work item")
 	}
+	if !allowReleased {
+		if err := checkMonthlyLeasePG(ctx, reader, scope.project, lease.LeaseID, s.config.now()); err != nil {
+			return leasestore.Lease{}, leasestore.Attempt{}, err
+		}
+	}
 	attempt, err := reader.Attempt(ctx, identity.AttemptID)
-	if errors.Is(err, corestore.ErrNotFound) && allowUnstarted && !allowReleased && validNativeID(runID, "run") && validNativeID(identity.AttemptID, "attempt") {
+	if errors.Is(err, corestore.ErrNotFound) && allowUnstarted && validNativeID(runID, "run") && validNativeID(identity.AttemptID, "attempt") {
 		latest, latestErr := reader.LatestAttempt(ctx, item.ID)
 		if latestErr != nil && !errors.Is(latestErr, corestore.ErrNotFound) {
 			return leasestore.Lease{}, leasestore.Attempt{}, latestErr
@@ -104,7 +116,10 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 		if lease.RenewedAt.After(now) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
 			return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is no longer current")
 		}
-		return lease, leasestore.Attempt{OrganizationID: scope.organization, ID: identity.AttemptID, IssueID: item.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: runID, Status: "running"}, nil
+		return lease, leasestore.Attempt{OrganizationID: scope.organization, ID: identity.AttemptID, IssueID: item.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: runID}, nil
+	}
+	if errors.Is(err, corestore.ErrNotFound) {
+		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The attempt is not the running owner of the lease")
 	}
 	if err != nil {
 		return leasestore.Lease{}, leasestore.Attempt{}, err
@@ -496,9 +511,15 @@ func conversationStoredInt64(value int64) sql.NullInt64 {
 }
 
 func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope, id string, before int64, limit int) (conversationPageRead, error) {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return conversationPageRead{}, conversationSnapshotUnavailable()
+	}
 	var page conversationPageRead
+	var compaction conversationstore.CompactionState
+	var compactionReference attachment.ArchiveReference
 	contentReferences := map[string]attachment.ArchiveReference{}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
 		}
@@ -534,9 +555,27 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 			}
 		}
 
-		messages, err := reader.Messages(ctx, id, before, limit)
-		if err != nil {
-			return err
+		compaction = stored.Compaction
+		if compaction.ContentReference != "" {
+			object, err := reader.ConversationContent(ctx, compaction.ContentReference)
+			if err != nil {
+				return err
+			}
+			compactionReference = object.Reference
+		}
+		var messages conversationstore.MessagePage
+		for remaining, cursor := limit, before; remaining > 0; {
+			batch, err := reader.Messages(ctx, id, cursor, min(remaining, corestore.MaxPageSize))
+			if err != nil {
+				return err
+			}
+			messages.Items = append(batch.Items, messages.Items...)
+			messages.Next = batch.Next
+			remaining -= len(batch.Items)
+			if batch.Next == 0 {
+				break
+			}
+			cursor = batch.Next
 		}
 		owner, ok := reader.(conversationstore.AttachmentReader)
 		if !ok {
@@ -546,9 +585,15 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 		for _, item := range messages.Items {
 			ids = append(ids, item.ID)
 		}
-		attachments, err := owner.MessageAttachments(ctx, scope.project, id, ids)
-		if err != nil {
-			return err
+		attachments := make(map[string][]conversationstore.Attachment, len(ids))
+		for batchIDs := range slices.Chunk(ids, corestore.MaxPageSize) {
+			batch, err := owner.MessageAttachments(ctx, scope.project, id, batchIDs)
+			if err != nil {
+				return err
+			}
+			for messageID, rows := range batch {
+				attachments[messageID] = rows
+			}
 		}
 		for _, item := range messages.Items {
 			if item.ContentReference != "" {
@@ -593,6 +638,18 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 	if err != nil {
 		return conversationPageRead{}, translateConversationError(err)
 	}
+	if compaction.ContentReference != "" {
+		var payload conversationContent
+		if err := s.readConversationObject(ctx, string(scope.organization), compactionReference, &payload); err != nil {
+			return conversationPageRead{}, err
+		}
+		if err := json.Unmarshal(payload.Data, &page.compaction); err != nil {
+			return conversationPageRead{}, fmt.Errorf("decode conversation compaction summary: %w", err)
+		}
+		if page.compaction.ThroughSequence != compaction.ThroughSequence {
+			return conversationPageRead{}, conversationContentUnavailable()
+		}
+	}
 	for index := range page.messages {
 		message := &page.messages[index]
 		if message.ContentID == "" {
@@ -612,10 +669,14 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 }
 
 func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeScope, stream *conversationStream, id string, cursor, through int64) (int64, error) {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return cursor, conversationSnapshotUnavailable()
+	}
 	for cursor < through {
 		var page conversationstore.EventPage
 		refs := map[string]attachment.ArchiveReference{}
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 				return err
 			}
@@ -635,6 +696,9 @@ func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeSc
 			}
 			if err := authorizeConversationLinkedItemPG(ctx, reader, scope, current); err != nil {
 				return err
+			}
+			if cursor < record.Compaction.ThroughSequence {
+				return errConversationCursorExpired
 			}
 			page, err = reader.ConversationEvents(ctx, id, cursor, conversationEventPage)
 			if err != nil {
@@ -676,7 +740,7 @@ func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeSc
 				return cursor, err
 			}
 			stored.Data = payload.Data
-			if stored.Type == conversation.EventMessageAccepted {
+			if stored.Type == conversation.EventMessageAccepted || stored.Type == conversation.EventMessageUpdated {
 				var message conversationMessageResource
 				if err := json.Unmarshal(payload.Data, &message); err != nil {
 					return cursor, err
@@ -797,12 +861,21 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			var err error
 			question, err = reader.Question(ctx, id, command.QuestionID)
+			if err == nil {
+				prior, priorFound, err = reader.Command(ctx, id, command.Key)
+			}
 			return err
 		})
 		if err != nil {
 			return nil, translateConversationError(err)
 		}
-		if question.Status == conversation.QuestionSending || question.Status == conversation.QuestionAnswered {
+		if priorFound {
+			if prior.RequestHash != conversation.RequestHash(command) {
+				return nil, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: 409, publicMessage: true}
+			}
+			return json.Marshal(prior.Receipt)
+		}
+		if question.Status == conversation.QuestionSending || question.Status == conversation.QuestionSent || question.Status == conversation.QuestionAnswered {
 			return nil, conversationQuestionAnswered()
 		}
 		if question.Status != conversation.QuestionPending || (question.ExpiresAt != nil && !s.config.now().Before(*question.ExpiresAt)) {
@@ -886,10 +959,9 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			original, err = reader.Message(ctx, id, command.MessageID)
 			return err
 		})
-		if errors.Is(err, corestore.ErrNotFound) {
+		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 			return nil, nativePublicInvalid("The message to retry is not part of this conversation")
 		}
-
 		if err != nil {
 			return nil, translateConversationError(err)
 		}
@@ -1006,9 +1078,6 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		if storedConversation.Revision != current.Revision || storedConversation.WorkItemID != current.WorkItemID {
-			return conversationStale("The conversation changed; retry the command")
-		}
 		if storedConversation.ReadAudience != "" {
 			audience, err := conversationReadAudienceRecord(ctx, writer, scope.organization, scope.credential)
 			if err != nil || audience != storedConversation.ReadAudience {
@@ -1022,11 +1091,22 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			return err
 		}
 		if command.Kind == conversation.CommandAnswer {
+			prior, found, err := writer.Command(ctx, id, command.Key)
+			if err != nil {
+				return err
+			}
+			if found {
+				if prior.RequestHash != conversation.RequestHash(command) {
+					return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: 409, publicMessage: true}
+				}
+				receipt, replay = prior.Receipt, true
+				return nil
+			}
 			lockedQuestion, err := writer.Question(ctx, id, command.QuestionID)
 			if err != nil {
 				return translateConversationError(err)
 			}
-			if lockedQuestion.Status == conversation.QuestionSending || lockedQuestion.Status == conversation.QuestionAnswered {
+			if lockedQuestion.Status == conversation.QuestionSending || lockedQuestion.Status == conversation.QuestionSent || lockedQuestion.Status == conversation.QuestionAnswered {
 				return conversationQuestionAnswered()
 			}
 			if lockedQuestion.Status != conversation.QuestionPending || (lockedQuestion.ExpiresAt != nil && !plan.now.Before(*lockedQuestion.ExpiresAt)) {
@@ -1037,6 +1117,9 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			}
 			question = lockedQuestion
 			question.Status, question.Answers, question.AnsweredBy, question.UpdatedAt = conversation.QuestionSending, command.Answers, scope.credential.ID, plan.now
+		}
+		if storedConversation.Revision != current.Revision || storedConversation.WorkItemID != current.WorkItemID {
+			return conversationStale("The conversation changed; retry the command")
 		}
 		reservation := conversationstore.Command{TargetTurnID: targetTurnID, OrganizationID: scope.organization, ConversationID: id, Key: command.Key, Kind: command.Kind, RequestHash: conversation.RequestHash(command), Receipt: conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliverySaved, UpdatedAt: plan.now}, CreatedAt: plan.now, UpdatedAt: plan.now}
 		existing, created, err := writer.ReserveCommand(ctx, reservation)
@@ -1204,7 +1287,7 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			if s.config.ConversationDispatch == nil {
 				return conversationDispatchUnavailable()
 			}
-			if err := s.config.ConversationDispatch.RequestDispatch(ctx, writer, scope.project, current.WorkItemID, dispatchFence, plan.now); err != nil {
+			if err := s.config.ConversationDispatch.QueueDispatch(ctx, writer, scope.project, current.WorkItemID, dispatchFence, plan.now); err != nil {
 				return err
 			}
 		}
@@ -1501,6 +1584,9 @@ func preparePGConversationMessage(ctx context.Context, plan *conversationPublica
 }
 
 func appendPGConversationEvent(ctx context.Context, writer tenantstore.Writer, organization tracker.OrganizationID, conversationID string, eventType conversation.EventType, body any, at time.Time) error {
+	if prepared, err := appendPreparedPGWorkerEvent(ctx, writer, organization, conversationID, eventType, body, at); prepared {
+		return err
+	}
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err

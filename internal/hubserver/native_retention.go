@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -29,24 +30,33 @@ type nativeRetentionStage struct {
 func (s *Service) maintainNativeBackfills(ctx context.Context) error {
 	return s.runNativeRetentionStages(ctx, []nativeRetentionStage{
 		{"populate Change columns", s.populateChangeColumns},
-		{"populate claim facts", func(ctx context.Context) error {
-			return s.database.populateClaimFacts(s.contentContext(ctx))
-		}},
-		{"populate runner facts", func(ctx context.Context) error {
-			return s.database.populateRunnerFacts(s.runDetailContext(s.contentContext(ctx)))
-		}},
-		{"populate time indexes", s.database.populateTimeIndexes},
+		{"populate claim facts", s.populateClaimRecoveryProjections},
 		{"expire request metrics", func(ctx context.Context) error { return s.expireRequestMetrics(ctx, s.config.now()) }},
 	})
+}
+
+func (s *Service) populateClaimRecoveryProjections(ctx context.Context) error {
+	owner, ok := s.config.TenantRepository.(interface {
+		BackfillChangeRecoveryProjections(context.Context, tracker.OrganizationID, *eventstore.Content, int) (int, error)
+	})
+	if !ok {
+		return workItemStorageUnavailable()
+	}
+	_, err := owner.BackfillChangeRecoveryProjections(ctx, tracker.OrganizationID(s.appOrganizationID()), eventstore.NewContent(s.runDetailStore()), corestore.MaxPageSize)
+	return err
 }
 
 func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) error {
 	backfillErr := s.maintainNativeBackfills(ctx)
 	cleanupErr := s.runNativeRetentionStages(ctx, []nativeRetentionStage{
 		{"expire native records", func(ctx context.Context) error { return s.expireNativeRecords(ctx, now) }},
-		{"archive closed issues", func(ctx context.Context) error { return s.archiveClosedNativeIssues(ctx, now) }},
-		{"compact analytics samples", func(ctx context.Context) error { return s.database.compactAnalyticsSamples(ctx, now) }},
-		{"reclaim storage", s.database.reclaimStorage},
+		{"compact conversation events", func(ctx context.Context) error {
+			if s.conversations == nil {
+				return nil
+			}
+			_, err := s.conversations.compactEventsPG(ctx, tracker.OrganizationID(s.appOrganizationID()), now)
+			return err
+		}},
 	})
 	return errors.Join(backfillErr, cleanupErr)
 }

@@ -82,7 +82,7 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 			WorkItemID: itemID, LinkedAt: &now, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},
 			CreatedAt: now, UpdatedAt: now, Revision: 1, Preferences: conversation.DefaultPreferences(),
 		}
-		if item.ActorPrincipalID != nil {
+		if item.ActorKind != nil && *item.ActorKind == "human" && item.ActorPrincipalID != nil {
 			record.OwnerPrincipalID = *item.ActorPrincipalID
 		}
 		return nil
@@ -370,7 +370,7 @@ func (r *conversationWorkerRouter) unbindPostgres(e echo.Context, request conver
 			return fmt.Errorf("lock conversation for unbind: %w", err)
 		}
 		record = conversationRecordFromStore(stored)
-		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, writer, scope, itemID, request.conversationWorkerIdentity, "", true, false); err != nil {
+		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, writer, scope, itemID, request.conversationWorkerIdentity, record.Execution.Owner.RunID, true, true); err != nil {
 			return fmt.Errorf("verify worker lease for unbind: %w", err)
 		}
 		if err := requireConversationRecordOwner(record, request.conversationWorkerIdentity, true); err != nil {
@@ -569,12 +569,15 @@ func (c *conversationService) leaseReleasedTenant(ctx context.Context, writer te
 		now = releasedAt
 	}
 	status := record.Execution.Status
+	executionError := record.Execution.Error
 	if !status.Terminal() {
 		status = conversation.ExecutionInterrupted
+		executionError = conversationLeaseLostError
 	}
 	if err := settlePGWorkerMessages(ctx, writer, &record, status, now, conversationPGWorkerPageSize); err != nil {
 		return fmt.Errorf("settle released conversation worker messages: %w", err)
 	}
+	record.Execution.Error = executionError
 	if err := expirePGOutstandingQuestions(ctx, writer, record.ID, record.Execution.Owner.AttemptID, "", func(question conversationstore.Question) error {
 		question.Status, question.UpdatedAt = conversation.QuestionExpired, now
 		if err := writer.UpsertQuestion(ctx, question); err != nil {
@@ -645,13 +648,30 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 			return err
 		}
 		current = conversationRecordFromStore(stored)
-		if _, err := s.authorizeConversationWorkerPG(ctx, reader, scope, current, request.conversationWorkerIdentity, "", false); err != nil {
+		if _, err := s.authorizeConversationWorkerPG(ctx, reader, scope, current, request.conversationWorkerIdentity, "", false, true); err != nil {
 			return err
 		}
 		if request.BatchKey != "" {
 			storedSequence, foundBatch, err = reader.TurnBatch(ctx, request.AttemptID, request.BatchKey)
 			if err != nil {
 				return err
+			}
+		}
+		if !foundBatch {
+			execution := current.Execution
+			for _, event := range request.Events {
+				if err := validatePGTurnEvent(ctx, reader, current, execution, event); err != nil {
+					return err
+				}
+				switch event.Type {
+				case "turn_started":
+					if thread := strings.TrimSpace(event.ThreadID); thread != "" {
+						execution.Owner.ThreadID = thread
+					}
+					execution.Owner.TurnID = strings.TrimSpace(event.TurnID)
+				case "turn_completed":
+					execution.Owner.TurnID = ""
+				}
 			}
 		}
 		return nil
@@ -663,21 +683,11 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 		return e.JSON(http.StatusAccepted, conversationTurnEventsResponse{EventSeq: storedSequence})
 	}
 	plan := &conversationPublicationPlan{service: c, record: current, original: current, now: now, prepared: make(preparedConversationContents), reads: &conversationArchiveReads{content: map[string][]byte{}}}
-	preparedItems := make([]conversationMessageRecord, len(request.Events))
-	for index, event := range request.Events {
-		if event.Type != "item" {
-			continue
-		}
-		data, err := conversationItemData(event.Data)
-		if err != nil {
-			return s.nativeAPIError(e, err)
-		}
-		message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageKind(event.Kind), Text: conversationTruncate(event.Summary, conversationMaxSummaryBytes), Data: data, Delivery: conversation.DeliveryCompleted, ProviderItemID: strings.TrimSpace(event.ProviderItemID), Actor: conversationActorFor(scope), CreatedAt: now, UpdatedAt: now}
-		if err := preparePGConversationMessage(ctx, plan, &message); err != nil {
-			return s.nativeAPIError(e, err)
-		}
-		preparedItems[index] = message
+	preparedItems, err := r.preparePGTurnMessages(ctx, scope, plan, request.Events)
+	if err != nil {
+		return s.nativeAPIError(e, err)
 	}
+	ctx = context.WithValue(ctx, pgWorkerPublicationKey{}, plan)
 	var result conversationTurnEventsResponse
 	changed := false
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
@@ -696,7 +706,7 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 		originalProviderThreadID := record.ProviderThreadID
 		originalProviderThreadRunnerID := record.ProviderThreadRunnerID
 		originalProviderThreadOrigin := record.ProviderThreadOrigin
-		if _, err := s.authorizeConversationWorkerPG(ctx, writer, scope, record, request.conversationWorkerIdentity, "", false); err != nil {
+		if _, err := s.authorizeConversationWorkerPG(ctx, writer, scope, record, request.conversationWorkerIdentity, "", false, true); err != nil {
 			return err
 		}
 		if request.BatchKey != "" {
@@ -708,6 +718,9 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 				result.EventSeq = sequence
 				return nil
 			}
+		}
+		if stored.Revision != current.Revision || stored.EventSequence != current.EventSeq || stored.Execution.Owner != current.Execution.Owner {
+			return conversationStale("The conversation changed before the event batch was committed")
 		}
 		if err := registerPreparedConversationObjects(ctx, writer, scope.organization, plan.prepared, now); err != nil {
 			return err
@@ -876,36 +889,32 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope nati
 			}
 		}
 	case "delta":
-		messages, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: record.ID, AttemptID: execution.Owner.AttemptID, Role: conversation.RoleAssistant, Limit: conversationPGWorkerPageSize})
-		if err != nil {
-			return err
-		}
-		if messages.Next != 0 {
-			return conversationUnsupported("The turn message set exceeds the bounded event batch")
-		}
 		var message conversationstore.Message
-		for _, candidate := range messages.Items {
-			if (event.MessageID != "" && candidate.ID == event.MessageID) || (event.MessageID == "" && candidate.ProviderItemID == event.ProviderItemID) {
-				message = candidate
-				break
-			}
-		}
-		if message.ID == "" {
-			message, err = writer.CreateMessage(ctx, conversationMessageToStore(scope.organization, conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, TurnID: execution.Owner.TurnID, ProviderItemID: strings.TrimSpace(event.ProviderItemID), Actor: conversationActorFor(scope), CreatedAt: now, UpdatedAt: now}))
+		var err error
+		if preparedItem.Revision == 0 {
+			accepted := preparedItem
+			accepted.Text, accepted.TextBytes = "", 0
+			message, err = writer.CreateMessage(ctx, conversationMessageToStore(scope.organization, accepted))
 			if err != nil {
 				return err
 			}
 			if err := appendEvent(conversation.EventMessageAccepted, projectMessage(conversationMessageFromStore(message))); err != nil {
 				return err
 			}
+		} else {
+			message, err = writer.Message(ctx, record.ID, preparedItem.ID)
+			if err != nil {
+				return err
+			}
+			if message.Revision != preparedItem.Revision || message.AttemptID != execution.Owner.AttemptID {
+				return conversationStale("The assistant message changed before the event batch was committed")
+			}
 		}
 		if event.Text != "" {
 			offset := message.TextBytes
-			message.TextBytes += int64(len(event.Text))
-			message.Text += event.Text
-			message.StoredTextBytes = int64(len(message.Text))
-			message.UpdatedAt = now
-			updated, err := writer.UpdateMessage(ctx, message, message.Revision)
+			next := conversationMessageToStore(scope.organization, preparedItem)
+			next.Sequence, next.Revision = message.Sequence, message.Revision
+			updated, err := writer.UpdateMessage(ctx, next, message.Revision)
 			if err != nil {
 				return err
 			}
@@ -936,7 +945,8 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope nati
 		if turnID == "" {
 			turnID = execution.Owner.TurnID
 		}
-		messageRecord := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageStatus, Text: conversationQuestionPrompt, Delivery: conversation.DeliveryCompleted, AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, TurnID: turnID, Actor: conversationActorFor(scope), CreatedAt: now, UpdatedAt: now}
+		messageRecord := preparedItem
+		messageRecord.AttemptID, messageRecord.ThreadID, messageRecord.TurnID = execution.Owner.AttemptID, execution.Owner.ThreadID, turnID
 		message, err := writer.CreateMessage(ctx, conversationMessageToStore(scope.organization, messageRecord))
 		if err != nil {
 			return err
@@ -1073,14 +1083,16 @@ func (r *conversationWorkerRouter) controlsPostgres(e echo.Context, id string, i
 	}
 	for {
 		page, err := r.pollControlsPostgres(ctx, scope, id, identity, after)
-		if err != nil {
+		if err != nil && (wait == 0 || !isNativeConflict(err)) {
 			return s.nativeAPIError(e, conversationStaleExecutionError("controls", id, translateConversationError(err)))
 		}
 		if len(page.Controls) > 0 || wait == 0 {
 			return e.JSON(http.StatusOK, page)
 		}
 		select {
+		case <-subscription.wake:
 		case <-subscription.closed:
+			return e.JSON(http.StatusOK, page)
 		case <-r.stop:
 			return e.JSON(http.StatusOK, page)
 		case <-deadline:
@@ -1107,7 +1119,7 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			return err
 		}
 		snapshot = conversationRecordFromStore(stored)
-		if _, err := r.service.server.authorizeConversationWorkerPG(ctx, reader, scope, snapshot, identity, "", false); err != nil {
+		if _, err := r.service.server.authorizeConversationWorkerPG(ctx, reader, scope, snapshot, identity, "", false, false); err != nil {
 			return err
 		}
 		messages, err := reader.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: id, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliveryQueued, conversation.DeliverySending, conversation.DeliverySaved}, Limit: limit})
@@ -1149,7 +1161,7 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 		if err := r.service.server.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return err
 		}
-		if _, err := r.service.server.authorizeConversationWorkerPG(ctx, writer, scope, snapshot, identity, "", false); err != nil {
+		if _, err := r.service.server.authorizeConversationWorkerPG(ctx, writer, scope, snapshot, identity, "", false, false); err != nil {
 			return err
 		}
 		stored, err := writer.LockConversation(ctx, scope.project, id)
@@ -1157,8 +1169,11 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			return err
 		}
 		record := conversationRecordFromStore(stored)
-		if stored.Execution.Owner.AttemptID != snapshot.Execution.Owner.AttemptID {
+		if stored.Execution.Owner != snapshot.Execution.Owner || stored.WorkItemID != snapshot.WorkItemID {
 			return conversationStale("The conversation worker changed")
+		}
+		if err := requireConversationRecordOwner(record, identity, false); err != nil {
+			return err
 		}
 		if stored.Revision != snapshot.Revision {
 			return nativeConflict(tracker.Revision(stored.Revision))

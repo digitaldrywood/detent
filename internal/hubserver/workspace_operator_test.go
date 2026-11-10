@@ -15,10 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacefiles"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -276,12 +278,12 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 
 func workspaceOperatorContext(t *testing.T, s *Service, token, organization, connection string) context.Context {
 	t.Helper()
-	credential, _, err := s.authenticateAPIToken(t.Context(), token, "", "")
+	credential, _, err := s.authenticateTenantAPIHash(t.Context(), tracker.OrganizationID(organization), apikey.HashToken(token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: connection, Client: "regression", DashboardURL: "https://approval.example.test", Identity: operatorIdentity(credential, organization), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
-		current, _, err := s.authenticateAPIToken(ctx, token, "", "")
+		current, _, err := s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(token), "", "")
 		if err != nil {
 			return operatortool.Authority{}, err
 		}

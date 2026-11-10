@@ -10,9 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +22,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -169,13 +174,11 @@ func TestConversationStreamReplaysAndFollows(t *testing.T) {
 		t.Skip("loopback network listener integration")
 	}
 
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, ArchiveContents: &conversationContentFixture{}}})
-	native := newNativeFixture(t, service, "", "Example project")
-	credential, _, err := native.service.authenticateTenantAPIHash(t.Context(), native.project.OrganizationID, apikey.HashToken(native.token), "", "")
+	f := newStreamFixture(t)
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := newStreamFixtureWithAPI(t, conversationAPIFixture{nativeFixture: native, ownerID: credential.ID})
 	created := f.create(t, f.token, map[string]any{"first_message": map[string]any{"key": "first", "text": "Stream me"}})
 	id := created.Conversation.ID
 	t.Run("replay stops at authorized head", func(t *testing.T) {
@@ -214,17 +217,9 @@ func TestConversationStreamReplaysAndFollows(t *testing.T) {
 	if err := f.service.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.Close(); err != nil {
-		t.Fatal(err)
-	}
 	f.server.Close()
-	restarted, err := Open(t.Context(), f.service.config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = restarted.Close() })
-	f.service = restarted
-	f.server = httptest.NewServer(restarted.Handler())
+	f.service = tfConvReopenConversationService(t, f.service)
+	f.server = httptest.NewServer(f.service.Handler())
 	t.Cleanup(f.server.Close)
 	response = f.command(t, f.token, id, conversation.Command{Key: "gap", Kind: conversation.CommandMessage, Text: "During the gap"})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -273,6 +268,49 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 			requireNativeStatus(t, response, tt.status)
 		})
 	}
+	t.Run("compaction does no archive IO under a lock and refuses changed source", checkCompactionPublicationSource)
+	t.Run("settle tick drives typed compaction", checkCompactionSettleTick)
+	t.Run("replay does not silently cross concurrent compaction", checkCompactionReplaySnapshot)
+	t.Run("compaction projection and watermarks survive restart", checkCompactionRestart)
+	t.Run("restart invalidates terminal message eligibility", checkCompactionRestartEligibility)
+	t.Run("append preserves progress past retained prefix", checkCompactionAppendProgress)
+	t.Run("replacement append invalidates only its predecessor", checkCompactionPredecessorInvalidation)
+	t.Run("pending lookup is tenant and conversation bounded", checkCompactionPendingLookup)
+	t.Run("bounded compaction is fair across conversations", func(t *testing.T) {
+		f := newStreamFixture(t)
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		old := now.Add(-31 * 24 * time.Hour)
+		firstID := f.create(t, f.token, map[string]any{"title": "Example first history"}).Conversation.ID
+		secondID := f.create(t, f.token, map[string]any{"title": "Example second history"}).Conversation.ID
+		if firstID > secondID {
+			firstID, secondID = secondID, firstID
+		}
+		first := seedStreamCompactionConversation(t, f, old.Add(-time.Hour), 1200, firstID)
+		second := seedStreamCompactionConversation(t, f, old, 1, secondID)
+		removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if removed != conversationstore.CompactionBatch-1 {
+			t.Fatalf("first tick removed=%d, want %d after retaining the snapshot", removed, conversationstore.CompactionBatch-1)
+		}
+		firstPage := readStreamCompactionConversation(t, f, first.ID)
+		if firstPage.Compaction.ScannedSequence != conversationstore.CompactionBatch || firstPage.Compaction.ThroughSequence != conversationstore.CompactionBatch {
+			t.Fatalf("first bounded page = %+v", firstPage.Compaction)
+		}
+		if got := readStreamCompactionConversation(t, f, second.ID); got.Compaction.ThroughSequence != 0 {
+			t.Fatalf("first tick exceeded its event budget: %+v", got.Compaction)
+		}
+		if _, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil {
+			t.Fatal(err)
+		}
+		if got := readStreamCompactionConversation(t, f, second.ID); got.Compaction.ThroughSequence != second.EventSequence {
+			t.Fatalf("second conversation starved behind a large history: %+v", got.Compaction)
+		}
+		if got := readStreamCompactionConversation(t, f, first.ID); got.Compaction != firstPage.Compaction {
+			t.Fatalf("second tick repeated the first conversation ahead of its peer: %+v", got.Compaction)
+		}
+	})
 	t.Run("compacted cursor requests a snapshot", func(t *testing.T) {
 		old := time.Now().UTC().Add(-31 * 24 * time.Hour)
 		plan, err := f.service.conversations.newPublicationPlan(t.Context(), id)
@@ -284,28 +322,22 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 			t.Fatal(err)
 		}
 		ctx := plan.context(t.Context())
-		tx, err := f.service.database.db.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		if _, err := f.service.conversations.store.appendEvent(ctx, tx, id, conversation.EventMessageDelta, body, old); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(t.Context(), "UPDATE conversations SET status='settled',settled_at=?,updated_at=? WHERE id=?", conversationTime(old), conversationTime(old), id); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+			if err := appendPGConversationEvent(ctx, writer, f.project.OrganizationID, id, conversation.EventMessageDelta, body, old); err != nil {
+				return err
+			}
+			record, err := writer.Conversation(ctx, f.project.ID, id)
+			if err != nil {
+				return err
+			}
+			record.Status, record.SettledAt, record.UpdatedAt = conversation.StatusSettled, &old, old
+			_, err = writer.UpdateConversation(ctx, record, record.Revision)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.service.maintainNativeRetention(t.Context(), time.Now().UTC()); err != nil {
 			t.Fatal(err)
-		}
-		stream := f.open(t, f.token, id, 0)
-		defer stream.close()
-		frame := stream.nextEvent(t)
-		if frame.Event != string(conversation.EventClosed) || !strings.Contains(frame.Data, conversationClosedCursorExpired) {
-			t.Fatalf("stale stream = %+v", frame)
 		}
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+id, f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
@@ -314,26 +346,32 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 		if snapshot.Compaction == nil || snapshot.Compaction.RemovedEvents != 1 || snapshot.Cursor < 1 {
 			t.Fatalf("snapshot = %+v", snapshot)
 		}
+		stream := f.open(t, f.token, id, 0)
+		defer stream.close()
+		frame := stream.nextEvent(t)
+		if frame.Event != string(conversation.EventClosed) || !strings.Contains(frame.Data, conversationClosedCursorExpired) {
+			t.Fatalf("stale stream = %+v", frame)
+		}
 	})
 }
 
 func TestConversationStreamClosesOnRevocationAndShutdown(t *testing.T) {
-	f := newStreamFixture(t)
 	t.Run("access revoked", func(t *testing.T) {
+		f := newStreamFixture(t)
 		id := f.create(t, f.token, map[string]any{"title": "Revoked"}).Conversation.ID
 		stream := f.open(t, f.token, id, 0)
 		if frame := stream.next(t); frame.Event != string(conversation.EventHeartbeat) {
 			t.Fatalf("frame = %#v", frame)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = ?", testTimestamp, f.ownerID); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+			return writer.RevokeAccessCredential(t.Context(), f.ownerID, f.service.config.now())
+		}); err != nil {
 			t.Fatal(err)
 		}
 		requireClosed(t, stream.nextEvent(t), "access_revoked")
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = NULL WHERE id = ?", f.ownerID); err != nil {
-			t.Fatal(err)
-		}
 	})
 	t.Run("server shutdown", func(t *testing.T) {
+		f := newStreamFixture(t)
 		id := f.create(t, f.token, map[string]any{"title": "Shutdown"}).Conversation.ID
 		stream := f.open(t, f.token, id, 0)
 		if frame := stream.next(t); frame.Event != string(conversation.EventHeartbeat) {
@@ -394,14 +432,46 @@ func TestShutdownClosesConversationStreamBeforeOuterServerDrain(t *testing.T) {
 
 type streamMembershipFailureProvider struct {
 	auth.HostedProvider
+	failure atomic.Pointer[streamMembershipFailure]
+}
+
+type streamMembershipFailure struct {
 	err error
 }
 
-func (p streamMembershipFailureProvider) Memberships(context.Context, string, string) ([]auth.Membership, error) {
-	return nil, p.err
+type streamHeartbeatRecorder struct {
+	*httptest.ResponseRecorder
+	heartbeat chan struct{}
+}
+
+func (r *streamHeartbeatRecorder) Write(data []byte) (int, error) {
+	n, err := r.ResponseRecorder.Write(data)
+	if r.heartbeat != nil && strings.Contains(r.Body.String(), "event: heartbeat\n") {
+		close(r.heartbeat)
+		r.heartbeat = nil
+	}
+	return n, err
+}
+
+func (r *streamHeartbeatRecorder) WriteString(data string) (int, error) {
+	return r.Write([]byte(data))
+}
+
+func (p *streamMembershipFailureProvider) Memberships(ctx context.Context, user, organization string) ([]auth.Membership, error) {
+	if failure := p.failure.Load(); failure != nil {
+		return nil, failure.err
+	}
+	return p.HostedProvider.Memberships(ctx, user, organization)
+}
+
+func (p *streamMembershipFailureProvider) fail(err error) {
+	p.failure.Store(&streamMembershipFailure{err: err})
 }
 
 func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
+	heartbeat := conversationStreamHeartbeat
+	conversationStreamHeartbeat = 40 * time.Millisecond
+	t.Cleanup(func() { conversationStreamHeartbeat = heartbeat })
 	for _, tt := range []struct {
 		name             string
 		account          string
@@ -415,8 +485,8 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 	}{
 		{
 			name: "screen read audience changed", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET read_audience='different-screen-access'"); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversations SET read_audience='different-screen-access' WHERE organization_id=$1 AND id=$2", scope.organization, f.conversation); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -444,72 +514,72 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		},
 		{
 			name: "local membership inactive", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active = 0"); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_members SET active=false WHERE organization_id=$1", scope.organization); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "shared membership inactive", account: "owner", shared: true, want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active = 0"); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_members SET active=false WHERE organization_id=$1", scope.organization); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "member token revoked", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = '2026-10-02T00:00:00Z'"); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2", f.service.config.now(), scope.organization); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "tenant missing", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_tenant RENAME TO original_tenant; CREATE TABLE hosted_tenant (singleton INTEGER, provider_id TEXT)"); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM hosted_tenant WHERE organization_id=$1", scope.organization); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "wrong provider organization", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_tenant RENAME TO original_tenant; CREATE TABLE hosted_tenant AS SELECT singleton, 'org_other' AS provider_id FROM original_tenant"); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_tenant SET provider_id='org_other' WHERE organization_id=$1", scope.organization); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
-			name: "tenant read failure", account: "owner", want: conversationClosedServerError, wantError: "no such table: hosted_tenant",
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_tenant RENAME TO unavailable_tenant"); err != nil {
+			name: "tenant read failure", account: "owner", want: conversationClosedServerError, wantError: "SQLSTATE 42P01",
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "ALTER TABLE hosted_tenant RENAME TO unavailable_tenant"); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
-			name: "member read failure", account: "owner", want: conversationClosedServerError, wantError: "no such table: hosted_members",
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_members RENAME TO unavailable_members"); err != nil {
+			name: "member read failure", account: "owner", want: conversationClosedServerError, wantError: "SQLSTATE 42P01",
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "ALTER TABLE hosted_members RENAME TO unavailable_members"); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
-			name: "shared member read failure", account: "owner", shared: true, want: conversationClosedServerError, wantError: "no such table: hosted_members",
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_members RENAME TO unavailable_members"); err != nil {
+			name: "shared member read failure", account: "owner", shared: true, want: conversationClosedServerError, wantError: "SQLSTATE 42P01",
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "ALTER TABLE hosted_members RENAME TO unavailable_members"); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
-			name: "grant read failure", account: "owner", want: conversationClosedServerError, wantError: "no such table: hosted_project_grants",
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_project_grants RENAME TO unavailable_grants"); err != nil {
+			name: "grant read failure", account: "owner", want: conversationClosedServerError, wantError: "SQLSTATE 42P01",
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "ALTER TABLE hosted_project_grants RENAME TO unavailable_grants"); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -517,39 +587,39 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		{
 			name: "provider timeout", account: "owner", want: conversationClosedServerError, wantErr: context.DeadlineExceeded, wantError: "context deadline exceeded",
 			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
-				f.service.config.Hosted.Provider = streamMembershipFailureProvider{HostedProvider: f.provider, err: context.DeadlineExceeded}
+				f.service.config.Hosted.Provider.(*streamMembershipFailureProvider).fail(context.DeadlineExceeded)
 			},
 		},
 		{
 			name: "provider rate limit", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "status 429", credentialStatus: http.StatusServiceUnavailable,
 			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
-				f.service.config.Hosted.Provider = streamMembershipFailureProvider{HostedProvider: f.provider, err: &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable, Status: http.StatusTooManyRequests}}
+				f.service.config.Hosted.Provider.(*streamMembershipFailureProvider).fail(&auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable, Status: http.StatusTooManyRequests})
 			},
 		},
 		{
 			name: "provider unavailable", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "status 503",
 			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
-				f.service.config.Hosted.Provider = streamMembershipFailureProvider{HostedProvider: f.provider, err: &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable, Status: http.StatusServiceUnavailable}}
+				f.service.config.Hosted.Provider.(*streamMembershipFailureProvider).fail(&auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable, Status: http.StatusServiceUnavailable})
 			},
 		},
 		{
-			name: "provider lookup sentinel", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "lookup hosted memberships",
+			name: "provider lookup sentinel", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "tenant authority storage is unavailable",
 			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
-				f.service.config.Hosted.Provider = streamMembershipFailureProvider{HostedProvider: f.provider, err: auth.ErrHostedIdentity}
+				f.service.config.Hosted.Provider.(*streamMembershipFailureProvider).fail(auth.ErrHostedIdentity)
 			},
 		},
 		{
 			name: "project grant removed", account: "owner", want: conversationClosedAccessRevoked,
 			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ? AND project_id = ?", scope.credential.Hosted.Subject, scope.project); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3", scope.organization, scope.credential.Hosted.Subject, scope.project); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "conversation made private", account: "viewer", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET visibility = 'private' WHERE id = ?", f.conversation); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversations SET visibility='private' WHERE organization_id=$1 AND id=$2", scope.organization, f.conversation); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -558,6 +628,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, browserPreviewConfig)
 			f.seedConversation(t)
+			f.service.config.Hosted.Provider = &streamMembershipFailureProvider{HostedProvider: f.provider}
 			request := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation+"/events", nil)
 			request.AddCookie(f.cookies[tt.account])
 			c := echo.New().NewContext(request, httptest.NewRecorder())
@@ -567,17 +638,58 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 			}
 			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: credential}
 			if tt.shared {
-				identity := credential.Hosted
-				f.service.config.Hosted.SharedEntry = &HostedSharedEntry{}
+				var session accessstore.Session
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					session, err = reader.AccessSession(t.Context(), credential.SessionHash)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				f.service.config.Hosted.SharedEntry = &HostedSharedEntry{Generation: 1}
 				c.Set(hostedSharedClaimsKey, cloudassert.Claims{
-					Kind: cloudassert.KindBrowser, Subject: identity.Subject, Email: "owner@example.test",
-					ProviderOrganization: identity.OrganizationID, ProviderSession: identity.SessionID,
-					SessionCreatedAt: identity.CreatedAt, SessionExpiresAt: identity.ExpiresAt,
-					Role: credential.HostedRole, AccessExpiresAt: identity.ExpiresAt, Binding: credential.SessionHash,
+					Audience: string(scope.organization), Generation: 1,
+					Kind: cloudassert.KindBrowser, Subject: session.Subject, Email: session.Email,
+					ProviderOrganization: session.ProviderOrganizationID, ProviderSession: session.SessionID,
+					SessionCreatedAt: session.IdentityCreatedAt, SessionExpiresAt: session.IdentityExpiresAt,
+					Role: credential.HostedRole, AccessExpiresAt: session.ExpiresAt, Binding: session.Hash,
+					CSRF: cloudassert.CSRFToken("stream", string(scope.organization)),
 				})
 			}
 			if _, err := f.service.reauthorizeConversationStream(c, &scope, f.conversation); err != nil {
 				t.Fatalf("initial authorization: %v", err)
+			}
+			verifyStream := tt.name != "conversation made private" && tt.name != "screen read audience changed"
+			var streamDone chan struct{}
+			var streamErr error
+			var response *httptest.ResponseRecorder
+			var sink *conversationLogSink
+			if verifyStream {
+				sink = &conversationLogSink{}
+				f.service.conversations.logger = slog.New(slog.NewJSONHandler(sink, nil)).With("component", "conversation")
+				response = httptest.NewRecorder()
+				ready := make(chan struct{})
+				ctx, cancel := context.WithCancel(t.Context())
+				streamContext := f.service.echo.NewContext(c.Request().Clone(ctx), &streamHeartbeatRecorder{ResponseRecorder: response, heartbeat: ready})
+				streamContext.Set("native_scope", scope)
+				if claims, ok := hostedSharedClaims(c); ok {
+					streamContext.Set(hostedSharedClaimsKey, claims)
+				}
+				streamContext.SetParamNames("conversation")
+				streamContext.SetParamValues(f.conversation)
+				streamDone = make(chan struct{})
+				go func() {
+					defer close(streamDone)
+					streamErr = f.service.streamConversationEvents(streamContext)
+				}()
+				defer func() { cancel(); <-streamDone }()
+				select {
+				case <-ready:
+				case <-streamDone:
+					t.Fatalf("stream ended before heartbeat: %v", streamErr)
+				case <-testenv.WaitContext(t, ctx).Done():
+					t.Fatal("stream did not emit its first heartbeat")
+				}
 			}
 			refreshHandler := f.sessionRefreshHandler(t, f.service.Handler())
 			if tt.refresh {
@@ -611,20 +723,24 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 					t.Fatalf("close reason for %v = %q, want %q", failure, got, tt.want)
 				}
 			}
-			if tt.name != "conversation made private" && tt.name != "screen read audience changed" {
-				sink := &conversationLogSink{}
-				f.service.conversations.logger = slog.New(slog.NewJSONHandler(sink, nil)).With("component", "conversation")
-				response := httptest.NewRecorder()
-				c.Response().Writer = response
-				c.Set("native_scope", scope)
-				c.SetParamNames("conversation")
-				c.SetParamValues(f.conversation)
-				if streamErr := f.service.streamConversationEvents(c); streamErr != nil {
+			if verifyStream {
+				f.service.conversations.broker.notify(f.conversation)
+				select {
+				case <-streamDone:
+				case <-testenv.WaitContext(t, t.Context()).Done():
+					t.Fatal("stream did not close after reauthorization failure")
+				}
+				if streamErr != nil {
 					t.Fatal(streamErr)
 				}
-				frame, frameErr := readSSEFrame(bufio.NewReader(response.Body))
-				if frameErr != nil {
-					t.Fatal(frameErr)
+				reader := bufio.NewReader(response.Body)
+				var frame sseFrame
+				for frame.Event != string(conversation.EventClosed) {
+					var frameErr error
+					frame, frameErr = readSSEFrame(reader)
+					if frameErr != nil {
+						t.Fatal(frameErr)
+					}
 				}
 				requireClosed(t, frame, tt.want)
 				requireConversationLogFields(t, sink.only(t, "conversation.stream_reauthorize_failed"), map[string]any{

@@ -265,6 +265,9 @@ func (c *conversationService) settleLoop(ctx context.Context) {
 			if settled > 0 {
 				c.logger.Info("conversation.settle_sweep", "settled", settled)
 			}
+			if _, err := c.compactEventsPG(ctx, organization, now); err != nil {
+				c.logger.Warn("conversation.compaction_failed", "error", err)
+			}
 			if _, err := c.sweepAttachments(ctx); err != nil {
 				c.logger.Warn("conversation.attachment_sweep_failed", "error", err)
 			}
@@ -863,56 +866,6 @@ func (s *Service) registerConversationRoutes(e *echo.Echo) {
 // Each helper appends the durable event that describes the change inside
 // the caller's transaction; the caller commits and then calls committed.
 
-// appendMessage stores a new message and its message.accepted event. It
-// fills identifiers and timestamps that are empty.
-func (c *conversationService) appendMessage(ctx context.Context, tx *sql.Tx, record *conversationRecord, message *conversationMessageRecord, now time.Time) error {
-	if message.ID == "" {
-		if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && plan.messageCursor < len(plan.messageIDs) {
-			message.ID = plan.messageIDs[plan.messageCursor]
-			plan.messageCursor++
-		} else {
-			message.ID = conversation.NewMessageID()
-		}
-	}
-	message.ConversationID = record.ID
-	if message.CreatedAt.IsZero() {
-		message.CreatedAt = now
-	}
-	if message.UpdatedAt.IsZero() {
-		message.UpdatedAt = message.CreatedAt
-	}
-	if err := c.store.appendMessage(ctx, tx, message); err != nil {
-		return err
-	}
-	if record.LastMessageAt == nil || record.LastMessageAt.Before(message.CreatedAt) {
-		at := message.CreatedAt
-		record.LastMessageAt = &at
-	}
-	if err := c.recordReferences(ctx, tx, *record, message, now); err != nil {
-		return err
-	}
-	// A new message is activity: a settled conversation wakes before the
-	// message is announced.
-	if err := c.unsettle(ctx, tx, record, now); err != nil {
-		return err
-	}
-	if _, err := c.store.appendEvent(ctx, tx, record.ID, conversation.EventMessageAccepted, projectMessage(*message), now); err != nil {
-		return err
-	}
-	return nil
-}
-
-// unsettle returns a settled conversation to active. Any accepted command or
-// new message wakes it; there is no unarchive action.
-func (c *conversationService) unsettle(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
-	if record.Status != conversation.StatusSettled {
-		return nil
-	}
-	record.Status = conversation.StatusActive
-	record.SettledAt = nil
-	return c.saveConversation(ctx, tx, record, now)
-}
-
 // recordReferences extracts the references a message's text carries,
 // resolves them in the conversation's scope and stores the ones that name
 // something the hub can see. Extraction is bounded by
@@ -1075,40 +1028,4 @@ func (c *conversationService) appendDeltaAt(ctx context.Context, tx *sql.Tx, con
 // across a retry.
 func conversationDeltaBody(messageID string, seq int64, text string) map[string]any {
 	return map[string]any{"message_id": messageID, "seq": seq, "text": text}
-}
-
-// saveConversation persists record changes with a revision check and emits
-// conversation.updated.
-func (c *conversationService) saveConversation(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
-	record.UpdatedAt = now
-	if err := c.store.updateConversation(ctx, tx, record, record.Revision); err != nil {
-		return translateConversationError(err)
-	}
-	if _, err := c.store.appendEvent(ctx, tx, record.ID, conversation.EventConversationUpdated, projectConversation(*record), now); err != nil {
-		return err
-	}
-	return nil
-}
-
-// recordReceipt stores the receipt and emits command.receipt. attemptID is
-// the execution owner the receipt belongs to, empty when no attempt owns the
-// conversation; it is logged so a receipt can be tied to a generation.
-func (c *conversationService) recordReceipt(ctx context.Context, tx *sql.Tx, conversationID, attemptID string, receipt conversation.Receipt, now time.Time) error {
-	receipt.UpdatedAt = now
-	if err := c.store.updateReceipt(ctx, tx, conversationID, receipt.Key, receipt); err != nil {
-		return err
-	}
-	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventCommandReceipt, receipt, now); err != nil {
-		return err
-	}
-	attributes := []any{"conversation_id", conversationID, "command_key", receipt.Key, "kind", receipt.Kind, "status", receipt.Status, "attempt_id", attemptID}
-	if receipt.Error != nil {
-		attributes = append(attributes, "error_code", receipt.Error.Code)
-	}
-	if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && plan.receiptLogs != nil {
-		plan.receiptLogs = append(plan.receiptLogs, attributes)
-	} else {
-		c.logger.Info("conversation.receipt", attributes...)
-	}
-	return nil
 }

@@ -256,6 +256,9 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 	if authority.Operation != "renew" && authority.Operation != "release" {
 		return tracker.ErrInvalidClaimRequest
 	}
+	if authority.Operation == "renew" {
+		return checkMonthlyLeasePG(ctx, reader, authority.Scope.project, lease.LeaseID, now)
+	}
 	return nil
 }
 

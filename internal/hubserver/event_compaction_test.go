@@ -18,6 +18,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -268,52 +271,80 @@ func TestEventCompactionConversations(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newConversationFixture(t)
-			now := time.Now().UTC()
+			f := streamFixture{conversationAPIFixture: newConversationAPIFixture(t, nil)}
+			fixture := conversationFixture{nativeFixture: f.nativeFixture, store: f.service.conversations.store, organization: f.project.OrganizationID}
+			now := time.Now().UTC().Truncate(time.Microsecond)
 			at := now.Add(-time.Duration(test.age) * 24 * time.Hour)
-			record := f.record(f.owner, "preserved conversation", at)
+			id := f.create(t, f.token, map[string]any{"title": "preserved conversation"}).Conversation.ID
+			record := conversationRecordFromStore(readStreamCompactionConversation(t, f, id))
+			record.UpdatedAt = at
 			record.Execution.Status = test.status
 			if test.settled {
 				record.Status = conversation.StatusSettled
 				record.SettledAt = &at
 			}
-			record = f.create(t, record)
-			tx := f.tx(t)
-			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "Final answer retained", Delivery: conversation.DeliveryCompleted, CreatedAt: at, UpdatedAt: at, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "test"}}
+			message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "Final answer retained", Delivery: conversation.DeliveryCompleted, CreatedAt: at, UpdatedAt: at, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "test"}}
 			if test.streaming {
 				message.Delivery = conversation.DeliveryResponding
 			}
-			if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
+			plan := &conversationPublicationPlan{service: f.service.conversations, record: record, now: at}
+			if err := preparePGConversationMessage(t.Context(), plan, &message); err != nil {
 				t.Fatal(err)
 			}
-			for range 600 {
-				if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, 0, "stream fragment"), at); err != nil {
-					t.Fatal(err)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+				if err := registerPreparedConversationObjects(t.Context(), writer, f.project.OrganizationID, plan.prepared, at); err != nil {
+					return err
 				}
-			}
-			for range 2 {
-				for _, kind := range []conversation.EventType{conversation.EventMessageUpdated, conversation.EventExecutionUpdated} {
-					if _, err := f.appendEvent(t, t.Context(), tx, record.ID, kind, map[string]string{"id": message.ID, "status": "completed"}, at); err != nil {
-						t.Fatal(err)
+				if _, err := writer.CreateMessage(t.Context(), conversationMessageToStore(f.project.OrganizationID, plan.messages[message.ID])); err != nil {
+					return err
+				}
+				appendEvent := func(kind conversation.EventType, body any) error {
+					raw, err := json.Marshal(body)
+					if err != nil {
+						return err
+					}
+					_, err = writer.AppendConversationEvent(t.Context(), conversationstore.Event{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, Event: conversation.Event{Type: kind, Data: raw, CreatedAt: at}})
+					return err
+				}
+				for range 600 {
+					if err := appendEvent(conversation.EventMessageDelta, conversationDeltaBody(message.ID, 0, "stream fragment")); err != nil {
+						return err
 					}
 				}
-			}
-			for _, title := range []string{"First", "First", "First", "Decision", "Decision", "Decision", "First", "First", "First"} {
-				if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventConversationUpdated, map[string]string{"id": message.ID, "status": "completed", "title": title}, at); err != nil {
-					t.Fatal(err)
+				for range 2 {
+					for _, kind := range []conversation.EventType{conversation.EventMessageUpdated, conversation.EventExecutionUpdated} {
+						if err := appendEvent(kind, map[string]string{"id": message.ID, "status": "completed"}); err != nil {
+							return err
+						}
+					}
 				}
-			}
-			for _, kind := range []conversation.EventType{conversation.EventMessageAccepted, conversation.EventMessageUpdated, conversation.EventQuestionOpened, conversation.EventQuestionUpdated, conversation.EventCommandReceipt, conversation.EventExecutionUpdated, conversation.EventConversationUpdated} {
-				if _, err := f.appendEvent(t, t.Context(), tx, record.ID, kind, map[string]string{"id": message.ID, "text": "durable content", "status": "completed"}, at); err != nil {
-					t.Fatal(err)
+				for _, title := range []string{"First", "First", "First", "Decision", "Decision", "Decision", "First", "First", "First"} {
+					if err := appendEvent(conversation.EventConversationUpdated, map[string]string{"id": message.ID, "status": "completed", "title": title}); err != nil {
+						return err
+					}
 				}
+				for _, kind := range []conversation.EventType{conversation.EventMessageAccepted, conversation.EventMessageUpdated, conversation.EventQuestionOpened, conversation.EventQuestionUpdated, conversation.EventCommandReceipt, conversation.EventExecutionUpdated, conversation.EventConversationUpdated} {
+					if err := appendEvent(kind, map[string]string{"id": message.ID, "text": "durable content", "status": "completed"}); err != nil {
+						return err
+					}
+				}
+				current, err := writer.Conversation(t.Context(), f.project.ID, record.ID)
+				if err != nil {
+					return err
+				}
+				update := conversationRecordToStore(record)
+				update.EventSequence = current.EventSequence
+				updated, err := writer.UpdateConversation(t.Context(), update, record.Revision)
+				record = conversationRecordFromStore(updated)
+				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
-			f.commit(t, tx)
 			for pass := range 3 {
-				if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+				if _, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil {
 					t.Fatal(err)
 				}
-				events, err := f.store.listEvents(t.Context(), f.store.db, record.ID, 0, 1000)
+				events, err := streamCompactionEvents(t, f, record.ID, 0)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -349,9 +380,13 @@ func TestEventCompactionConversations(t *testing.T) {
 					t.Fatalf("metadata history lost transitions: %v", titles)
 				}
 			}
-			summary, err := readEventCompaction(t.Context(), f.store.db, record.OrganizationID, record.ProjectID, "conversation", record.ID)
-			if err != nil {
-				t.Fatal(err)
+			var summary tracker.EventCompaction
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID, f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var snapshot conversationSnapshot
+			decodeHubResponse(t, response, &snapshot)
+			if snapshot.Compaction != nil {
+				summary = *snapshot.Compaction
 			}
 			if test.compact && (summary.RemovedEvents != 607 || summary.RetainedEvents != 13) {
 				t.Fatalf("summary=%+v", summary)
@@ -362,19 +397,19 @@ func TestEventCompactionConversations(t *testing.T) {
 			if test.streaming && summary.RemovedEvents != 0 {
 				t.Fatalf("protected conversation compacted: %+v", summary)
 			}
-			_, err = f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 0)
+			_, err := fixture.publishedRecordEvents(t.Context(), record, 0)
 			if !test.streaming != errors.Is(err, errConversationCursorExpired) {
 				t.Fatalf("stale replay: %v", err)
 			}
-			events, err := f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 612)
+			events, err := fixture.publishedRecordEvents(t.Context(), record, 612)
 			if err != nil || len(events) != 8 {
 				t.Fatalf("current replay: %v, %d events", err, len(events))
 			}
-			messages, err := f.store.listMessages(t.Context(), f.store.db, record.ID, 0, 50)
+			messages, err := fixture.publishedRecordMessages(t.Context(), record)
 			if err != nil || len(messages) != 1 || messages[0].Text != "Final answer retained" {
 				t.Fatalf("messages=%+v err=%v", messages, err)
 			}
-			got, err := f.store.readConversationByID(t.Context(), f.store.db, record.ID)
+			got, err := fixture.readRecord(t.Context(), record.ProjectID, record.ID)
 			if err != nil || got.EventSeq != 620 || got.Title != record.Title || got.Revision != record.Revision {
 				t.Fatalf("current state changed: %+v %v", got, err)
 			}

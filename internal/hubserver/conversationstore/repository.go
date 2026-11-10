@@ -12,6 +12,7 @@ import (
 )
 
 type Conversation struct {
+	Compaction             CompactionState
 	OrganizationID         tracker.OrganizationID
 	ProjectID              tracker.ProjectID
 	ID                     string
@@ -209,6 +210,7 @@ type MessageFilter struct {
 	Oldest           bool
 	ConversationID   string
 	AttemptID        string
+	ProviderItemID   string
 	TurnID           string
 	Role             conversation.Role
 	Kind             conversation.MessageKind

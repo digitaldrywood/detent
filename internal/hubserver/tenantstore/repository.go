@@ -119,4 +119,5 @@ type ProjectParticipants interface {
 
 type DispatchRequests interface {
 	RequestDispatch(context.Context, Writer, tracker.ProjectID, string, leasestore.Fence, time.Time) error
+	QueueDispatch(context.Context, Writer, tracker.ProjectID, string, leasestore.Fence, time.Time) error
 }

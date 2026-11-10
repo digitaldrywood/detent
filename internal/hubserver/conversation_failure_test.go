@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -31,29 +32,17 @@ import (
 // test can act as a human actor and then revoke that actor.
 func conversationOperatorToken(t *testing.T, f nativeFixture, name string) (token string, principal string) {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": name, "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var created tokenResponse
-	decodeHubResponse(t, response, &created)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+created.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID}), http.StatusNoContent)
+	created := conversationFixturePrincipal(t, f, name)
 	return created.Token, created.ID
-}
-
-// conversationTokenID resolves the principal id of a token by its name.
-func conversationTokenID(t *testing.T, service *Service, name string) string {
-	t.Helper()
-	var id string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", name).Scan(&id); err != nil {
-		t.Fatalf("read token %q: %v", name, err)
-	}
-	return id
 }
 
 // conversationRevokeToken revokes a principal the way an operator removing
 // an actor does: the row stays, the credential stops authenticating.
 func conversationRevokeToken(t *testing.T, service *Service, principal string) {
 	t.Helper()
-	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = ?", testTimestamp, principal); err != nil {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), service.database.hostedOrganization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RevokeAccessCredential(t.Context(), principal, service.config.now())
+	}); err != nil {
 		t.Fatalf("revoke token %q: %v", principal, err)
 	}
 }
@@ -86,15 +75,11 @@ func (f *conversationWorkerFixture) as(generation conversationGeneration, body f
 	body()
 }
 
-// restart closes the hub and opens a new one on the same database file, the
-// way a process restart does, and points the fixture at the new service.
 func (f *conversationWorkerFixture) restart(t *testing.T) {
 	t.Helper()
-	config := Config{DatabasePath: f.service.config.DatabasePath, Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour, ArchiveContents: f.chat.store.contents}, now: f.service.config.now}
-	if err := f.service.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	service := openTestService(t, config)
+	service := tfConvReopenConversationService(t, f.service, func(cfg *Config) {
+		cfg.Conversation = &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour, ArchiveContents: f.chat.store.contents}
+	})
 	f.service = service
 	f.chat = service.conversations
 	if f.chat == nil {
@@ -244,7 +229,7 @@ func TestConversationRevokedActorMidFlight(t *testing.T) {
 			t.Fatalf("a denied command emitted events: %d -> %d", before.EventSeq, after.EventSeq)
 		}
 		var commands int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_commands WHERE conversation_id = ? AND key = 'op-2'", f.record.ID).Scan(&commands); err != nil {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key = 'op-2'", f.project.OrganizationID, f.record.ID).Scan(&commands); err != nil {
 			t.Fatal(err)
 		}
 		if commands != 0 {
@@ -272,7 +257,7 @@ func TestConversationRevokedWorkerToken(t *testing.T) {
 	text := f.queue(t, conversation.MessageText, "text-1", "Later", nil)
 	requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
 
-	conversationRevokeToken(t, f.service, conversationTokenID(t, f.service, "conversation-worker"))
+	conversationRevokeToken(t, f.service, f.runner.binding.RunnerID)
 
 	t.Run("worker endpoints stop accepting the credential", func(t *testing.T) {
 		before := f.load(t)
@@ -342,7 +327,7 @@ func (f conversationQuestionFixture) answer(t *testing.T, key, value string) *ht
 func (f conversationQuestionFixture) questionStatus(t *testing.T) conversation.QuestionStatus {
 	t.Helper()
 	var status string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status FROM conversation_questions WHERE id = ?", f.questionID).Scan(&status); err != nil {
+	if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT status FROM conversation_questions WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, f.questionID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	return conversation.QuestionStatus(status)
@@ -365,7 +350,7 @@ func TestConversationDuplicateAnswers(t *testing.T) {
 			t.Fatalf("replay = %s, want %s", replay.Body.String(), first.Body.String())
 		}
 		var answers int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id = ? AND kind = ?", f.conversationID, conversation.MessageAnswer).Scan(&answers); err != nil {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND kind=$3", f.project.OrganizationID, f.conversationID, conversation.MessageAnswer).Scan(&answers); err != nil {
 			t.Fatal(err)
 		}
 		if answers != 1 {
@@ -444,7 +429,7 @@ func TestConversationDuplicateAnswers(t *testing.T) {
 				t.Fatal("concurrent replay changed the stored receipt")
 			}
 			var answers int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id = ? AND kind = ?", f.conversationID, conversation.MessageAnswer).Scan(&answers); err != nil {
+			if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND kind=$3", f.project.OrganizationID, f.conversationID, conversation.MessageAnswer).Scan(&answers); err != nil {
 				t.Fatal(err)
 			}
 			if answers != 1 {
@@ -464,7 +449,7 @@ func TestConversationDuplicateAnswers(t *testing.T) {
 			t.Fatalf("question status = %q, want expired", got)
 		}
 		var answers int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id = ? AND kind = ?", f.conversationID, conversation.MessageAnswer).Scan(&answers); err != nil {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND kind=$3", f.project.OrganizationID, f.conversationID, conversation.MessageAnswer).Scan(&answers); err != nil {
 			t.Fatal(err)
 		}
 		if answers != 0 {
@@ -632,24 +617,38 @@ func TestConversationQueueOverflowPersistsNothing(t *testing.T) {
 	count := func(query string, args ...any) int {
 		t.Helper()
 		var total int
-		if err := f.service.database.db.QueryRowContext(t.Context(), query, args...).Scan(&total); err != nil {
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), query, append([]any{f.project.OrganizationID}, args...)...).Scan(&total); err != nil {
 			t.Fatal(err)
 		}
 		return total
 	}
-	before := count("SELECT count(*) FROM conversation_messages WHERE conversation_id = ?", record.ID)
+	before := count("SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2", record.ID)
 	overflow := conversation.Command{Key: "q4", Kind: conversation.CommandMessage, Text: "Too many"}
 	requireNativeError(t, f.command(t, f.token, record.ID, overflow), http.StatusServiceUnavailable, "queue_full")
-	if got := count("SELECT count(*) FROM conversation_messages WHERE conversation_id = ?", record.ID); got != before {
+	if got := count("SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2", record.ID); got != before {
 		t.Fatalf("messages = %d, want %d (queue_full must not append)", got, before)
 	}
-	if got := count("SELECT count(*) FROM conversation_commands WHERE conversation_id = ? AND key = 'q4'", record.ID); got != 0 {
+	if got := count("SELECT count(*) FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key = 'q4'", record.ID); got != 0 {
 		t.Fatal("queue_full must not reserve the key or store a receipt")
 	}
 
 	// Drain the queue the way a bound worker's poll does, then retry the key
 	// that was rejected: it must be accepted as a first use, not replayed.
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND delivery = ?", conversation.DeliverySent, record.ID, conversation.DeliveryQueued); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		messages, err := w.FilteredMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 200, Oldest: true})
+		if err != nil {
+			return err
+		}
+		for _, message := range messages.Items {
+			if message.Delivery == conversation.DeliveryQueued {
+				message.Delivery = conversation.DeliverySent
+				if _, err := w.UpdateMessage(t.Context(), message, message.Revision); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	response := f.command(t, f.token, record.ID, overflow)
@@ -659,7 +658,7 @@ func TestConversationQueueOverflowPersistsNothing(t *testing.T) {
 	if receipt.Status != conversation.DeliveryQueued || receipt.MessageID == "" {
 		t.Fatalf("retry receipt = %#v", receipt)
 	}
-	if got := count("SELECT count(*) FROM conversation_messages WHERE conversation_id = ? AND command_key = 'q4'", record.ID); got != 1 {
+	if got := count("SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND command_key = 'q4'", record.ID); got != 1 {
 		t.Fatalf("messages for the retried key = %d, want exactly 1", got)
 	}
 }
@@ -748,7 +747,7 @@ func TestConversationLostAcknowledgementStaysUnknown(t *testing.T) {
 				t.Fatal("refused steering must not persist a message or change the conversation")
 			}
 			var reserved int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM conversation_commands WHERE conversation_id = ? AND key = ?", f.record.ID, command.Key).Scan(&reserved); err != nil {
+			if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT COUNT(*) FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key=$3", f.project.OrganizationID, f.record.ID, command.Key).Scan(&reserved); err != nil {
 				t.Fatal(err)
 			}
 			if reserved != 0 {
@@ -881,13 +880,13 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 			query        string
 			retainsOwner bool
 		}{
-			{name: "removed policy preserves owner", query: "DELETE FROM project_policies WHERE scope = (SELECT scope FROM lease_policies WHERE lease_id = ?)", retainsOwner: true},
-			{name: "released lease", query: "UPDATE leases SET released_at = acquired_at WHERE lease_id = ?"},
-			{name: "terminal attempt", query: "UPDATE native_attempts SET status = 'succeeded' WHERE lease_id = ?"},
+			{name: "removed policy preserves owner", query: "DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2", retainsOwner: true},
+			{name: "released lease", query: "UPDATE leases SET released_at=acquired_at WHERE organization_id=$1 AND lease_id=$2"},
+			{name: "terminal attempt", query: "UPDATE native_attempts SET status='succeeded' WHERE organization_id=$1 AND lease_id=$2"},
 			{name: "foreign attempt"},
-			{name: "foreign work item", query: "UPDATE native_attempts SET work_item_id = (SELECT native_id FROM issues WHERE title = 'foreign-worker-issue') WHERE lease_id = ?"},
-			{name: "foreign run", query: "UPDATE native_attempts SET run_id = 'foreign-run' WHERE lease_id = ?"},
-			{name: "wrong fence", query: "UPDATE native_attempts SET fencing_token = fencing_token + 1 WHERE lease_id = ?"},
+			{name: "foreign work item"},
+			{name: "foreign run"},
+			{name: "wrong fence"},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				t.Parallel()
@@ -899,21 +898,39 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 				if test.retainsOwner {
 					wantStatus, wantCapabilities = conversation.ExecutionRunning, original.Capabilities
 				}
-				if test.name == "foreign work item" {
-					f.create(t, "foreign-worker-issue")
-				}
-				if test.name == "foreign attempt" {
-					foreign := original
-					foreign.Owner.AttemptID = "foreign-attempt"
-					raw, err := json.Marshal(foreign)
-					if err != nil {
+				if test.query != "" {
+					target := any(f.lease.ID)
+					if test.retainsOwner {
+						target = f.project.ID
+					}
+					if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), test.query, f.project.OrganizationID, target); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET execution_json=?,content_attachment_id='',execution_status=NULL,query_metadata_version=0 WHERE id=?`, string(raw), f.record.ID); err != nil {
-						t.Fatal(err)
+				} else {
+					foreignItem := tracker.NativeWorkItemID("")
+					if test.name == "foreign work item" {
+						foreignItem = f.create(t, "foreign-worker-issue").WorkItemID
 					}
-				} else if _, err := f.service.database.db.ExecContext(t.Context(), test.query, f.lease.ID); err != nil {
-					t.Fatal(err)
+					f.writeTenant(t, func(w tenantstore.Writer) error {
+						row, err := w.Conversation(t.Context(), f.project.ID, f.record.ID)
+						if err != nil {
+							return err
+						}
+						switch test.name {
+						case "foreign attempt":
+							row.Execution.Owner.AttemptID = "foreign-attempt"
+						case "foreign work item":
+							row.WorkItemID = string(foreignItem)
+						case "foreign run":
+							row.Execution.Owner.RunID = "foreign-run"
+						case "wrong fence":
+							row.Execution.Owner.FencingToken++
+						default:
+							return fmt.Errorf("unknown owner mismatch %q", test.name)
+						}
+						_, err = w.UpdateConversation(t.Context(), row, row.Revision)
+						return err
+					})
 				}
 				if err := f.chat.reconcileExecutions(t.Context()); err != nil {
 					t.Fatal(err)
@@ -981,14 +998,17 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 	}
 
 	t.Run("a replayed command key returns the stored receipt", func(t *testing.T) {
-		tx := f.tx(t)
-		stored, conflict, err := f.chat.store.reserveCommand(t.Context(), tx, f.record.ID, "restart-handed", conversation.CommandMessage, "hash-restart-handed", f.service.config.now())
-		if err != nil || stored == nil || conflict {
-			t.Fatalf("reserveCommand() = %#v, %v, %v", stored, conflict, err)
-		}
-		if stored.Status != conversation.DeliverySending || stored.MessageID != handed.ID {
-			t.Fatalf("stored receipt = %#v", stored)
-		}
+		f.writeTenant(t, func(w tenantstore.Writer) error {
+			now := f.service.config.now()
+			stored, inserted, err := w.ReserveCommand(t.Context(), conversationstore.Command{OrganizationID: f.project.OrganizationID, ConversationID: f.record.ID, Key: "restart-handed", Kind: conversation.CommandMessage, RequestHash: "hash-restart-handed", Receipt: conversation.Receipt{Key: "restart-handed", Kind: conversation.CommandMessage, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now})
+			if err != nil || inserted {
+				t.Fatalf("ReserveCommand() = %#v, inserted=%v, %v", stored, inserted, err)
+			}
+			if stored.Receipt.Status != conversation.DeliverySending || stored.Receipt.MessageID != handed.ID {
+				t.Fatalf("stored receipt = %#v", stored.Receipt)
+			}
+			return nil
+		})
 	})
 
 	t.Run("pending work is woken again", func(t *testing.T) {
@@ -1061,6 +1081,8 @@ func TestConversationWorkerRestartDeliversQueuedControlOnce(t *testing.T) {
 	before := len(f.messages(t))
 
 	f.release(t)
+	f.runner = conversationWorkerRunner(t, f.nativeFixture)
+	f.worker = f.runner.redemption.Credential
 	f.claim(t)
 	response := f.bind(t, nil)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -1129,15 +1151,40 @@ func TestConversationRetryReQueuesOneMessage(t *testing.T) {
 	requireNativeStatus(t, f.unbind(t, "interrupted"), http.StatusOK)
 	requireConversationDelivery(t, f, lost, "lost-1", conversation.DeliveryUnknown)
 	before := len(f.messages(t))
+	var dispatchBefore tenantstore.DispatchState
+	f.readTenant(t, func(reader tenantstore.Reader) error {
+		var err error
+		dispatchBefore, err = reader.(tenantstore.DispatchReader).IssueDispatchState(t.Context(), f.project.ID, f.issue.WorkItemID)
+		return err
+	})
 
 	retry := conversation.Command{Key: "retry-1", Kind: conversation.CommandRetry, MessageID: lost.ID}
-	response := f.command(t, f.token, retry)
+	operator, principal := conversationOperatorToken(t, f.nativeFixture, "retry-operator")
+	response := f.command(t, operator, retry)
 	requireNativeStatus(t, response, http.StatusOK)
 	var receipt conversation.Receipt
 	decodeHubResponse(t, response, &receipt)
 	if receipt.Status != conversation.DeliveryQueued || receipt.MessageID != lost.ID || receipt.Kind != conversation.CommandRetry {
 		t.Fatalf("retry receipt = %#v, want queued for %s", receipt, lost.ID)
 	}
+	assertQueuedDispatch := func() {
+		t.Helper()
+		f.readTenant(t, func(reader tenantstore.Reader) error {
+			state, err := reader.(tenantstore.DispatchReader).IssueDispatchState(t.Context(), f.project.ID, f.issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if state.Generation != dispatchBefore.Generation+1 || state.RequestedAt == nil {
+				t.Fatalf("queued retry dispatch = %+v, previous generation=%d", state, dispatchBefore.Generation)
+			}
+			lease, err := reader.Lease(t.Context(), string(f.lease.ID))
+			if err == nil && (lease.ReleasedAt != nil || lease.FencingToken != int64(f.lease.FencingToken)) {
+				t.Fatalf("retry changed the live lease: %+v", lease)
+			}
+			return err
+		})
+	}
+	assertQueuedDispatch()
 	stored := f.messages(t)[lost.ID]
 	if stored.Delivery != conversation.DeliveryQueued || stored.AttemptID != "" || stored.TurnID != "" {
 		t.Fatalf("retried message = %#v, want queued and unowned", stored)
@@ -1153,13 +1200,29 @@ func TestConversationRetryReQueuesOneMessage(t *testing.T) {
 	}
 
 	t.Run("the retry key replays its own receipt", func(t *testing.T) {
-		replay := f.command(t, f.token, retry)
+		replay := f.command(t, operator, retry)
 		requireNativeStatus(t, replay, http.StatusOK)
 		var again conversation.Receipt
 		decodeHubResponse(t, replay, &again)
 		if again.Key != receipt.Key || again.Status != receipt.Status || again.MessageID != receipt.MessageID {
 			t.Fatalf("replayed receipt = %#v, want %#v", again, receipt)
 		}
+		assertQueuedDispatch()
+	})
+	t.Run("a revoked actor cannot change the queued intent", func(t *testing.T) {
+		conversationRevokeToken(t, f.service, principal)
+		requireConversationErrorCode(t, f.command(t, operator, retry), http.StatusUnauthorized, "unauthorized")
+		denied := retry
+		denied.Key = "retry-revoked"
+		requireConversationErrorCode(t, f.command(t, operator, denied), http.StatusUnauthorized, "unauthorized")
+		assertQueuedDispatch()
+		f.readTenant(t, func(reader tenantstore.Reader) error {
+			_, found, err := reader.Command(t.Context(), f.record.ID, denied.Key)
+			if found {
+				t.Fatal("revoked actor reserved a new command")
+			}
+			return err
+		})
 	})
 
 	t.Run("the next attempt is handed the message once", func(t *testing.T) {
@@ -1222,11 +1285,34 @@ func TestConversationRetryReQueuesOneMessage(t *testing.T) {
 // log carries a message.updated frame naming the message.
 func conversationEmittedMessageUpdate(t *testing.T, f *conversationWorkerFixture, messageID string) bool {
 	t.Helper()
-	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT count(*) FROM conversation_events WHERE conversation_id = ? AND type = ? AND object_id = ?",
-		f.record.ID, conversation.EventMessageUpdated, messageID).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	return count > 0
+	found := false
+	f.readTenant(t, func(reader tenantstore.Reader) error {
+		var after int64
+		for {
+			page, err := reader.ConversationEvents(t.Context(), f.record.ID, after, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			for _, event := range page.Items {
+				if event.Type != conversation.EventMessageUpdated {
+					continue
+				}
+				var message struct {
+					ID string `json:"id"`
+				}
+				if err := json.Unmarshal(event.Data, &message); err != nil {
+					return err
+				}
+				if message.ID == messageID {
+					found = true
+					return nil
+				}
+			}
+			if page.Next == 0 {
+				return nil
+			}
+			after = page.Next
+		}
+	})
+	return found
 }

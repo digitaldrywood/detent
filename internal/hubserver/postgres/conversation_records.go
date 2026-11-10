@@ -51,7 +51,7 @@ func (s *session) ConversationByCreationKey(ctx context.Context, principal, key 
 const conversationSelect = `SELECT c.organization_id,c.project_id,c.id,c.creation_key,c.creation_hash,c.owner_principal_id,c.owner_subject,c.origin,c.title,c.visibility,c.status,
 c.subject_work_item_id,c.work_item_id,c.linked_at,c.revision,c.provider_thread_id,c.provider_thread_runner_id,c.provider_thread_origin,
 c.execution_json,c.event_seq,c.preferences_json,c.read_audience,c.created_at,c.updated_at,c.last_message_at,c.settled_at,c.archived,
-c.content_attachment_id,c.message_count,c.execution_continuation
+c.content_attachment_id,c.message_count,c.execution_continuation,c.compaction_through_sequence,c.compaction_scanned_sequence,c.compaction_content_id,c.compaction_content_scanned_sequence
 FROM conversations c`
 
 func scanPGConversation(ctx context.Context, row interface{ Scan(...any) error }) (conversationstore.Conversation, error) {
@@ -63,7 +63,7 @@ func scanPGConversation(ctx context.Context, row interface{ Scan(...any) error }
 		&record.Title, &record.Visibility, &record.Status, &subject, &workItem, &linked, &record.Revision,
 		&record.ProviderThreadID, &record.ProviderThreadRunnerID, &record.ProviderThreadOrigin, &execution, &record.EventSequence,
 		&preferences, &record.ReadAudience, &record.CreatedAt, &record.UpdatedAt, &lastMessage, &settled, &record.Archived,
-		&record.ContentReference, &record.MessageCount, &record.ExecutionContinuation)
+		&record.ContentReference, &record.MessageCount, &record.ExecutionContinuation, &record.Compaction.ThroughSequence, &record.Compaction.ScannedSequence, &record.Compaction.ContentReference, &record.Compaction.ContentScannedSequence)
 	if err != nil {
 		return record, mapError(ctx, err)
 	}
@@ -326,9 +326,9 @@ func (s *session) Messages(ctx context.Context, id string, beforeSequence int64,
 	var rows pgx.Rows
 	var err error
 	if beforeSequence > 0 {
-		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND seq<$3 ORDER BY seq DESC LIMIT $4`, s.organization, id, beforeSequence, limit+1)
+		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND seq<$3 ORDER BY seq DESC LIMIT $4`, s.organization, id, beforeSequence, limit+1)
 	} else {
-		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 ORDER BY seq DESC LIMIT $3`, s.organization, id, limit+1)
+		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 ORDER BY seq DESC LIMIT $3`, s.organization, id, limit+1)
 	}
 	if err != nil {
 		return conversationstore.MessagePage{}, mapError(ctx, err)
@@ -377,6 +377,9 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 	if filter.AttemptID != "" {
 		add("attempt_id=$%d", filter.AttemptID)
 	}
+	if filter.ProviderItemID != "" {
+		add("provider_item_id=$%d", filter.ProviderItemID)
+	}
 	if filter.TurnID != "" {
 		add("turn_id=$%d", filter.TurnID)
 	}
@@ -405,7 +408,7 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 	if filter.Oldest {
 		order = "ASC"
 	}
-	query := `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE ` + strings.Join(conditions, " AND ") + fmt.Sprintf(" ORDER BY seq %s LIMIT $%d", order, len(args))
+	query := `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE ` + strings.Join(conditions, " AND ") + fmt.Sprintf(" ORDER BY seq %s LIMIT $%d", order, len(args))
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return conversationstore.MessagePage{}, mapError(ctx, err)
@@ -435,12 +438,15 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 func scanPGMessage(row interface{ Scan(...any) error }) (conversationstore.Message, error) {
 	var m conversationstore.Message
 	var actor []byte
+	var actorKind, actorPrincipal pgtype.Text
 	var toolName, toolID, toolStatus, actionID, actionAgent, actionResult pgtype.Text
-	err := row.Scan(&m.OrganizationID, &m.ConversationID, &m.ID, &m.Sequence, &m.Role, &m.Kind, &m.Text, &m.Data, &m.Delivery, &m.AttemptID, &m.ThreadID, &m.TurnID, &m.ProviderItemID, &actor, &m.CommandKey, &m.CreatedAt, &m.UpdatedAt, &m.ContentReference, &m.Revision, &m.TextBytes, &m.StoredTextBytes, &toolName, &toolID, &toolStatus, &actionID, &actionAgent, &actionResult)
+	err := row.Scan(&m.OrganizationID, &m.ConversationID, &m.ID, &m.Sequence, &m.Role, &m.Kind, &m.Text, &m.Data, &m.Delivery, &m.AttemptID, &m.ThreadID, &m.TurnID, &m.ProviderItemID, &actor, &m.CommandKey, &m.CreatedAt, &m.UpdatedAt, &m.ContentReference, &m.Revision, &m.TextBytes, &m.StoredTextBytes, &toolName, &toolID, &toolStatus, &actionID, &actionAgent, &actionResult, &actorKind, &actorPrincipal)
 	if err != nil {
 		return m, err
 	}
-	if err := json.Unmarshal(actor, &m.Actor); err != nil {
+	if actorKind.Valid && actorKind.String != "" && actorPrincipal.Valid {
+		m.Actor.Kind, m.Actor.PrincipalID = conversation.ActorKind(actorKind.String), actorPrincipal.String
+	} else if err := json.Unmarshal(actor, &m.Actor); err != nil {
 		return m, fmt.Errorf("decode conversation message actor: %w", err)
 	}
 	m.ToolName = pgStringPtr(toolName)
@@ -461,12 +467,12 @@ func pgStringPtr(value pgtype.Text) *string {
 }
 
 func (s *session) Message(ctx context.Context, conversationID, id string) (conversationstore.Message, error) {
-	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND id=$3`, s.organization, conversationID, id)
+	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND id=$3`, s.organization, conversationID, id)
 	return scanPGMessage(row)
 }
 
 func (s *session) MessageByCommandKey(ctx context.Context, conversationID, key string) (conversationstore.Message, bool, error) {
-	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND command_key=$3 ORDER BY seq LIMIT 1`, s.organization, conversationID, key)
+	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND command_key=$3 ORDER BY seq LIMIT 1`, s.organization, conversationID, key)
 	message, err := scanPGMessage(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return conversationstore.Message{}, false, nil
@@ -836,13 +842,16 @@ func (s *session) CreateMessage(ctx context.Context, m conversationstore.Message
 	if err != nil {
 		return m, err
 	}
+	if m.ContentReference != "" {
+		actor = []byte(`{}`)
+	}
 	if len(m.Data) == 0 {
 		m.Data = json.RawMessage(`{}`)
 	}
 	if m.Revision == 0 {
 		m.Revision = 1
 	}
-	err = s.db.QueryRow(ctx, `INSERT INTO conversation_messages (organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,text_bytes,stored_text_bytes,tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING revision`, m.OrganizationID, m.ConversationID, m.ID, m.Sequence, m.Role, m.Kind, m.Text, string(m.Data), m.Delivery, m.AttemptID, m.ThreadID, m.TurnID, m.ProviderItemID, string(actor), m.CommandKey, m.CreatedAt, m.UpdatedAt, m.ContentReference, m.Revision, m.TextBytes, m.StoredTextBytes, m.ToolName, m.ToolItemID, m.ToolStatus, m.OperatorActionID, m.OperatorAgent, m.OperatorResult).Scan(&m.Revision)
+	err = s.db.QueryRow(ctx, `INSERT INTO conversation_messages (organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,text_bytes,stored_text_bytes,tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29) RETURNING revision`, m.OrganizationID, m.ConversationID, m.ID, m.Sequence, m.Role, m.Kind, m.Text, string(m.Data), m.Delivery, m.AttemptID, m.ThreadID, m.TurnID, m.ProviderItemID, string(actor), m.CommandKey, m.CreatedAt, m.UpdatedAt, m.ContentReference, m.Revision, m.TextBytes, m.StoredTextBytes, m.ToolName, m.ToolItemID, m.ToolStatus, m.OperatorActionID, m.OperatorAgent, m.OperatorResult, m.Actor.Kind, m.Actor.PrincipalID).Scan(&m.Revision)
 	if err != nil {
 		return m, mapError(ctx, err)
 	}
@@ -860,10 +869,30 @@ func (s *session) UpdateMessage(ctx context.Context, m conversationstore.Message
 	if err != nil {
 		return m, err
 	}
+	if m.ContentReference != "" {
+		actor = []byte(`{}`)
+	}
 	if len(m.Data) == 0 {
 		m.Data = json.RawMessage(`{}`)
 	}
-	err = s.db.QueryRow(ctx, `UPDATE conversation_messages SET role=$1,kind=$2,text=$3,data_json=$4,delivery=$5,attempt_id=$6,thread_id=$7,turn_id=$8,provider_item_id=$9,actor_json=$10,command_key=$11,updated_at=$12,content_attachment_id=$13,revision=revision+1,text_bytes=$14,stored_text_bytes=$15,tool_name=$16,tool_item_id=$17,tool_status=$18,operator_action_id=$19,operator_action_agent=$20,operator_action_result=$21 WHERE organization_id=$22 AND conversation_id=$23 AND id=$24 AND revision=$25 RETURNING revision`, m.Role, m.Kind, m.Text, string(m.Data), m.Delivery, m.AttemptID, m.ThreadID, m.TurnID, m.ProviderItemID, string(actor), m.CommandKey, m.UpdatedAt, m.ContentReference, m.TextBytes, m.StoredTextBytes, m.ToolName, m.ToolItemID, m.ToolStatus, m.OperatorActionID, m.OperatorAgent, m.OperatorResult, m.OrganizationID, m.ConversationID, m.ID, expected).Scan(&m.Revision)
+	err = s.db.QueryRow(ctx, `WITH locked_conversation AS MATERIALIZED (
+ SELECT id FROM conversations WHERE organization_id=$22 AND id=$23 FOR UPDATE
+), previous AS MATERIALIZED (
+ SELECT m.delivery FROM conversation_messages m JOIN locked_conversation c ON c.id=m.conversation_id
+ WHERE m.organization_id=$22 AND m.conversation_id=$23 AND m.id=$24 AND m.revision=$25 FOR UPDATE OF m
+), changed AS (
+UPDATE conversation_messages SET role=$1,kind=$2,text=$3,data_json=$4,delivery=$5,attempt_id=$6,thread_id=$7,turn_id=$8,provider_item_id=$9,actor_json=$10,command_key=$11,updated_at=$12,content_attachment_id=$13,revision=revision+1,text_bytes=$14,stored_text_bytes=$15,tool_name=$16,tool_item_id=$17,tool_status=$18,operator_action_id=$19,operator_action_agent=$20,operator_action_result=$21,actor_kind=$26,actor_principal_id=$27 WHERE organization_id=$22 AND conversation_id=$23 AND id=$24 AND revision=$25 AND EXISTS (SELECT 1 FROM previous) RETURNING revision
+), invalidated AS (
+ UPDATE conversations c SET
+ compaction_content_scanned_sequence=LEAST(c.compaction_content_scanned_sequence,e.before_delta),
+ compaction_scanned_sequence=LEAST(c.compaction_scanned_sequence,e.before_delta)
+ FROM (SELECT seq-1 AS before_delta FROM conversation_events WHERE organization_id=$22 AND conversation_id=$23 AND message_id=$24 AND type='message.delta' ORDER BY seq LIMIT 1) e
+ WHERE c.organization_id=$22 AND c.id=$23 AND $5 IN ('delivered','completed','interrupted','failed','rejected','unknown')
+ AND EXISTS (SELECT 1 FROM previous WHERE delivery NOT IN ('delivered','completed','interrupted','failed','rejected','unknown'))
+ AND EXISTS (SELECT 1 FROM changed)
+ RETURNING c.id
+)
+SELECT revision FROM changed`, m.Role, m.Kind, m.Text, string(m.Data), m.Delivery, m.AttemptID, m.ThreadID, m.TurnID, m.ProviderItemID, string(actor), m.CommandKey, m.UpdatedAt, m.ContentReference, m.TextBytes, m.StoredTextBytes, m.ToolName, m.ToolItemID, m.ToolStatus, m.OperatorActionID, m.OperatorAgent, m.OperatorResult, m.OrganizationID, m.ConversationID, m.ID, expected, m.Actor.Kind, m.Actor.PrincipalID).Scan(&m.Revision)
 	if err != nil {
 		return m, updated(ctx, err)
 	}
@@ -947,11 +976,34 @@ func (s *session) AppendConversationEvent(ctx context.Context, e conversationsto
 	if !e.Type.Valid() || !json.Valid(e.Data) {
 		return e, corestore.ErrInvalidPage
 	}
-	err := s.db.QueryRow(ctx, `UPDATE conversations SET event_seq=event_seq+1 WHERE organization_id=$1 AND id=$2 RETURNING event_seq`, e.OrganizationID, e.ConversationID).Scan(&e.Seq)
+	metadata, group, err := conversationEventMetadataArguments(e)
+	if err != nil {
+		return e, err
+	}
+	counter := `UPDATE conversations SET event_seq=event_seq+1 WHERE organization_id=$1 AND id=$2 RETURNING event_seq`
+	counterArgs := []any{e.OrganizationID, e.ConversationID}
+	switch e.Type {
+	case conversation.EventMessageUpdated, conversation.EventExecutionUpdated:
+		if group != "" {
+			counter = `UPDATE conversations SET event_seq=event_seq+1,compaction_scanned_sequence=LEAST(compaction_scanned_sequence,COALESCE((SELECT seq-1 FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2 AND type=$3 AND compaction_group_key=$4 ORDER BY seq DESC LIMIT 1),compaction_scanned_sequence)) WHERE organization_id=$1 AND id=$2 RETURNING event_seq`
+			counterArgs = append(counterArgs, e.Type, group)
+		}
+	case conversation.EventConversationUpdated:
+		counter = `UPDATE conversations SET event_seq=event_seq+1,compaction_scanned_sequence=LEAST(compaction_scanned_sequence,COALESCE((SELECT seq-1 FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2 AND type=$3 ORDER BY seq DESC LIMIT 1),compaction_scanned_sequence)) WHERE organization_id=$1 AND id=$2 RETURNING event_seq`
+		counterArgs = append(counterArgs, e.Type)
+	}
+	err = s.db.QueryRow(ctx, counter, counterArgs...).Scan(&e.Seq)
 	if err != nil {
 		return e, updated(ctx, err)
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO conversation_events (organization_id,conversation_id,seq,type,body_json,created_at,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7)`, e.OrganizationID, e.ConversationID, e.Seq, e.Type, string(e.Data), e.CreatedAt, e.ContentReference)
+	body := e.Data
+	if e.ContentReference != "" {
+		body = json.RawMessage(`{}`)
+	}
+	args := append([]any{e.OrganizationID, e.ConversationID, e.Seq, e.Type, string(body), e.CreatedAt, e.ContentReference}, metadata...)
+	_, err = s.db.Exec(ctx, `INSERT INTO conversation_events (organization_id,conversation_id,seq,type,body_json,created_at,content_attachment_id,query_metadata_version,
+message_id,object_id,message_role,message_kind,attempt_id,execution_status,thread_id,turn_id,snapshot_title,snapshot_visibility,snapshot_status,snapshot_subject_work_item_id,snapshot_work_item_id,snapshot_linked_at,delta_offset,delta_bytes,message_revision,snapshot_preferences_key,snapshot_model,snapshot_effort,snapshot_access,compaction_group_key)
+VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`, args...)
 	return e, mapError(ctx, err)
 }
 

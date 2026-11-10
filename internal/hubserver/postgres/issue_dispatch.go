@@ -22,6 +22,14 @@ func (s *session) IssueDispatchState(ctx context.Context, project tracker.Projec
 }
 
 func (s *session) RequestIssueDispatch(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, fence leasestore.Fence, at time.Time) error {
+	return s.requestIssueDispatch(ctx, project, item, fence, at, false)
+}
+
+func (s *session) QueueIssueDispatch(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, fence leasestore.Fence, at time.Time) error {
+	return s.requestIssueDispatch(ctx, project, item, fence, at, true)
+}
+
+func (s *session) requestIssueDispatch(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, fence leasestore.Fence, at time.Time, queued bool) error {
 	if at.IsZero() {
 		return tracker.ErrInvalidClaimRequest
 	}
@@ -50,8 +58,10 @@ func (s *session) RequestIssueDispatch(ctx context.Context, project tracker.Proj
 	} else if fence != (leasestore.Fence{}) {
 		return tracker.ErrStaleFencingToken
 	}
-	if _, err := s.ActiveLeaseForIssue(ctx, current.ID); err == nil {
-		return tracker.ErrLeaseConflict
+	if lease, err := s.ActiveLeaseForIssue(ctx, current.ID); err == nil {
+		if !queued || lease.LeaseID != fence.LeaseID || lease.FencingToken != fence.FencingToken {
+			return tracker.ErrLeaseConflict
+		}
 	} else if !errors.Is(err, corestore.ErrNotFound) {
 		return err
 	}

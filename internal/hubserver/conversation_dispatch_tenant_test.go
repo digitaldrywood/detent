@@ -265,8 +265,16 @@ type conversationDispatchLockProbe struct {
 	probe    func() error
 }
 
+func (f conversationDispatchRequestFunc) QueueDispatch(ctx context.Context, writer tenantstore.Writer, project tracker.ProjectID, item string, fence leasestore.Fence, at time.Time) error {
+	return f(ctx, writer, project, item, fence, at)
+}
+
 func (p conversationDispatchLockProbe) RequestDispatch(ctx context.Context, writer tenantstore.Writer, project tracker.ProjectID, item string, fence leasestore.Fence, at time.Time) error {
 	return p.delegate.RequestDispatch(ctx, conversationDispatchProbeWriter{Writer: writer, DispatchWriter: writer.(tenantstore.DispatchWriter), probe: p.probe}, project, item, fence, at)
+}
+
+func (p conversationDispatchLockProbe) QueueDispatch(ctx context.Context, writer tenantstore.Writer, project tracker.ProjectID, item string, fence leasestore.Fence, at time.Time) error {
+	return p.delegate.QueueDispatch(ctx, conversationDispatchProbeWriter{Writer: writer, DispatchWriter: writer.(tenantstore.DispatchWriter), probe: p.probe}, project, item, fence, at)
 }
 
 type conversationDispatchProbeWriter struct {

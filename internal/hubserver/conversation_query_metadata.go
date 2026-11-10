@@ -3,15 +3,14 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 )
 
 type conversationQueryMetadata struct {
@@ -83,58 +82,32 @@ func messageQueryMetadata(raw []byte, actor conversation.ActorKind) (conversatio
 }
 
 func eventQueryMetadata(raw []byte) (conversationQueryMetadata, error) {
-	var body map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &body); err != nil {
+	metadata, err := conversationstore.ProjectEventMetadata(raw)
+	if err != nil {
 		return conversationQueryMetadata{}, err
 	}
 	var m conversationQueryMetadata
-	for _, field := range []struct{ column, key string }{
-		{"message_id", "message_id"}, {"object_id", "id"}, {"message_role", "role"}, {"message_kind", "kind"},
-		{"attempt_id", "attempt_id"}, {"execution_status", "status"}, {"thread_id", "thread_id"}, {"turn_id", "turn_id"},
-		{"snapshot_title", "title"}, {"snapshot_visibility", "visibility"}, {"snapshot_status", "status"},
-		{"snapshot_subject_work_item_id", "subject_work_item_id"}, {"snapshot_work_item_id", "work_item_id"}, {"snapshot_linked_at", "linked_at"},
-	} {
-		var value *string
-		if data := body[field.key]; len(data) > 0 {
-			if err := json.Unmarshal(data, &value); err != nil {
-				return m, err
-			}
-		}
-		m.add(field.column, value)
-	}
-	for _, field := range []struct{ column, key string }{
-		{"delta_offset", "seq"}, {"delta_bytes", "text_bytes"}, {"message_revision", "message_revision"},
-	} {
-		var value *int64
-		if data := body[field.key]; len(data) > 0 {
-			if err := json.Unmarshal(data, &value); err != nil {
-				return m, err
-			}
-		}
-		m.add(field.column, value)
-	}
-	var preferences struct {
-		Model  *string `json:"model"`
-		Effort *string `json:"reasoning_effort"`
-		Access *string `json:"access"`
-	}
-	var key *string
-	if data := body["preferences"]; len(data) > 0 && string(data) != "null" {
-		if err := json.Unmarshal(data, &preferences); err != nil {
-			return m, err
-		}
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, data); err != nil {
-			return m, err
-		}
-		digest := sha256.Sum256(compact.Bytes())
-		value := hex.EncodeToString(digest[:])
-		key = &value
-	}
-	m.add("snapshot_preferences_key", key)
-	m.add("snapshot_model", preferences.Model)
-	m.add("snapshot_effort", preferences.Effort)
-	m.add("snapshot_access", preferences.Access)
+	m.add("message_id", metadata.MessageID)
+	m.add("object_id", metadata.ObjectID)
+	m.add("message_role", metadata.Role)
+	m.add("message_kind", metadata.Kind)
+	m.add("attempt_id", metadata.AttemptID)
+	m.add("execution_status", metadata.Status)
+	m.add("thread_id", metadata.ThreadID)
+	m.add("turn_id", metadata.TurnID)
+	m.add("snapshot_title", metadata.Title)
+	m.add("snapshot_visibility", metadata.Visibility)
+	m.add("snapshot_status", metadata.Status)
+	m.add("snapshot_subject_work_item_id", metadata.SubjectWorkItem)
+	m.add("snapshot_work_item_id", metadata.WorkItem)
+	m.add("snapshot_linked_at", metadata.LinkedAt)
+	m.add("delta_offset", metadata.DeltaOffset)
+	m.add("delta_bytes", metadata.DeltaBytes)
+	m.add("message_revision", metadata.MessageRevision)
+	m.add("snapshot_preferences_key", metadata.PreferencesKey)
+	m.add("snapshot_model", metadata.Model)
+	m.add("snapshot_effort", metadata.Effort)
+	m.add("snapshot_access", metadata.Access)
 	return m, nil
 }
 

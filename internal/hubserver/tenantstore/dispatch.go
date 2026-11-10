@@ -21,4 +21,5 @@ type DispatchReader interface {
 type DispatchWriter interface {
 	DispatchReader
 	RequestIssueDispatch(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, leasestore.Fence, time.Time) error
+	QueueIssueDispatch(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, leasestore.Fence, time.Time) error
 }

@@ -155,6 +155,66 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 			t.Fatalf("archived request = %v", err)
 		}
 	}
+	t.Run("queued intent preserves the current fenced lease", func(t *testing.T) {
+		for _, org := range []tracker.OrganizationID{"org_queue_first", "org_queue_second"} {
+			seedLeaseFamily(t, r, org)
+			at := time.Now().UTC().Truncate(time.Microsecond)
+			lease := claimLease(t, r, org, leaseClaim(1))
+			event := attemptEvent(lease)
+			event.DispatchGeneration = 0
+			recordLeaseAttempt(t, r, org, event)
+			queue := func(fence leasestore.Fence) error {
+				return r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.(tenantstore.DispatchWriter).QueueIssueDispatch(t.Context(), "prj_1", "wi_1", fence, at)
+				})
+			}
+			for _, fence := range []leasestore.Fence{{}, {LeaseID: "other", FencingToken: lease.FencingToken}, {LeaseID: lease.LeaseID, FencingToken: lease.FencingToken + 1}} {
+				if err := queue(fence); !errors.Is(err, tracker.ErrStaleFencingToken) {
+					t.Fatalf("stale queued request = %v", err)
+				}
+			}
+			if err := queue(leaseFence(lease)); err != nil {
+				t.Fatal(err)
+			}
+			nextRequest := leaseClaim(1)
+			nextRequest.LeaseID, nextRequest.SessionID = "lease_queued_next", "session_queued_next"
+			if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				_, err := w.Claim(t.Context(), nextRequest)
+				return err
+			}); !errors.Is(err, tracker.ErrLeaseConflict) {
+				t.Fatalf("overlapping claim with queued intent = %v", err)
+			}
+			if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+				state, err := reader.(tenantstore.DispatchReader).IssueDispatchState(t.Context(), "prj_1", "wi_1")
+				if err != nil {
+					return err
+				}
+				if state.Generation != 1 || state.RequestedAt == nil || !state.RequestedAt.Equal(at) {
+					t.Fatalf("queued intent = %+v", state)
+				}
+				active, err := reader.ActiveLeaseForIssue(t.Context(), lease.IssueID)
+				if err == nil && (active.LeaseID != lease.LeaseID || active.FencingToken != lease.FencingToken || active.ReleasedAt != nil) {
+					t.Fatalf("queued intent changed active lease: %+v", active)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				_, err := w.Release(t.Context(), leaseFence(lease), "completed")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			next := claimLease(t, r, org, nextRequest)
+			nextEvent := attemptEvent(next)
+			nextEvent.DispatchGeneration = 1
+			recordLeaseAttempt(t, r, org, nextEvent)
+			if err := queue(leaseFence(lease)); !errors.Is(err, tracker.ErrStaleFencingToken) {
+				t.Fatalf("superseded owner queued dispatch = %v", err)
+			}
+		}
+	})
 }
 
 func TestIssueDispatchRollbackRefusesAcrossTenantRLS(t *testing.T) {

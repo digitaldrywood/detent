@@ -12,6 +12,14 @@ import (
 )
 
 func (p tenantNativeRunEventParticipant) RequestDispatch(ctx context.Context, writer tenantstore.Writer, project tracker.ProjectID, item string, fence leasestore.Fence, at time.Time) error {
+	return p.requestDispatch(ctx, writer, project, item, fence, at, false)
+}
+
+func (p tenantNativeRunEventParticipant) QueueDispatch(ctx context.Context, writer tenantstore.Writer, project tracker.ProjectID, item string, fence leasestore.Fence, at time.Time) error {
+	return p.requestDispatch(ctx, writer, project, item, fence, at, true)
+}
+
+func (p tenantNativeRunEventParticipant) requestDispatch(ctx context.Context, writer tenantstore.Writer, project tracker.ProjectID, item string, fence leasestore.Fence, at time.Time, queued bool) error {
 	dispatch, ok := writer.(tenantstore.DispatchWriter)
 	if !ok {
 		return conversationDispatchUnavailable()
@@ -28,6 +36,9 @@ func (p tenantNativeRunEventParticipant) RequestDispatch(ctx context.Context, wr
 		if err == nil {
 			fence = leasestore.Fence{LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}
 		}
+	}
+	if queued {
+		return dispatch.QueueIssueDispatch(ctx, project, tracker.NativeWorkItemID(item), fence, at)
 	}
 	return dispatch.RequestIssueDispatch(ctx, project, tracker.NativeWorkItemID(item), fence, at)
 }

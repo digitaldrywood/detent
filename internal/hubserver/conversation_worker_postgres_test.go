@@ -90,6 +90,9 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		if err := w.CreateAccessCredential(t.Context(), workerCredential); err != nil {
 			return err
 		}
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: workerID, ProjectID: f.project.ID}); err != nil {
+			return err
+		}
 		createdIssue, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, NativeID: "wi_pg_worker", Number: 1, Title: "Example worker item", ActorKind: new("human"), ActorPrincipalID: new(f.ownerID), WorkflowStateName: new("Todo"), CreatedAt: time.Now().UTC()})
 		if err != nil {
 			return err
@@ -112,6 +115,9 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		}
 		lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(binding.MachineID), SessionID: "session-pg-worker", LeaseID: "lease-pg-worker", TTL: time.Hour})
 		if err != nil {
+			return err
+		}
+		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: f.project.OrganizationID, RunnerID: binding.RunnerID, LeaseID: lease.LeaseID, AssignedAt: lease.RenewedAt}); err != nil {
 			return err
 		}
 		f.service.config.now = func() time.Time { return lease.RenewedAt }
@@ -334,17 +340,20 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	if turnResponse.EventSeq == 0 {
 		t.Fatalf("turn event sequence = %d", turnResponse.EventSeq)
 	}
+	var storedMessages []conversationstore.Message
 	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		messages, err := r.FilteredMessages(t.Context(), conversationstore.MessageFilter{ConversationID: linked.ID, AttemptID: identity.AttemptID, Role: conversation.RoleAssistant, Limit: 10})
-		if err != nil {
-			return err
-		}
-		if len(messages.Items) != 1 || messages.Items[0].Text != "example response" {
-			return fmt.Errorf("stored assistant delta messages = %+v", messages.Items)
-		}
-		return nil
+		storedMessages = messages.Items
+		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if len(storedMessages) != 1 || storedMessages[0].Text != "" || storedMessages[0].ContentReference == "" {
+		t.Fatalf("stored assistant delta messages = %+v", storedMessages)
+	}
+	storedMessage, err := f.service.conversations.readPublicationMessage(t.Context(), f.project.OrganizationID, linked.ID, storedMessages[0].ID)
+	if err != nil || storedMessage.Text != "example response" {
+		t.Fatalf("stored assistant delta text = %q, error = %v", storedMessage.Text, err)
 	}
 	stale := identity
 	stale.FencingToken++
@@ -592,7 +601,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		if err != nil {
 			return fmt.Errorf("claim replacement lease: %w", err)
 		}
-		return nil
+		return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: f.project.OrganizationID, RunnerID: binding.RunnerID, LeaseID: nextLease.LeaseID, AssignedAt: nextLease.RenewedAt})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1077,6 +1086,10 @@ type conversationBindOrderWriter struct {
 	order *conversationBindOrderRepository
 }
 
+func (r *conversationBindOrderRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, read)
+}
+
 func (r *conversationBindOrderRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error { return write(conversationBindOrderWriter{Writer: w, order: r}) })
 }
@@ -1129,6 +1142,9 @@ func bindWithConcurrentRunnerEvent(t *testing.T, admin *sql.DB, order *conversat
 	}()
 	select {
 	case <-order.first:
+	case response := <-done:
+		joined = true
+		t.Fatalf("bind returned before its lock-order barrier: status=%d body=%s", response.Code, response.Body.String())
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
@@ -1159,6 +1175,10 @@ type conversationControlOrderRepository struct {
 type conversationControlOrderWriter struct {
 	tenantstore.Writer
 	order *conversationControlOrderRepository
+}
+
+func (r *conversationControlOrderRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, read)
 }
 
 func (r *conversationControlOrderRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
