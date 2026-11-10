@@ -1,8 +1,6 @@
 package orchestrator
 
 import (
-	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +15,6 @@ import (
 // Replays #3058's body publication before attempt 7018 ended, then the
 // 14:14:11Z restart. A completed delivery must not need worker capacity again.
 func TestOperationalBodyCompletionSurvivesRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	finished := time.Date(2026, 9, 30, 13, 59, 24, 0, time.UTC)
 	published := finished.Add(-27 * time.Second)
@@ -55,21 +49,10 @@ func TestOperationalBodyCompletionSurvivesRestart(t *testing.T) {
 			issue.Description = operationalCompletionAuthorizationBody()
 			cfg := completionDeferralConfig()
 			cfg.AutoPromote = normalizeAutoPromoteConfig(AutoPromoteConfig{Enabled: true, OptoutLabel: "requires-human-review", Gate: gate.Config{Kind: gate.KindCommand}})
-			path := filepath.Join(t.TempDir(), "detent.db")
-			backend := openCompletionDeferralStoreWithoutCleanup(t, path)
-			id := startCompletionDeferralAttempt(t, backend, issue, finished)
-			// Preserve the recorded attempt identity in the existing SQLite fixture.
-			db, err := sql.Open("sqlite", path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = db.ExecContext(t.Context(), "UPDATE work_attempts SET id = 7018, worker_type = 'agent', started_at = '2026-09-30T13:50:26Z' WHERE id = ?", id)
-			if closeErr := db.Close(); closeErr != nil {
-				t.Fatal(closeErr)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
+			backend := &completionAttemptRecorder{recordingWorkAttemptStore: recordingWorkAttemptStore{nextID: 7018}}
+			startCompletionDeferralAttempt(t, backend, issue, finished)
+			backend.attempt.WorkerType = "agent"
+			backend.attempt.StartedAt = time.Date(2026, 9, 30, 13, 50, 26, 0, time.UTC)
 			running := completionDeferralRunning(issue, 7018, finished)
 			running.Generation = 25
 			running.StartedAt = time.Date(2026, 9, 30, 13, 50, 26, 0, time.UTC)
@@ -94,7 +77,15 @@ func TestOperationalBodyCompletionSurvivesRestart(t *testing.T) {
 				t.Fatalf("receipt = %s, want accepted operational success; metadata: %s", receipt.TerminalState, receipt.WorkerMetadataJSON)
 			}
 			unrelated := completionDeferralIssue("unrelated-reclaimed-at-restart", "In Progress")
-			unrelatedID := startCompletionDeferralAttempt(t, backend, unrelated, finished)
+			const unrelatedID int64 = 7019
+			restartedOwner := &recordingWorkAttemptStore{
+				recent: []store.WorkAttempt{receipt},
+				reclaimed: []store.WorkAttempt{{
+					ID: unrelatedID, ProjectID: cfg.Project.ID, IssueID: unrelated.ID, Identifier: unrelated.Identifier,
+					Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalTimedOut,
+					ErrorClass: "lease_expired", StartedAt: finished.Add(-time.Minute), CompletedAt: restarted,
+				}},
+			}
 			if tc.change != nil {
 				tc.change(&issue)
 			}
@@ -107,19 +98,17 @@ func TestOperationalBodyCompletionSurvivesRestart(t *testing.T) {
 			}
 			tracker.stateIssues = []connector.Issue{issue}
 			tracker.updates, tracker.comments = nil, nil
-			if err := backend.Close(); err != nil {
-				t.Fatal(err)
-			}
-			backend = openCompletionDeferralStore(t, path)
-			orch = Orchestrator{cfg: cfg, connector: tracker, workAttempts: backend}
+			orch = Orchestrator{cfg: cfg, connector: tracker, workAttempts: restartedOwner}
 			state = newState(cfg)
 			orch.recoverDurableWorkAttempts(t.Context(), &state, restarted)
-			reclaimed, err := backend.WorkAttempt(t.Context(), unrelatedID)
-			if err != nil {
-				t.Fatal(err)
+			reclaimed := false
+			for _, attempt := range state.WorkAttempts {
+				if attempt.AttemptID == unrelatedID && attempt.Status == string(store.WorkAttemptStatusTerminal) && attempt.Stale {
+					reclaimed = true
+				}
 			}
-			if reclaimed.Status != store.WorkAttemptStatusTerminal {
-				t.Fatalf("unrelated attempt was not reclaimed: %#v", reclaimed)
+			if !reclaimed {
+				t.Fatalf("unrelated owner-reclaimed attempt was not recovered: %#v", state.WorkAttempts)
 			}
 			orch.restoreDurableGateWaitCompletions(t.Context(), &state, []connector.Issue{issue})
 			completed, restored := state.Completed[issue.ID]
@@ -130,7 +119,7 @@ func TestOperationalBodyCompletionSurvivesRestart(t *testing.T) {
 				t.Fatalf("completion kind = %q", completed.CompletionKind)
 			}
 			result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, restarted)
-			if len(result.dispatchCandidates) != 0 || len(state.Running) != 0 {
+			if len(result.dispatchCandidates) != 0 || len(state.Running) != 0 || len(restartedOwner.starts) != 0 {
 				t.Fatal("operational delivery requested another worker")
 			}
 			if tc.wantState == "" {
