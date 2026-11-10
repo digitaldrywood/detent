@@ -37,14 +37,6 @@ type workItemArchive struct {
 	Archived bool `json:"archived"`
 }
 
-func workItemRecordRoute(path string) bool {
-	switch path {
-	case nativeBase + "/labels", nativeBase + "/work-items", nativeBase + "/work-items/:item", nativeBase + "/work-items/:item/comments", nativeBase + "/work-items/:item/comments/:comment", nativeBase + "/work-items/:item/archive", nativeBase + "/work-items/:item/restore", nativeBase + "/work-items/:item/dependencies", nativeBase + "/work-items/:item/source-intake", nativeBase + "/work-items/:item/events", nativeBase + "/work-items/:item/workflow", nativeBase + "/work-items/:item/attempts", nativeBase + "/work-items/:item/attempts/:attempt":
-		return true
-	}
-	return false
-}
-
 func workItemStorageUnavailable() error {
 	return &nativeError{Code: "not_ready", Message: "This work item operation requires storage that is not available", status: http.StatusServiceUnavailable, publicMessage: true}
 }
@@ -123,8 +115,40 @@ func (s *Service) readWorkItem(ctx context.Context, scope nativeScope, id string
 	if err == nil {
 		err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue)
 	}
+	if err == nil {
+		err = s.hydrateWorkItemActorNames(ctx, scope.organization, []*tracker.NativeIssue{&issue})
+	}
 	issue.OmittedFields = append(issue.OmittedFields, "change_sequence")
 	return scope.reporterIssue(issue), err
+}
+
+func (s *Service) hydrateWorkItemActorNames(ctx context.Context, organization tracker.OrganizationID, issues []*tracker.NativeIssue) error {
+	principals := make([]string, 0, len(issues))
+	seen := make(map[string]bool, len(issues))
+	for _, issue := range issues {
+		principal := issue.Actor.PrincipalID
+		if principal != "" && !seen[principal] {
+			principals = append(principals, principal)
+			seen[principal] = true
+		}
+	}
+	if len(principals) == 0 {
+		return nil
+	}
+	var names map[string]string
+	if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		names, err = reader.AccessPublicNames(ctx, principals)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read filer identities: %w", err)
+	}
+	for _, issue := range issues {
+		if name := names[issue.Actor.PrincipalID]; name != "" {
+			issue.Actor.DisplayName = name
+		}
+	}
+	return nil
 }
 
 func (s *Service) hydrateCommentRecord(ctx context.Context, row corestore.Comment, version eventstore.CollaborationVersion) (tracker.NativeComment, error) {

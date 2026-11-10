@@ -95,7 +95,7 @@ func (s *session) boardModelQuery(f viewstore.BoardSelection, authority accessst
 	if f.Compact {
 		columns = boardListColumns
 	}
-	model := allowed + ",b.source_revision,b.source_event_sequence,b.source_project_revision,b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at,b.running,b.dispatchable,b.issue_number,b.page_list_bytes," + boardModelDisplayColumns + "," + columns
+	model := allowed + ",b.source_revision,b.source_event_sequence,b.source_project_revision,b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at,b.running,b.dispatchable,b.issue_number,b.page_list_bytes," + boardModelDisplayColumns + "," + columns + "," + publicActorNameSQL("b.organization_id", "b.page_actor_principal_id")
 	query := "WITH page AS MATERIALIZED (SELECT b.* FROM native_board_items b WHERE " + where + " ORDER BY " + order + fmt.Sprintf(" LIMIT $%d", limitArg) + ") SELECT " + model + " FROM page b ORDER BY " + order
 
 	return query, args, nil
@@ -166,6 +166,7 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 		defer rows.Close()
 		for rows.Next() {
 			var row viewstore.BoardRecord
+			row.ActorDisplayName = new(string)
 			var part, number int
 			var allowed bool
 			targets := []any{&part, &allowed, &row.SourceRevision, &row.SourceEventSequence, &row.SourceProjectRevision, &row.Position.Lane, &row.Position.State, &row.Position.Priority, &row.Position.ActivityMissing, &row.Position.Activity, &row.Position.Identifier, &row.ClosedAt, &row.Running, &row.Dispatchable, &number, &row.ListBytes}
@@ -173,6 +174,7 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 			page, finishPage := boardPageTargets(&row)
 			targets = append(targets, display...)
 			targets = append(targets, page...)
+			targets = append(targets, row.ActorDisplayName)
 			if err := rows.Scan(targets...); err != nil {
 				return err
 			}

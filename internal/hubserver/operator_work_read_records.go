@@ -92,6 +92,9 @@ func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativ
 	if err == nil {
 		err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &item)
 	}
+	if err == nil {
+		err = s.hydrateWorkItemActorNames(ctx, scope.organization, []*tracker.NativeIssue{&item})
+	}
 	item.OmittedFields = append(item.OmittedFields, "change_sequence")
 	return scope.reporterIssue(item), err
 }

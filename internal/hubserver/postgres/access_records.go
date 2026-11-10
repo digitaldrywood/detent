@@ -12,6 +12,30 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func publicActorNameSQL(organization, principal string) string {
+	return `coalesce((SELECT nullif(member.email,'') FROM hosted_members member WHERE member.organization_id=` + organization + ` AND member.principal_id=` + principal + ` LIMIT 1),(SELECT credential.name FROM api_tokens credential WHERE credential.organization_id=` + organization + ` AND credential.id=` + principal + `),'')`
+}
+
+func (s *session) AccessPublicNames(ctx context.Context, principals []string) (map[string]string, error) {
+	names := make(map[string]string, len(principals))
+	if len(principals) == 0 {
+		return names, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT requested.principal_id,`+publicActorNameSQL("$1", "requested.principal_id")+` FROM unnest($2::text[]) AS requested(principal_id)`, s.organization, principals)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var principal, name string
+		if err := rows.Scan(&principal, &name); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		names[principal] = name
+	}
+	return names, mapError(ctx, rows.Err())
+}
+
 func (s *session) HubIdentity(ctx context.Context) (accessstore.HubIdentity, error) {
 	var row accessstore.HubIdentity
 	err := s.db.QueryRow(ctx, `SELECT organization_id,server_id,cursor_key FROM hub_server_identities WHERE organization_id=$1`, s.organization).Scan(&row.OrganizationID, &row.ID, &row.CursorKey)

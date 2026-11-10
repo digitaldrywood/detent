@@ -70,6 +70,7 @@ type BoardRecord struct {
 	ExpiresAt             *time.Time
 	ExecutionFence        int64
 	ActorPrincipalID      string
+	ActorDisplayName      *string
 	IssueType             string
 	VerificationState     string
 	Priority              *int

@@ -17,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -295,6 +294,9 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 		}
 		applyNativeShippedWindows(page.Work, windows, selectedWindow)
 	}
+	if err := s.hydrateBoardRecordActorNames(ctx, scope.organization, snapshot.Records, snapshot.WorkRecords); err != nil {
+		return page, err
+	}
 	if selection.SearchText != "" || selection.Fingerprint != "" {
 		for _, records := range [][]viewstore.BoardRecord{snapshot.Records, snapshot.WorkRecords} {
 			for index := range records {
@@ -382,6 +384,47 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	return page, err
 }
 
+func (s *Service) hydrateBoardRecordActorNames(ctx context.Context, organization tracker.OrganizationID, groups ...[]viewstore.BoardRecord) error {
+	var issues []*tracker.NativeIssue
+	var sizes []int
+	for _, records := range groups {
+		for index := range records {
+			row := &records[index]
+			if row.PageIssue == nil {
+				return viewstore.ErrInvalidView
+			}
+			issue := *row.PageIssue
+			row.PageIssue = &issue
+			raw, err := json.Marshal(issue.Actor)
+			if err != nil {
+				return err
+			}
+			if row.ActorDisplayName == nil {
+				issues = append(issues, row.PageIssue)
+			} else if *row.ActorDisplayName != "" {
+				row.PageIssue.Actor.DisplayName = *row.ActorDisplayName
+			}
+			sizes = append(sizes, len(raw))
+		}
+	}
+	if err := s.hydrateWorkItemActorNames(ctx, organization, issues); err != nil {
+		return err
+	}
+	position := 0
+	for _, records := range groups {
+		for index := range records {
+			row := &records[index]
+			raw, err := json.Marshal(row.PageIssue.Actor)
+			if err != nil {
+				return err
+			}
+			row.ListBytes += len(raw) - sizes[position]
+			position++
+		}
+	}
+	return nil
+}
+
 func boardModelCard(scope nativeScope, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
 	if row.PageIssue == nil {
 		return tracker.NativeBoardCard{}, viewstore.ErrInvalidView
@@ -424,42 +467,6 @@ func boardIssueCollections(issue tracker.NativeIssue) tracker.NativeIssue {
 	return issue
 }
 
-func laneSelected(state string, selection viewstore.BoardSelection, states []policy.State) bool {
-	if len(selection.States) > 0 && !slices.Contains(selection.States, state) {
-		return false
-	}
-	if selection.Terminal == nil {
-		return true
-	}
-	for _, candidate := range states {
-		if candidate.Name == state {
-			return candidate.Terminal == *selection.Terminal
-		}
-	}
-	return false
-}
-
-func (s *Service) applyIssueSearchHit(ctx context.Context, scope nativeScope, params url.Values, item tracker.NativeWorkItemID, issue *tracker.NativeIssue) error {
-	text := strings.TrimSpace(params.Get("q"))
-	if len(text) > searchstore.MaxQueryTextBytes {
-		return nativePublicInvalid("Search query is too long")
-	}
-	query := searchstore.Query{Kind: "work", ProjectID: scope.project, WorkItemID: item, Text: text, Archived: params.Get("archived"), Limit: 1}
-	if scope.credential.HostedRole == "reporter" {
-		principal := scope.actor().PrincipalID
-		query.Reporter = &principal
-	}
-	matches, err := searchstore.NewContent(s.runDetailStore()).Find(ctx, tenantSearchRepository{boardSearchRepository{Repository: s.config.TenantRepository, service: s, scope: scope}}, scope.organization, query)
-	if err != nil {
-		return err
-	}
-	if len(matches.Items) != 1 || matches.Items[0].Document.WorkItemID != item {
-		return searchstore.ErrIndexPending
-	}
-	issue.Snippet, issue.SearchScore = matches.Items[0].Snippet, matches.Items[0].Score
-	return nil
-}
-
 func (s *Service) boardAccessVersion(ctx context.Context, r tenantstore.Reader, scope nativeScope) (string, error) {
 	authority := s.accessAuthority(scope, false)
 	revisions, err := r.BoardAccessRevisions(ctx, authority.CredentialID, authority.UserID)
@@ -484,22 +491,4 @@ func (s *Service) boardAccessVersion(ctx context.Context, r tenantstore.Reader, 
 	}
 	digest := sha256.Sum256(raw)
 	return hex.EncodeToString(digest[:]), nil
-}
-
-type boardSearchRepository struct {
-	tenantstore.Repository
-	service *Service
-	scope   nativeScope
-}
-
-func (r boardSearchRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	if organization != r.scope.organization {
-		return corestore.ErrNotFound
-	}
-	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		if err := r.service.authorizeAccessScope(ctx, reader, r.scope, false); err != nil {
-			return err
-		}
-		return read(reader)
-	})
 }

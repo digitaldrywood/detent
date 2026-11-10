@@ -151,6 +151,9 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 		issue, err = s.readWorkItemSourcePage(ctx, scope, id)
 	}
 	if err == nil {
+		err = s.hydrateWorkItemActorNames(ctx, scope.organization, []*tracker.NativeIssue{&issue})
+	}
+	if err == nil {
 		issue.DependencyReady = false
 		issue.SchedulingEligible = nil
 		for _, field := range []string{"dependency_ready", "scheduling_eligible"} {

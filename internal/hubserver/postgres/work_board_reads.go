@@ -20,10 +20,11 @@ var boardColumns = `b.organization_id,b.project_id,b.work_item_id,b.source_revis
 b.state,b.archived,b.terminal,b.running,b.dispatchable,b.lane_rank,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at,b.expires_at,b.execution_fence,
 b.actor_principal_id,b.issue_type,b.verification_state,b.priority,b.created_at,b.updated_at,b.payload_object_key,b.payload_sha256,b.payload_bytes,b.payload_content_bytes,
 ARRAY(SELECT value FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='label' ORDER BY value),
-ARRAY(SELECT value FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='assignee' ORDER BY value),` + boardDisplayColumns + "," + boardPageColumns + "," + boardListColumns + ",b.page_list_bytes,b.page_window_mask,b.page_refresh_after"
+ARRAY(SELECT value FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='assignee' ORDER BY value),` + boardDisplayColumns + "," + boardPageColumns + "," + boardListColumns + ",b.page_list_bytes,b.page_window_mask,b.page_refresh_after," + publicActorNameSQL("b.organization_id", "b.page_actor_principal_id")
 
 func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.BoardRecord, error) {
 	var b viewstore.BoardRecord
+	b.ActorDisplayName = new(string)
 	var key, digest string
 	var size, content int64
 	targets := []any{&b.OrganizationID, &b.ProjectID, &b.WorkItemID, &b.SourceRevision, &b.SourceEventSequence, &b.SourceProjectRevision,
@@ -36,7 +37,7 @@ func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.Boa
 	targets = append(targets, page...)
 	targets = append(targets, list...)
 	targets = append(targets, &b.ListBytes)
-	targets = append(targets, &b.WindowMask, &b.RefreshAfter)
+	targets = append(targets, &b.WindowMask, &b.RefreshAfter, b.ActorDisplayName)
 	targets = append(targets, extra...)
 	err := row.Scan(targets...)
 	finish()

@@ -14,27 +14,35 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeIssueCreatedBy(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "filer-list")
-	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 	states := append(nativeTriageStates(nativeFixtureStates()), tracker.NativeState{Name: "Cancelled", Terminal: true})
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), scope.project)
+		if err != nil {
+			return err
+		}
+		project.States = states
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	if err := updateNativeProjectStates(t.Context(), tx, scope, states, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE api_tokens SET name=$1 WHERE organization_id=$2 AND id=$3", "operator-filer-list", scope.organization, credential.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,30 +62,28 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 		if test.other {
 			creator.token = testHubAdminToken
 		}
-		issue := creator.create(t, test.name)
-		issue.State, issue.Archived = test.state, test.archived
-		issue.Labels = []string{"filed"}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: test.state}, time.Now())
-		if err != nil {
-			tx.Rollback()
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", creator.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + test.name}, Title: test.name, Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: test.state, Labels: []string{"filed"}})
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		if test.archived {
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/archive", creator.token, archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive-" + test.name}, ExpectedRevision: issue.Revision})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &issue)
 		}
 		ids[test.name] = issue.WorkItemID
 	}
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "filer-foreign")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES(?,?,?)", credential.ID, scope.organization, foreign.project.ID); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.organization, TokenID: credential.ID, ProjectID: foreign.project.ID})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	foreign.token = f.token
 	hidden := foreign.create(t, "hidden filer")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=? AND project_id=?", credential.ID, foreign.project.ID); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessTokenGrant(t.Context(), credential.ID, foreign.project.ID)
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,13 +164,124 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 			}
 		})
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, foreign.base+"/work-items?created_by=me", f.token, nil)
-	requireNativeStatus(t, response, http.StatusNotFound)
-	hostedContextData(t, call("tools/call", operatortool.WorkList, map[string]any{"project_id": foreign.project.ID, "created_by": "me"}), true)
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(ids["triaged"]), f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var restDetail tracker.NativeIssue
+	decodeHubResponse(t, response, &restDetail)
+	if restDetail.Actor.Kind != "human" || restDetail.Actor.PrincipalID != credential.ID || restDetail.Actor.DisplayName != "operator-filer-list" {
+		t.Fatalf("REST detail filer=%+v", restDetail.Actor)
+	}
 	data := hostedContextData(t, call("tools/call", operatortool.WorkItem, map[string]any{"project_id": scope.project, "reference": ids["triaged"]}), false)
 	var detail operatortool.WorkReadResult[tracker.NativeIssue]
 	if err := json.Unmarshal(data, &detail); err != nil || detail.Data.Actor.DisplayName != "operator-filer-list" {
 		t.Fatalf("detail=%s error=%v", data, err)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, foreign.base+"/work-items?created_by=me", f.token, nil)
+	requireNativeStatus(t, response, http.StatusNotFound)
+	hostedContextData(t, call("tools/call", operatortool.WorkList, map[string]any{"project_id": foreign.project.ID, "created_by": "me"}), true)
+}
+
+func TestNativeFilerPublicNames(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "filer-names")
+	organizations := []tracker.OrganizationID{f.project.OrganizationID, f.project.OrganizationID + "_second"}
+	for _, organization := range organizations {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, principal := range []string{"person", "service"} {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: principal, Name: string(organization) + " <" + principal + ">", Hash: apikey.HashToken(string(organization) + principal), Scope: "operator", Kind: "service", ProjectAccess: "all", CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()}); err != nil {
+					return err
+				}
+			}
+			return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_person", PrincipalID: "person", MembershipID: "membership_person", Email: string(organization) + "@example.test", Role: "member", Active: true, CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, organization := range organizations {
+		t.Run(string(organization), func(t *testing.T) {
+			var names map[string]string
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				names, err = r.AccessPublicNames(t.Context(), []string{"person", "service", "missing", "person"})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(names) != 3 || names["person"] != string(organization)+"@example.test" || names["service"] != string(organization)+" <service>" || names["missing"] != "" {
+				t.Fatalf("public identities=%v", names)
+			}
+			var records []viewstore.BoardRecord
+			for _, principal := range []string{"person", "service"} {
+				issue := tracker.NativeIssue{Actor: tracker.Actor{Kind: "human", PrincipalID: principal}}
+				raw, err := json.Marshal(issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				records = append(records, viewstore.BoardRecord{PageIssue: &issue, ListBytes: len(raw)})
+			}
+			work := append([]viewstore.BoardRecord(nil), records...)
+			queries := 0
+			ctx := postgres.WithTransactionTiming(t.Context(), func(string, time.Time) {}, func(_ time.Time, query string) {
+				if strings.Contains(query, "FROM unnest($2::text[])") {
+					queries++
+				}
+			})
+			if err := f.service.hydrateBoardRecordActorNames(ctx, organization, records, work); err != nil {
+				t.Fatal(err)
+			}
+			if queries != 1 {
+				t.Fatalf("page filer lookups=%d, want one batch", queries)
+			}
+			for _, group := range [][]viewstore.BoardRecord{records, work} {
+				for _, row := range group {
+					actor := row.PageIssue.Actor
+					if actor.Kind != "human" || actor.DisplayName != names[actor.PrincipalID] {
+						t.Fatalf("hydrated actor=%+v", actor)
+					}
+					raw, err := json.Marshal(row.PageIssue)
+					if err != nil || row.ListBytes != len(raw) {
+						t.Fatalf("page bytes=%d encoded=%d error=%v", row.ListBytes, len(raw), err)
+					}
+				}
+			}
+			currentName, missingName := names["service"], ""
+			for _, test := range []struct {
+				name, principal, stored, want string
+				loaded                        *string
+				queries                       int
+			}{
+				{"loaded current", "service", "Previous name", currentName, &currentName, 0},
+				{"loaded absent", "missing", "External <actor>", "External <actor>", &missingName, 0},
+				{"unloaded absent", "missing", "External <actor>", "External <actor>", nil, 1},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					original := tracker.NativeIssue{Actor: tracker.Actor{Kind: "integration", PrincipalID: test.principal, ViaKey: "recorded-key", DisplayName: test.stored, Agent: "Recorded assistant"}}
+					raw, err := json.Marshal(original)
+					if err != nil {
+						t.Fatal(err)
+					}
+					records := []viewstore.BoardRecord{{PageIssue: &original, ActorDisplayName: test.loaded, ListBytes: len(raw)}}
+					work := append([]viewstore.BoardRecord(nil), records...)
+					queries = 0
+					if err := f.service.hydrateBoardRecordActorNames(ctx, organization, records, work); err != nil {
+						t.Fatal(err)
+					}
+					if queries != test.queries || original.Actor.DisplayName != test.stored || records[0].PageIssue == work[0].PageIssue {
+						t.Fatalf("lookups=%d want=%d original=%+v", queries, test.queries, original.Actor)
+					}
+					want := original.Actor
+					want.DisplayName = test.want
+					for _, row := range []viewstore.BoardRecord{records[0], work[0]} {
+						if row.PageIssue == &original || row.PageIssue.Actor != want {
+							t.Fatalf("hydrated actor=%+v want=%+v", row.PageIssue.Actor, want)
+						}
+						raw, err := json.Marshal(row.PageIssue)
+						if err != nil || row.ListBytes != len(raw) {
+							t.Fatalf("page bytes=%d encoded=%d error=%v", row.ListBytes, len(raw), err)
+						}
+					}
+				})
+			}
+		})
 	}
 }
 

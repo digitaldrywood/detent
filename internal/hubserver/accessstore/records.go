@@ -241,6 +241,7 @@ type ProjectAccessCleaner interface {
 }
 
 type Reader interface {
+	AccessPublicNames(context.Context, []string) (map[string]string, error)
 	OperatorSession(context.Context, string, time.Time) (OperatorSession, error)
 	AccessCredentialHasMember(context.Context, string) (bool, error)
 	HubIdentity(context.Context) (HubIdentity, error)
