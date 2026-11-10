@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -17,7 +18,7 @@ import (
 // warning rather than a failed run.
 
 func attemptDiffRunner() *Runner {
-	return &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), finalizationContext: context.WithTimeoutCause}
 }
 
 func attemptDiffFile(t *testing.T, dir, name, content string) {

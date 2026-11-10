@@ -470,7 +470,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		outcome = "interrupted"
 		runErr = errors.Join(runErr, context.Cause(guarded))
 	}
-	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+	finishCtx, cancel := r.finalizationContext(context.WithoutCancel(guarded), r.afterRunTimeout, context.DeadlineExceeded)
 	defer cancel()
 	if runtime, ok := req.Execution.(RuntimeExecution); ok {
 		observation := tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: "completed", HeartbeatAt: r.now(), Identity: result.RuntimeIdentity}
@@ -525,7 +525,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				}
 				// Deferred lease release publishes the prepared outcome after Run returns.
 				runErr = r.attributeFailure(guarded, req, runErr)
-				reprepareCtx, reprepareCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+				reprepareCtx, reprepareCancel := r.finalizationContext(context.WithoutCancel(guarded), r.afterRunTimeout, context.DeadlineExceeded)
 				reprepareErr := prepared.PrepareFinish(reprepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
 				reprepareCancel()
 				runErr = errors.Join(runErr, reprepareErr)
@@ -856,10 +856,10 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	}
 	finalizationErr = errors.Join(finalizationErr, executionCancellation(req))
 	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
-	finalPushCtx, finalPushCancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointTimeout)
+	finalPushCtx, finalPushCancel := r.finalizationContext(context.WithoutCancel(ctx), checkpointTimeout, context.DeadlineExceeded)
 	r.finishCheckpointRef(finalPushCtx, req.checkpointRefs, req)
 	finalPushCancel()
-	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	recoveryCtx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.afterRunTimeout, context.DeadlineExceeded)
 	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
 	cancel()
 	checkpoint := executionCheckpointPreservingPublication(req.Execution, state)

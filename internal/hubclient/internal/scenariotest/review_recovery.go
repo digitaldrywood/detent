@@ -455,8 +455,21 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					return sessions.ReconcileSessionFinalization(ctx, id, nil)
 				}}
 			}
+			finalizationRoot, cancelFinalization := context.WithCancel(context.WithoutCancel(t.Context()))
+			t.Cleanup(cancelFinalization)
 			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Logger: logger, Store: sessionStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
-				return context.WithCancel(testenv.WaitContext(t, ctx))
+				finalization, cancel := context.WithCancel(testenv.WaitContext(t, ctx))
+				done := make(chan struct{})
+				stop := context.AfterFunc(finalizationRoot, func() {
+					cancel()
+					close(done)
+				})
+				return finalization, sync.OnceFunc(func() {
+					if !stop() {
+						<-done
+					}
+					cancel()
+				})
 			}})
 			if err != nil {
 				t.Fatal(err)
@@ -476,6 +489,9 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				go func() { done <- orch.Run(ctx) }()
 				stop := sync.OnceFunc(func() {
 					cancel()
+					if t.Failed() {
+						cancelFinalization()
+					}
 					if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 						t.Error(err)
 					}

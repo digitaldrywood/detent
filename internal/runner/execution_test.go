@@ -1451,7 +1451,7 @@ func TestNativeEpiloguePreservesBeforeCleanup(t *testing.T) {
 				execution.validateErr = ErrExecutionAuthorityUnavailable
 				cancel()
 			}
-			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second, finalizationContext: context.WithTimeoutCause}
 			err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, false)
 			if errors.Is(err, ErrExecutionAuthorityUnavailable) != test.lost || backend.retained != test.retained || backend.afterRun != test.after {
 				t.Fatalf("epilogue error=%v retained=%v hook=%v", err, backend.retained, backend.afterRun)
@@ -1905,7 +1905,7 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 					execution.validateErr = test.authorityErr
 					return errors.Join(ctx.Err(), test.artifactErr)
 				}
-				r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+				r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second, finalizationContext: context.WithTimeoutCause}
 				issue := workspace.Issue{}
 				request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, finalizeNativeWork: true}
 				var client *github.Client
@@ -2081,7 +2081,7 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 			if test.failed {
 				execution.failure = errors.New("upload unavailable")
 			}
-			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second, finalizationContext: context.WithTimeoutCause}
 			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, validationEvidenceSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
 				return tracker.AttemptDiffRequest{Files: []tracker.AttemptDiffFile{{Path: ".detent/validation/1/test.png", Status: "added"}}}, test.screenshot
 			}}
@@ -2137,7 +2137,7 @@ func TestStageEndPushesCheckpointRef(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
 			cancel(context.Canceled)
 			defer cancel(context.Canceled)
-			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second, finalizationContext: context.WithTimeoutCause}
 			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}
 			req.checkpointRefs = newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{Checkpoint: test.restored}, nil)
 			err := r.afterExecution(ctx, req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true)
@@ -2331,7 +2331,7 @@ func TestValidationEvidenceUsesCurrentAttemptDiff(t *testing.T) {
 			t.Fatalf("fixture Git: %v %s", err, output)
 		}
 	}
-	r := &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+	r := &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second, finalizationContext: context.WithTimeoutCause}
 	source := r.attemptDiffSource(t.Context(), workspace.Info{Path: directory}, workspace.Issue{})
 	diff, available := source(t.Context())
 	if !available {

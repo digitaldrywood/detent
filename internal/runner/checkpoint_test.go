@@ -64,7 +64,7 @@ func checkpointRunnerFixture(t *testing.T) (*Runner, *workerCheckpoint, *checkpo
 	t.Helper()
 	root := t.TempDir()
 	backend := &checkpointBackendStub{published: strings.Repeat("b", 40)}
-	return &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}, &workerCheckpoint{
+	return &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now, finalizationContext: context.WithTimeoutCause}, &workerCheckpoint{
 		backend: backend,
 		plan:    workspace.CheckpointPlan{Info: workspace.Info{Path: root, Branch: "owned-issue"}, BaseSHA: strings.Repeat("a", 40), Journal: filepath.Join(root, "checkpoint.json")},
 		request: RunRequest{Issue: connector.Issue{ID: "2313", Identifier: "example/repo#2313", Title: "Recover intended work"}, CheckpointValidate: func(context.Context) error { return nil }},

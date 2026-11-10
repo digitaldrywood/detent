@@ -173,17 +173,18 @@ func (w cancelledCheckpointWorkspace) PushCheckpointRef(ctx context.Context, _ w
 
 func TestCheckpointRefHonorsFinalizationCancellation(t *testing.T) {
 	for _, test := range []struct {
-		name                   string
-		final, deadline, wired bool
+		name                          string
+		final, deadline, wired, owned bool
 	}{
 		{name: "active push cancellation"}, {name: "final retry cancellation", final: true}, {name: "shared retry deadline", final: true, deadline: true},
 		{name: "completion owns detached two minute budget", wired: true},
+		{name: "completion honors finalization owner", wired: true, owned: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				backend := cancelledCheckpointWorkspace{started: make(chan struct{})}
 				refs := newCheckpointRefs(backend, &testExecution{}, workspace.Info{}, workspace.Issue{}, nil)
-				r := &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+				r := &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), finalizationContext: context.WithTimeoutCause}
 				ctx, cancel := context.WithCancel(t.Context())
 				expected := time.Duration(0)
 				if test.deadline {
@@ -195,6 +196,19 @@ func TestCheckpointRefHonorsFinalizationCancellation(t *testing.T) {
 					expected = 2 * time.Minute
 					r.workspace = backend
 					r.afterRunTimeout = time.Second
+				}
+				owner, cancelOwner := context.WithCancel(t.Context())
+				defer cancelOwner()
+				var limits []time.Duration
+				if test.owned {
+					expected = 0
+					r.finalizationContext = func(_ context.Context, limit time.Duration, cause error) (context.Context, context.CancelFunc) {
+						limits = append(limits, limit)
+						if cause != context.DeadlineExceeded {
+							t.Errorf("finalization deadline cause changed: %v", cause)
+						}
+						return context.WithCancel(owner)
+					}
 				}
 				defer cancel()
 				started := time.Now()
@@ -213,10 +227,16 @@ func TestCheckpointRefHonorsFinalizationCancellation(t *testing.T) {
 					}
 				}()
 				<-backend.started
+				if test.owned {
+					cancelOwner()
+				}
 				if !test.deadline {
 					cancel()
 				}
 				<-done
+				if test.owned && (len(limits) != 2 || limits[0] != checkpointTimeout || limits[1] != r.afterRunTimeout) {
+					t.Fatalf("finalization owner budgets=%v", limits)
+				}
 				if time.Since(started) != expected {
 					t.Fatalf("cancelled finalization took %s", time.Since(started))
 				}
@@ -230,7 +250,7 @@ func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 	backend := &checkpointFinalizingWorkspace{wipExecutionWorkspace: &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}}
 	recorded := make(chan tracker.NativeCheckpoint, 1)
 	execution := &testExecution{onCheckpoint: func(c tracker.NativeCheckpoint) { recorded <- c }}
-	r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+	r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second, finalizationContext: context.WithTimeoutCause}
 	refs := newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{}, nil)
 	req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}
 	r.startCheckpointRefs(t.Context(), refs, req, backend)
