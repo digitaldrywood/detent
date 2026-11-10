@@ -8,18 +8,48 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/searchtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func newTeamThreadNativeFixture(t *testing.T, service *Service, organization tracker.OrganizationID, name string) nativeFixture {
+	t.Helper()
+	f := newNativeFixture(t, service, organization, name)
+	f.service.registerTeamThreadRoutes(f.service.echo)
+	return f
+}
+
+type teamThreadReadGuardKey struct{}
+
+type teamThreadReadGuard struct {
+	tenantstore.Repository
+}
+
+func (r teamThreadReadGuard) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	depth, ok := ctx.Value(teamThreadReadGuardKey{}).(*atomic.Int32)
+	if !ok {
+		return r.Repository.ReadTenant(ctx, organization, workload, read)
+	}
+	if depth.Add(1) != 1 {
+		depth.Add(-1)
+		return errors.New("thread read requested another reader while holding a reader")
+	}
+	defer depth.Add(-1)
+	return r.Repository.ReadTenant(ctx, organization, workload, read)
+}
 
 func threadBase(f nativeFixture) string {
 	return "/api/v2/organizations/" + string(f.project.OrganizationID) + "/threads"
@@ -124,12 +154,9 @@ func TestTeamThreadScopeAccess(t *testing.T) {
 			})
 		}
 	})
-	f := newNativeFixture(t, nil, "", "first")
-	second := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,created_at) VALUES('org_other','Other',?)", conversationTime(f.service.config.now())); err != nil {
-		t.Fatal(err)
-	}
-	foreign := newNativeFixture(t, f.service, "org_other", "foreign")
+	f := newTeamThreadNativeFixture(t, nil, "", "first")
+	second := newTeamThreadNativeFixture(t, f.service, f.project.OrganizationID, "second")
+	foreign := newTeamThreadNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign")
 	issue := f.create(t, "subject")
 	general := createTestThread(t, f, "general", "")
 	project := createTestThread(t, f, "project", "")
@@ -147,7 +174,7 @@ func TestTeamThreadScopeAccess(t *testing.T) {
 	}{
 		{"general shared", second, general, 200}, {"project member", f, project, 200}, {"issue member", f, subject, 200},
 		{"other project hidden", second, project, 404}, {"other issue hidden", second, subject, 404}, {"second project member", second, other, 200},
-		{"foreign organization", foreign, general, 403}, {"foreign general hidden", f, foreignThread, 403},
+		{"foreign organization", foreign, general, http.StatusUnauthorized}, {"foreign general hidden", f, foreignThread, http.StatusUnauthorized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/threads/" + tc.target.ID
@@ -180,6 +207,7 @@ func TestTeamThreadScopeAccess(t *testing.T) {
 
 func TestTeamThreadReadCursorAndIsolation(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
+	f.service.registerTeamThreadRoutes(f.service.echo)
 	issue := f.nativeFixture.create(t, "thread subject")
 	th := createTestThread(t, f.nativeFixture, "issue", issue.WorkItemID)
 	base := threadBase(f.nativeFixture)
@@ -235,7 +263,7 @@ func TestTeamThreadReadCursorAndIsolation(t *testing.T) {
 			t.Fatal(out)
 		}
 	}
-	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,10 +279,19 @@ func TestTeamThreadReadCursorAndIsolation(t *testing.T) {
 		t.Fatal("worker issue context includes team posts")
 	}
 	var attempts, comments int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE work_item_id=?", issue.WorkItemID).Scan(&attempts); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", issue.WorkItemID).Scan(&comments); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		item, err := reader.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		page, err := reader.AttemptPage(t.Context(), item.ID, leasestore.AttemptCursor{}, 1)
+		if err != nil {
+			return err
+		}
+		rows, err := reader.Comments(t.Context(), f.project.ID, issue.WorkItemID, 0, 1)
+		attempts, comments = len(page.Items), len(rows)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if attempts != 0 || comments != 0 {
@@ -263,7 +300,7 @@ func TestTeamThreadReadCursorAndIsolation(t *testing.T) {
 }
 
 func TestTeamThreadMCP(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "mcp-threads")
+	f := newTeamThreadNativeFixture(t, nil, "", "mcp-threads")
 	call := func(name string, args any) json.RawMessage {
 		t.Helper()
 		payload := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args, "_meta": json.RawMessage(fleetProtocolMeta)}}
@@ -341,7 +378,7 @@ func TestTeamThreadHostedAgentAttribution(t *testing.T) {
 	}
 	ctx := changeOperatorContext(t, f.service, key.Token, "org_security")
 	ctx = operatortool.BindConnection(ctx, "thread-agent", "Example client")
-	keyCredential, _, err := f.service.authenticateAPIToken(ctx, key.Token, "", "")
+	keyCredential, _, err := f.service.authenticateTenantAPIHash(ctx, "org_security", apikey.HashToken(key.Token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,11 +431,11 @@ func TestTeamThreadHostedAgentAttribution(t *testing.T) {
 	if len(read.Posts) != 1 || read.Posts[0].ActingFor != credential.ID || read.Posts[0].Client != "fleet-test" {
 		t.Fatalf("read attribution=%s", raw)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET operator_key_scope='read' WHERE id=?", key.ID); err != nil {
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET operator_key_scope='read' WHERE organization_id=$1 AND id=$2", f.service.accessOrganization(), key.ID); err != nil {
 		t.Fatal(err)
 	}
 	hostedContextData(t, send("tools/call", "post_to_thread", teamThreadInput{ThreadID: thread.ID, Kind: "note", Body: "Must be denied"}), true)
-	keyCredential, _, err = f.service.authenticateAPIToken(ctx, key.Token, "", "")
+	keyCredential, _, err = f.service.authenticateTenantAPIHash(ctx, "org_security", apikey.HashToken(key.Token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,17 +453,19 @@ func TestTeamThreadHostedAgentAttribution(t *testing.T) {
 }
 
 func TestTeamThreadPaginationAndReferences(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "paging")
-	second := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
+	f := newTeamThreadNativeFixture(t, nil, "", "paging")
+	second := newTeamThreadNativeFixture(t, f.service, f.project.OrganizationID, "other")
 	issue := f.create(t, "linked issue")
+	originalClock := f.service.config.now
+	now := originalClock().UTC().Truncate(time.Microsecond)
+	f.service.config.now = func() time.Time { return now }
+	t.Cleanup(func() { f.service.config.now = originalClock })
 	first := createTestThread(t, f, "general", "")
+	now = now.Add(time.Microsecond)
 	middle := createTestThread(t, f, "project", "")
+	now = now.Add(time.Microsecond)
 	last := createTestThread(t, f, "issue", issue.WorkItemID)
-	for _, row := range []struct{ id, stamp, title string }{{first.ID, "2026-10-27T10:00:00.000000001Z", "alpha"}, {middle.ID, "2026-10-27T10:00:00.000000002Z", "beta"}, {last.ID, "2026-10-27T10:00:00.000000003Z", "gamma"}} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE team_threads SET updated_at=? WHERE id=?", row.stamp, row.id); err != nil {
-			t.Fatal(err)
-		}
-	}
+	f.service.config.now = originalClock
 	cursor := ""
 	for i, want := range []string{last.ID, middle.ID, first.ID} {
 		r := performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"?limit=1&cursor="+cursor, f.token, nil)
@@ -462,45 +501,25 @@ func TestTeamThreadPaginationAndReferences(t *testing.T) {
 	ref := operatortool.ThreadReference{Kind: "issue", ID: string(issue.WorkItemID)}
 	r = performHubAPIRequest(t, f.service, http.MethodPost, threadBase(f)+"/"+first.ID+"/posts", f.token, teamThreadInput{Kind: "finding", Body: "Linked finding", References: []operatortool.ThreadReference{ref}})
 	requireNativeStatus(t, r, 201)
-	f.service.outbox.stop()
+	if f.service.outbox != nil {
+		f.service.outbox.stop()
+	}
 	for _, tc := range []struct {
 		name  string
 		token string
 		want  int
 	}{{"visible reference", f.token, 1}, {"hidden reference", second.token, 0}} {
 		t.Run("single reader/"+tc.name, func(t *testing.T) {
-			reader := f.service.database.reader
-			reader.SetMaxOpenConns(1)
-			defer reader.SetMaxOpenConns(readerConnections)
-			waits := reader.Stats().WaitCount
-			ctx, cancel := context.WithCancel(t.Context())
+			originalTenant, originalAccess := f.service.config.TenantRepository, f.service.config.AccessRepository
+			guard := teamThreadReadGuard{Repository: originalTenant}
+			f.service.config.TenantRepository, f.service.config.AccessRepository = guard, guard
+			t.Cleanup(func() {
+				f.service.config.TenantRepository, f.service.config.AccessRepository = originalTenant, originalAccess
+			})
+			ctx := context.WithValue(t.Context(), teamThreadReadGuardKey{}, &atomic.Int32{})
 			request := newHubAPIRequest(t, http.MethodGet, threadBase(f)+"/"+first.ID, tc.token, nil).WithContext(ctx)
 			response := httptest.NewRecorder()
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				f.service.Handler().ServeHTTP(response, request)
-			}()
-			defer func() {
-				cancel()
-				<-done
-			}()
-			testenv.WaitUntil(t, t.Context(), func() error {
-				select {
-				case <-done:
-					return nil
-				default:
-				}
-				if reader.Stats().WaitCount > waits {
-					return nil
-				}
-				return errors.New("thread read has not completed")
-			})
-			select {
-			case <-done:
-			default:
-				t.Fatal("thread read requested another reader connection while holding the only connection")
-			}
+			f.service.Handler().ServeHTTP(response, request)
 			requireNativeStatus(t, response, 200)
 			var read teamThreadRead
 			decodeHubResponse(t, response, &read)
@@ -510,8 +529,15 @@ func TestTeamThreadPaginationAndReferences(t *testing.T) {
 		})
 	}
 	r = performHubAPIRequest(t, f.service, http.MethodPost, threadBase(f)+"/"+first.ID+"/posts", second.token, teamThreadInput{Kind: "note", Body: "Not authorized to link", References: []operatortool.ThreadReference{ref}})
-	if r.Code != 404 {
-		t.Fatalf("unreadable reference accepted: %d %s", r.Code, r.Body.String())
+	if r.Code != http.StatusNotFound {
+		t.Errorf("unreadable reference status=%d, want404: %s", r.Code, r.Body.String())
+	}
+	r = performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"/"+first.ID, f.token, nil)
+	requireNativeStatus(t, r, http.StatusOK)
+	var unchanged teamThreadRead
+	decodeHubResponse(t, r, &unchanged)
+	if len(unchanged.Posts) != 1 || unchanged.Thread.PostCount != 1 {
+		t.Fatalf("refused reference changed thread history: %+v", unchanged)
 	}
 }
 
@@ -588,7 +614,11 @@ func TestTeamThreadAuthorizationRoutes(t *testing.T) {
 				}
 			}
 			if role == "removed" {
-				operatorSQL(t, v.hostedSecurityFixture, "UPDATE hosted_members SET active=0 WHERE user_id=?", viewer.identity.Subject)
+				if err := v.service.config.AccessRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(writer tenantstore.Writer) error {
+					return writer.RevokeAccessMember(t.Context(), viewer.identity.Subject, v.service.config.now())
+				}); err != nil {
+					t.Fatal(err)
+				}
 				if err := v.provider.RevokeMembership(t.Context(), "membership_"+viewer.identity.Subject); err != nil {
 					t.Fatal(err)
 				}
@@ -624,7 +654,24 @@ func TestTeamThreadAuthorizationRoutes(t *testing.T) {
 				targets = append(targets, target{name, thread, input})
 			}
 			if role == "reporter" {
-				operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE native_id IN (?,?)", targets[2].input.IssueID, targets[3].input.IssueID)
+				if err := v.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(reader tenantstore.Reader) error {
+					for index, filer := range []string{"reporter", "tester"} {
+						item, err := reader.WorkItem(t.Context(), v.project, tracker.NativeWorkItemID(targets[index+2].input.IssueID))
+						if err != nil {
+							return err
+						}
+						member, err := reader.AccessMember(t.Context(), v.users[filer].identity.Subject)
+						if err != nil {
+							return err
+						}
+						if item.ActorKind == nil || *item.ActorKind != "human" || item.ActorPrincipalID == nil || *item.ActorPrincipalID != member.PrincipalID {
+							t.Fatalf("thread fixture lost typed %s actor: %+v", filer, item)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			readable := func(name string) bool {
 				return role != "removed" && (role != "ungranted" || name == "general") && (role != "reporter" || name != "other")
@@ -863,7 +910,16 @@ func TestTeamThreadUnreadRoleDowngrade(t *testing.T) {
 		want int64
 	}{{"member", 2}, {"reporter", 1}, {"viewer", 2}, {"reporter", 1}} {
 		t.Run(tc.role, func(t *testing.T) {
-			operatorSQL(t, v.hostedSecurityFixture, "UPDATE hosted_members SET role=? WHERE user_id=?", tc.role, viewer.identity.Subject)
+			if err := v.service.config.AccessRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(writer tenantstore.Writer) error {
+				member, err := writer.AccessMember(t.Context(), viewer.identity.Subject)
+				if err != nil {
+					return err
+				}
+				member.Role = tc.role
+				return writer.UpdateAccessMember(t.Context(), member)
+			}); err != nil {
+				t.Fatal(err)
+			}
 			if err := v.provider.SetMembershipRole(t.Context(), "membership_"+viewer.identity.Subject, tc.role); err != nil {
 				t.Fatal(err)
 			}

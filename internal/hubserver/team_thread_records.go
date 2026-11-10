@@ -91,6 +91,9 @@ func (s *Service) threadRecordReference(ctx context.Context, r tenantstore.Reade
 	}
 	scope.project = tracker.ProjectID(target.ProjectID)
 	if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
+			return teamReference{}, corestore.ErrNotFound
+		}
 		return teamReference{}, err
 	}
 	switch kind {
