@@ -40,15 +40,29 @@ func TestReleaseFinalizer(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if output, err := exec.Command("gpgconf", "--homedir", signingHome, "--kill", "gpg-agent").CombinedOutput(); err != nil {
+		command := exec.Command("gpgconf", "--homedir", signingHome, "--kill", "gpg-agent")
+		command.Dir = signingHome
+		if output, err := command.CombinedOutput(); err != nil {
 			t.Errorf("stop signing agent: %v: %s", err, output)
 		}
 		if err := os.RemoveAll(signingHome); err != nil {
 			t.Error(err)
 		}
 	})
+	for _, name := range []string{"S.gpg-agent", "S.gpg-agent.extra", "S.gpg-agent.browser", "S.gpg-agent.ssh"} {
+		if err := os.WriteFile(filepath.Join(signingHome, name), []byte("%Assuan%\nsocket="+name+".socket\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	signingProgram := filepath.Join(signingHome, "signer")
+	if err := os.WriteFile(signingProgram, []byte("#!/bin/sh\ncd \"$GNUPGHOME\" || exit\nexec gpg \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	fixtureRun := func(t *testing.T, directory, program string, args ...string) string {
 		t.Helper()
+		if program == "gpg" {
+			program = signingProgram
+		}
 		command := exec.CommandContext(t.Context(), program, args...)
 		command.Dir = directory
 		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + directory, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GNUPGHOME=" + signingHome}
@@ -258,6 +272,7 @@ esac
 			fixtureRun(t, repo, realGit, "init", "--quiet")
 			fixtureRun(t, repo, realGit, "config", "user.name", "Example Operator")
 			fixtureRun(t, repo, realGit, "config", "user.email", "operator@example.com")
+			fixtureRun(t, repo, realGit, "config", "gpg.program", signingProgram)
 			fixtureRun(t, repo, realGit, "add", ".github")
 			fixtureRun(t, repo, realGit, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "example source")
 			sha := fixtureRun(t, repo, realGit, "rev-parse", "HEAD")
