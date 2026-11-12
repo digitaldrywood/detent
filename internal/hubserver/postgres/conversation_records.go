@@ -1084,6 +1084,23 @@ func (s *session) RecordTurnBatch(ctx context.Context, attemptID, batchKey strin
 	return mapError(ctx, err)
 }
 
+func (s *session) PruneTerminalTurnBatches(ctx context.Context, now time.Time, limit int) (int64, error) {
+	if now.IsZero() || limit < 1 {
+		return 0, corestore.ErrInvalidPage
+	}
+	result, err := s.db.Exec(ctx, `DELETE FROM conversation_turn_batches b USING (
+SELECT t.attempt_id,t.batch_key FROM conversation_turn_batches t
+JOIN native_attempts a ON a.organization_id=t.organization_id AND a.id=t.attempt_id
+JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
+WHERE t.organization_id=$1 AND (a.status<>'running' OR l.released_at IS NOT NULL OR l.expires_at<=$2)
+LIMIT $3) retired
+WHERE b.organization_id=$1 AND b.attempt_id=retired.attempt_id AND b.batch_key=retired.batch_key`, s.organization, now, limit)
+	if err != nil {
+		return 0, mapError(ctx, err)
+	}
+	return result.RowsAffected(), nil
+}
+
 func (s *session) ReplaceMessageReferences(ctx context.Context, conversationID, messageID string, references []conversationstore.MessageReference, at time.Time) error {
 	if len(references) > conversation.MaxReferences {
 		return corestore.ErrInvalidPage

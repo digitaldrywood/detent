@@ -274,6 +274,7 @@ type Writer interface {
 	RecordStart(context.Context, string, string, time.Time) error
 	RecordAudience(context.Context, string, string, conversation.Visibility, conversation.Visibility, time.Time) error
 	RecordTurnBatch(context.Context, string, string, int64, time.Time) error
+	PruneTerminalTurnBatches(context.Context, time.Time, int) (int64, error)
 	ReplaceMessageReferences(context.Context, string, string, []MessageReference, time.Time) error
 	PutToolRevision(context.Context, ToolRevision) error
 	PutConversationContent(context.Context, ContentObject) error
