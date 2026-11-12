@@ -314,8 +314,8 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								readDenied = true
 							case "unselected project", "future project", "future project read key", "future project without user grant", "future project without issuer grant":
 								project = "prj_other"
-								seedNativeFixturePolicy(t, f.service, "org_security/"+project)
 								createProject(tracker.ProjectID(project), credential.ID)
+								seedNativeFixturePolicy(t, f.service, "org_security/"+project)
 								readDenied = access == hostedProjectsSelected
 								if scenario == "future project without user grant" {
 									writeAccess(func(w tenantstore.Writer) error {
@@ -331,13 +331,13 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								}
 							case "no projects at creation":
 								project = "prj_after_empty"
-								seedNativeFixturePolicy(t, f.service, "org_security/"+project)
 								writeAccess(func(w tenantstore.Writer) error {
 									if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.service.accessOrganization(), ID: tracker.ProjectID(project), Name: "After empty", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}}); err != nil {
 										return err
 									}
 									return w.InitializeProjectAccess(t.Context(), tracker.ProjectID(project), credential.ID)
 								})
+								seedNativeFixturePolicy(t, f.service, "org_security/"+project)
 								f.base = strings.Replace(f.base, string(f.project), project, 1)
 								f.project = tracker.ProjectID(project)
 								f.grant(t, user, true, false)
