@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 // Workspace dispatch. A workspace is its own work item
@@ -189,51 +187,6 @@ func (p workspaceIssueClosePlan) write(ctx context.Context, w tenantstore.Writer
 		return w.PutSearch(ctx, p.search, 0)
 	}
 	return nil
-}
-
-// workspaceClaimable reports whether this runner may claim this workspace's
-// item, and why not when it may not. The reason is returned rather than logged
-// because it is the same sentence the workspace's failure would carry.
-func workspaceClaimable(record workspaceRecord, capabilities workspacesession.Capabilities, fresh bool, runnerID, retainedRunner, runnerIsolation, configuredIsolation string) (bool, string) {
-	if !fresh {
-		return false, "the runner has no fresh workspace capability report"
-	}
-	if !capabilities.Satisfies(record.Requires) {
-		return false, "the runner does not serve every required surface"
-	}
-	if !terminalIsolationAllowed(record.Requires, configuredIsolation, runnerIsolation) {
-		return false, "the runner's terminal isolation is not allowed by the organization"
-	}
-	if retainedRunner != "" && retainedRunner != runnerID {
-		// The worktree is still retained on the runner that produced it, and
-		// no other runner has it. Handing the item to a second runner would
-		// silently give the reader a fresh checkout of a different tree.
-		return false, "the attempt's retained worktree belongs to another runner"
-	}
-	return true, ""
-}
-
-// terminalIsolationAllowed reports whether a runner reporting isolation may
-// serve a workspace with these requires under the organization's configured
-// workspaces.terminal.isolation. Only a terminal
-// depends on it. container is the stricter level and is always acceptable;
-// user runs the shell as the runner's own account and is acceptable only where
-// the organization configured user explicitly. A runner that reports no level
-// cannot say how its shell is confined, so it serves no terminal.
-func terminalIsolationAllowed(requires []string, configured, reported string) bool {
-	if !slices.Contains(requires, workspacesession.CapabilityTerminal) {
-		return true
-	}
-	switch reported {
-	case workspacesession.IsolationSandbox:
-		return configured == workspacesession.IsolationSandbox || configured == workspacesession.IsolationUser
-	case workspacesession.IsolationContainer:
-		return true
-	case workspacesession.IsolationUser:
-		return configured == workspacesession.IsolationUser
-	default:
-		return false
-	}
 }
 
 // workspaceIsolationRefused is the refusal a bind or heartbeat gets when the
