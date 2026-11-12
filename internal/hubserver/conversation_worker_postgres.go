@@ -235,6 +235,22 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 	return e.JSON(http.StatusOK, response)
 }
 
+func pgControlAttachments(ctx context.Context, reader tenantstore.Reader, project tracker.ProjectID, conversationID, messageID string) ([]conversation.Attachment, error) {
+	owner, ok := reader.(conversationstore.AttachmentReader)
+	if !ok {
+		return nil, conversationUnsupported("Conversation attachment owner is unavailable")
+	}
+	rows, err := owner.MessageAttachments(ctx, project, conversationID, []string{messageID})
+	if err != nil {
+		return nil, err
+	}
+	records := make([]conversationAttachmentRecord, 0, len(rows[messageID]))
+	for _, row := range rows[messageID] {
+		records = append(records, conversationAttachmentFromStore(row))
+	}
+	return projectAttachments(records), nil
+}
+
 func handoffPGBindControls(ctx context.Context, writer tenantstore.Writer, scope nativeScope, record *conversationRecord, candidates []conversationstore.Message, content map[string]conversationContent, now time.Time, limit int) ([]conversationControl, error) {
 	controls := make([]conversationControl, 0, min(limit, len(candidates)))
 	if conversationBetweenTurns(record.Execution) {
@@ -265,6 +281,10 @@ func handoffPGBindControls(ctx context.Context, writer tenantstore.Writer, scope
 			control.Kind, control.Text = "message", payload.Text
 			if message.ContentReference == "" {
 				control.Text = message.Text
+			}
+			control.Attachments, err = pgControlAttachments(ctx, writer, scope.project, record.ID, message.ID)
+			if err != nil {
+				return nil, err
 			}
 		case conversation.MessageInterrupt:
 			control.Kind = "interrupt"
@@ -1244,6 +1264,10 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 				control.Kind, control.Text = "message", payload.Text
 				if message.ContentReference == "" {
 					control.Text = message.Text
+				}
+				control.Attachments, err = pgControlAttachments(ctx, writer, scope.project, id, message.ID)
+				if err != nil {
+					return err
 				}
 			case conversation.MessageInterrupt:
 				control.Kind = "interrupt"
