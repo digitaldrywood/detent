@@ -496,7 +496,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 						t.Fatal("failed provisioning deleted a preexisting Sprite")
 					}
 				}
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"capacity": 1, "version": "fixture"})
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": runner.redemption.Hostname, "capacity": 1, "version": "fixture"})
 				requireNativeStatus(t, response, http.StatusOK)
 			}
 			view, err = f.service.readSpritePool(t.Context(), scope)
