@@ -3,24 +3,12 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"strconv"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type conversationPublicationKey struct{}
-
-func (c *conversationService) newPublicationPlan(ctx context.Context, id string) (*conversationPublicationPlan, error) {
-	ctx = newConversationArchiveReads(ctx)
-	record, err := c.readPublicationConversation(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return &conversationPublicationPlan{service: c, record: record, original: record, now: c.server.config.now(), reads: conversationArchiveCache(ctx)}, nil
-}
 
 func (p *conversationPublicationPlan) context(ctx context.Context) context.Context {
 	if p.prepared == nil {
@@ -42,45 +30,7 @@ func (p *conversationPublicationPlan) context(ctx context.Context) context.Conte
 	if p.retryMessage != nil {
 		ctx = context.WithValue(ctx, conversationPreparedRetryKey{}, *p.retryMessage)
 	}
-	if p.issueAllocation != nil {
-		ctx = context.WithValue(ctx, conversationIssueAllocationKey{}, *p.issueAllocation)
-	}
 	return context.WithValue(ctx, conversationPublicationKey{}, p)
-}
-
-func (p *conversationPublicationPlan) validate(ctx context.Context, tx *sql.Tx) error {
-	if p.original.ID == "" {
-		return nil
-	}
-	var revision, sequence int64
-	if err := tx.QueryRowContext(ctx, "SELECT revision,event_seq FROM conversations WHERE id=?", p.original.ID).Scan(&revision, &sequence); err != nil {
-		return err
-	}
-	if revision != p.original.Revision || sequence != p.original.EventSeq {
-		return nativeConflict(tracker.Revision(revision))
-	}
-	return nil
-}
-
-func conversationWriteTime(ctx context.Context, now time.Time) time.Time {
-	if p, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok {
-		return p.now
-	}
-	return now
-}
-
-func validateConversationPublication(ctx context.Context, tx *sql.Tx) error {
-	if p, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok {
-		return p.validate(ctx, tx)
-	}
-	return nil
-}
-
-func rollbackConversationPreparation(tx *sql.Tx) error {
-	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		return err
-	}
-	return nil
 }
 
 func conversationQuestionID(ctx context.Context) string {

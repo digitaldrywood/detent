@@ -407,7 +407,7 @@ func (f *coordinatorFixture) appendMessage(t *testing.T, record *conversationRec
 	if message.Role == conversation.RoleUser && len(message.Data) == 0 {
 		message.Data = f.connectionData
 	}
-	plan, err := f.conversations.newPublicationPlan(t.Context(), record.ID)
+	plan, err := newTestPublicationPlan(f.conversations, t.Context(), record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2022,7 +2022,7 @@ func TestConversationCoordinatorAttachmentReadFailure(t *testing.T) {
 			f := newCoordinatorFixture(t, "attachment")
 			record := f.seed(t, test.name, nil)
 			message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "read this", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
-			plan, err := f.conversations.newPublicationPlan(t.Context(), record.ID)
+			plan, err := newTestPublicationPlan(f.conversations, t.Context(), record.ID)
 			if err != nil {
 				t.Fatal(err)
 			}

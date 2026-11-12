@@ -313,7 +313,7 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 	})
 	t.Run("compacted cursor requests a snapshot", func(t *testing.T) {
 		old := time.Now().UTC().Add(-31 * 24 * time.Hour)
-		plan, err := f.service.conversations.newPublicationPlan(t.Context(), id)
+		plan, err := newTestPublicationPlan(f.service.conversations, t.Context(), id)
 		if err != nil {
 			t.Fatal(err)
 		}

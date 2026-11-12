@@ -2,9 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -282,103 +280,6 @@ func requireConversationRecordOwner(record conversationRecord, identity conversa
 // one transaction may be open at a time on the hub pool, so fn must never
 // start another.
 
-// readLinkedConversation resolves the canonical conversation of a work item
-// in the request scope.
-func (c *conversationService) readLinkedConversation(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
-	record, err := c.store.readLinkedConversationRecord(ctx, tx, scope, item)
-	if err != nil {
-		return record, err
-	}
-	if err := c.authorizeRead(ctx, tx, scope, record); err != nil {
-		return record, err
-	}
-	return record, nil
-}
-
-func (s *conversationStore) readLinkedConversationRecord(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
-	columns := conversationReadColumns
-	if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && plan.record.WorkItemID == item {
-		columns = conversationReadProjection(ctx, tx, plan.record.ID)
-	}
-	record, err := s.readConversationRecord(ctx, tx, tx.QueryRowContext(ctx, "SELECT "+columns+" FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item))
-	if errors.Is(err, sql.ErrNoRows) {
-		return record, nativeNotFound()
-	}
-	if err != nil {
-		return record, fmt.Errorf("read linked conversation: %w", err)
-	}
-	return record, nil
-}
-
-func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, now time.Time) (conversationRecord, error) {
-	var record conversationRecord
-	var err error
-	if scope.credential.Scope == apiScopeWorker {
-		record, err = c.store.readLinkedConversationRecord(ctx, tx, scope, item)
-		if err == nil {
-			readable := record
-			readable.ReadAudience = ""
-			err = c.authorizeRead(ctx, tx, scope, readable)
-		}
-	} else {
-		record, err = c.readLinkedConversation(ctx, tx, scope, item)
-	}
-	if err == nil {
-		return record, nil
-	}
-	var failure *nativeError
-	if !errors.As(err, &failure) || failure.Code != "not_found" || record.ID != "" {
-		return conversationRecord{}, err
-	}
-	issue, _, err := readNativeIssue(ctx, tx, scope, item)
-	if err != nil {
-		return conversationRecord{}, err
-	}
-	record = conversationRecord{
-		ID: conversation.NewConversationID(), OrganizationID: scope.organization, ProjectID: scope.project,
-		OwnerPrincipalID: scope.credential.ID, Title: deriveConversationTitle(issue.Title),
-		Origin:     conversationOriginWorker,
-		Visibility: conversation.VisibilityShared, Status: conversation.StatusActive,
-		WorkItemID: item, LinkedAt: &now,
-		Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if issue.Actor.PrincipalID != "" {
-		var owner string
-		switch err := tx.QueryRowContext(ctx, "SELECT id FROM api_tokens WHERE id = ?", issue.Actor.PrincipalID).Scan(&owner); {
-		case err == nil:
-			record.OwnerPrincipalID = owner
-		case !errors.Is(err, sql.ErrNoRows):
-			return conversationRecord{}, fmt.Errorf("read issue actor token: %w", err)
-		}
-	}
-	if p, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && p.creation != nil {
-		record = *p.creation
-	}
-	if err := c.store.createConversation(ctx, tx, &record); err != nil {
-		return conversationRecord{}, err
-	}
-	return record, nil
-}
-
-// readReceipt returns the stored receipt for a command key; found is false
-// when the key was never reserved.
-func (c *conversationService) readReceipt(ctx context.Context, tx nativeQueryer, conversationID, key string) (receipt conversation.Receipt, found bool, err error) {
-	var encoded, contentID string
-	err = tx.QueryRowContext(ctx, "SELECT receipt_json,content_attachment_id FROM conversation_commands WHERE conversation_id = ? AND key = ?", conversationID, key).Scan(&encoded, &contentID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return conversation.Receipt{}, false, nil
-	}
-	if err != nil {
-		return conversation.Receipt{}, false, fmt.Errorf("read receipt: %w", err)
-	}
-	decoded, err := c.store.decodeReceipt(ctx, tx, conversationID, encoded, contentID)
-	if err != nil || decoded == nil {
-		return conversation.Receipt{}, false, err
-	}
-	return *decoded, true, nil
-}
-
 func conversationDeliveryForExecution(status conversation.ExecutionStatus) conversation.Delivery {
 	switch status {
 	case conversation.ExecutionCompleted:
@@ -515,19 +416,6 @@ func conversationTruncate(value string, limit int) string {
 }
 
 // Lease loss.
-
-// leaseReleased settles the execution bound to a lease right after the
-// lease's release committed. Failures are logged: the release itself has
-// already succeeded and the reconcile loop retries.
-func (c *conversationService) leaseReleased(ctx context.Context, leaseID tracker.LeaseID) {
-	organization, err := c.lifecycleOrganization()
-	if err == nil {
-		err = c.reconcileExecutionsPG(ctx, organization)
-	}
-	if err != nil {
-		c.logger.Warn("conversation lease release reconcile failed", "lease", leaseID, "error", err)
-	}
-}
 
 func (c *conversationService) reconcileExecutions(ctx context.Context) error {
 	organization, err := c.lifecycleOrganization()

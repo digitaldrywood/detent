@@ -1105,7 +1105,7 @@ func TestConversationAPIAnswer(t *testing.T) {
 	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
 	record := f.create(t, f.token, map[string]any{"title": "Questions"}).Conversation
 	requireNativeStatus(t, f.link(t, f.token, record.ID, "link", true, "Ask me"), http.StatusOK)
-	plan, err := f.service.conversations.newPublicationPlan(t.Context(), record.ID)
+	plan, err := newTestPublicationPlan(f.service.conversations, t.Context(), record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

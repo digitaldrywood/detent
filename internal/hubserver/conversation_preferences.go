@@ -396,17 +396,6 @@ func (s *Service) listWorkItemReferences(c echo.Context) error {
 // so tests can shorten it.
 var conversationSettleInterval = 5 * time.Minute
 
-// settleIdleConversations settles every active conversation whose execution
-// has ended or never started and whose last activity is older than the
-// settle window. It returns how many settled.
-func (c *conversationService) settleIdleConversations(ctx context.Context, now time.Time) (int, error) {
-	organization, err := c.lifecycleOrganization()
-	if err != nil {
-		return 0, err
-	}
-	return c.settleIdleConversationsPG(ctx, organization, now)
-}
-
 func (s *Service) readWorkItemReferences(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()

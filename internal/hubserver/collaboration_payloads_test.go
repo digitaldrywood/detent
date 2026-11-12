@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,68 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func appendLegacyNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, workItemID string, eventType string, data tracker.CollaborationData, now time.Time) error {
-	var sequence int64
-	if err := tx.QueryRowContext(ctx, "UPDATE issues SET event_sequence = event_sequence + 1 WHERE organization_id = ? AND project_id = ? AND native_id = ? RETURNING event_sequence", scope.organization, scope.project, workItemID).Scan(&sequence); err != nil {
-		return err
-	}
-	actor, err := marshalNative(scope.actor())
-	if err != nil {
-		return err
-	}
-	payload, err := marshalNative(data)
-	if data.Run != nil {
-		run, encodeErr := marshalNative(*data.Run)
-		if encodeErr != nil {
-			return encodeErr
-		}
-		payload, err = marshalNative(struct {
-			tracker.CollaborationData
-			Run json.RawMessage `json:"run"`
-		}{CollaborationData: data, Run: json.RawMessage(run)})
-	}
-	if err != nil {
-		return err
-	}
-	id := newNativeID("evt")
-	decision := tracker.NativeSchedulerDecision{}
-	if data.Decision != nil {
-		decision = *data.Decision
-	}
-	key := analyticsDimension(decision.Source, decision.Reason)
-	attempt := ""
-	if data.Run != nil {
-		attempt = data.Run.AttemptID
-	}
-	metadata, err := activityQueryMetadata([]byte(payload))
-	if err != nil {
-		return err
-	}
-	archiveValues, err := archiveEventValues(payload)
-	if err != nil {
-		return err
-	}
-	args := []any{id, scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, nullString(data.FromState), nullString(data.ToState), attempt, key, now.UnixNano(), metadata.values[0], metadata.values[1]}
-	args = append(args, eventClaimFacts(data.Run)...)
-	args = append(args, archiveValues...)
-	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,analytics_from_state,analytics_to_state,analytics_attempt_id,analytics_skip_key,analytics_recorded_ns,analytics_projection_version,query_metadata_version,run_attempt_id,activity_spans_present,claim_attempt_id,run_id,run_lease_id,run_fencing_token,run_sequence,run_policy_id,push_change_id,push_version_id,push_head_sha,push_external_effect,push_effect_state,archive_operation,archive_from_state,archive_to_state,archive_attempt_id,archive_outcome,archive_landed_commit) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,1,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args...)
-	if err != nil {
-		return err
-	}
-
-	if err := updateEventPageFacts(ctx, tx, id, scope.actor(), data); err != nil {
-		return err
-	}
-	if err := updateHealthEventProjection(ctx, tx, id, scope.actor(), data); err != nil {
-		return err
-	}
-	if err := writeChangeColumns(ctx, tx, changeColumnFamily{table: "collaboration_events", key: "id", payload: "data_json"}, id, payload, changeEventColumns(data)); err != nil {
-		return err
-	}
-	landed := data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Landing != nil && data.Run.Runtime.Landing.Landed
-	return insertHealthEventTime(ctx, tx, id, string(scope.organization), eventType, landed, now)
-}
 
 func TestCollaborationPayloadInlineBytes(t *testing.T) {
 	store := &memoryRunDetails{}

@@ -311,7 +311,7 @@ func TestConversationSettleSweep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settled, err := f.service.conversations.settleIdleConversations(t.Context(), now)
+	settled, err := f.service.conversations.settleIdleConversationsForTest(t.Context(), now)
 	if err != nil {
 		t.Fatalf("settleIdleConversations() error = %v", err)
 	}
@@ -337,7 +337,7 @@ func TestConversationSettleSweep(t *testing.T) {
 	if got := f.snapshot(t, f.token, idle.ID).Conversation.Status; got != conversation.StatusActive {
 		t.Fatalf("status after a message = %q, want active", got)
 	}
-	settled, err = f.service.conversations.settleIdleConversations(t.Context(), now)
+	settled, err = f.service.conversations.settleIdleConversationsForTest(t.Context(), now)
 	if err != nil {
 		t.Fatalf("settleIdleConversations() error = %v", err)
 	}

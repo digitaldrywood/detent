@@ -14,7 +14,7 @@ import (
 
 func checkPGWorkerMessagePage(t *testing.T) {
 	f := newConversationWorkerFixture(t)
-	plan, err := f.chat.newPublicationPlan(t.Context(), f.record.ID)
+	plan, err := newTestPublicationPlan(f.chat, t.Context(), f.record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func checkPGWorkerCompletionHistory(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newConversationWorkerFixture(t)
 			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
-			plan, err := f.chat.newPublicationPlan(t.Context(), f.record.ID)
+			plan, err := newTestPublicationPlan(f.chat, t.Context(), f.record.ID)
 			if err != nil {
 				t.Fatal(err)
 			}

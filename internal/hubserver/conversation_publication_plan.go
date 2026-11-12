@@ -16,24 +16,19 @@ type conversationPublicationPlan struct {
 	coordinator      bool
 	eventCursor      int
 	events           []any
-	receiptLogs      [][]any
 	prepared         preparedConversationContents
 	reads            *conversationArchiveReads
 	retryMessage     *conversationMessageRecord
-	issueAllocation  *conversationIssueAllocation
 	service          *conversationService
 	record           conversationRecord
 	original         conversationRecord
 	insertedMessages int64
-	creation         *conversationRecord
 	messageIDs       []string
-	messageCursor    int
 	questionIDs      []string
 	questionCursor   int
 	now              time.Time
 	revisions        map[string]int64
 	messages         map[string]conversationMessageRecord
-	questions        map[string]conversationQuestionRecord
 }
 
 func (p *conversationPublicationPlan) event(ctx context.Context, body any) error {
@@ -189,13 +184,6 @@ func (p *conversationPublicationPlan) rememberMessage(message conversationMessag
 		p.messages = map[string]conversationMessageRecord{}
 	}
 	p.messages[message.ID] = message
-}
-
-func (p *conversationPublicationPlan) currentMessage(message conversationMessageRecord) conversationMessageRecord {
-	if current, ok := p.messages[message.ID]; ok {
-		return current
-	}
-	return message
 }
 
 func (p *conversationPublicationPlan) saveConversation(ctx context.Context) error {

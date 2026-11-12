@@ -3,11 +3,9 @@ package hubserver
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,11 +18,6 @@ func firstDispatchableState(project tracker.NativeProject) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// reportFresh reports whether an observation is recent enough to act on.
-func reportFresh(report providercapacity.Report, now time.Time) bool {
-	return !report.ObservedAt.IsZero() && !now.Before(report.ObservedAt) && now.Before(report.ObservedAt.Add(providercapacity.MaxAge))
 }
 
 // conversationTranscriptRunes bounds each transcript line handed to a runner

@@ -187,7 +187,7 @@ func prepareTestConversationRecord(t *testing.T, store *conversationStore, recor
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, err := store.preparePayload(t.Context(), string(record.OrganizationID), content)
+	ctx, err := store.preparePayloads(t.Context(), string(record.OrganizationID), content)
 	if err != nil {
 		t.Fatal(err)
 	}
