@@ -953,6 +953,14 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			repository := validationRepository(version.Repository)
+			scheduled := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: strings.Repeat("a", 64), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Check", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", JobURL: "https://github.com/" + repository + "/actions/jobs/456", HeadSHA: receipt.MergeSHA, Conclusion: "failure"}
+			body := issueorigin.Stamp("Scheduled check failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/" + repository + "/actions/runs/123", Fingerprint: scheduled.OccurrenceKey})
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "landing-validation"}, Body: body}), http.StatusOK)
+			issue, err := coordinatorActionIssue(t.Context(), f.service, scope.organization, scope.project, f.issue.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if test.invalid != "" {
 				invalid, err := content.PreparePayload(t.Context(), scope.organization, []byte(test.invalid))
 				if err != nil {
@@ -968,7 +976,7 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 				if !errors.Is(err, artifact.ErrIntegrity) {
 					t.Errorf("invalid archived landing receipt returned %v, want typed integrity error", err)
 				}
-				_, _, _, err = f.service.hydrateValidationAuditCandidate(t.Context(), scope, f.issue.WorkItemID, validationAuditCandidate{receipt: &row, binding: &attempt}, &selected)
+				_, err = f.service.readValidationAuditRecord(t.Context(), scope, issue, &selected)
 				if !errors.Is(err, artifact.ErrIntegrity) {
 					t.Fatalf("validation accepted invalid archived landing receipt: %v", err)
 				}
@@ -976,14 +984,6 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			}
 			if err != nil || !reflect.DeepEqual(after, receipt) {
 				t.Fatalf("receipt after conversion differs: %v", err)
-			}
-			repository := validationRepository(version.Repository)
-			scheduled := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: strings.Repeat("a", 64), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Check", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", JobURL: "https://github.com/" + repository + "/actions/jobs/456", HeadSHA: receipt.MergeSHA, Conclusion: "failure"}
-			body := issueorigin.Stamp("Scheduled check failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/" + repository + "/actions/runs/123", Fingerprint: scheduled.OccurrenceKey})
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "landing-validation"}, Body: body}), http.StatusOK)
-			issue, err := coordinatorActionIssue(t.Context(), f.service, scope.organization, scope.project, f.issue.WorkItemID)
-			if err != nil {
-				t.Fatal(err)
 			}
 			audit, err := f.service.readValidationAuditRecord(t.Context(), scope, issue, &selected)
 			if err != nil || audit == nil || len(audit.Occurrences) != 1 || len(audit.Occurrences[0].Comparisons) != 1 {

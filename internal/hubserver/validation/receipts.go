@@ -15,13 +15,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/gotestreceiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 const (
 	ReceiptRetention      = 30 * 24 * time.Hour
-	receiptPruneBudget    = 2 * time.Second
+	receiptPruneBudget    = storageconversion.BackgroundBudget
 	ReceiptAttestationTTL = 12 * time.Hour
 	receiptKeyPurpose     = "detent go test receipt digest v1"
 )
