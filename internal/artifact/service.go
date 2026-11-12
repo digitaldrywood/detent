@@ -44,7 +44,6 @@ type Config struct {
 	OrganizationRetainedLimit int64         `json:"-"`
 	OrganizationReservedLimit int64         `json:"-"`
 	Catalog                   Catalog       `json:"-"`
-	DatabasePath              string        `json:"database_path"`
 	Policy                    Policy        `json:"policy"`
 	Storage                   StorageConfig `json:"storage"`
 	HubOrigin                 string        `json:"hub_origin"`

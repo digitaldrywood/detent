@@ -92,7 +92,7 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 	if gotConfig.SecretKeys == nil || gotConfig.SecretKeys.Version() != 1 {
 		t.Fatal("secret keys were not supplied from the environment")
 	}
-	if gotConfig.Hosted != nil || gotConfig.DatabaseBackend != hubserver.DatabasePostgres || gotConfig.DatabasePath != "" || gotConfig.Postgres == nil {
+	if gotConfig.Hosted != nil || gotConfig.DatabaseBackend != hubserver.DatabasePostgres || gotConfig.Postgres == nil {
 		t.Fatal("expected local mode with PostgreSQL configuration")
 	}
 	connection := gotConfig.Postgres.Connection
@@ -144,7 +144,7 @@ func TestHubServeCommandValidatesDatabase(t *testing.T) {
 		want  string
 	}{
 		{name: "missing configuration", want: "PostgreSQL Hub configuration is required"},
-		{name: "obsolete database path", body: hubServePostgresConfig, flags: []string{"--database", "hub.db"}, want: "PostgreSQL Hub cannot use a SQLite database path"},
+		{name: "obsolete database path", body: hubServePostgresConfig, flags: []string{"--database", "hub.db"}, want: "unknown flag: --database"},
 		{name: "invalid PostgreSQL field", body: hubServePostgresConfig + "  unexpected: true\n", want: "Hub PostgreSQL configuration is invalid"},
 		{name: "extra document", body: hubServePostgresConfig + "---\npostgres: {}\n", want: "Hub configuration must contain one document"},
 		{name: "partial hosted configuration", body: hubServePostgresConfig + "organization_id: org_example\n"},

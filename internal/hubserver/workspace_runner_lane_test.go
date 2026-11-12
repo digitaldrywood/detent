@@ -409,7 +409,7 @@ func TestNativeCapabilitiesAdvertiseWorkspaceSessionsOnlyWhenServed(t *testing.T
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Workspace: test.workspace})
+			service := openTestService(t, Config{Workspace: test.workspace})
 			f := newNativeFixture(t, service, "", "capabilities")
 			response := performHubAPIRequest(t, service, http.MethodGet, "/api/v2/capabilities", f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)

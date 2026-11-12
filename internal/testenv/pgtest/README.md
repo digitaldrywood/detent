@@ -1,8 +1,7 @@
 # PostgreSQL test fixtures
 
-`pgtest` is a test-only helper for the Hub PostgreSQL port. Existing SQLite
-fixtures are unchanged. PostgreSQL schema migrations belong to their owning
-package; supply them as the template migration function.
+`pgtest` supplies isolated PostgreSQL test fixtures. PostgreSQL schema migrations
+belong to their owning package; supply them as the template migration function.
 
 Keep a `pgtest.NewTemplate(migrate)` in a package variable for the test process.
 The first constructed Template owns the binary cluster's lifetime, including

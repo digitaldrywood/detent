@@ -2,11 +2,9 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -386,103 +384,6 @@ func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.Native
 	return &identity
 }
 
-type nativeAttemptRow struct {
-	attempt                                             tracker.NativeAttempt
-	data, started, updated, artifacts, expires, renewed string
-	checkpoint, released, cleanupAcknowledged           sql.NullString
-}
-
-func scanNativeAttemptRow(rows *sql.Rows) (nativeAttemptRow, error) {
-	var row nativeAttemptRow
-	err := rows.Scan(&row.data, &row.attempt.Status, &row.started, &row.updated, &row.checkpoint, &row.artifacts, &row.expires, &row.released, &row.renewed, &row.attempt.WorkItemRevision, &row.attempt.DispatchGeneration, &row.cleanupAcknowledged)
-	return row, err
-}
-
-func (row nativeAttemptRow) hydrate(ctx context.Context, q nativeQueryer, now time.Time) (tracker.NativeAttempt, error) {
-	attempt := row.attempt
-	data, started, updated, artifacts, expires, renewed := row.data, row.started, row.updated, row.artifacts, row.expires, row.renewed
-	checkpoint, released, cleanupAcknowledged := row.checkpoint, row.released, row.cleanupAcknowledged
-	if attemptSummaryRead(ctx) {
-		var err error
-		attempt.NativeRunData, attempt.Checkpoint, err = readTypedNativeRun(ctx, q, data)
-		if err != nil {
-			return attempt, err
-		}
-		attempt.Unavailable = []string{"completion_body", "evidence", "steps", "process_usage", "usage", "runtime"}
-	} else if err := decodeRunDetail(ctx, q, data, &attempt.NativeRunData); err != nil {
-		return attempt, err
-	}
-	if checkpoint.Valid {
-		decoded, retainedArtifacts, err := decodeCheckpointPayload(ctx, q, checkpoint.String)
-		if err != nil {
-			return attempt, err
-		}
-		attempt.Checkpoint = decoded
-		if retainedArtifacts != nil {
-			attempt.ArtifactIDs = retainedArtifacts
-		}
-	}
-	if artifacts != "[]" {
-		if err := decodeStorageJSON(ctx, []byte(artifacts), &attempt.ArtifactIDs); err != nil {
-			return attempt, err
-		}
-	}
-	var err error
-	if attempt.StartedAt, err = parseTimeValue(started); err != nil {
-		return attempt, err
-	}
-	if attempt.UpdatedAt, err = parseTimeValue(updated); err != nil {
-		return attempt, err
-	}
-	expiry, err := parseTimeValue(expires)
-	if err != nil {
-		return attempt, err
-	}
-	attempt.LeaseExpiresAt = expiry
-	if attempt.LeaseRenewedAt, err = parseTimeValue(renewed); err != nil {
-		return attempt, err
-	}
-	attempt.Current = !released.Valid && !now.Before(attempt.LeaseRenewedAt) && now.Before(expiry)
-	if released.Valid {
-		at, err := parseTimeValue(released.String)
-		if err != nil {
-			return attempt, err
-		}
-		attempt.ClaimReleasedAt = &at
-	}
-	if cleanupAcknowledged.Valid {
-		at, err := parseTimeValue(cleanupAcknowledged.String)
-		if err != nil {
-			return attempt, err
-		}
-		attempt.CleanupAcknowledgedAt = &at
-	}
-	attempt.FinalizationAvailability = "unavailable"
-	attempt.TerminalFailureAvailability = "unavailable"
-	if attempt.TerminalFailure != nil {
-		public := attempt.TerminalFailure.Public()
-		attempt.TerminalFailure = &public
-		attempt.TerminalFailureAvailability = "available"
-	}
-	if attempt.Finalization != nil {
-		public := attempt.Finalization.Public()
-		attempt.Finalization = &public
-		attempt.FinalizationAvailability = "available"
-	}
-	attempt.RuntimeFreshness = "unavailable"
-	if attempt.Runtime != nil {
-		attempt.RuntimeFreshness = "available"
-		heartbeat := attempt.Runtime.HeartbeatAt
-		if heartbeat.IsZero() || now.Before(heartbeat) || attempt.Status == "running" && (!attempt.Current || now.Sub(heartbeat) >= expiry.Sub(attempt.LeaseRenewedAt)) {
-			attempt.RuntimeFreshness = "expired"
-		}
-	}
-	if attempt.Status == "running" && !attempt.Current {
-		attempt.Status = "interrupted"
-	}
-	return attempt, nil
-}
-
 func (s *Service) getNativeAttempt(c echo.Context) error {
 	if c.QueryParam("view") == "cleanup" {
 		result, err := s.readNativeCleanupAttempt(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("attempt"))
@@ -586,67 +487,6 @@ func (s *Service) readNativeAttempt(ctx context.Context, scope nativeScope, item
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	return s.readNativeAttemptTenant(ctx, scope, item, id)
-}
-
-func readNativeAttempt(ctx context.Context, q nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.NativeAttempt, error) {
-	if _, _, err := readNativeIssue(ctx, q, scope, item); err != nil {
-		return tracker.NativeAttempt{}, err
-	}
-	attempt, err := readNativeAttemptRecord(ctx, q, scope, item, id, now)
-	if err != nil {
-		return attempt, err
-	}
-	if explanationRead(ctx) {
-		return attempt, nil
-	}
-	err = readAttachmentEvidence(ctx, q, scope, item, &attempt.NativeRunData)
-	return attempt, err
-}
-
-func readNativeAttemptRecord(ctx context.Context, q nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.NativeAttempt, error) {
-	var err error
-	q, err = archiveQuery(ctx, q, item, "run", id, 0)
-	if err != nil {
-		return tracker.NativeAttempt{}, err
-	}
-	rows, err := q.QueryContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json),a.status,a.started_at,a.updated_at,COALESCE(NULLIF(a.checkpoint_object_key,''),a.checkpoint_json),a.artifact_ids_json,l.expires_at,l.released_at,l.renewed_at,a.work_item_revision,a.dispatch_generation,a.cleanup_acknowledged_at FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.id=?`, scope.organization, scope.project, item, id)
-	if err != nil {
-		return tracker.NativeAttempt{}, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return tracker.NativeAttempt{}, err
-		}
-		return tracker.NativeAttempt{}, nativeNotFound()
-	}
-	record, err := scanNativeAttemptRow(rows)
-	if err != nil {
-		return tracker.NativeAttempt{}, err
-	}
-	if err := rows.Close(); err != nil {
-		return tracker.NativeAttempt{}, err
-	}
-	return record.hydrate(ctx, q, now)
-}
-
-func leaseReleaseFailure(ctx context.Context, tx nativeQueryer, data tracker.NativeRunData, now time.Time) (tracker.NativeTerminalFailure, error) {
-	var reason sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT e.payload_json FROM work_events e JOIN leases l ON l.issue_id=e.issue_id AND l.fencing_token=e.fencing_token
-WHERE l.lease_id=? AND l.fencing_token=? AND e.kind='lease_released' ORDER BY e.id DESC LIMIT 1`, data.LeaseID, data.FencingToken).Scan(&reason)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return tracker.NativeTerminalFailure{}, fmt.Errorf("read attempt lease release reason: %w", err)
-	}
-	if reason.Valid {
-		var payload struct {
-			Reason string `json:"reason"`
-		}
-		if err := decodeStorageJSON(ctx, []byte(reason.String), &payload); err != nil {
-			return tracker.NativeTerminalFailure{}, err
-		}
-		reason.String = payload.Reason
-	}
-	return nativeLeaseReleaseFailure(reason.String, now), nil
 }
 
 func nativeLeaseReleaseFailure(reason string, now time.Time) tracker.NativeTerminalFailure {

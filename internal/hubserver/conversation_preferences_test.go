@@ -503,7 +503,7 @@ func conversationRank1() *int {
 // project's Backlog lane when it has one, however that lane is cased.
 func TestConversationHandoffLaterUsesBacklog(t *testing.T) {
 	t.Parallel()
-	service := openTestService(t, Config{DatabasePath: t.TempDir() + "/hub.db", Conversation: &ConversationConfig{Enabled: true}})
+	service := openTestService(t, Config{Conversation: &ConversationConfig{Enabled: true}})
 	organization, err := service.database.postgres.DesignatedLocalOrganization(t.Context())
 	if err != nil {
 		t.Fatal(err)

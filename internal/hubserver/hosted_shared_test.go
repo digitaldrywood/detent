@@ -37,9 +37,9 @@ func hostedSharedKey(seed byte) ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(value)
 }
 
-func hostedSharedTestConfig(path string, provider auth.HostedProvider, key ed25519.PrivateKey, generation int64) Config {
+func hostedSharedTestConfig(provider auth.HostedProvider, key ed25519.PrivateKey, generation int64) Config {
 	legacyPlans := pilotHostedPlans()
-	return Config{DatabasePath: path, Hosted: &HostedConfig{
+	return Config{Hosted: &HostedConfig{
 		Plans: &legacyPlans, OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner",
 		PublicURL: "https://hub.example.test", StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, Provider: provider,
 		SharedEntry: &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: generation},
@@ -50,7 +50,7 @@ func newHostedSharedFixture(t *testing.T, configure ...func(*Config)) hostedShar
 	t.Helper()
 	key := hostedSharedKey(7)
 	provider := newHostedSecurityProvider()
-	cfg := hostedSharedTestConfig(hostedTestDatabasePath(t), provider, key, 1)
+	cfg := hostedSharedTestConfig(provider, key, 1)
 	for _, apply := range configure {
 		apply(&cfg)
 	}
@@ -479,18 +479,16 @@ func TestHostedSharedBindingRequiresExplicitMigration(t *testing.T) {
 	t.Parallel()
 	key := hostedSharedKey(7)
 	provider := newHostedSecurityProvider()
-	originPath := hostedTestDatabasePath(t)
-	origin := Config{DatabasePath: originPath, Hosted: &HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "https://hub.example.test", Provider: provider}}
+	origin := Config{Hosted: &HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "https://hub.example.test", Provider: provider}}
 	service := openTestService(t, origin)
 	originConfig := service.config
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(t.Context(), reopenHostedSharedPostgres(originConfig, hostedSharedTestConfig(originPath, provider, key, 1))); !errors.Is(err, ErrHostedDatabaseBinding) {
+	if _, err := Open(t.Context(), reopenHostedSharedPostgres(originConfig, hostedSharedTestConfig(provider, key, 1))); !errors.Is(err, ErrHostedDatabaseBinding) {
 		t.Fatalf("origin database opened in shared mode: %v", err)
 	}
-	sharedPath := hostedTestDatabasePath(t)
-	shared := openTestService(t, hostedSharedTestConfig(sharedPath, provider, key, 1))
+	shared := openTestService(t, hostedSharedTestConfig(provider, key, 1))
 	if _, err := hostedPostgresAdmin(t, shared).ExecContext(t.Context(), "UPDATE hosted_tenant SET allocation_generation=2 WHERE organization_id=$1", "org_security"); err == nil {
 		t.Fatal("generation changed without a migration record")
 	}
@@ -501,7 +499,7 @@ func TestHostedSharedBindingRequiresExplicitMigration(t *testing.T) {
 	if err := shared.Close(); err != nil {
 		t.Fatal(err)
 	}
-	matching, err := Open(t.Context(), reopenHostedSharedPostgres(sharedConfig, hostedSharedTestConfig(sharedPath, provider, key, 1)))
+	matching, err := Open(t.Context(), reopenHostedSharedPostgres(sharedConfig, hostedSharedTestConfig(provider, key, 1)))
 	if err != nil {
 		t.Fatalf("matching PostgreSQL binding failed to reopen: %v", err)
 	}
@@ -509,11 +507,11 @@ func TestHostedSharedBindingRequiresExplicitMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, cfg := range map[string]Config{
-		"origin reopen":    func() Config { c := origin; c.DatabasePath = sharedPath; return c }(),
-		"stale generation": hostedSharedTestConfig(sharedPath, provider, key, 2),
-		"local reopen":     {DatabasePath: sharedPath},
+		"origin reopen":    origin,
+		"stale generation": hostedSharedTestConfig(provider, key, 2),
+		"local reopen":     {},
 		"different shared host": func() Config {
-			c := hostedSharedTestConfig(sharedPath, provider, key, 1)
+			c := hostedSharedTestConfig(provider, key, 1)
 			c.Hosted.PublicURL = "https://other.example.test"
 			return c
 		}(),
@@ -765,7 +763,7 @@ func TestHostedPlatformUsers(t *testing.T) {
 }
 
 func reopenHostedSharedPostgres(source, target Config) Config {
-	target.DatabaseBackend, target.DatabasePath, target.Postgres = source.DatabaseBackend, "", source.Postgres
+	target.DatabaseBackend, target.Postgres = source.DatabaseBackend, source.Postgres
 	target.SecretKeys, target.Content, target.RunDetails = source.SecretKeys, source.Content, source.RunDetails
 	target.TenantRepository, target.AccessRepository, target.BillingRepository = nil, nil, nil
 	target.NativeRunEvents, target.ProjectParticipants, target.ConversationDispatch, target.ChangeVersionAuthority = nil, nil, nil, nil

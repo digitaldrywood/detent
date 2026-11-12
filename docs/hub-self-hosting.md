@@ -11,8 +11,8 @@ durable storage are the supported deployment described here. Use the released
 Detent binary with launchd or systemd. A same-machine runner can use loopback;
 remote access requires TLS. This is single-host operation
 with explicit downtime for maintenance; there is no active-active replication,
-automatic failover, or high availability guarantee. Never share a live SQLite
-file over NFS/SMB, mount it into runners, or run a second owner against it.
+automatic failover, or high availability guarantee. PostgreSQL owns all durable
+application state through the Hub. Runners never open an application database.
 
 Self-hosted Detent is free. No WorkOS, Stripe, Detent Cloud account,
 `cloud.detent.build` callback, Detent subscription or purchased infrastructure is
@@ -206,29 +206,10 @@ then remove the runner job in the runner account's session:
 launchctl bootout "gui/$(id -u)/com.digitaldrywood.detent.runner"
 ```
 
-Switch to the still-logged-in Hub account for the following
-maintenance commands. Remove the Hub job from that account's launchd domain so
-`KeepAlive` cannot restart it:
-
-```sh
-launchctl bootout "gui/$(id -u)/com.digitaldrywood.detent.hub"
-mkdir -p "$HOME/Library/Application Support/Detent Hub/backups"
-detent hub backup --database "$HOME/Library/Application Support/Detent Hub/hub.db" --output "$HOME/Library/Application Support/Detent Hub/backups/snapshot-unique.db"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.hub.plist"
-detent hub verify --database "$HOME/Library/Application Support/Detent Hub/backups/snapshot-unique.db"
-```
-
-Wait for the Hub process to exit before running backup. Choose a new snapshot
-filename each time; backup refuses an existing output. Restart the Hub even if
-backup fails, then switch back to the runner account and reload its LaunchAgent:
-
-```sh
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.runner.plist"
-```
-
-Keep snapshots and secret-manager copies in storage inaccessible to the runner account.
-Follow [backup and export](#backup-and-export) for custody and retention; never
-copy live SQLite files or delete the ownership lock to bypass a running owner.
+Use the Hub account's private PostgreSQL backup configuration for maintenance.
+Follow [backup and export](#backup-and-export) for verified backups, custody and
+retention. Keep backups and install credentials inaccessible to runner accounts.
+Never copy live PostgreSQL data files or bypass the database owner.
 
 ### Linux with both systemd units
 
@@ -266,7 +247,7 @@ start it with a private database and the administrator token environment
 variable described above:
 
 ```sh
-detent hub serve --database ./hub.db
+detent hub serve --hosted-config ./hub.yaml
 ```
 
 Without hosted configuration, startup requires either the Hub process's existing
@@ -297,8 +278,8 @@ is used. A Hub using `--hosted-config` retains its hosted authentication flow.
 
 | Location | Owner and recovery treatment |
 | --- | --- |
-| `/var/lib/detent-hub/hub.db` and SQLite sidecars | Hub-only local disk; back up through the owner or stopped-owner command |
-| `/var/lib/detent-hub/hub.db.lock` | Ownership coordination; not a backup or a lock to manually remove while running |
+| PostgreSQL database | Hub-owned durable state; use verified PostgreSQL backups |
+| PostgreSQL install credentials | Private Hub install configuration; never expose to runners |
 | `/etc/detent-hub/credentials.env` | Secret manager/root; back up separately with restricted access and revocation records |
 | systemd unit, TLS configuration/certificates | Versioned operator configuration; preserve with the selected binary/checksum |
 | `/var/lib/detent-hub/backups/` | Private example staging path; copy finished snapshots to encrypted off-host backup storage |
@@ -675,7 +656,7 @@ rerunning registration against the old identity cannot take over its reserved
 IDs. Stop the old runner before starting its replacement, update any exact
 runner/machine selectors and approve the resulting policy. Verify the new ID
 with `runner_project_diagnostics`. Preserve old principal rows for history;
-never reactivate them by editing SQLite.
+never reactivate them by editing database rows.
 
 See [Hub API enrollment](hub-api.md#scoped-runner-onboarding) for the separate
 `init`/`enroll` flow when IDs must be bound before token creation. Use
@@ -711,9 +692,9 @@ ignored, and model selection does not belong in repository `detent.yaml`.
 The [artifact examples](examples/artifacts/) contain a systemd unit, Caddy
 configuration and S3-compatible `service.json`. The artifact service
 (`detent artifacts --artifact-config PATH serve`) is an independently available
-authorization/download process with a durable catalog/outbox and a private object
-store. Execution runners may be disposable; the artifact process, catalog and
-bucket are not. Keep them outside runner workspaces. No AWS compute, hosted
+authorization/download process with a Hub-backed PostgreSQL catalog/outbox and
+a private object store. Execution runners are disposable. Keep durable Hub and
+object storage outside runner workspaces. No AWS compute, hosted
 account or particular storage vendor is mandatory.
 
 Run `detent artifacts --artifact-config /private/service.json verify-storage`
@@ -745,131 +726,45 @@ confirms absence. It fails closed with `unsupported_capability`,
 `require_versioning: true` additionally requires real version IDs and
 version-pinned reads and deletes. The service never changes bucket settings.
 
-The catalog is private to its service. `detent artifacts --artifact-config PATH usage` (logical
-retained and reserved bytes) and `detent artifacts --artifact-config PATH backup --output PATH`
-refuse to open a running catalog, so stop only the artifact service for them;
-downloads are unavailable meanwhile. A catalog backup does not contain bucket
-bytes: back up provider object versions separately, and keep the newest
+The artifact catalog is owned by the authenticated Hub PostgreSQL service.
+`detent artifacts --artifact-config PATH usage` reads logical retained and
+reserved bytes through the Hub. `detent artifacts --artifact-config PATH backup
+--output PATH` exports catalog records; it does not contain bucket bytes.
+Back up provider object versions separately and keep the newest
 `{artifact}/deleted` markers outside rollbackable object backups. The service
-enforces live, abandoned-upload and deletion-record expiry; your backup system
+enforces live, abandoned-upload and deletion-record expiry; the backup system
 owns backup expiry. `usage` is not a provider invoice; provider requests, egress
 and storage are billed by the provider.
 
 ## Backup and export
 
-`detent hub backup` is also the supported full-instance collaboration export.
-It includes organizations, projects, stable issue/comment/change IDs, versions,
-events, provenance, external references, identity rows, grants, approved policies,
-outbox and artifact references. It is a SQLite snapshot, not a per-project JSON
-merge format. Importing into an existing Hub or selectively merging tenants is
-unsupported. Raw artifacts, TLS files, runner workspaces and provider credentials
-are separate backups. Treat snapshots as sensitive customer data even though
-Hub bearer credentials are stored as hashes.
+PostgreSQL is the Hub's only durable application database. Back up the complete
+PostgreSQL database with PostgreSQL backup tooling and verify restoration into an
+isolated database before relying on a backup. Preserve the required database
+roles, schema, tenant identities, command receipts, leases and history together.
+A backup is sensitive customer data and needs encrypted storage and a retention
+policy. Record its checksum, capture time, schema version and configuration
+revision. Keep object storage versions, deletion markers, TLS files and install
+credentials under their own verified backup policies.
 
-For routine backups without an outage, an instance administrator can ask the
-running self-hosted Hub to write a snapshot through its authenticated admin API.
-Create a private backup directory writable by the Hub service user, then send
-an absolute path on the **Hub host** (not the HTTP client's machine):
-
-```sh
-sudo -u detent-hub install -d -m 0700 /var/lib/detent-hub/backups
-curl --fail-with-body --request POST 'http://127.0.0.1:7777/api/v2/admin/backup' \
-  --header "Authorization: Bearer $DETENT_HUB_ADMIN_TOKEN" \
-  --header 'Content-Type: application/json' \
-  --data '{"output":"/var/lib/detent-hub/backups/<unique-snapshot>.db"}'
-sudo -u detent-hub /usr/bin/detent hub verify --database '/var/lib/detent-hub/backups/<unique-snapshot>.db'
-```
-
-Use HTTPS when calling through the reverse proxy. Only an unscoped instance
-administrator credential can create a backup; project credentials and runners
-cannot. The endpoint is unavailable on hosted Cloud Hubs. Success returns
-`204 No Content`; neither snapshot bytes nor the output path appear in the
-response body, including errors. A lost HTTP response does not establish whether
-the snapshot completed; inspect and verify the destination before repeating.
-
-The snapshot uses SQLite's online backup API on a dedicated reader connection
-with a fixed read transaction. It contains all writes committed when that read
-snapshot begins; later commits remain on the live Hub. Writes continue during
-the copy without holding the Hub writer connection. A long snapshot retains
-its WAL read position, so allow disk space for concurrent writes. The new file
-has `0600` permissions, existing destinations are never replaced, and failed or
-cancelled copies remove their incomplete output. Wait for successful completion
-before verifying or copying the file. No snapshot download endpoint is provided.
-
-Offline CLI maintenance remains supported. Drain runners and stop the Hub
-before using `hub backup` against its database. `backup` and `verify` acquire
-the source's ownership lock and fail if another owner is running. They check
-identity, integrity, foreign keys and supported schema without upgrading the
-source.
-
-```sh
-sudo systemctl stop detent-hub
-sudo -u detent-hub install -d -m 0700 /var/lib/detent-hub/backups
-sudo -u detent-hub /usr/bin/detent hub backup --database /var/lib/detent-hub/hub.db --output '/var/lib/detent-hub/backups/<unique-snapshot>.db'
-sudo -u detent-hub /usr/bin/detent hub verify --database '/var/lib/detent-hub/backups/<unique-snapshot>.db'
-sudo systemctl start detent-hub
-```
-
-The running Hub uses WAL with normal SQLite locking, while its application
-ownership lock prevents a second Hub from opening the database. This preserves
-live WAL replication such as Cloud's Litestream setup. For routine off-host
-copies, schedule the online admin operation, verify the detached snapshot,
-compress it and upload that file to encrypted object storage. Offline backups
-still make the Hub unavailable while checking and copying the database; restart
-it even when that backup fails and choose an outage window that cannot outlast
-active leases.
-
-Replace angle-bracket placeholders before execution. Backup output must not
-exist and must differ from the source. Copy only the completed snapshot to the
-backup system. Never copy live DB/WAL/SHM files. Record checksum, capture time,
-binary version, returned schema version, retention deadline, custody policy and
-configuration revision outside the snapshot. Test an isolated restore regularly.
+Runners have no local application database to back up. Their checkouts and
+workspaces are disposable; source bundles and execution records needed after a
+restart belong to the Hub or object storage.
 
 ## Restore/import and move between Hubs
 
-Use a trusted, unexpired snapshot and a **new** local destination. Fence the old
-Hub and stop its runners before moving production traffic. Restoring does not
-stop processes or revoke credentials on the source machine. A restored clone
-must never run concurrently against the same external projection/workspace.
+Restore a verified PostgreSQL backup into an isolated PostgreSQL instance using
+PostgreSQL restore tooling. Verify restricted roles, forced row-level security,
+schema compatibility, tenant bindings and object references before exposing the
+Hub. Fence the source deployment and its runners before moving traffic. Never
+run restored and source deployments concurrently against the same external
+systems. A database restore does not undo external writes: reconcile publication
+and provider receipts before permitting execution.
 
-Load a fresh high-entropy `DETENT_HUB_ADMIN_TOKEN` from private secret storage in
-the maintenance process environment, then run as the database owner:
-
-```sh
-detent hub verify --database '/private/backup/<snapshot>.db'
-detent hub restore --database '/private/backup/<snapshot>.db' --output /private/restored/hub.db
-detent hub serve --database /private/restored/hub.db --listen 127.0.0.1:7777
-```
-
-The restored unhosted Hub requires CLI or App credentials as described in
-[GitHub modes](#github-modes). Check those credentials before starting it.
-
-Restore validates the source, copies through SQLite backup, migrates a private
-staging copy, checks integrity, and publishes the new path without overwriting
-anything. Before publication it revokes every copied generic/runner credential
-and enrollment, releases every active lease, rotates cursor authority and creates
-a fresh administrator principal. The supplied token must differ from every
-source credential. JSON output gives the new administrator ID and schema, never
-the token. Existing identities, grants, event ordering, policy provenance and
-external references remain intact for attribution. Old pagination cursors must
-be discarded. Attempts with released leases are presented as interrupted by the
-existing run-history logic; they do not authorize resumed side effects.
-
-Verify authenticated `/health`, content/history and references while isolated.
-Create fresh human/operator and integration credentials, restore only currently
-approved project grants, reenroll runners using new bindings, and reapprove
-policies with exact ID selectors. Reconfigure review-policy principal IDs where
-credentials changed. Set the service environment to the fresh administrator
-credential; ordinary startup will not replace the copied revoked bootstrap row.
-
-For artifacts, preserve catalog/service/artifact IDs and object versions, update
-the trusted Hub origin, replace publisher credentials, and update the project
-binding before reopening downloads. Existing grants depend on revoked principals
-and must be reacquired. Keep current deletion markers independently of catalog
-rollback and follow the artifact restore procedure. Hub backup alone cannot
-restore object access. Keep GitHub transport disabled until an operator checks
-pending outbox work against current GitHub state and resolves any already-applied
-external effects; restoring a snapshot does not roll back a GitHub mutation.
+Preserve historical import sources until their required records and objects are
+accounted for. Follow the [local migration runbook](hub-local-migration.md) for
+verified historical sources. Never turn a historical source into a serving
+backend.
 
 ## Upgrade, interruption and compatibility
 
@@ -888,61 +783,22 @@ The restart budget is less than the configured runner renewal interval (30
 seconds by default), including shutdown, database reopen and authenticated HTTPS
 readiness through the existing proxy. Shutdown closes conversation streams and
 control polls before waiting for HTTP handlers; the hosted activity stream exits
-on its existing one-second tick. SQLite opens at the current schema without
-repeating a full foreign-key scan. It still verifies ownership, identity, pragmas
-and migration history; `hub verify` retains full offline integrity/foreign-key
-verification. These changes do not extend a lease or accept an expired owner.
-
-When adopting this procedure from a binary that verified foreign keys after
-committing the final migration, use the existing offline `hub verify` during a
-maintenance window first. A failed upgrade from that binary may already have
-recorded its final schema version; unchanged-schema startup does not repeat its
-data verification. Retain the verified snapshot and resolve any reported failure
-before using the quick restart procedure.
+on its existing one-second tick. PostgreSQL startup verifies runtime roles,
+row-level security and schema compatibility. Restarting never extends a lease
+or accepts an expired owner.
 
 A schema-changing upgrade requires a separate maintenance window. Rehearse the
-selected binary's migrations against a verified snapshot before cut-over and
-record the duration. The live Hub holds an exclusive SQLite connection and an
-instance lock: a second binary cannot pre-migrate its live database while it
-serves requests. Do not copy a migrated snapshot over the live database or open a
-second owner; either loses or competes with current run events. If the measured
-migration cannot fit the restart budget, let active runners finish while the old
-Hub remains online, then stop the unit, create/verify the pre-upgrade backup and
-start the prepared binary. Never hold a stopped Hub while waiting for active
-runners to finish.
+selected release's PostgreSQL migrations against a verified isolated restore and
+record the duration. Apply forward Goose migrations with the restricted
+migration role through `detent hub migrate-postgres` before starting the runtime
+Hub. Runtime credentials must not gain migration privileges. Startup checks
+roles, forced row-level security and schema compatibility and refuses unsafe or
+unsupported settings.
 
-Startup applies embedded forward goose migrations before health becomes ready.
-Foreign keys are checked inside the final migration transaction before recording
-its version. Each migration is transactional; a crash or failed final validation
-rolls back the unfinished migration. Earlier completed migrations remain applied
-and the same binary retries the remainder on restart. Fix disk/permission
-problems first.
-Never manually advance the schema table or run the unrelated runner-store
-`make db-migrate` against a Hub database.
-
-Schema 19 repairs the two formerly valid schema-18 branches. Migration 18 remains
-`00018_change_viewed_files.sql`; onboarding moves to
-`00019_project_onboarding.sql`. The forward-only, transactional migration creates
-only missing tables. A viewed-files schema 18 retains all viewed markers and gains
-onboarding; an onboarding schema 18 retains progress, revision and timestamps and
-gains viewed-files storage. Hosted identity and change-version rows stay in place.
-Both-table databases also retain their rows. Ordinary startup handles these
-variants automatically; no schema-version edits or table deletion is required.
-Use the backup procedure above before upgrading; keep the snapshot for rollback.
-
-If restore is interrupted before publication, the requested destination is absent.
-A private `.hub-restore-*` directory may remain beside it; retain it for diagnosis
-or remove it only after confirming no maintenance process owns it. Retry from the
-original backup to a new destination. Never serve a staging database. Once a
-destination is published, it has already been migrated and old authority fenced.
-
-A binary rejects a schema newer than it supports with `ErrUnsupportedSchema`
-(`database=N supported=M`); there is no automatic downgrade. Keep the failed
-database for diagnosis. Use the newer compatible binary, or restore the
-pre-upgrade snapshot into a new path with a binary supporting that snapshot.
-Switch the unit's database path only after validation. Never point an older binary
-at the upgraded live file. Pre-upgrade backups retain the old schema because
-offline backup does not migrate it. Keep the recovery binary with the snapshot.
+Preserve the verified pre-upgrade PostgreSQL backup and object references. Never
+manually advance the schema ledger, overwrite the live database with a rehearsed
+copy, or point an incompatible binary at an upgraded database. Use a compatible
+binary or an isolated verified restore for recovery.
 
 Prefer identical release versions across Hub and runners. Rolling overlap is
 supported only where `/api/v2/capabilities` and the runner agree on protocol major
@@ -1000,7 +856,7 @@ do not paste bearer headers or content into diagnostic reports.
 | Policy mismatch | Hub policy descriptor/approval and locally resolved policy ID; inspect trusted repository/workflow changes and obtain explicit administrator approval |
 | Storage outage | Artifact error (`storage_unreachable`, integrity/missing/expiry reason), service maintenance logs and `verify-storage`; restore configured storage access, preserve pending catalog/outbox, never advertise unverified bytes |
 | GitHub compatibility/projection failure | `/api/v1/outbox/health`, `/api/v1/repositories/freshness`, `/health` and GitHub profile; distinguish disabled transport, missing permissions, rate budget, stale projection, conflict and dead-letter/operator action before retrying |
-| Startup/schema failure | systemd exit status and private journal, `hub verify` while stopped; check local disk, permissions, ownership and binary/schema versions; do not remove an active lock |
+| Startup/schema failure | systemd exit status and private journal and PostgreSQL startup diagnostics; check runtime roles, row-level security, schema and binary versions |
 
 ## Project Sprites credentials
 
@@ -1037,13 +893,11 @@ of both a database backup and its keys exposes those credentials.
 To rotate the master key, add the new version to `DETENT_HUB_SECRET_KEYS` while
 retaining the old versions, set `DETENT_HUB_SECRET_KEY_VERSION` to it, and
 restart the Hub; it rewraps stored secrets under the active key after restart.
-`detent hub secrets status --database PATH` checks stored secrets against the
-environment keyring without writing and reports configured, missing and
-retirable versions. It exits 0 once rotation is complete, 3 while it is
-incomplete and 2 when the proposed keyring fails preflight; retire old versions
-only after exit 0. Rotating master keys does not
-replace a provider credential that may have been exposed: revoke and replace
-that credential at its source.
+Use `detent hub secrets` for the authenticated API rotation procedure. Rewrap
+through `POST /api/v2/organizations/{organization}/secrets/rewrap` and read
+`GET /api/v2/organizations/{organization}/secrets/status` until no problems remain
+before retiring old keys. Master-key rotation does not replace an exposed
+provider credential: revoke and replace that credential at its source.
 
 Setting a token validates `GET https://api.sprites.dev/v1/sprites` with Bearer
 authentication. Redirects are refused and provider errors/bodies are never echoed.

@@ -41,7 +41,7 @@ func TestRegistrationCatalogGolden(t *testing.T) {
 					}
 				})
 			} else {
-				cfg := hostedSharedTestConfig("", newHostedSecurityProvider(), hostedSharedKey(7), 1)
+				cfg := hostedSharedTestConfig(newHostedSecurityProvider(), hostedSharedKey(7), 1)
 				if base == "hosted" || base == "maintenance" {
 					cfg.Hosted.SharedEntry = nil
 				}

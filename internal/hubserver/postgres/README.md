@@ -5,16 +5,16 @@ core records, request metrics and platform registry/authentication families.
 Provision `roles.sql` as a PostgreSQL superuser, then apply `migrations/`
 with the Goose PostgreSQL dialect as
 `detent_migration_v2` on an empty PostgreSQL 17 or 18 database. Existing installations
-apply only the new timestamp migration after provisioning the roles. The
-SQLite migration chain and runtime remain separate; this package does not
-switch the Hub database backend or import tenant data.
+apply only new timestamp migrations after provisioning the roles. PostgreSQL
+through the Hub is the only durable application state owner. Historical imports
+use verified source copies and never create another serving backend.
 
 ## Core persistence boundary
 
 `../corestore` defines the domain records and repository contracts for projects,
 work items and comments. `sqlc.yaml` and `queries/` generate the private SQL
-adapter in `pgquery/`; the local store's sqlc configuration is independent.
-`make generate` regenerates both adapters and `make check-generated` checks both.
+adapter in `pgquery/`. `make generate` regenerates the adapter and
+`make check-generated` checks the output.
 
 Construct one `NewRepository` at Hub startup with a single runtime `sql.DB` and
 operator-supplied `PoolConfig`. Inject that repository into serving and background
@@ -242,8 +242,8 @@ The authenticated organization is an explicit argument to every operation,
 and all five metrics tables enable and force RLS. Runtime construction validates
 these tables alongside the core family. The migration installs under
 `detent_migration_v2`; platform access remains restricted to `detent_platform_v2`.
-This family boundary follows the core port: backend selection and legacy SQLite
-import remain separate integration work.
+This family shares the PostgreSQL core transaction boundary. Historical import
+sources remain separate from serving state.
 
 Detailed minutes retain 14 days, hourly route histograms retain 90 days, and
 daily route/caller-kind totals retain 400 days. The cutoff is truncated to its
@@ -372,9 +372,8 @@ number of indexed reads and writes and holds one parent lock across database wor
 only; receipt insertion holds one unique-key lock. No history scan, fleet lock,
 periodic task or derived write is introduced (INV-18). Object payloads stay outside
 the database (INV-20); tracker history and provenance remain authoritative (INV-16).
-The SQLite runtime, backend selection, whole-database import, run/attempt records,
-change source bundles, policies, landing receipts, session attribution and other
-record families remain separate follow-on work.
+Run/attempt records, change source bundles, policies, landing receipts and
+session attribution use their typed PostgreSQL family owners.
 
 ## Attempt claims and leases
 
@@ -424,12 +423,9 @@ recording. The authenticated caller still owns claim eligibility, policy,
 routing and capacity admission before this storage transaction; its captured
 item revision must match at claim time.
 
-Capacity reservation is a separate follow-on family in
-[#2025](https://cloud.detent.build/drywood-creek-consulting/detent/issues/2025): provider-account admission,
-runner and project limits, monthly budget admission, retained expired renewal
-and grouped landing reservations require their typed policy/routing tables and
-must be checked and reserved atomically before backend activation. This port
-does not replace those existing SQLite owners or reinterpret their limits.
+Provider-account admission, runner and project limits, monthly budget admission,
+retained expired renewal and grouped landing reservations use typed PostgreSQL
+policy/routing tables and must be checked and reserved atomically.
 
 At INV-21 scale, 10,000 tenants and runners share the existing fixed pool. Each
 claim, renewal, release, expiry or attempt event uses a fixed number of indexed
@@ -442,82 +438,34 @@ Callbacks never perform external I/O or derived projection work while locked
 
 ## Runner runtime state
 
-The runner's `internal/store` SQLite file has three responsibilities: disposable
-observations, a cache of durable records and policy whose native authority belongs
-in the Hub, and local process cleanup. Classification is by field and consumer, rather
-than by database file: `codex_sessions` and `work_attempts` contain both durable
-history and local cleanup identities. Opening a fresh local database is supported
-for both the enrolled runner and the local CLI/board. This classification does
-not switch either runtime's database backend or remove the local board's store.
+Runners are stateless. Job ownership, leases, checkpoints, recovery, retries,
+completion, configuration and history are read and written through authenticated
+Hub APIs backed by PostgreSQL. Runner memory may track executing processes;
+local checkouts, workspaces and temporary output are disposable. Publish source
+bundles, checkpoint receipts and anything else needed after a restart to the Hub
+or object storage before acknowledging it.
 
-| Family and local records | Classification for native runner jobs | Authority and continuation |
-| --- | --- | --- |
-| Source commits, staged/unstaged changes and untracked work represented by native checkpoints and immutable Change versions | Published to the Hub | The first portable family. Hub recovery selects the exact version and its verified source bundle, or the recorded checkpoint ref. Another runner restores it into its own workspace before starting the provider. The original SQLite file and workspace are unnecessary. |
-| `worker_generations`; worker PID, PGID, start time, owner generation, scratch reservation and reap outcome in `codex_sessions`; active process ownership in `work_attempts` | Needed for local process cleanup | Local ownership identifies which processes and scratch paths this controller may clean up. Keep PID plus start-time checks and live sibling-generation exclusion. Neither a missing database nor a reused numeric attempt ID proves that an old worker exited. |
-| `project_runner_setup` | Disposable | A setup hash is an observation of a checkout and hook configuration. Re-run setup in a fresh workspace; never use an old hash to authorize a different checkout. Native dependency removal belongs to #2033. |
-| `session_progress`, `scheduler_decisions`, `project_dispatch_status`, `health_notification_states`, `staleness_warning_states` | Disposable | Recompute current progress, dispatch and health observations. Local diagnostics may retain them, but later jobs cannot require them. Required historical diagnostic evidence belongs in Hub runtime receipts (#2028); native dependency removal belongs to #2033. |
-| `lane_ledger`, `lane_ledger_instance`, `lane_observations`, `workflow_history_revision` | Disposable | Local projections and installation observations do not replace tracker history, workflow intent or the current issue contract. Rebuild from their authorities (#2033). |
-| `issue_contract_rollout.activated_at` | Published to the Hub as durable policy | The original cutoff controls contract enforcement for issues without explicit contract state. Preserve it across store and runner replacement through the existing Hub policy authority, or explicitly retire the cutoff dependency in #2033. Recreating the SQLite store must not silently grant exemptions to previously enforced issues. |
-| `issue_progress_credits`, `issue_park_acknowledgements`, `merge_required_check_streaks` | Disposable | Historical hints never veto a native claim. Re-evaluate source, review and current external facts through the existing owner; remove obsolete native dependencies (#2033). |
-| `detent_runs`; session identity, completion and usage in `codex_sessions`; attempt history in `work_attempts`; `work_attempt_sequence`, `usage_events`, `workflow_phase_events`, `efficiency_receipts`, `provenance_attribution_boundaries` | Published to the Hub | Existing native attempt/runtime observations provide partial publication. Complete durable diagnostics, timing, usage and provenance publication and native report reads in #2028. Local numeric IDs remain diagnostic attributes, never global job identities. |
-| Provider thread/session identity and session configuration in `codex_sessions` and `work_attempts` | Published to the Hub when required for continuation | Bare provider IDs do not make a session portable. Required continuation identity and provider-supported artifacts need Hub publication (#2027). Until then, verified source recovery can start a fresh provider conversation; existing same-machine session reuse remains an optional optimization. |
-| `validator_verdicts` | Published to the Hub | Decisions, context-bound findings and comment receipts belong with immutable Change evidence. Existing native reviews cover accepted evidence; complete memo publication and context-valid reuse in #2029. |
-| `security_audit_runs`, `security_audit_dispositions` | Published to the Hub | Audit provenance and dispositions belong with the current source/version and independent review identity. Complete publication in #2030. |
-| `backlog_admission_proposals`, `backlog_admission_runs`, `backlog_admission_run_issues`, `backlog_admission_downstream_outcomes`, `backlog_admission_declines` | Published to the Hub | Proposal, decision and external publication receipts survive runner replacement through the existing admission owner (#2031). |
-| `backlog_admission_malformed_results` | Disposable | Malformed-result observations never become durable dispatch vetoes. Publish any required diagnostic receipt through the admission owner (#2031). |
-| `retro_runs`, `routine_runs`, `routine_findings`, `scheduled_runs` | Published to the Hub | Automation identity, findings and scheduling/publication receipts survive runner replacement through their existing owner (#2032). |
-| `human_questions`, `budget_overrides` | Published to the Hub for native work | Human intent and spending policy come from their existing Hub authorities. Preserve local CLI/board intent in the local store; isolate native consumers in #2033. Subscription quota never determines eligibility or retries. |
-| `organizations`, `projects`, `token_grants`, `api_keys`, `api_usage_logs`, `auth_magic_links`, `auth_sessions` | Published to the Hub for native work | Native organization/project access and authentication come from authenticated Hub context and declared runner enrollment. These local tables retain local CLI/board configuration, authorization and audit behavior; they are not credentials to copy into jobs (#2033). |
-| Goose migration bookkeeping and SQLite internal tables | Disposable | Database-local implementation metadata has no job continuation meaning. |
+Process cleanup checks PID and start time before signaling. Local process
+observations never authorize execution, source recovery or publication. Another
+eligible runner reconstructs authorized work from the Hub's exact source version,
+policy and execution lease in a fresh workspace. Private provider files and
+credentials are not transferred. Missing durable state fails closed rather than
+recreating defaults.
 
-Opening a fresh SQLite file alone does not preserve issue contract rollout
-policy: its migration initializes `activated_at` to the current time. An issue
-without explicit contract state whose creation or stage-update time falls between
-the original and replacement cutoffs would become exempt. Until #2033 publishes
-the original cutoff or explicitly retires that dependency while preserving
-enforcement, replacing the store requires preserving this policy. The fresh-store
-process-cleanup tests do not establish policy portability; this classification
-does not change runtime enforcement or implement policy transfer.
-
-The local cleanup exception does not permit storing the only copy of unfinished
-work on a runner. Process ownership is not source custody. A missing cleanup
-record fails closed for signaling and cleanup acknowledgement, while another
-eligible runner can continue from acknowledged, quiescent Hub-retained source.
-Cleanup must not use another machine's published PID as local authority.
-
-Portable source recovery reuses the existing `ChangeSourceExecution` and
-`workspace.ChangeSource` owners. A source bundle retains committed source and
-its checked digests; a checkpoint ref can retain staged, unstaged and untracked
-changes before finalization. Recovery verifies the selected source, current
-version, policy and execution lease. It starts a fresh provider conversation
-when no verified continuation is available, preserving the distinction between
-resuming durable work and reusing a provider session. Private provider files and
-credentials are not transferred. The PostgreSQL event/change adapter preserves
-the source manifest in its compressed version object, behind tenant-scoped typed
-version keys. Source bundle storage and backend cutover retain their existing
-separate owners; this classification introduces no new migration or inline
-payload column.
-
-The remaining family issues #2027 through #2033 have typed dependency edges to
-#2022 and preserve local CLI/board behavior. Their issue bodies own implementation
-scope and acceptance; this table defines the state ownership boundary (INV-16,
-INV-17). At INV-21 scale, the selected recovery path reads one requested immutable
-version and its size-bounded bundle, or one exact checkpoint ref. It does not
-scan runner files, tenants or attempt history to discover source. PostgreSQL
-uses the existing shared pool and tenant-leading keys. No new hot path, shared
-lock, periodic task, retry owner or fleet fan-out is introduced.
-
+At 10,000 tenants and runners, recovery reads one requested immutable version
+and its size-bounded bundle or one exact checkpoint ref through the shared
+PostgreSQL pool. It never scans runner files, tenants or attempt history to
+discover source (INV-16, INV-17, INV-18, INV-21).
 
 ## Bounded storage conversion
 
 The single conversion owner remains `../storage_conversion.go`. Its tick drives
-SQLite and PostgreSQL through `storageconversion.Storage`, preserving fair
-family cursors, row/byte budgets and the existing background cadence. The Hub
-continues selecting SQLite until backend cutover (#2020). `ConversionStorage`
+PostgreSQL through `storageconversion.Storage`, preserving fair family cursors,
+row/byte budgets and the existing background cadence. `ConversionStorage`
 implements storage operations for the PostgreSQL `runs`, `versions` and
 `evidence` families; it has no scheduling loop or retry owner (INV-3).
 It uses the existing `Repository`, background connection budget and compressed
-`attachment.DetailStore`. Other SQLite families remain with their unported stores.
+`attachment.DetailStore`.
 
 Current writes and existing PostgreSQL records use `payload_format_version=2`.
 An import can explicitly preserve a historical object reference with version 1;
@@ -601,8 +549,7 @@ At 10,000 tenants and runners, opening a scope performs one budget acquisition,
 one transaction begin and one tenant-context binding, independent of fleet and
 history size. Work and row locks inside the callback are bounded by the command's
 participants. No per-tenant pool, fleet scan, object I/O or derived refresh is
-introduced (INV-16, INV-18, INV-21). SQLite remains on its existing transaction
-implementation; this boundary does not enable unported serving paths.
+introduced (INV-16, INV-18, INV-21). Missing PostgreSQL serving owners fail closed.
 
 ## Raw source mappings (P28)
 
@@ -625,12 +572,10 @@ with constant-time tenant membership checks, independently of fleet size.
 
 ## Tenant startup selection (P03)
 
-Hub `Config.DatabaseBackend` selects `sqlite` (also the empty default) or
-`postgres`. PostgreSQL requires `Config.Postgres` and forbids `DatabasePath`,
-SQLite credential maintenance and SQLite binding migration. Supplying PostgreSQL
-settings without selecting that backend is an error. Selection happens before
-any filesystem access, lock, SQLite connection or migration; failures never fall
-back to SQLite. Existing local startup and file ownership remain unchanged.
+Hub `Config.DatabaseBackend` must select `postgres` and supply `Config.Postgres`.
+An empty or unknown backend and retired binding migration modes fail closed.
+Startup validates configuration before opening the PostgreSQL owner. There is
+no local database configuration or fallback.
 
 `postgres.Config` supplies a concrete `pq.Config` and fixed `PoolConfig`.
 Host, port, database, login and TLS mode must be explicit. Use
@@ -738,11 +683,8 @@ changes are part of this contract.
 
 ## P23: request metrics serving integration
 
-The Hub database owner selects its request metrics collector from the configured
-backend. PostgreSQL collectors share the tenant repository and never open a
-metrics SQLite file or own the shared pool. SQLite collectors retain their
-existing file binding and schema. Full PostgreSQL Hub startup remains subject to
-the existing refusal until all serving families are ported.
+The Hub request-metrics collector shares the PostgreSQL tenant repository and
+its connection pool. The database owner controls the pool lifetime.
 
 A background flush submits at most 200 minute observations. Remaining records
 stay pending for the next tick; failed batches retain their exact histograms.
@@ -781,9 +723,8 @@ external I/O or locks held across network calls.
 
 `Config.TenantRepository` selects the shared tenant unit of work for native
 project creation, lookup, rename, integration settings, content settings, model
-selection, slug settings and retirement. Without it, the existing SQLite owners
-serve those operations. Backend startup and access-store selection remain with
-their respective owners; this interface alone does not enable an entire tenant.
+selection, slug settings and retirement. A missing tenant owner fails closed.
+Backend startup and access-store selection remain with their respective owners.
 
 `projectstore` describes the project record and its typed settings. Project,
 settings, ordered workflow states and transitions are read in one SQL statement,
@@ -933,8 +874,8 @@ INV-16, INV-18, INV-20 and INV-21.
 
 `Config.TenantRepository` routes individual native issue reads, issue creation and
 editing, archive and restore, and comment creation, editing, tombstoning and
-sequence pagination through core storage. SQLite remains the owner when no tenant
-repository is selected. Core record cursors retain their existing timestamp and
+sequence pagination through core storage. A missing tenant repository fails
+closed. Core record cursors retain their existing timestamp and
 identity boundaries. Ordered issue-page projections, relationships, readable URLs,
 search, project-wide change watermarks and public event-history reads belong to their respective serving owners;
 this selection does not authorize a SQLite fallback for those PostgreSQL records.
@@ -989,7 +930,7 @@ and visible comments share a 64 KiB UTF-8 byte budget. Title and numeric identit
 remain available even when the body fills the budget. The title retains its
 weight; comments contribute body text in binary source-ID order. Events and
 changes keep their existing searchable content in that same bounded aggregate.
-Thread search continues to index titles only. The tokenizer preserves SQLite
+Thread search continues to index titles only. The tokenizer preserves the source
 Unicode61 classification, case folding, diacritic removal and Porter stemming.
 Existing Unicode and snippet fixtures compare the implementations.
 

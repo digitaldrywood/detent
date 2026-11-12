@@ -20,7 +20,7 @@ func TestArtifactMaintenanceCommands(t *testing.T) {
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 	for _, operation := range []string{"usage", "backup", "invalid config", "public listener"} {
 		t.Run(operation, func(t *testing.T) {
-			cfg := artifact.Config{ServiceID: artifact.NewID("service"), OrganizationID: artifact.NewID("org"), Mode: "customer", DatabasePath: filepath.Join(t.TempDir(), "catalog.db"), HubOrigin: "https://hub.example.com", PublishTokenEnv: "PUBLISHER", Policy: artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 4 << 20, ReservedBytes: 4 << 20, ArtifactBytes: 2 << 20, UploadBytes: 1 << 20, RetentionSeconds: 60}, AbandonedUploadSeconds: 30, DeletionRecordSeconds: 120, BackupSeconds: 60}, Storage: artifact.StorageConfig{Kind: "s3", Region: "us-east-1", Bucket: "example"}}
+			cfg := artifact.Config{ServiceID: artifact.NewID("service"), OrganizationID: artifact.NewID("org"), Mode: "customer", HubOrigin: "https://hub.example.com", PublishTokenEnv: "PUBLISHER", Policy: artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 4 << 20, ReservedBytes: 4 << 20, ArtifactBytes: 2 << 20, UploadBytes: 1 << 20, RetentionSeconds: 60}, AbandonedUploadSeconds: 30, DeletionRecordSeconds: 120, BackupSeconds: 60}, Storage: artifact.StorageConfig{Kind: "s3", Region: "us-east-1", Bucket: "example"}}
 			if operation == "invalid config" {
 				cfg.Policy.BackupSeconds = 0
 			}

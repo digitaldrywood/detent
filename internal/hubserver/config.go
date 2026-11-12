@@ -85,7 +85,6 @@ type Config struct {
 	GitHubAppInstallation func(context.Context, string) (GitHubAppInstallation, error)
 
 	ImportBackend              ImportBackend
-	DatabasePath               string
 	DatabaseBackend            DatabaseBackend
 	Postgres                   *postgres.Config
 	ListenAddress              string

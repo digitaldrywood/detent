@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -28,7 +27,7 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	repository, adminDB := projectRecordPostgresWithAdmin(t, 3)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
+		RunDetails: &memoryRunDetails{}, Clock: clock.Now,
 		NativeRunEvents: tenantNativeRunEventParticipant{}, SecretKeys: secretTestKeys(t, "1", "1"),
 	})
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}

@@ -131,7 +131,7 @@ func newOperatorSharedFixture(t *testing.T, configure ...func(*Config)) operator
 	t.Helper()
 	key := hostedSharedKey(7)
 	configure = append([]func(*Config){func(cfg *Config) {
-		shared := hostedSharedTestConfig("", cfg.Hosted.Provider, key, 1)
+		shared := hostedSharedTestConfig(cfg.Hosted.Provider, key, 1)
 		cfg.Hosted = shared.Hosted
 	}}, configure...)
 	f := newOperatorSecurityFixture(t, configure...)

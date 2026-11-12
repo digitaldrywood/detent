@@ -333,7 +333,7 @@ permits only one execution across concurrent
 connections, disconnects and daemon restarts. Receipts contain identifiers/URLs
 and outcome, without arguments or rendered result text. Replays reauthorize the
 current credential/project authority. The application owns persistence; neither
-MCP transport writes SQLite nor a transport dedup cache decides business replay.
+MCP transport writes application state nor a transport dedup cache decides business replay.
 This adds no recovery or takeover loop. A missing durable application service
 returns an opaque unavailable error before mutation.
 

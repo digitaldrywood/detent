@@ -274,7 +274,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				f.service.config.now = func() time.Time { return entryNow }
 				provider := newHostedSecurityProvider()
 				shared := hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: f.service, provider: provider, project: f.project.ID, base: f.base}}
-				f.service.config.Hosted = hostedSharedTestConfig("", provider, hostedSharedKey(7), 1).Hosted
+				f.service.config.Hosted = hostedSharedTestConfig(provider, hostedSharedKey(7), 1).Hosted
 				f.service.config.Hosted.OrganizationID = string(f.project.OrganizationID)
 				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "INSERT INTO hosted_tenant(organization_id,provider_id,bootstrap_subject,public_url,deployment,allocation_generation) VALUES ($1,'org_provider','user_owner','https://hub.example.test','shared',1) ON CONFLICT (organization_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,bootstrap_subject=EXCLUDED.bootstrap_subject,public_url=EXCLUDED.public_url,deployment=EXCLUDED.deployment,allocation_generation=EXCLUDED.allocation_generation", f.project.OrganizationID); err != nil {
 					t.Fatal(err)

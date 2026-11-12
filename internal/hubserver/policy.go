@@ -1076,56 +1076,6 @@ source_json = CASE WHEN excluded.source_json = 'null' AND project_observed_polic
 	return err
 }
 
-func readObservedPolicies(ctx context.Context, query nativeQueryer, scope string, approved policy.Descriptor, now time.Time) ([]policy.ObservedPolicy, error) {
-	rows, err := query.QueryContext(ctx, `WITH current_reports AS (
-SELECT o.* FROM project_observed_policies o
-LEFT JOIN runner_identities i ON i.id = o.runner_id
-JOIN api_tokens t ON t.id = COALESCE(i.token_id, o.runner_id) AND t.revoked_at IS NULL
-AND (t.expires_at IS NULL OR julianday(t.expires_at) > julianday(?))
-JOIN token_grants g ON g.token_id = t.id AND g.organization_id || '/' || g.project_id = o.scope
-WHERE i.removed_at IS NULL
-)
-SELECT o.descriptor_json, o.source_json, o.runner_id, o.observed_at, o.policy_id,
-EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = o.policy_id AND r.approved_by <> 'runner-report'),
-(SELECT count(DISTINCT policy_id) FROM current_reports WHERE scope = o.scope),
-EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = ? AND (r.approved_by = 'repository-default-branch' OR EXISTS (SELECT 1 FROM project_workflow_applies a WHERE a.scope = r.scope AND a.definition_digest = r.source_digest AND a.source_commit = r.workflow_revision AND (a.change_id <> '' OR a.pull_request_url <> ''))))
-FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observed_at DESC, o.runner_id`, formatHubTime(now), approved.ID, scope, approved.ID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := []policy.ObservedPolicy{}
-	seen := map[string]int{}
-	for rows.Next() {
-		var raw, source, id string
-		var observed policy.ObservedPolicy
-		var distinct int
-		var repositoryApproved bool
-		if err := rows.Scan(&raw, &source, &observed.RunnerID, &observed.ObservedAt, &id, &observed.PreviouslyApproved, &distinct, &repositoryApproved); err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		if index, ok := seen[id]; ok {
-			result[index].RunnerIDs = append(result[index].RunnerIDs, observed.RunnerID)
-			continue
-		}
-		seen[id] = len(result)
-		if err := json.Unmarshal([]byte(raw), &observed.Policy); err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		if observed.PreviouslyApproved && (repositoryApproved && approved.Workflow != nil || observed.Policy.SameAuthoredInputs(approved) && observed.Policy.Authored.Version < approved.Authored.Version) {
-			delete(seen, id)
-			continue
-		}
-		if err := json.Unmarshal([]byte(source), &observed.Source); err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		observed.Conflict = distinct > 1 || observed.PreviouslyApproved
-		observed.RunnerIDs = []string{observed.RunnerID}
-		result = append(result, observed)
-	}
-	return result, errors.Join(rows.Err(), rows.Close())
-}
-
 func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	var request struct {
 		ExpectedID string `json:"expected_policy_id"`
@@ -1271,21 +1221,6 @@ type projectPolicyRead struct {
 	ObservedPolicies             []policy.ObservedPolicy `json:"observed_policies,omitempty"`
 	ObservedPolicyDetailsOmitted bool                    `json:"observed_policy_details_omitted,omitempty"`
 	ObservedPoliciesOmitted      int                     `json:"observed_policies_omitted,omitempty"`
-}
-
-func (s *Service) projectPolicyRead(ctx context.Context, query nativeQueryer, scope string, approval policy.Approval, observations bool) (projectPolicyRead, error) {
-	result := projectPolicyRead{Approval: approval}
-	if approval.Policy.ID != "" {
-		result.Policy = &result.Approval.Policy
-	}
-	if observations {
-		var err error
-		result.ObservedPolicies, err = readObservedPolicies(ctx, query, scope, approval.Policy, s.config.now())
-		if err != nil {
-			return result, err
-		}
-	}
-	return result, nil
 }
 
 const projectPolicyCacheLimit = 256

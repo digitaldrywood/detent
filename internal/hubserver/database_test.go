@@ -10,8 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -40,8 +38,7 @@ const (
 func TestOpenTestServiceUsesPostgres(t *testing.T) {
 	for _, hosted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "hub.db")
-			cfg := Config{DatabasePath: path, InitialAdminToken: []byte("example_fixture_admin_token")}
+			cfg := Config{InitialAdminToken: []byte("example_fixture_admin_token")}
 			if hosted {
 				plans := pilotHostedPlans()
 				cfg.Hosted = &HostedConfig{
@@ -64,9 +61,6 @@ func TestOpenTestServiceUsesPostgres(t *testing.T) {
 			if err := service.retainHostedOperationRecords(t.Context(), time.Now().UTC()); err != nil {
 				t.Fatalf("retain hosted operation records: %v", err)
 			}
-			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("legacy database path exists or cannot be checked: %v", err)
-			}
 		})
 	}
 }
@@ -76,13 +70,9 @@ var testChangeObjects sync.Map
 func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
 	if cfg.Content == nil && cfg.RunDetails == nil && (cfg.Hosted == nil || cfg.Hosted.SharedEntry == nil || cfg.Hosted.SharedEntry.Content == nil && cfg.Hosted.SharedEntry.RunDetails == nil) {
-		objectKey := cfg.DatabasePath
-		if objectKey == "" {
-			objectKey = t.Name()
-		}
-		value, loaded := testChangeObjects.LoadOrStore(objectKey, &changeObjectFixture{})
+		value, loaded := testChangeObjects.LoadOrStore(t.Name(), &changeObjectFixture{})
 		if !loaded {
-			t.Cleanup(func() { testChangeObjects.Delete(objectKey) })
+			t.Cleanup(func() { testChangeObjects.Delete(t.Name()) })
 		}
 		cfg.Content = value.(*changeObjectFixture).call
 	}
@@ -120,7 +110,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 		if admin, ok := projectRecordDatabases.Load(repository); ok {
 			defaults := startupConfig(startupConnection(t, admin.(*sql.DB), "detent_runtime_v2", ""))
 			cfg.DatabaseBackend = DatabasePostgres
-			cfg.DatabasePath = ""
+
 			cfg.Postgres = defaults.Postgres
 			if cfg.Hosted == nil {
 				cfg.Hosted = defaults.Hosted
@@ -134,7 +124,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 		fixtureAdmin = admin
 		defaults := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 		cfg.DatabaseBackend = DatabasePostgres
-		cfg.DatabasePath = ""
+
 		cfg.Postgres = defaults.Postgres
 		if cfg.now != nil || cfg.Clock != nil {
 			cfg.Postgres.LeaseClock = cfg.normalized().now
@@ -305,60 +295,8 @@ func authorizeHubTestRequest(request *http.Request) {
 	request.Header.Set("Authorization", "Bearer "+testHubAdminToken)
 }
 
-func seedProjection(t *testing.T, db *sql.DB) (int64, int64) {
-	t.Helper()
-	repository, err := db.ExecContext(t.Context(), "INSERT INTO repositories (github_node_id, github_owner, github_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", "R_repo", "digitaldrywood", "detent", testTimestamp, testTimestamp)
-	if err != nil {
-		t.Fatalf("insert repository: %v", err)
-	}
-	repositoryID, err := repository.LastInsertId()
-	if err != nil {
-		t.Fatalf("repository id: %v", err)
-	}
-	seedCompatibilityProject(t, db, repositoryID)
-	workflow, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states (repository_id, github_node_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", repositoryID, "WS_todo", "Todo", "Todo", testTimestamp, testTimestamp)
-	if err != nil {
-		t.Fatalf("insert workflow state: %v", err)
-	}
-	workflowID, err := workflow.LastInsertId()
-	if err != nil {
-		t.Fatalf("workflow state id: %v", err)
-	}
-	issue, err := db.ExecContext(t.Context(), "INSERT INTO issues (repository_id, workflow_state_id, github_node_id, github_number, title, url, github_state, source_version, source_updated_at, synchronized_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", repositoryID, workflowID, "I_issue", 1, "Issue", "https://example.test/1", "open", "v1", testTimestamp, testTimestamp, testTimestamp, testTimestamp)
-	if err != nil {
-		t.Fatalf("insert issue: %v", err)
-	}
-	issueID, err := issue.LastInsertId()
-	if err != nil {
-		t.Fatalf("issue id: %v", err)
-	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO pull_requests (repository_id, issue_id, github_node_id, github_number, title, url, github_state, head_ref, head_sha, base_ref, source_version, source_updated_at, synchronized_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", repositoryID, issueID, "PR_one", 1, "PR", "https://example.test/pr/1", "open", "feature", "abc", "main", "v1", testTimestamp, testTimestamp, testTimestamp, testTimestamp); err != nil {
-		t.Fatalf("insert pull request: %v", err)
-	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO github_webhook_inbox (delivery_id, repository_id, event_type, payload_sha256, payload_bytes, status, received_at, last_received_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", "delivery-one", repositoryID, "issues", "abc", 2, "pending", testTimestamp, testTimestamp, testTimestamp, testTimestamp); err != nil {
-		t.Fatalf("insert webhook delivery: %v", err)
-	}
-	return repositoryID, issueID
-}
-
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-func seedCompatibilityProject(t *testing.T, db *sql.DB, repositoryID int64) {
-	t.Helper()
-	var exists bool
-	if err := db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects')").Scan(&exists); err != nil {
-		t.Fatal(err)
-	}
-	if !exists {
-		return
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO projects(organization_id,repository_id,name,profile,created_at)
-SELECT o.id,r.id,r.github_owner || '/' || r.github_name,'github_compatible',r.created_at FROM organizations o CROSS JOIN repositories r WHERE o.local=1 AND r.id=?
-ON CONFLICT(repository_id) DO NOTHING`, repositoryID); err != nil {
-		t.Fatalf("seed compatibility project: %v", err)
-	}
 }
 
 func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {

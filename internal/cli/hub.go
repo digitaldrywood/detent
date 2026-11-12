@@ -115,7 +115,6 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 func newHubServeCommand(version, commit string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
 	var hostedConfigPath string
 	var credentialMaintenance bool
-	var databasePath string
 	var listenAddress string
 	var tlsCertificateFile string
 	var tlsKeyFile string
@@ -161,9 +160,6 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 			if postgresConfig == nil {
 				return NewValidationError("PostgreSQL Hub configuration is required", "Set postgres in the file passed to --hosted-config.", nil)
 			}
-			if strings.TrimSpace(databasePath) != "" {
-				return NewValidationError("PostgreSQL Hub cannot use a SQLite database path", "Remove --database and use the PostgreSQL configuration.", nil)
-			}
 			var adminToken string
 			if hosted == nil {
 				adminTokenEnv = strings.TrimSpace(adminTokenEnv)
@@ -207,7 +203,7 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 					conversation = &conversationConfig
 				}
 				if conversation != nil && conversation.Backend != nil {
-					for _, path := range []string{databasePath, hostedConfigPath} {
+					for _, path := range []string{hostedConfigPath} {
 						if path == "" {
 							continue
 						}
@@ -237,7 +233,7 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 					workspaces = &workspaceConfig
 				}
 			}
-			closeProfiling := startHubProfiling(cmd, lookupEnv, hostedConfigPath, databasePath, logger)
+			closeProfiling := startHubProfiling(cmd, lookupEnv, hostedConfigPath, "", logger)
 			defer closeProfiling()
 			return run(cmd.Context(), hubserver.Config{
 				Hosted:                     hosted,
@@ -245,7 +241,6 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 				Usage:                      usage,
 				Workspace:                  workspaces,
 				CredentialMaintenance:      credentialMaintenance,
-				DatabasePath:               databasePath,
 				ListenAddress:              listenAddress,
 				TLSCertFile:                strings.TrimSpace(tlsCertificateFile),
 				TLSKeyFile:                 strings.TrimSpace(tlsKeyFile),
@@ -268,14 +263,13 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 		},
 	}
 	cmd.Flags().BoolVar(&credentialMaintenance, "credential-maintenance", false, "serve only authenticated credential administration for the bound hosted tenant on private loopback")
-	cmd.Flags().StringVar(&databasePath, "database", "", "local filesystem path to the Hub SQLite database")
 	cmd.Flags().StringVar(&hostedConfigPath, "hosted-config", "", "PostgreSQL Hub configuration file with hosted identity settings when applicable")
 	cmd.Flags().StringVar(&listenAddress, "listen", hubserver.DefaultListenAddress, "Hub listen address: host:port, or unix:/absolute/path in a private directory")
 	cmd.Flags().StringVar(&tlsCertificateFile, "tls-cert", "", "TLS certificate file")
 	cmd.Flags().StringVar(&tlsKeyFile, "tls-key", "", "TLS private key file")
 	cmd.Flags().BoolVar(&trustedProxy, "trusted-proxy", false, "declare that a trusted reverse proxy terminates TLS")
 	cmd.Flags().StringVar(&adminTokenEnv, "admin-token-env", "DETENT_HUB_ADMIN_TOKEN", "environment variable containing the initial Hub administrator token")
-	cmd.Flags().DurationVar(&busyTimeout, "busy-timeout", 5*time.Second, "SQLite busy timeout")
+	cmd.Flags().DurationVar(&busyTimeout, "busy-timeout", 5*time.Second, "Hub operation cleanup timeout")
 	cmd.Flags().DurationVar(&shutdownTimeout, "shutdown-timeout", 5*time.Second, "graceful HTTP shutdown timeout")
 	cmd.Flags().StringVar(&githubWebhookSecretEnv, "github-webhook-secret-env", "DETENT_HUB_GITHUB_WEBHOOK_SECRET", "environment variable containing the GitHub webhook secret")
 	cmd.Flags().DurationVar(&webhookPayloadRetention, "webhook-payload-retention", hubserver.DefaultWebhookPayloadRetention, "retention period for raw GitHub webhook payloads")

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"reflect"
 	"testing"
@@ -18,21 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
-
-func withMutableClaimFact(ctx context.Context, tx *sql.Tx, trigger string, write func() error) error {
-	var definition string
-	if err := tx.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?`, trigger).Scan(&definition); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DROP TRIGGER `+trigger); err != nil {
-		return err
-	}
-	if err := write(); err != nil {
-		return err
-	}
-	_, err := tx.ExecContext(ctx, definition)
-	return err
-}
 
 func TestTypedRunnerAdmissionFacts(t *testing.T) {
 	repository := projectRecordPostgres(t)

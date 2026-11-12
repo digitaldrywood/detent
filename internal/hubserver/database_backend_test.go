@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -230,20 +229,12 @@ func TestDatabaseBackendRejectsAmbiguousConfiguration(t *testing.T) {
 		{"missing postgres", Config{DatabaseBackend: DatabasePostgres}},
 		{"implicit postgres", Config{Postgres: &postgres.Config{}}},
 		{"sqlite with postgres", Config{DatabaseBackend: "sqlite", Postgres: &postgres.Config{}}},
-		{"two authorities", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, DatabasePath: "example.db"}},
 		{"sqlite binding migration", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, hostedBindingMigration: true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "unopened", "hub.db")
-			if test.config.DatabasePath != "" {
-				test.config.DatabasePath = path
-			}
 			store, err := openDatabase(t.Context(), test.config.normalized())
 			if !errors.Is(err, ErrDatabaseBackend) || store != nil {
 				t.Fatalf("open = %v, %v", store, err)
-			}
-			if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("invalid backend touched SQLite directory: %v", err)
 			}
 		})
 	}

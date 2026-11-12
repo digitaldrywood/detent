@@ -123,7 +123,7 @@ func gitHubServiceConfig(t *testing.T, cfg hubserver.Config) (hubserver.Config, 
 	if _, err := db.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
 		t.Fatal(err)
 	}
-	cfg.DatabaseBackend, cfg.DatabasePath = hubserver.DatabasePostgres, ""
+	cfg.DatabaseBackend = hubserver.DatabasePostgres
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
 	cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "http://127.0.0.1:7777", Provider: &githubHostedProvider{}}
 	cfg.RunDetails = &githubDetails{}

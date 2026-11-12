@@ -172,7 +172,7 @@ func TestCoordinatorTurnOutlivesSharedBrowserAccessToken(t *testing.T) {
 			backend := newFakeCoordinatorBackend()
 			key := hostedSharedKey(7)
 			provider := newHostedSecurityProvider()
-			cfg := hostedSharedTestConfig(hostedTestDatabasePath(t), provider, key, 1)
+			cfg := hostedSharedTestConfig(provider, key, 1)
 			cfg.now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
 			cfg.Conversation = &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir(), ArchiveContents: &conversationContentFixture{}}
 			service := openTestService(t, cfg)

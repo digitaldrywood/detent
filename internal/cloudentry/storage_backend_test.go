@@ -245,7 +245,7 @@ func configurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*
 		connection.Host = "127.0.0.1"
 	}
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
-	cfg.DatabasePath = ""
+
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
 	cfg.RunDetails = tenantDetailFixture{&conversationArchiveFixture{}}
 	return admin

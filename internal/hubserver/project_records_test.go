@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"sync"
@@ -412,7 +411,7 @@ func verifyProjectRecordParticipants(t *testing.T) {
 
 func TestPostgresProjectParticipantsAuditLifecycleAndRevokeGrants(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	org := nativeOrganization{ID: "org_project_lifecycle", Name: "Project lifecycle", Slug: "project-lifecycle"}
 	seedPostgresHubAdmin(t, repository, service, org)
 	now := service.config.now().UTC()
@@ -469,7 +468,7 @@ func TestPostgresProjectParticipantsAuditLifecycleAndRevokeGrants(t *testing.T) 
 
 func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	service := openPostgresHubTestService(t, repository, Config{})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
 	if err != nil {
 		t.Fatal(err)

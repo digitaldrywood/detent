@@ -82,11 +82,9 @@ roles grant platform access; configured legacy lists produce one startup warning
 
 `detent cloud assertion-key` prints a new signing seed and public key. The seed
 belongs in the entry's private environment and the public key in each tenant's
-`shared_entry.public_keys`. `state_directory` holds two single-owner SQLite files:
-`registry.db` (organization IDs, provider organization IDs, names, private
-endpoints, generations) and the private `auth.db` (hashed session and
-login-transaction references, per-organization provider sessions, content-free
-audit). Neither holds collaboration content.
+`shared_entry.public_keys`. PostgreSQL owns the platform registry,
+authentication sessions, login transactions and content-free audit records.
+Install directories contain disposable runtime files, never application state.
 
 Tenant endpoints are Unix sockets only. Before every connection the entry checks
 that the socket and its directory are owned by the entry's service user and that
@@ -196,8 +194,8 @@ shown on the provisioning screen and the platform console, and resuming setup
 starts it again. The child receives only
 `PATH`/`HOME`/`TMPDIR`/`LANG`/`TZ`/`LOG_LEVEL`/`DETENT_LOG_LEVEL`, the WorkOS key
 variable, the optional entitlement token variable and its own admin token. Each
-tenant owns its SQLite file exclusively; never place `tenant_root` on a network
-filesystem.
+tenant's durable application state belongs to PostgreSQL through authenticated
+Hub APIs; `tenant_root` is not a durable database owner.
 
 Deletion is owner-only (`/organizations/ORG/delete`, current provider owner, typed
 name, CSRF). It marks the organization `deleting`, revokes every authorization and
@@ -208,17 +206,12 @@ erases customer data, including after a failed signup.
 
 ### Backup and recovery
 
-`state_directory/registry.db` and every `tenant_root/ORG/hub.db` are backed up
-together, with the entry and tenants quiesced. `detent hub backup` is offline
-maintenance: it requires the owning tenant to be stopped even though it uses
-SQLite's backup API internally, so a backup through this path interrupts every
-tenant until entry and tenant health recover. Copying live database and WAL files
-is unsupported; the shared entry exposes no coordinated live snapshot.
-`auth.db` holds only sessions and login transactions and is not restored: a
-restore starts with no sessions, and every user signs in again. To restore one
-tenant, stop the entry, restore its `hub.db` with `detent hub restore`, and if
-its binding moved, re-register it with a higher generation; the registry refuses
-a lower generation or a reused ID, and deleted organizations stay tombstoned.
+Back up the shared PostgreSQL database with verified PostgreSQL tooling,
+including platform registry and authentication records and tenant data. Keep
+object storage backups and install credentials separately. Test an isolated
+restore, preserve tenant bindings and generations, and fence the old deployment
+before routing production traffic to the restored Hub. Runners retain no local
+application database.
 
 ### Routing and sessions
 

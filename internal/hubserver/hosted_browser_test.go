@@ -295,7 +295,7 @@ func hostedPostgresConfig(t *testing.T, cfg Config) Config {
 	}
 	admin := postgresStartupTemplate.Database(t)
 	cfg.DatabaseBackend = DatabasePostgres
-	cfg.DatabasePath = ""
+
 	defaults := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Postgres = defaults.Postgres
 	if len(cfg.InitialAdminToken) == 0 {

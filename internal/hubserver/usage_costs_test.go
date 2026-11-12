@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -225,7 +224,7 @@ func TestMonthlyCostsMCPBounds(t *testing.T) {
 
 func newCostLedgerTestService(t *testing.T, now time.Time) *Service {
 	t.Helper()
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }})
+	service := openTestService(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }})
 	for _, organization := range []tracker.OrganizationID{"org", "other-org"} {
 		err := service.database.billingRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), Slug: string(organization), CreatedAt: now}); err != nil {

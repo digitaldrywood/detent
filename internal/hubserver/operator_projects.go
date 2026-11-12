@@ -484,7 +484,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			raw, _, err := s.nativeCommandReplay(ctx, scope, options.OperationID, r.RequestID, request)
 			return raw, err
 		}
-		raw, err := s.executeNativeMutation(ctx, scope, options, request.Mutation, request, updateProjectSpriteAllocation(request))
+		raw, err := s.setProjectSpriteAllocationRecord(ctx, scope, options.OperationID, request)
 		if err != nil {
 			return nil, err
 		}

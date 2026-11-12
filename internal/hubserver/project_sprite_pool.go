@@ -422,14 +422,6 @@ func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, setti
 	return s.executeSpritePoolSettingsCommand(ctx, scope, tracker.Mutation{}, nil, func(spritePoolSettings) (spritePoolSettings, *string, error) { return settings, tier, nil })
 }
 
-func (s *Service) spritePoolAuthority(ctx context.Context, query nativeQueryer, scope nativeScope) (string, error) {
-	var actor string
-	err := query.QueryRowContext(ctx, `SELECT p.configured_by FROM organization_sprite_pools p JOIN api_tokens t ON t.id=p.configured_by AND t.revoked_at IS NULL
-WHERE p.organization_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND
-((t.scope='admin' AND t.native_only=0) OR EXISTS (SELECT 1 FROM hosted_members m WHERE m.principal_id=t.id AND m.active=1 AND m.role IN ('owner','admin')))`, scope.organization, formatHubTime(s.config.now())).Scan(&actor)
-	return actor, err
-}
-
 func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, view spritePoolView) (spriteScaleInput, []spritePoolMember, error) {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()

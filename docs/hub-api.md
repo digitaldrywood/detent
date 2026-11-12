@@ -1,6 +1,6 @@
 # Detent Hub API
 
-Detent Hub owns its SQLite database and exposes fleet coordination through an authenticated HTTP API. Clients must never open or copy the live database files.
+Detent Hub owns durable application state in PostgreSQL and exposes fleet coordination through an authenticated HTTP API. Clients and runners use authenticated Hub APIs.
 
 This page documents implemented behavior, including native collaboration, Changes, durable artifacts and scoped runner enrollment through `/api/v2`. See [self-hosted operations](hub-self-hosting.md) for deployment, export/import and recovery, and [Durable artifacts](#durable-artifacts) below for the independent artifact service. Monthly organization and project budgets constrain detected USD costs before capacity acquisition; organization exhaustion takes precedence over project headroom.
 
@@ -570,20 +570,16 @@ Set a high-entropy bootstrap administrator token, then start the service on its 
 
 ```sh
 export DETENT_HUB_ADMIN_TOKEN="$(openssl rand -hex 32)"
-detent hub serve --database /var/lib/detent/hub.db
+detent hub serve --hosted-config /etc/detent/hub.yaml
 ```
 
 The bootstrap token is inserted only when the Hub database has no bootstrap credential. Later restarts do not replace a token that was rotated or revoked through the API.
 
 The default listener is `127.0.0.1:7777`. A non-loopback `--listen` value is rejected unless either `--tls-cert` and `--tls-key` are both set or `--trusted-proxy` explicitly declares that a trusted reverse proxy terminates TLS. The proxy or host firewall must prevent clients from bypassing that proxy.
 
-Self-hosted instance administrators can call `POST /api/v2/admin/backup` with
-`{"output":"/private/backups/snapshot.db"}` to create an online SQLite snapshot
-on the Hub host. Success returns an empty `204` response. Output paths must be
-new, files are private (`0600`), and response bodies never contain the path or
-snapshot bytes. Project-scoped credentials cannot call it, and hosted Cloud
-Hubs do not expose it. See [backup and export](hub-self-hosting.md#backup-and-export)
-for snapshot consistency, offline maintenance and restore instructions.
+Full-instance backup and restore use verified PostgreSQL backups and separately
+preserved object storage. See [backup and export](hub-self-hosting.md#backup-and-export)
+for custody, restore isolation and traffic cutover requirements.
 
 ## Local board migration
 
@@ -1952,10 +1948,9 @@ and Echo route template, with IDs and query strings removed. Each row includes
 estimates from merged power-of-two microsecond histograms, bounded by the
 observed maximum; they are not averages of minute percentiles.
 
-Each tenant Hub aggregates requests in memory and flushes every minute to
-`<tenant-database-path>.metrics.sqlite`, using a separate SQLite connection and
-Goose schema. Minute rows retain caller, route, status class and latency for
-14 days. Neither the shared entry nor the host aggregates tenant metrics.
+The Hub aggregates requests in memory and flushes bounded batches to the shared
+PostgreSQL request-metrics owner. Tenant-scoped minute rows retain caller,
+route, status class and latency for 14 days.
 
 The same flush folds requests into hourly rows per route template and status
 class, retained for 90 days. With `window=<duration>` (1h to 2160h) the
@@ -2881,9 +2876,9 @@ fetches, proxies or stores artifact bytes.
 
 `detent artifacts --artifact-config service.json serve` runs the portable
 authorization and download service. It runs independently of execution runners,
-behind a TLS reverse proxy on a configured loopback port, with a private SQLite
-catalog under single-owner instance locking. Never put the catalog on NFS/SMB or
-open it from two processes. Example [service configuration](examples/artifacts/service.json),
+behind a TLS reverse proxy on a configured loopback port. Its authenticated
+Hub-backed catalog owns reservations, retention, deletion and history in
+PostgreSQL. Example [service configuration](examples/artifacts/service.json),
 [systemd unit](examples/artifacts/detent-artifacts.service) and
 [Caddy configuration](examples/artifacts/Caddyfile) describe a Linux
 installation using an existing private bucket; their numeric values are finite
@@ -3114,7 +3109,7 @@ the issue, attempt, Change, diff, conversation and revision endpoints return
 contains organization, project and work-item identities, a decimal-string
 `revision`, `section_id`, compressed SHA-256, compressed and uncompressed byte
 sizes, `codec`, `schema_version` and an authorized same-origin `access_path`.
-`current` contains the current SQLite metadata. Hot reads retain their existing
+`current` contains the current PostgreSQL metadata. Hot reads retain their existing
 response shape. Agent reads without this header retain their existing contract.
 
 The archive producer publishes a complete revision in `issue_archive_sections`
@@ -3131,7 +3126,7 @@ section includes `attempts`, an array of timeline run summaries using the
 attempt schema, without full runtime detail. The issue and issue-revision
 sections never contain dependencies, blockers, dependents, related issues or
 viewer-filtered reason fields. Those fields come only from current authorized
-SQLite reads. Comments and timeline events also remain SQLite reads.
+PostgreSQL reads. Comments and timeline events also remain PostgreSQL reads.
 
 Section access requires the descriptor's `section` and `revision` query
 parameters. A digest-only request cannot access an object published in this
@@ -3542,7 +3537,7 @@ automatic recovery requires both plus the approved project policy.
 
 ### Archived detail sections
 
-Deep API and MCP reads use one Hub section resolver. SQLite selects an
+Deep API and MCP reads use one Hub section resolver. The PostgreSQL owner selects an
 organization/project/work-item reference from `native_archive_sections` and the
 attachment catalog; a caller cannot supply an object key or download URL. The
 Hub reads through the tenant's inherited Cloud Entry channel. Entry owns storage
@@ -3554,14 +3549,12 @@ explicit `archive` availability result instead of an empty successful history.
 
 A schema-1 section has `schema_version`, `organization_id`, `project_id`,
 `work_item_id`, `section_id` and `tables`. Each table has `name`, `columns` and
-`rows`. Columns start with `rowid`, followed by the current SQLite columns in
-schema order, including generated columns. Rows contain JSON scalar SQL values.
-Only the run, Change, revision, history or conversation tables permitted for that section
-are accepted; organization, project, item and parent identities must match the
-catalog. The resolver overlays these records on a read-only SQLite snapshot.
-Primary keys identify payload stubs; original row IDs remain ordering anchors.
+`rows`. Historical sections retain their source column names and scalar values
+as verified import data. Serving reads use typed PostgreSQL history owners and
+object references. Only tables permitted for the section are accepted;
+organization, project, item and parent identities must match the catalog.
 Current issue visibility, relationship filtering and conversation authorization
-continue to use live SQLite records.
+come from PostgreSQL.
 
 The archive publisher retains run identities, diff headers, Change version and
 evidence identities, and conversation/message identities needed by existing
@@ -3582,7 +3575,7 @@ owner/admin browser session. Filtered principals
 receive the normal authorized fields without a raw section URL. URL presentation
 does not change a native pagination cursor's scope.
 
-Issue lists, run summaries, comments and factual timeline projections stay in SQLite.
+Issue lists, run summaries, comments and factual timeline projections stay in PostgreSQL.
 Full history pages can resolve a history section using the original event sequences;
 continuations cross section boundaries without returning retired payload stubs.
 Issue/comment search retains its existing FTS index and bounded matched snippets;

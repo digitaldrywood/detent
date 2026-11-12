@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -216,19 +215,12 @@ type hostedSecurityFixture struct {
 	base     string
 }
 
-func hostedTestDatabasePath(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "hosted.db")
-	return path
-}
-
 func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 	t.Parallel()
 	for _, organization := range []string{"org_first", "org_second", "org_third"} {
 		t.Run(organization, func(t *testing.T) {
 			t.Parallel()
 			service := openHostedPostgresService(t, Config{
-				DatabasePath: hostedTestDatabasePath(t),
 				Hosted: &HostedConfig{
 					OrganizationID:       organization,
 					WorkOSOrganizationID: "provider_" + organization,
@@ -317,7 +309,6 @@ func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSe
 	provider := newHostedSecurityProvider()
 	legacyPlans := pilotHostedPlans()
 	cfg := Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hosted.db"),
 		Hosted: &HostedConfig{
 			Plans:                &legacyPlans,
 			OrganizationID:       "org_security",
@@ -1271,9 +1262,8 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 	var logs bytes.Buffer
 	provider := newHostedSecurityProvider()
 	service := openHostedPostgresService(t, Config{
-		DatabasePath: hostedTestDatabasePath(t),
-		Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
-		Hosted:       &HostedConfig{OrganizationID: "org_logs", WorkOSOrganizationID: "org_provider", PublicURL: "https://logs.example.test", Provider: provider},
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		Hosted: &HostedConfig{OrganizationID: "org_logs", WorkOSOrganizationID: "org_provider", PublicURL: "https://logs.example.test", Provider: provider},
 	})
 	const sentinel = "private-content-bearer-sentinel"
 	service.echo.GET("/security/error", func(c echo.Context) error {

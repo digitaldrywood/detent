@@ -168,20 +168,6 @@ func archivePeriod(raw json.RawMessage, current *int) (*int, error) {
 	return days, nil
 }
 
-func requireIntegrationIdle(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	var active int
-	err := tx.QueryRowContext(ctx, `SELECT
-(SELECT count(*) FROM leases l JOIN issues i ON i.id = l.issue_id WHERE i.project_id = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)) +
-(SELECT count(*) FROM github_outbox o JOIN issues i ON i.id = o.issue_id WHERE i.project_id = ? AND o.status = 'processing')`, scope.project, formatHubTime(now), scope.project).Scan(&active)
-	if err != nil {
-		return err
-	}
-	if active != 0 {
-		return nativePublicInvalid("Finish active leases and processing GitHub writes before changing integration authority")
-	}
-	return nil
-}
-
 func supersedeDisallowedOutbox(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
 	rows, err := tx.QueryContext(ctx, `SELECT o.id,o.desired_json,o.desired_issue_number,o.desired_summary,p.github_projection FROM github_outbox o JOIN issues i ON i.id=o.issue_id JOIN projects p ON p.id=i.project_id WHERE p.id=? AND p.profile='native' AND o.mutation_kind='workpad' AND o.status IN ('pending','retrying') AND (o.desired_issue_number IS NULL OR o.desired_summary IS NULL)`, scope.project)
 	if err != nil {

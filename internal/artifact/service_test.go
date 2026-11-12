@@ -475,16 +475,13 @@ func TestCatalogSharedHubAndExport(t *testing.T) {
 
 func TestCatalogRequiresHub(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"", ":memory:", "file:catalog.db", filepath.Join(t.TempDir(), "catalog.db")} {
-		cfg := testConfig(t)
-		cfg.Catalog = nil
-		cfg.DatabasePath = path
-		if service, err := NewService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, nil); !errors.Is(err, ErrAuthorization) {
-			if service != nil {
-				service.Close()
-			}
-			t.Fatal("local catalog accepted", err)
+	cfg := testConfig(t)
+	cfg.Catalog = nil
+	if service, err := NewService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, nil); !errors.Is(err, ErrAuthorization) {
+		if service != nil {
+			service.Close()
 		}
+		t.Fatal("catalog without Hub accepted", err)
 	}
 }
 
@@ -559,7 +556,7 @@ func TestRestoredCatalogCannotResurrectDeletedArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := s.config
-	cfg.DatabasePath = backup
+
 	restored, err := newTestService(t.Context(), cfg, storage, nil)
 	if err != nil {
 		t.Fatal(err)

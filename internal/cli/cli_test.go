@@ -51,7 +51,7 @@ func TestCommandHelpLeadsWithExample(t *testing.T) {
 		flags   []string
 	}{
 		{name: "promote", args: []string{"promote"}, example: "detent promote api", flags: []string{"--config", "--priority"}},
-		{name: "migration Hub", args: []string{"hub", "serve"}, example: "detent hub serve", flags: []string{"--database", "--listen"}},
+		{name: "migration Hub", args: []string{"hub", "serve"}, example: "detent hub serve", flags: []string{"--hosted-config", "--listen"}},
 		{name: "migration registration", args: []string{"hub", "runner", "register"}, example: "detent hub runner register", flags: []string{"--url", "--organization", "--name", "--capacity", "--config", "--workspace-root"}},
 		{name: "migration foreground runner", example: "detent", flags: []string{"--config", "--headless"}},
 	} {

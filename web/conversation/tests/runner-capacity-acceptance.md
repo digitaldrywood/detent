@@ -2,7 +2,7 @@
 
 Use the existing hosted runner-settings journey for integrated capacity acceptance.
 It serves the real Cloud application and API with fake authentication, two projects,
-two enrolled runners on separate machines, and an isolated SQLite database. Its test
+two enrolled runners on separate machines, and an isolated PostgreSQL database. Its test
 plan permits sixteen concurrent jobs so the runner ceilings can be observed. No
 provider process executes and no production system or fleet setting is accessed.
 
@@ -11,7 +11,7 @@ From the workspace root, with Node 24, Go 1.26 and worker scratch configured:
 ```sh
 make app
 npm ci --ignore-scripts
-go test -p 4 -timeout=120s ./internal/hubserver -run '^(TestRunnerProjectCapacityClaims|TestRunnerProjectCapacityAdministration|TestRunnerCapacityApplication|TestHubMCPFleetBoundary)$' -count=1 -v
+go test -p 4 -timeout=120s ./internal/hubserver -run '^(TestRunnerProjectCapacityClaims|TestRunnerProjectCapacityAdministration|TestRunnerCapacityApplication|TestHubMCPFleetBoundary)$' -v
 go test -p 4 -c -o "$TMPDIR/runner-capacity-hub.test" ./internal/hubserver
 DETENT_HOSTED_PREVIEW_BINARY="$TMPDIR/runner-capacity-hub.test" node node_modules/@playwright/test/cli.js test tests/visual/runner-settings.spec.js --project=chromium --workers=1 --retries=0 --reporter=line --output "$TMPDIR/runner-capacity-playwright"
 ```

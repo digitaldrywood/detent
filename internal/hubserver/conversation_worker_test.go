@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,7 +52,7 @@ type conversationWorkerFixture struct {
 func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveContentStore) *conversationWorkerFixture {
 	t.Helper()
 	fixture := &conversationWorkerFixture{now: time.Now().UTC().Truncate(time.Second)}
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &verifiedAttemptDetails{}, Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time {
+	config := Config{RunDetails: &verifiedAttemptDetails{}, Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time {
 		fixture.mu.Lock()
 		defer fixture.mu.Unlock()
 		return fixture.now

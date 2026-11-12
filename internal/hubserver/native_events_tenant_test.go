@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -89,7 +88,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	participant := &nativeRunEventParticipantFixture{}
 	keys := secretTestKeys(t, "1", "1")
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{},
+		RunDetails:      &memoryRunDetails{},
 		NativeRunEvents: participant, SecretKeys: keys,
 	})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")

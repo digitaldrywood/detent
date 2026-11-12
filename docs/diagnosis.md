@@ -13,7 +13,7 @@ sample.
 
 The dashboard's Hourly concurrency card is the first stop for throughput. It
 uses a rolling 24-hour interval sweep of `work_attempts` and shows fleet-wide
-and per-project median, p90, and maximum concurrency. Use the queries below
+and per-project median, p90, and maximum concurrency. Use the recorded activity reads below
 when the dashboard needs corroboration or a different window.
 
 ## Authority by question
@@ -32,7 +32,7 @@ when the dashboard needs corroboration or a different window.
 Read the served build directly from the live page:
 
 ```sh
-curl -fsS http://127.0.0.1:<port>/ | rg -o 'data-detent-served-version="[^"]+"' -m 1
+curl -fsS "http://127.0.0.1:<port>/" | rg -o 'data-detent-served-version="[^"]+"' -m 1
 ```
 
 Activity classification uses the provider's existing parsed command actions
@@ -79,7 +79,7 @@ from discarded evidence; absent causal attribution is unknown.
 
 Every authenticated `/api/v2` response carries a `Server-Timing` header with
 `db`, `compute`, `encode` and `total` durations in milliseconds. `db` is the
-time spent executing SQLite statements and stepping their rows on any pool,
+time spent executing PostgreSQL statements and reading their rows on any pool,
 `encode` is JSON encoding, and `compute` is the remainder of `total`. The
 `db` span leaves out `BEGIN`, `COMMIT` and the wait for a pool connection;
 that time falls into `compute`.
@@ -200,11 +200,9 @@ Typed attempt columns cover the fields the queries below need:
 background one row per transaction; `projection_ready IS NULL` marks a row not
 yet projected, so report that count with every result.
 
-Stored timestamps are ISO strings containing `T`. SQLite
-`datetime('now', '-24 hours')` emits a space, so comparing it directly to these
-strings can match every timestamp on the cutoff date. Bind ISO literals such as
-`'2026-09-14T00:00:00Z'`, or compare `unixepoch()` values. Daily spend is
-assigned by session start time, not prorated.
+Ordered timestamps use PostgreSQL timestamp types. Bind typed UTC boundaries
+and test both ordering and the boundary predicate. Daily spend is assigned by
+session start time, not prorated.
 
 ### What total tokens means
 
@@ -235,118 +233,14 @@ are not independent spend. `event_msg` records with
 (cumulative) and `last_token_usage` (last model call); cumulative snapshots are
 not summed.
 
-### Audit queries
+### Audit reads
 
-Open the runner's instance database read-only. It lives beside the runner's
-`global.yaml` (for an enrolled runner, `~/.config/detent-runner/detent.db`):
-
-```sh
-sqlite3 -readonly "$HOME/.config/detent-runner/detent.db"
-```
-
-The setup creates only temporary views and reads typed columns. Replace the
-window literal throughout for another audit. The merge proxy counts distinct
-identifiers that reached Done, were delivered, or had a successful merge-mode
-attempt; it is not an independent forge merge verification.
-
-```sql
-create temp view att as
-select w.id, w.project_id, w.identifier, w.lane, w.attempt_number, w.status,
-  w.started_at, w.completed_at, substr(w.started_at,1,10) day,
-  w.terminal_state, w.error_class, w.status_message, w.detent_session_id,
-  w.metadata_run_mode run_mode, w.metadata_pr_number pr_number,
-  w.metadata_pr_head_sha pr_head, w.metrics_turns turns, w.projection_ready,
-  p.id pe_id, p.total_tokens tokens, p.input_tokens, p.output_tokens,
-  p.cached_input_tokens, p.reasoning_output_tokens, c.agent_role
-from work_attempts w
-left join workflow_phase_events p on p.session_id = w.detent_session_id and p.phase_type = 'agent_session'
-left join codex_sessions c on c.id = w.detent_session_id
-where w.started_at >= '2026-09-07T00:00:00Z';
-
-create temp view pe as
-select p.*, substr(p.started_at,1,10) day, c.agent_role, c.final_state, c.work_attempt_id
-from workflow_phase_events p left join codex_sessions c on c.id = p.session_id
-where p.phase_type = 'agent_session' and p.started_at >= '2026-09-07T00:00:00Z';
-
-create temp view merged_days as
-select project_id, identifier, substr(min(merged_at),1,10) day
-from (
-  select project_id, identifier, started_at merged_at from workflow_phase_events
-  where phase_type='lane' and phase_name='Done' and started_at >= '2026-09-07T00:00:00Z'
-  union all
-  select project_id, identifier, completed_at from work_attempts
-  where completed_at >= '2026-09-07T00:00:00Z'
-    and (terminal_state='delivered' or
-      (metadata_run_mode='merge' and terminal_state='success'
-       and status_message='worker reached terminal state'))
-)
-where identifier is not null
-group by project_id, identifier;
-```
-
-Coverage: attempts with a recorded session and rows still awaiting projection.
-
-```sql
-select count(*) attempts, sum(pe_id is not null) with_phase_event,
-  sum(pe_id is null) unknown_tokens, sum(projection_ready is null) unprojected,
-  sum(tokens) recorded_tokens
-from att;
-```
-
-Tokens per merged PR per project per day, from all recorded sessions:
-
-```sql
-with spend as (
-  select project_id, day, sum(total_tokens) tokens from pe group by 1,2
-), merges as (
-  select project_id, day, count(*) merged_prs from merged_days group by 1,2
-), days as (
-  select project_id, day from spend union select project_id, day from merges
-)
-select d.project_id, d.day, coalesce(s.tokens,0) tokens, coalesce(m.merged_prs,0) merged_prs,
-  coalesce(s.tokens,0) * 1.0 / nullif(m.merged_prs,0) tokens_per_merged_pr
-from days d left join spend s using (project_id, day) left join merges m using (project_id, day)
-order by d.project_id, d.day;
-```
-
-Repeat attempts on the same PR head:
-
-```sql
-with ranked as (
-  select project_id, identifier, pr_head, lane, terminal_state, tokens,
-    row_number() over (partition by identifier, pr_head order by started_at) rn
-  from att where pr_head is not null)
-select project_id, identifier, substr(pr_head,1,10) head, count(*) attempts,
-  sum(case when rn>1 then tokens else 0 end) repeat_tokens, sum(tokens) recorded_tokens
-from ranked group by 1,2,3 having count(*) > 1 order by repeat_tokens desc;
-```
-
-Tokens by terminal state and error class, and cache ratio per project:
-
-```sql
-select terminal_state, error_class, count(*) n, sum(tokens) tokens
-from att group by 1,2 order by tokens desc;
-
-select project_id, count(*) sessions, sum(input_tokens) input, sum(cached_input_tokens) cached,
-  round(1.0*sum(cached_input_tokens)/nullif(sum(input_tokens),0),3) cache_ratio,
-  round(1.0*sum(output_tokens)/nullif(sum(total_tokens),0),4) output_share
-from pe group by 1 order by input desc;
-```
-
-Service-restart abandonment clusters (infrastructure failures belong to the
-instance, never the issue):
-
-```sql
-select substr(completed_at,1,16) restart_minute, count(*) attempts_abandoned,
-  sum(tokens) recorded_tokens, group_concat(distinct project_id) projects
-from att where terminal_state='abandoned' and error_class='service_restart'
-group by 1 order by 1;
-```
-
-Session IDs are local to one runner database; do not join numeric IDs across
-runners. To combine runners, export `pe`-based spend and `merged_days` from each,
-sum spend by `(project_id, day)`, and count each merged identifier once at its
-earliest day.
+Use the Detent MCP attempt, report and history reads for the authenticated
+organization and project. Runners keep no durable application database.
+Correlate attempts by their typed identities and recorded timestamps, and state
+the time window and coverage of every result. Use PostgreSQL diagnostics only
+when the supported application reads cannot answer the question; never infer
+runtime history from a disposable workspace.
 
 ## Codex startup stalls
 
@@ -430,159 +324,13 @@ pausing a pipe reader while sampling can itself block `lsof` in
 original failure. Record completed output size, exit status, elapsed time,
 and relevant stack symbols, keeping process paths and raw samples private.
 
-## Ready-to-paste SQLite queries
+## Recorded activity reads
 
-These queries default to a rolling 24-hour window. Replace `'-24 hours'` or
-add a `project_id` predicate when investigating a narrower incident.
-
-### Hourly maximum-concurrency interval sweep
-
-This event sweep counts overlapping attempt intervals without relying on a
-single observation. Active attempts end at their recorded lease or heartbeat
-when no completion exists, so an old incomplete row does not extend forever.
-
-```sql
-WITH RECURSIVE
-params AS (
-  SELECT unixepoch(strftime('%Y-%m-%dT%H:00:00Z', 'now'), '-24 hours') AS from_at,
-         unixepoch(strftime('%Y-%m-%dT%H:00:00Z', 'now')) AS to_at
-),
-hours(hour_start) AS (
-  SELECT from_at FROM params
-  UNION ALL
-  SELECT hour_start + 3600
-  FROM hours, params
-  WHERE hour_start + 3600 < to_at
-),
-project_hours AS (
-  SELECT DISTINCT attempts.project_id, hours.hour_start,
-         MIN(hours.hour_start + 3600, params.to_at) AS hour_end
-  FROM work_attempts AS attempts
-  CROSS JOIN hours
-  CROSS JOIN params
-  WHERE unixepoch(attempts.started_at) < MIN(hours.hour_start + 3600, params.to_at)
-    AND unixepoch(COALESCE(attempts.completed_at, attempts.lease_expires_at,
-                          attempts.heartbeat_at, attempts.started_at)) > hours.hour_start
-),
-raw_events AS (
-  SELECT ph.project_id, ph.hour_start, ph.hour_start AS event_at,
-         SUM(CASE WHEN unixepoch(attempts.started_at) < ph.hour_start
-                   AND unixepoch(COALESCE(attempts.completed_at, attempts.lease_expires_at,
-                                         attempts.heartbeat_at, attempts.started_at)) > ph.hour_start
-                  THEN 1 ELSE 0 END) AS delta
-  FROM project_hours AS ph
-  LEFT JOIN work_attempts AS attempts ON attempts.project_id = ph.project_id
-  GROUP BY ph.project_id, ph.hour_start
-  UNION ALL
-  SELECT ph.project_id, ph.hour_start, unixepoch(attempts.started_at), 1
-  FROM project_hours AS ph
-  JOIN work_attempts AS attempts ON attempts.project_id = ph.project_id
-  WHERE unixepoch(attempts.started_at) >= ph.hour_start
-    AND unixepoch(attempts.started_at) < ph.hour_end
-    AND unixepoch(COALESCE(attempts.completed_at, attempts.lease_expires_at,
-                          attempts.heartbeat_at, attempts.started_at)) > unixepoch(attempts.started_at)
-  UNION ALL
-  SELECT ph.project_id, ph.hour_start,
-         unixepoch(COALESCE(attempts.completed_at, attempts.lease_expires_at,
-                            attempts.heartbeat_at, attempts.started_at)), -1
-  FROM project_hours AS ph
-  JOIN work_attempts AS attempts ON attempts.project_id = ph.project_id
-  WHERE unixepoch(COALESCE(attempts.completed_at, attempts.lease_expires_at,
-                          attempts.heartbeat_at, attempts.started_at)) > ph.hour_start
-    AND unixepoch(COALESCE(attempts.completed_at, attempts.lease_expires_at,
-                          attempts.heartbeat_at, attempts.started_at)) < ph.hour_end
-    AND unixepoch(attempts.started_at) < ph.hour_end
-),
-events AS (
-  SELECT project_id, hour_start, event_at, SUM(delta) AS delta
-  FROM raw_events
-  GROUP BY project_id, hour_start, event_at
-),
-points AS (
-  SELECT project_id, hour_start, event_at,
-         SUM(delta) OVER (
-           PARTITION BY project_id, hour_start
-           ORDER BY event_at
-           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-         ) AS concurrency
-  FROM events
-)
-SELECT project_id, datetime(hour_start, 'unixepoch') AS hour_start,
-       MAX(concurrency) AS max_concurrency
-FROM points
-GROUP BY project_id, hour_start
-ORDER BY hour_start, project_id;
-```
-
-Correlate a pinned result with the mechanism signature before attributing it:
-
-```sql
-SELECT project_id,
-       strftime('%Y-%m-%dT%H:00:00Z', decision_at) AS hour,
-       COUNT(*) AS sampled_refusals
-FROM scheduler_decisions
-WHERE unixepoch(decision_at) >= unixepoch('now', '-24 hours')
-  AND result = 'skipped'
-  AND wait_reason = 'provider_rate_window_backpressure'
-GROUP BY project_id, hour
-ORDER BY hour, project_id;
-```
-
-### Per-issue dispatch counts
-
-```sql
-SELECT project_id,
-       COALESCE(NULLIF(TRIM(identifier), ''), NULLIF(TRIM(issue_id), ''),
-                NULLIF(TRIM(issue_url), '')) AS issue,
-       COUNT(*) AS dispatches,
-       MIN(started_at) AS first_dispatch,
-       MAX(started_at) AS latest_dispatch
-FROM work_attempts
-WHERE unixepoch(started_at) >= unixepoch('now', '-24 hours')
-GROUP BY project_id, issue
-HAVING issue IS NOT NULL
-ORDER BY dispatches DESC, latest_dispatch DESC;
-```
-
-### Lane and project distribution
-
-```sql
-SELECT project_id,
-       COALESCE(NULLIF(TRIM(lane), ''), '(unrecorded)') AS lane,
-       COUNT(*) AS dispatches,
-       ROUND(SUM(MAX(
-         0,
-         unixepoch(MIN(COALESCE(completed_at, lease_expires_at, heartbeat_at,
-                                started_at), datetime('now')))
-         - unixepoch(MAX(started_at, datetime('now', '-24 hours')))
-       )) / 3600.0, 2) AS agent_hours
-FROM work_attempts
-WHERE unixepoch(started_at) < unixepoch('now')
-  AND unixepoch(COALESCE(completed_at, lease_expires_at, heartbeat_at, started_at))
-      > unixepoch('now', '-24 hours')
-GROUP BY project_id, lane
-ORDER BY agent_hours DESC, dispatches DESC, project_id, lane;
-```
-
-### Blocked entries by reason
-
-`workflow_phase_events.reason` is the durable recovery reason on the recorded
-entry into Blocked; the alias below matches the operator-facing field name.
-
-```sql
-SELECT project_id,
-       COALESCE(NULLIF(TRIM(reason), ''), '(unrecorded)') AS recovery_reason,
-       COUNT(*) AS blocked_entries,
-       MIN(started_at) AS first_seen,
-       MAX(started_at) AS latest_seen
-FROM workflow_phase_events
-WHERE phase_type = 'lane'
-  AND lower(phase_name) = 'blocked'
-  AND status = 'entered'
-  AND unixepoch(started_at) >= unixepoch('now', '-24 hours')
-GROUP BY project_id, recovery_reason
-ORDER BY blocked_entries DESC, project_id, recovery_reason;
-```
+Use the operator activity report and attempt history reads with an explicit UTC
+window and project scope. Compare recorded attempt intervals, dispatch events,
+lane transitions and outcomes. Report missing or incomplete intervals alongside
+concurrency, throughput and blocked-reason claims. A current state snapshot does
+not establish historical delivery or concurrency.
 
 ## Security audit waits
 

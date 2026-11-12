@@ -20,7 +20,7 @@ var ErrDatabaseBackend = errors.New("hub database backend configuration is inval
 var ErrPostgresServingUnavailable = errors.New("PostgreSQL Hub serving requires the remaining storage owners to be ported")
 
 func validateDatabaseBackend(cfg Config) error {
-	if cfg.DatabaseBackend != DatabasePostgres || cfg.Postgres == nil || cfg.DatabasePath != "" || cfg.hostedBindingMigration {
+	if cfg.DatabaseBackend != DatabasePostgres || cfg.Postgres == nil || cfg.hostedBindingMigration {
 		return ErrDatabaseBackend
 	}
 	return nil

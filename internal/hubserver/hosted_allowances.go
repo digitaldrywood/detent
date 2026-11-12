@@ -8,7 +8,6 @@ import (
 	"maps"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -18,47 +17,6 @@ import (
 )
 
 var ErrBillingUsageUnavailable = errors.New("billing usage requires the selected tenant transaction")
-
-const customerContentEvent = `type NOT LIKE 'run.%' AND type <> 'scheduler.decision'`
-
-const collaborationBytesLegacyRecount = `SELECT
-	(SELECT coalesce(sum(length(CAST(title AS BLOB))+length(CAST(body AS BLOB))+length(CAST(labels_json AS BLOB))+length(CAST(assignees_json AS BLOB))),0) FROM issues) +
-	(SELECT coalesce(sum(length(CAST(body AS BLOB))),0) FROM native_comments) +
-	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM collaboration_versions) +
-	(SELECT coalesce(sum(length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB))),0) FROM collaboration_events WHERE ` + customerContentEvent + `) +
-	(SELECT coalesce(sum(length(CAST(reference_json AS BLOB))),0) FROM artifact_references) +
-	(SELECT coalesce(sum(length(bundle)),0) FROM change_sources) +
-	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
-	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL AND customer_owned=0)`
-
-const collaborationBytesRecount = collaborationBytesLegacyRecount + ` + (SELECT coalesce(sum(object_bytes),0) FROM change_content_objects WHERE billable=1)`
-
-func recountCollaborationBytes(ctx context.Context, tx *sql.Tx) error {
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='change_content_objects')`).Scan(&exists); err != nil {
-		return err
-	}
-	query := collaborationBytesLegacyRecount
-	if exists {
-		query = collaborationBytesRecount
-		var billable int
-		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('change_content_objects') WHERE name='billable'").Scan(&billable); err != nil {
-			return err
-		}
-		if billable == 0 {
-			query = strings.ReplaceAll(query, " WHERE billable=1", "")
-		}
-	}
-	var customerOwned int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('attachments') WHERE name='customer_owned'").Scan(&customerOwned); err != nil {
-		return err
-	}
-	if customerOwned == 0 {
-		query = strings.ReplaceAll(query, " AND customer_owned=0", "")
-	}
-	_, err := tx.ExecContext(ctx, "UPDATE hosted_usage_counters SET value=("+query+") WHERE name='collaboration_bytes'")
-	return err
-}
 
 type hostedConsumptionRecord struct {
 	usage       map[string]int64
