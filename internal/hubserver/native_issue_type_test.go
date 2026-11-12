@@ -258,7 +258,7 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 		if stored.IssueType != "" {
 			t.Fatalf("existing type=%v", stored.IssueType)
 		}
-		page, err := f.service.readIssues(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, url.Values{"label": {test.label}})
+		page, err := f.service.readIssues(t.Context(), nativeBoardFixtureScope(t, f), url.Values{"label": {test.label}})
 		if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != test.id || page.Items[0].Type != "" {
 			t.Fatalf("existing issue page=%#v err=%v", page, err)
 		}
