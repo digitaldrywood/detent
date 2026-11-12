@@ -19,6 +19,9 @@ func pilotHostedJourney(t *testing.T) (*browserHostedFixture, string, string) {
 	f := seedHostedOnboardingJourney(t, newBrowserHostedOrganizationFixture(t, true, artifact.NewID("org")))
 	runner := pilotHostedRunner(t, f, 2)
 	base := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/projects/" + f.project
+	if err := f.service.maintainBoardRecords(t.Context()); err != nil {
+		t.Fatalf("refresh board projection: %v", err)
+	}
 	response := f.page(t, "owner", base+"/work-items")
 	requireNativeStatus(t, response, http.StatusOK)
 	var issues tracker.Page[tracker.NativeIssue]
