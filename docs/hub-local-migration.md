@@ -28,7 +28,7 @@ The migration inventory covers every configured project and its tracker, includi
 | Service configuration | launchd plist or systemd unit/drop-ins, environment file, executable path and enablement state |
 | Credentials | Separate private backup of provider/Git sign-ins and secret configuration; secrets never belong in issue exports |
 
-Copies of SQLite stores are coherent only when taken from a stopped owner, with any WAL/SHM sidecars as one set. Active attempts and landing operations finish before the old board stops; an old board that still runs can pause projects with `detent --config <old-config> pause <project> --reason "Hub migration"`.
+Copies of SQLite stores are coherent only when taken from a stopped owner, with any WAL/SHM sidecars as one set. Active attempts and landing operations finish before the old board stops.
 
 ## 2. Start a Hub and connect MCP
 

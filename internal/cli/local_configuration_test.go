@@ -131,39 +131,6 @@ func TestLocalConfigurationEnrolledStartupRenewsCredentials(t *testing.T) {
 	}
 }
 
-func TestResumeCommandRejectsInvalidFlagsAndManualPause(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		args   []string
-		paused bool
-		want   string
-	}{
-		{name: "missing expiry", args: []string{"resume", "detent"}, want: "one of --for or --until is required"},
-		{name: "mutually exclusive expiry", args: []string{"resume", "detent", "--for", "2h", "--until", "2099-01-01T00:00:00Z"}, want: "--for and --until are mutually exclusive"},
-		{name: "invalid duration", args: []string{"resume", "detent", "--for", "tomorrow"}, want: "--for must be a positive Go duration"},
-		{name: "negative duration", args: []string{"resume", "detent", "--for", "-1h"}, want: "--for must be a positive Go duration"},
-		{name: "invalid timestamp", args: []string{"resume", "detent", "--until", "tomorrow"}, want: "--until must be an RFC 3339 timestamp"},
-		{name: "past timestamp", args: []string{"resume", "detent", "--until", "2000-01-01T00:00:00Z"}, want: "--until must be in the future"},
-		{name: "manual pause", args: []string{"resume", "detent", "--for", "2h"}, paused: true, want: "project is manually paused"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			configPath := "global.yaml"
-			cmd := NewRootCommand(t.Context(), withProjectCommandReadFixture(globalconfig.Config{Projects: []globalconfig.Project{{ID: "detent", Paused: test.paused}}}))
-			cmd.SetOut(&bytes.Buffer{})
-			cmd.SetErr(&bytes.Buffer{})
-			cmd.SetArgs(append([]string{"--config", configPath}, test.args...))
-			err := cmd.Execute()
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("Execute() error = %v, want substring %q", err, test.want)
-			}
-		})
-	}
-}
-
 func TestProjectAdminCommandsRejectMissingProject(t *testing.T) {
 	t.Parallel()
 
@@ -177,7 +144,7 @@ func TestProjectAdminCommandsRejectMissingProject(t *testing.T) {
 	}))
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--config", configPath, "pause", "ap", "--reason", "maintenance"})
+	cmd.SetArgs([]string{"--config", configPath, "promote", "ap", "--priority", "1"})
 
 	err := cmd.Execute()
 	if err == nil {

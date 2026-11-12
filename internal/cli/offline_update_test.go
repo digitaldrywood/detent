@@ -23,7 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
 	"golang.org/x/crypto/blake2b"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
@@ -131,11 +130,6 @@ func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
 	service := detentupdate.NewService(serviceConfig)
 	options := detentupdate.ApplyOptions{AssumeYes: true, FromRelease: true, RecoveryStatePath: detentupdate.RecoveryStatePath(configPath),
 		Preflight: detentupdate.CommandPreflight("-test.run=^TestOfflineUpdateControllerProcess$"),
-	}
-	command := &cobra.Command{}
-	command.Flags().String("config", configPath, "")
-	if _, handled, err := ApplyRunningUpdate(t.Context(), command, options); err != nil || handled {
-		t.Fatalf("offline CLI coordination: handled=%t err=%v", handled, err)
 	}
 	t.Setenv("DETENT_OFFLINE_UPDATE_PHASE", "preflight")
 	applied, err := service.Apply(t.Context(), options)

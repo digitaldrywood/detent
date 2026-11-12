@@ -11,7 +11,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/cli"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -35,7 +34,7 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	if !strings.HasPrefix(output, "Examples:\n") {
 		t.Fatalf("help output does not lead with examples:\n%s", output)
 	}
-	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "pause", "unpause", "promote"} {
+	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "promote"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
@@ -51,7 +50,7 @@ func TestCommandHelpLeadsWithExample(t *testing.T) {
 		example string
 		flags   []string
 	}{
-		{name: "pause", args: []string{"pause"}, example: "detent pause api", flags: []string{"--config", "--reason"}},
+		{name: "promote", args: []string{"promote"}, example: "detent promote api", flags: []string{"--config", "--priority"}},
 		{name: "migration Hub", args: []string{"hub", "serve"}, example: "detent hub serve", flags: []string{"--database", "--listen"}},
 		{name: "migration registration", args: []string{"hub", "runner", "register"}, example: "detent hub runner register", flags: []string{"--url", "--organization", "--name", "--capacity", "--config", "--workspace-root"}},
 		{name: "migration foreground runner", example: "detent", flags: []string{"--config", "--headless"}},
@@ -97,8 +96,8 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 	}{
 		{
 			name:       "command typo",
-			args:       []string{"paues"},
-			want:       []string{`unknown command "paues"`, "Did you mean this?", "\tpause"},
+			args:       []string{"promtoe"},
+			want:       []string{`unknown command "promtoe"`, "Did you mean this?", "\tpromote"},
 			wantNoBoot: true,
 		},
 		{
@@ -109,16 +108,16 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 		},
 		{
 			name:       "semantic command suggestion",
-			args:       []string{"stop", "detent"},
-			want:       []string{`unknown command "stop"`, "Did you mean this?", "\tpause"},
+			args:       []string{"prioritize", "detent"},
+			want:       []string{`unknown command "prioritize"`, "Did you mean this?", "\tpromote"},
 			wantNoBoot: true,
 		},
 		{
 			name:       "semantic command suggestion before intended local flags",
-			args:       []string{"stop", "--reason", "maintenance"},
-			want:       []string{`unknown command "stop"`, "Did you mean this?", "\tpause"},
+			args:       []string{"prioritize", "--priority", "1"},
+			want:       []string{`unknown command "prioritize"`, "Did you mean this?", "\tpromote"},
 			dontWant:   []string{"unknown flag"},
-			wantCount:  map[string]int{"\tpause": 1},
+			wantCount:  map[string]int{"\tpromote": 1},
 			wantNoBoot: true,
 		},
 		{
@@ -129,8 +128,8 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 		},
 		{
 			name:       "local flag typo",
-			args:       []string{"pause", "--reasn", "x"},
-			want:       []string{"unknown flag: --reasn", "Did you mean this?", "\t--reason"},
+			args:       []string{"promote", "--priorty", "1"},
+			want:       []string{"unknown flag: --priorty", "Did you mean this?", "\t--priority"},
 			wantNoBoot: true,
 		},
 	}
@@ -399,9 +398,6 @@ func TestDevRuntimeCommandBuildsScreenshotsDemoBootConfig(t *testing.T) {
 	if got.Host != "0.0.0.0" {
 		t.Fatalf("Host = %q, want demo wildcard host", got.Host)
 	}
-	if got.Isolated.ManifestPath != "/api/v1/demo/scenarios" {
-		t.Fatalf("ManifestPath = %q, want demo scenario endpoint", got.Isolated.ManifestPath)
-	}
 	if len(got.Global.Projects) < 8 {
 		t.Fatalf("Global projects = %d, want screenshot fleet config", len(got.Global.Projects))
 	}
@@ -498,44 +494,44 @@ func TestResolveOutputFormatFromArgsPrecedence(t *testing.T) {
 	}{
 		{
 			name:      "flag before unknown command beats tty",
-			args:      []string{"--format", "json", "paues"},
+			args:      []string{"--format", "json", "promtoe"},
 			stdoutTTY: true,
 			want:      cli.OutputFormatJSON,
 		},
 		{
 			name:      "flag after unknown command beats tty",
-			args:      []string{"paues", "--format", "json"},
+			args:      []string{"promtoe", "--format", "json"},
 			stdoutTTY: true,
 			want:      cli.OutputFormatJSON,
 		},
 		{
 			name:      "equals form beats tty",
-			args:      []string{"paues", "--format=json"},
+			args:      []string{"promtoe", "--format=json"},
 			stdoutTTY: true,
 			want:      cli.OutputFormatJSON,
 		},
 		{
 			name: "flag beats env and non tty",
-			args: []string{"paues", "--format", "pretty"},
+			args: []string{"promtoe", "--format", "pretty"},
 			env:  "json",
 			want: cli.OutputFormatPretty,
 		},
 		{
 			name:      "env beats tty",
-			args:      []string{"paues"},
+			args:      []string{"promtoe"},
 			env:       "json",
 			stdoutTTY: true,
 			want:      cli.OutputFormatJSON,
 		},
 		{
 			name:      "tty defaults pretty",
-			args:      []string{"paues"},
+			args:      []string{"promtoe"},
 			stdoutTTY: true,
 			want:      cli.OutputFormatPretty,
 		},
 		{
 			name:      "terminator stops flag scan",
-			args:      []string{"paues", "--", "--format", "json"},
+			args:      []string{"promtoe", "--", "--format", "json"},
 			stdoutTTY: true,
 			want:      cli.OutputFormatPretty,
 		},
@@ -779,8 +775,8 @@ func TestRootCommandClassifiesMistypedCommandSuggestion(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "near miss", args: []string{"paues"}, want: "pause"},
-		{name: "semantic alias", args: []string{"stop", "api"}, want: "pause"},
+		{name: "near miss", args: []string{"promtoe"}, want: "promote"},
+		{name: "semantic alias", args: []string{"prioritize", "api"}, want: "promote"},
 	}
 
 	for _, tt := range tests {
@@ -818,8 +814,8 @@ func TestProblemForErrorBuildsStableEnvelope(t *testing.T) {
 		wantExit  int
 	}{
 		{name: "general", err: errors.New("disk is full"), wantCode: "general", wantTitle: "Command failed", wantExit: cli.ExitGeneral},
-		{name: "validation", err: cli.NewValidationError("--id is required", "Run detent pause --help.", nil), wantCode: "validation", wantTitle: "Validation failed", wantExit: cli.ExitValidation},
-		{name: "unknown command", err: errors.New(`unknown command "paues" for "detent"`), wantCode: "unknown_command", wantTitle: "Unknown command", wantExit: cli.ExitValidation},
+		{name: "validation", err: cli.NewValidationError("--id is required", "Run detent promote --help.", nil), wantCode: "validation", wantTitle: "Validation failed", wantExit: cli.ExitValidation},
+		{name: "unknown command", err: errors.New(`unknown command "promtoe" for "detent"`), wantCode: "unknown_command", wantTitle: "Unknown command", wantExit: cli.ExitValidation},
 		{name: "unknown flag", err: errors.New("unknown flag: --hedless"), wantCode: "unknown_flag", wantTitle: "Unknown flag", wantExit: cli.ExitValidation},
 		{name: "auth", err: fmt.Errorf("wrapped: %w", cli.ErrGitHubAuth), wantCode: "github_auth", wantTitle: "GitHub authentication required", wantExit: cli.ExitAuth},
 		{name: "config exists", err: fmt.Errorf("%w: /tmp/global.yaml", cli.ErrConfigExists), wantCode: "config_exists", wantTitle: "Global config already exists", wantExit: cli.ExitNotFoundOrConfig},
@@ -875,300 +871,6 @@ func TestProblemForErrorExtractsInlineDidYouMeanFromHint(t *testing.T) {
 	}
 	if got.SuggestedFix != err.Hint {
 		t.Fatalf("ProblemForError().SuggestedFix = %q, want %q", got.SuggestedFix, err.Hint)
-	}
-}
-
-func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
-	t.Parallel()
-
-	paths := createProjectFiles(t)
-	configPath := filepath.Join(paths.root, "global.yaml")
-	writeGlobalConfig(t, configPath, []globalconfig.Project{
-		{
-			ID:       "detent",
-			Workflow: paths.workflowPath,
-			Workdir:  paths.workdirPath,
-			Weight:   2,
-			Priority: 4,
-		},
-		{ID: "docs", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
-	})
-
-	signals := make(chan cli.Signal, 5)
-	runCommand := func(args ...string) {
-		t.Helper()
-
-		allArgs := append([]string{"--config", configPath}, args...)
-		cmd := cli.NewRootCommand(
-			context.Background(),
-			cli.WithStdoutTTY(func() bool { return true }),
-			cli.WithSignalFunc(func(_ context.Context, signal cli.Signal) error {
-				signals <- signal
-				return nil
-			}),
-		)
-		cmd.SetOut(&bytes.Buffer{})
-		cmd.SetErr(&bytes.Buffer{})
-		cmd.SetArgs(allArgs)
-
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("Execute(%v) error = %v", args, err)
-		}
-	}
-
-	runCommand("pause", "detent", "--reason", "release hold", "--until-issue", "example-org/example-project#1499")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-		if !project.Paused {
-			t.Fatal("Paused = false, want true")
-		}
-		if project.PausedReason != "release hold" || project.PausedUntilIssue != "example-org/example-project#1499" || project.PausedAt == "" {
-			t.Fatalf("pause metadata = %#v", project)
-		}
-	})
-	assertSignal(t, signals, cli.OperationPauseProject, "detent")
-
-	runCommand("unpause", "detent")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-		if project.Paused {
-			t.Fatal("Paused = true, want false")
-		}
-		if project.PausedReason != "" || project.PausedUntilIssue != "" || project.PausedUntil != "" || project.PausedAt != "" {
-			t.Fatalf("pause metadata not cleared: %#v", project)
-		}
-	})
-	assertSignal(t, signals, cli.OperationUnpauseProject, "detent")
-
-	resumeStarted := time.Now().UTC()
-	runCommand("resume", "detent", "--for", "2h")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-		until, err := time.Parse(time.RFC3339, project.ActiveHoursOverrideUntil)
-		if err != nil {
-			t.Fatalf("ActiveHoursOverrideUntil = %q: %v", project.ActiveHoursOverrideUntil, err)
-		}
-		if until.Before(resumeStarted.Add(119*time.Minute)) || until.After(time.Now().UTC().Add(121*time.Minute)) {
-			t.Fatalf("ActiveHoursOverrideUntil = %v, want about two hours from now", until)
-		}
-	})
-	assertSignal(t, signals, cli.OperationResumeProject, "detent")
-
-	runCommand("promote", "docs", "--priority", "1")
-	assertProject(t, configPath, "docs", func(project globalconfig.Project) {
-		if project.Priority != 0 {
-			t.Fatalf("Priority = %d, want 0", project.Priority)
-		}
-	})
-	assertSignal(t, signals, cli.OperationPromoteProject, "docs")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-		if project.Priority != 1 {
-			t.Fatalf("detent rank = %d, want 1", project.Priority)
-		}
-	})
-
-}
-
-func TestPauseCommandExitConditionFlags(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		args          []string
-		wantIssue     string
-		wantTimestamp string
-	}{
-		{
-			name:      "issue exit condition",
-			args:      []string{"--until-issue", "example-org/example-project#1499"},
-			wantIssue: "example-org/example-project#1499",
-		},
-		{
-			name:          "timestamp exit condition",
-			args:          []string{"--until", "2026-08-01T12:00:00-05:00"},
-			wantTimestamp: "2026-08-01T12:00:00-05:00",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			paths := createProjectFiles(t)
-			configPath := filepath.Join(paths.root, "global.yaml")
-			writeGlobalConfig(t, configPath, []globalconfig.Project{{
-				ID:       "detent",
-				Workflow: paths.workflowPath,
-				Workdir:  paths.workdirPath,
-				Weight:   1,
-			}})
-
-			cmd := cli.NewRootCommand(context.Background())
-			cmd.SetOut(&bytes.Buffer{})
-			cmd.SetErr(&bytes.Buffer{})
-			args := []string{"--config", configPath, "pause", "detent", "--reason", "release hold"}
-			cmd.SetArgs(append(args, tt.args...))
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("Execute() error = %v", err)
-			}
-
-			assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-				if !project.Paused {
-					t.Fatal("Paused = false, want true")
-				}
-				if project.PausedReason != "release hold" {
-					t.Fatalf("PausedReason = %q, want release hold", project.PausedReason)
-				}
-				if project.PausedUntilIssue != tt.wantIssue {
-					t.Fatalf("PausedUntilIssue = %q, want %q", project.PausedUntilIssue, tt.wantIssue)
-				}
-				if project.PausedUntil != tt.wantTimestamp {
-					t.Fatalf("PausedUntil = %q, want %q", project.PausedUntil, tt.wantTimestamp)
-				}
-			})
-		})
-	}
-}
-
-func TestPauseCommandValidatesIssueReference(t *testing.T) {
-	t.Parallel()
-
-	nativeWorkflow := `---
-tracker:
-  kind: hub_native
-  repository: example-org/example-project
----
-Prompt
-`
-	githubWorkflow := `---
-tracker:
-  kind: github
-  repository: example-org/video-project
----
-Prompt
-`
-	tests := []struct {
-		name       string
-		reference  string
-		withGitHub bool
-		wantError  string
-		wantPaused bool
-	}{
-		{
-			name:      "rejects cross repository issue without resolver",
-			reference: "example-org/video-project#155",
-			wantError: "no configured project tracker can resolve GitHub pause exit issue example-org/video-project#155",
-		},
-		{
-			name:       "accepts cross repository issue with configured resolver",
-			reference:  "example-org/video-project#155",
-			withGitHub: true,
-			wantPaused: true,
-		},
-		{
-			name:       "accepts native project number",
-			reference:  "prj_example#42",
-			wantPaused: true,
-		},
-		{
-			name:       "accepts native number",
-			reference:  "#42",
-			wantPaused: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			native := createProjectFilesWithWorkflow(t, nativeWorkflow)
-			projects := []globalconfig.Project{{
-				ID:       "prj_example",
-				Workflow: native.workflowPath,
-				Workdir:  native.workdirPath,
-				Weight:   1,
-			}}
-			if tt.withGitHub {
-				github := createProjectFilesWithWorkflow(t, githubWorkflow)
-				projects = append(projects, globalconfig.Project{
-					ID:       "video-studio",
-					Workflow: github.workflowPath,
-					Workdir:  github.workdirPath,
-					Weight:   1,
-				})
-			}
-			configPath := filepath.Join(native.root, "global.yaml")
-			writeGlobalConfig(t, configPath, projects)
-
-			cmd := cli.NewRootCommand(context.Background())
-			cmd.SetOut(&bytes.Buffer{})
-			cmd.SetErr(&bytes.Buffer{})
-			cmd.SetArgs([]string{
-				"--config", configPath,
-				"pause", "prj_example",
-				"--reason", "release hold",
-				"--until-issue", tt.reference,
-			})
-			err := cmd.Execute()
-			if tt.wantError != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
-					t.Fatalf("Execute() error = %v, want containing %q", err, tt.wantError)
-				}
-			} else if err != nil {
-				t.Fatalf("Execute() error = %v", err)
-			}
-
-			assertProject(t, configPath, "prj_example", func(project globalconfig.Project) {
-				if project.Paused != tt.wantPaused {
-					t.Fatalf("Paused = %t, want %t", project.Paused, tt.wantPaused)
-				}
-			})
-		})
-	}
-}
-
-func TestPauseCommandRejectsInvalidFlags(t *testing.T) {
-	t.Parallel()
-
-	paths := createProjectFiles(t)
-	configPath := filepath.Join(paths.root, "global.yaml")
-	writeCLIInstallConfig(t, configPath, []globalconfig.Project{{
-		ID:       "detent",
-		Workflow: paths.workflowPath,
-		Workdir:  paths.workdirPath,
-		Weight:   1,
-	}})
-
-	tests := []struct {
-		name string
-		args []string
-		want string
-	}{
-		{
-			name: "missing reason",
-			args: []string{"pause", "detent"},
-			want: "--reason is required",
-		},
-		{
-			name: "mutually exclusive exits",
-			args: []string{"pause", "detent", "--reason", "hold", "--until-issue", "example-org/example-project#1499", "--until", "2026-08-01T12:00:00Z"},
-			want: "--until-issue and --until are mutually exclusive",
-		},
-		{
-			name: "invalid timestamp",
-			args: []string{"pause", "detent", "--reason", "hold", "--until", "tomorrow"},
-			want: "--until must be an RFC 3339 timestamp",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cmd := cli.NewRootCommand(context.Background())
-			cmd.SetOut(&bytes.Buffer{})
-			cmd.SetErr(&bytes.Buffer{})
-			cmd.SetArgs(append([]string{"--config", configPath}, tt.args...))
-			err := cmd.Execute()
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Execute() error = %v, want substring %q", err, tt.want)
-			}
-		})
 	}
 }
 
@@ -1280,31 +982,6 @@ func writeCLIInstallConfig(t *testing.T, path string, projects []globalconfig.Pr
 func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
 	t.Helper()
 	writeCLIInstallConfig(t, path, projects)
-}
-
-func assertProject(t *testing.T, configPath string, id string, assert func(globalconfig.Project)) {
-	t.Helper()
-
-	cfg, err := readStoredCLIConfiguration(t, configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	for _, project := range cfg.Projects {
-		if project.ID == id {
-			assert(project)
-			return
-		}
-	}
-	t.Fatalf("project %q not found in %#v", id, cfg.Projects)
-}
-
-func assertSignal(t *testing.T, signals <-chan cli.Signal, operation cli.Operation, projectID string) {
-	t.Helper()
-
-	signal := <-signals
-	if signal.Operation != operation || signal.ProjectID != projectID {
-		t.Fatalf("signal = %#v, want %s %s", signal, operation, projectID)
-	}
 }
 
 func assertHintedError(t *testing.T, err error, wantErr error, wantMessage string, wantHint string, wantCommands []string) {

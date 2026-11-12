@@ -59,7 +59,6 @@ type doctorCheck struct {
 	AutoPromoteCandidates      []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates  []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
 	PermanentlyHeldRecoveries  []doctorBlockedRecoveryCandidateDiagnostic `json:"permanently_held_recoveries,omitempty"`
-	BackendCapacity            []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
 	BacklogAdmission           *doctorAdmissionDiagnostic                 `json:"backlog_admission,omitempty"`
 	DependencyCapabilities     []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
 	LaneSignalWarnings         []telemetry.LaneSignalWarning              `json:"lane_signal_warnings,omitempty"`
@@ -72,7 +71,6 @@ type doctorCheck struct {
 	ClosedActiveIssues         []doctorStatusDriftIssueDiagnostic         `json:"closed_active_issues,omitempty"`
 	AuthorizationAttention     []doctorAuthorizationAttentionDiagnostic   `json:"authorization_attention,omitempty"`
 	OwnershipAttention         []doctorOwnershipAttentionDiagnostic       `json:"ownership_attention,omitempty"`
-	OrphanedAgentProcesses     *telemetry.OrphanedAgentProcesses          `json:"orphaned_agent_processes,omitempty"`
 	ProjectDefinition          *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
 	Capabilities               *doctorCapabilityReport                    `json:"capabilities,omitempty"`
 	WorkflowOptimization       doctorWorkflowOptimizationReport           `json:"-"`
@@ -548,12 +546,6 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "Budget overrides",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorBudgetOverrides(jobCtx, resolution, cfg.ProjectID, time.Now().UTC(), deps)}
-			},
-		},
-		doctorCheckJob{
-			Name: "Backend capacity",
-			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, boot, cfg.ProjectID, deps)}
 			},
 		},
 		doctorCheckJob{

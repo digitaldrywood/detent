@@ -106,7 +106,6 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	cmd.Flags().StringVar(&authOIDCIssuer, "auth-oidc-issuer", "", "issuer URL for isolated OIDC auth")
 	cmd.Flags().StringVar(&authOIDCClientID, "auth-oidc-client-id", "", "client ID for isolated OIDC auth")
 	cmd.Flags().StringVar(&authOIDCClientSecret, "auth-oidc-client-secret", "", "client secret for isolated OIDC auth")
-	cmd.AddCommand(newDevRuntimeCaptureCommand(opts))
 	return cmd
 }
 
@@ -213,10 +212,6 @@ func devRuntimeBootConfig(ctx context.Context, runtime devruntime.Runtime, host 
 }
 
 func devRuntimeIsolationInfo(runtime devruntime.Runtime) *IsolatedRuntimeInfo {
-	manifestPath := ""
-	if runtime.Demo == devruntime.DemoScreenshots {
-		manifestPath = "/api/v1/demo/scenarios"
-	}
 	return &IsolatedRuntimeInfo{
 		Home:          runtime.Home,
 		ConfigPath:    runtime.ConfigPath,
@@ -228,7 +223,6 @@ func devRuntimeIsolationInfo(runtime devruntime.Runtime) *IsolatedRuntimeInfo {
 		FixturePath:   runtime.FixturePath,
 		Demo:          runtime.Demo,
 		DemoClock:     runtime.DemoClock,
-		ManifestPath:  manifestPath,
 	}
 }
 

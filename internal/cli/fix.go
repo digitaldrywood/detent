@@ -37,7 +37,6 @@ func newFixCommand(configPath *string, opts options) *cobra.Command {
 	}
 	cmd.AddCommand(
 		newWorkflowLayoutFixCommand(configPath, opts),
-		newWorkerProcessesFixCommand(configPath, opts),
 	)
 	return cmd
 }

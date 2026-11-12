@@ -143,7 +143,7 @@ func TestRegisteredCommandsHaveExamples(t *testing.T) {
 }
 
 func TestRunCLIWritesProblemJSONForUnknownCommand(t *testing.T) {
-	for _, command := range []string{"paues", "init", "add-project", "remove-project", "refresh-project", "onboarding", "work-item", "github-local", "start", "status", "auth", "key", "ci-trigger-label", "shadow-run"} {
+	for _, command := range []string{"promtoe", "pause", "unpause", "resume", "state", "issue", "report", "mcp", "capacity", "init", "add-project", "remove-project", "refresh-project", "onboarding", "work-item", "github-local", "start", "status", "auth", "key", "ci-trigger-label", "shadow-run"} {
 		t.Run(command, func(t *testing.T) {
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
@@ -180,12 +180,12 @@ func TestRunCLIWritesProblemJSONForUnknownCommand(t *testing.T) {
 			if !strings.Contains(got.Detail, command) {
 				t.Fatalf("detail = %q, want command", got.Detail)
 			}
-			if command == "paues" {
-				if len(got.DidYouMean) != 1 || got.DidYouMean[0] != "pause" {
-					t.Fatalf("did_you_mean = %#v, want pause", got.DidYouMean)
+			if command == "promtoe" {
+				if len(got.DidYouMean) != 1 || got.DidYouMean[0] != "promote" {
+					t.Fatalf("did_you_mean = %#v, want promote", got.DidYouMean)
 				}
-				if !strings.Contains(got.SuggestedFix, "detent pause") {
-					t.Fatalf("suggested_fix = %q, want detent pause", got.SuggestedFix)
+				if !strings.Contains(got.SuggestedFix, "detent promote") {
+					t.Fatalf("suggested_fix = %q, want detent promote", got.SuggestedFix)
 				}
 			}
 		})
@@ -241,7 +241,7 @@ func TestRunCLIWritesProblemJSONForProjectNotFound(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := runCLI(context.Background(), []string{"--config", configPath, "--format", "json", "pause", "ap", "--reason", "integration test"}, &stdout, &stderr)
+	code := runCLI(context.Background(), []string{"--config", configPath, "--format", "json", "promote", "ap", "--priority", "1"}, &stdout, &stderr)
 	if code != cli.ExitNotFoundOrConfig {
 		t.Fatalf("exit code = %d, want %d\nstderr:\n%s", code, cli.ExitNotFoundOrConfig, stderr.String())
 	}
@@ -292,11 +292,11 @@ func TestRunCLIPrettyUnknownCommandPrintsHint(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := runCLI(context.Background(), []string{"paues", "--format", "pretty"}, &stdout, &stderr)
+	code := runCLI(context.Background(), []string{"promtoe", "--format", "pretty"}, &stdout, &stderr)
 	if code != 3 {
 		t.Fatalf("exit code = %d, want 3\nstderr:\n%s", code, stderr.String())
 	}
-	for _, want := range []string{"Error: unknown command", "Hint: Run detent pause instead."} {
+	for _, want := range []string{"Error: unknown command", "Hint: Run detent promote instead."} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
 		}
@@ -332,7 +332,7 @@ func TestCommandErrorsUseSemanticExitCodes(t *testing.T) {
 		cmd := newRootCommand(context.Background())
 		cmd.SetOut(&bytes.Buffer{})
 		cmd.SetErr(&bytes.Buffer{})
-		cmd.SetArgs([]string{"pause"})
+		cmd.SetArgs([]string{"promote"})
 
 		err := cmd.Execute()
 		if err == nil {
@@ -357,7 +357,7 @@ global:
 		cmd := newRootCommand(context.Background())
 		cmd.SetOut(&bytes.Buffer{})
 		cmd.SetErr(&bytes.Buffer{})
-		cmd.SetArgs([]string{"--config", configPath, "pause", "missing", "--reason", "integration test"})
+		cmd.SetArgs([]string{"--config", configPath, "promote", "missing", "--priority", "1"})
 
 		err := cmd.Execute()
 		if err == nil {

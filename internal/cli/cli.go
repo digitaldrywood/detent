@@ -10,15 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
-	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/service"
 )
@@ -76,9 +73,6 @@ type Operation string
 const (
 	OperationInit           Operation = "init"
 	OperationAddProject     Operation = "add-project"
-	OperationPauseProject   Operation = "pause"
-	OperationUnpauseProject Operation = "unpause"
-	OperationResumeProject  Operation = "resume"
 	OperationPromoteProject Operation = "promote"
 	OperationRemoveProject  Operation = "remove-project"
 )
@@ -120,36 +114,6 @@ type Signal struct {
 type configPathResult struct {
 	Path string `json:"path"`
 	Rule string `json:"rule"`
-}
-
-type projectResult struct {
-	ID                    string                 `json:"id"`
-	Workflow              string                 `json:"workflow"`
-	WorkflowRef           string                 `json:"workflow_ref,omitempty"`
-	Workdir               string                 `json:"workdir"`
-	Weight                int                    `json:"weight"`
-	Priority              int                    `json:"priority"`
-	Paused                bool                   `json:"paused"`
-	PausedReason          string                 `json:"paused_reason,omitempty"`
-	PausedUntilIssue      string                 `json:"paused_until_issue,omitempty"`
-	PausedUntil           string                 `json:"paused_until,omitempty"`
-	CredentialRef         string                 `json:"credential_ref,omitempty"`
-	GlobalConfigGitStatus *globalConfigGitStatus `json:"global_config_git,omitempty"`
-}
-
-type projectPausedResult struct {
-	Status           string `json:"status"`
-	Project          string `json:"project"`
-	Paused           bool   `json:"paused"`
-	PausedReason     string `json:"paused_reason,omitempty"`
-	PausedUntilIssue string `json:"paused_until_issue,omitempty"`
-	PausedUntil      string `json:"paused_until,omitempty"`
-}
-
-type projectResumedResult struct {
-	Status                   string `json:"status"`
-	Project                  string `json:"project"`
-	ActiveHoursOverrideUntil string `json:"active_hours_override_until"`
 }
 
 type projectPriorityResult struct {
@@ -204,7 +168,6 @@ type IsolatedRuntimeInfo struct {
 	FixturePath   string
 	Demo          string
 	DemoClock     string
-	ManifestPath  string
 }
 
 type BootFunc func(context.Context, BootConfig) error
@@ -225,8 +188,6 @@ type CommandRunner func(context.Context, string, ...string) (string, error)
 type ProjectManager interface {
 	Add(context.Context, globalconfig.Project) error
 	Remove(context.Context, project.ID) error
-	Pause(context.Context, project.ID) error
-	Unpause(context.Context, project.ID) error
 }
 
 type Option func(*options)
@@ -248,7 +209,6 @@ type options struct {
 	runCommand        CommandRunner
 	httpDo            func(*http.Request) (*http.Response, error)
 	configureLog      LoggerFunc
-	captureDemo       demoCaptureFunc
 	version           string
 	build             buildinfo.Info
 	stdoutTTY         func() bool
@@ -353,10 +313,6 @@ func ProjectManagerSignalFunc(manager ProjectManager) SignalFunc {
 			return manager.Add(ctx, signal.Project)
 		case OperationRemoveProject:
 			return manager.Remove(ctx, project.ID(signal.ProjectID))
-		case OperationPauseProject:
-			return manager.Pause(ctx, project.ID(signal.ProjectID))
-		case OperationUnpauseProject:
-			return manager.Unpause(ctx, project.ID(signal.ProjectID))
 		default:
 			return nil
 		}
@@ -396,10 +352,7 @@ JSON errors:
   Optional fields: suggested_fix, did_you_mean, docs_url.
   Stable codes: general, validation, unknown_command, unknown_flag, github_auth,
   config_exists, project_exists, project_not_found, doctor_failed, shutdown_forced,
-  shutdown_timeout, dashboard_unreachable, dashboard_timeout,
-  dashboard_unauthorized, dashboard_forbidden, ambiguous_reference,
-  issue_not_found, unsupported_model_version, runtime_unavailable,
-  dashboard_request_failed.
+  shutdown_timeout.
 
 Exit codes:
   0  success
@@ -492,22 +445,11 @@ detent --format json config path`),
 		newArtifactCommand(opts.lookupEnv),
 		newAttachCommand(opts.lookupEnv, nil),
 		newValidateCommand(opts.lookupEnv, nil, installGoTestWrapper),
-		newPauseProjectCommand(&configPath, opts),
-		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
-			clearProjectPause(project)
-			return nil
-		}),
-		newResumeProjectCommand(&configPath, opts),
 		newBudgetCommand(&configPath, opts),
 		newAuditCommand(&configPath, &host, &port, opts),
 		newConfigCommand(&configPath, opts),
-		newCapacityCommand(&configPath, &host, &port, opts),
 		newExposureCommand(&configPath, opts),
-		newIssueCommand(&configPath, &host, &port, opts),
-		newMCPCommand(&configPath, &host, &port, opts),
-		newStateCommand(&configPath, &host, &port, opts),
 		newPromoteCommand(&configPath, opts),
-		newReportCommand(&configPath, &host, &port, opts),
 	)
 	cmd.SetHelpCommand(newHelpCommand(cmd, opts))
 	ConfigureExamplesFirstHelp(cmd)
@@ -551,7 +493,6 @@ func defaultOptions() options {
 		ghAuthToken: defaultGHAuthToken,
 		runCommand:  defaultCommandRunner,
 		httpDo:      http.DefaultClient.Do,
-		captureDemo: runDemoCapture,
 		stdoutTTY:   stdoutIsTTY,
 		service:     defaultServiceFactory,
 	}
@@ -724,126 +665,6 @@ func writeErrorHint(out io.Writer, err error) error {
 
 type projectEdit func(*globalconfig.Project) error
 
-type projectValidation func(context.Context, globalconfig.Config, int) error
-
-func newPauseProjectCommand(configPath *string, opts options) *cobra.Command {
-	var reason string
-	var untilIssue string
-	var until string
-	cmd := &cobra.Command{
-		Use:     "pause PROJECT_ID",
-		Short:   "Pause a project",
-		Example: `detent pause api --reason "maintenance" --until-issue digitaldrywood/api#42`,
-		Args:    ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			reason = strings.TrimSpace(reason)
-			untilIssue = strings.TrimSpace(untilIssue)
-			until = strings.TrimSpace(until)
-			if err := validatePauseFlags(reason, untilIssue, until); err != nil {
-				return err
-			}
-			out, err := OutputForCommand(cmd)
-			if err != nil {
-				return err
-			}
-			updated, err := updateProject(cmd.Context(), *configPath, opts, OperationPauseProject, args[0], func(project *globalconfig.Project) error {
-				project.Paused = true
-				project.PausedReason = reason
-				project.PausedAt = time.Now().UTC().Format(time.RFC3339)
-				project.PausedUntilIssue = untilIssue
-				project.PausedUntil = until
-				return nil
-			}, func(ctx context.Context, cfg globalconfig.Config, index int) error {
-				return validatePauseIssueReference(ctx, cfg, index)
-			})
-			if err != nil {
-				return err
-			}
-			return out.Write(nil, projectEditResult(OperationPauseProject, updated))
-		},
-	}
-	cmd.Flags().StringVar(&reason, "reason", "", "reason the project is paused")
-	cmd.Flags().StringVar(&untilIssue, "until-issue", "", "auto-unpause after this tracker issue closes")
-	cmd.Flags().StringVar(&until, "until", "", "auto-unpause at this RFC 3339 timestamp")
-	return cmd
-}
-
-func validatePauseFlags(reason string, untilIssue string, until string) error {
-	switch {
-	case strings.TrimSpace(reason) == "":
-		return WrapValidation(errors.New("--reason is required"))
-	case strings.TrimSpace(untilIssue) != "" && strings.TrimSpace(until) != "":
-		return WrapValidation(errors.New("--until-issue and --until are mutually exclusive"))
-	case strings.TrimSpace(until) != "":
-		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(until)); err != nil {
-			return WrapValidation(errors.New("--until must be an RFC 3339 timestamp"))
-		}
-	}
-	return nil
-}
-
-func newResumeProjectCommand(configPath *string, opts options) *cobra.Command {
-	var duration string
-	var until string
-	cmd := &cobra.Command{
-		Use:     "resume PROJECT_ID",
-		Short:   "Temporarily allow dispatch outside active hours",
-		Example: "detent resume api --for 2h",
-		Args:    ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			now := time.Now().UTC()
-			overrideUntil, err := activeHoursOverrideDeadline(now, duration, until)
-			if err != nil {
-				return err
-			}
-			out, err := OutputForCommand(cmd)
-			if err != nil {
-				return err
-			}
-			updated, err := updateProject(cmd.Context(), *configPath, opts, OperationResumeProject, args[0], func(project *globalconfig.Project) error {
-				if project.Paused {
-					return WrapValidation(errors.New("project is manually paused; run detent unpause before adding an active-hours override"))
-				}
-				project.ActiveHoursOverrideUntil = overrideUntil.Format(time.RFC3339)
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-			return out.Write(nil, projectEditResult(OperationResumeProject, updated))
-		},
-	}
-	cmd.Flags().StringVar(&duration, "for", "", "allow dispatch for this Go duration, such as 2h")
-	cmd.Flags().StringVar(&until, "until", "", "allow dispatch until this RFC 3339 timestamp")
-	return cmd
-}
-
-func activeHoursOverrideDeadline(now time.Time, duration string, until string) (time.Time, error) {
-	duration = strings.TrimSpace(duration)
-	until = strings.TrimSpace(until)
-	if duration == "" && until == "" {
-		return time.Time{}, WrapValidation(errors.New("one of --for or --until is required"))
-	}
-	if duration != "" && until != "" {
-		return time.Time{}, WrapValidation(errors.New("--for and --until are mutually exclusive"))
-	}
-	if duration != "" {
-		parsed, err := time.ParseDuration(duration)
-		if err != nil || parsed <= 0 {
-			return time.Time{}, WrapValidation(errors.New("--for must be a positive Go duration such as 2h"))
-		}
-		return now.Add(parsed), nil
-	}
-	parsed, err := time.Parse(time.RFC3339, until)
-	if err != nil {
-		return time.Time{}, WrapValidation(errors.New("--until must be an RFC 3339 timestamp"))
-	}
-	if !parsed.After(now) {
-		return time.Time{}, WrapValidation(errors.New("--until must be in the future"))
-	}
-	return parsed, nil
-}
-
 func clearProjectPause(project *globalconfig.Project) {
 	if project == nil {
 		return
@@ -853,26 +674,6 @@ func clearProjectPause(project *globalconfig.Project) {
 	project.PausedAt = ""
 	project.PausedUntilIssue = ""
 	project.PausedUntil = ""
-}
-
-func newEditProjectCommand(configPath *string, opts options, operation Operation, use string, short string, edit projectEdit) *cobra.Command {
-	return &cobra.Command{
-		Use:     use + " PROJECT_ID",
-		Short:   short,
-		Example: "detent " + use + " api",
-		Args:    ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			out, err := OutputForCommand(cmd)
-			if err != nil {
-				return err
-			}
-			updated, err := updateProject(cmd.Context(), *configPath, opts, operation, args[0], edit)
-			if err != nil {
-				return err
-			}
-			return out.Write(nil, projectEditResult(operation, updated))
-		},
-	}
 }
 
 func newConfigCommand(configPath *string, opts options) *cobra.Command {
@@ -951,7 +752,6 @@ func updateProject(
 	operation Operation,
 	id string,
 	edit projectEdit,
-	validations ...projectValidation,
 ) (globalconfig.Project, error) {
 	path, err := resolveConfigPath(configPath, opts)
 	if err != nil {
@@ -969,14 +769,6 @@ func updateProject(
 	}
 	if err := edit(&cfg.Projects[index]); err != nil {
 		return globalconfig.Project{}, err
-	}
-	for _, validate := range validations {
-		if validate == nil {
-			continue
-		}
-		if err := validate(ctx, cfg, index); err != nil {
-			return globalconfig.Project{}, err
-		}
 	}
 	var promotedPriority *int
 	if operation == OperationPromoteProject {
@@ -1009,104 +801,6 @@ func updateProject(
 		return globalconfig.Project{}, err
 	}
 	return cfg.Projects[index], nil
-}
-
-func validatePauseIssueReference(ctx context.Context, cfg globalconfig.Config, projectIndex int) error {
-	project := cfg.Projects[projectIndex]
-	reference := strings.TrimSpace(project.PausedUntilIssue)
-	if reference == "" {
-		return nil
-	}
-
-	deps := runtimeDeps{}.withDefaults()
-	trackers := make([]pause.Tracker, 0, len(cfg.Projects))
-	trackerKinds := make(map[string]string, len(cfg.Projects))
-	for _, candidate := range cfg.Projects {
-		workflow, err := loadRuntimeProjectWorkflow(ctx, candidate, deps)
-		if err != nil {
-			if strings.EqualFold(strings.TrimSpace(candidate.ID), strings.TrimSpace(project.ID)) {
-				return pauseIssueValidationError(project.ID, reference, fmt.Errorf("load project workflow: %w", err))
-			}
-			continue
-		}
-		projectID := strings.TrimSpace(candidate.ID)
-		trackers = append(trackers, pause.Tracker{
-			ProjectID:  projectID,
-			Kind:       workflow.Config.Tracker.Kind,
-			Repository: workflow.Config.Tracker.Repository,
-		})
-		trackerKinds[strings.ToLower(projectID)] = workflow.Config.Tracker.Kind
-	}
-
-	resolution, err := pause.ResolveReference(project.ID, reference, trackers)
-	if err != nil {
-		return pauseIssueValidationError(project.ID, reference, err)
-	}
-	kind := trackerKinds[strings.ToLower(strings.TrimSpace(resolution.ProjectID))]
-	if !pauseTrackerSupportsIssueReferences(kind) {
-		return pauseIssueValidationError(
-			project.ID,
-			reference,
-			fmt.Errorf("resolver project %s tracker kind %s cannot resolve issue references", resolution.ProjectID, kind),
-		)
-	}
-	return nil
-}
-
-func pauseTrackerSupportsIssueReferences(kind string) bool {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case workflowconfig.TrackerGitHub, workflowconfig.TrackerHubNative:
-		return true
-	default:
-		return false
-	}
-}
-
-func pauseIssueValidationError(projectID string, reference string, err error) error {
-	return WrapValidation(fmt.Errorf(
-		"cannot pause project %q with --until-issue %q: %w",
-		strings.TrimSpace(projectID),
-		strings.TrimSpace(reference),
-		err,
-	))
-}
-
-func newProjectResult(project globalconfig.Project) projectResult {
-	return projectResult{
-		ID:               project.ID,
-		Workflow:         project.Workflow,
-		WorkflowRef:      project.WorkflowRef,
-		Workdir:          project.Workdir,
-		Weight:           project.Weight,
-		Priority:         project.Priority,
-		Paused:           project.Paused,
-		PausedReason:     project.PausedReason,
-		PausedUntilIssue: project.PausedUntilIssue,
-		PausedUntil:      project.PausedUntil,
-		CredentialRef:    project.CredentialRef,
-	}
-}
-
-func projectEditResult(operation Operation, project globalconfig.Project) any {
-	switch operation {
-	case OperationPauseProject, OperationUnpauseProject:
-		return projectPausedResult{
-			Status:           "ok",
-			Project:          project.ID,
-			Paused:           project.Paused,
-			PausedReason:     project.PausedReason,
-			PausedUntilIssue: project.PausedUntilIssue,
-			PausedUntil:      project.PausedUntil,
-		}
-	case OperationResumeProject:
-		return projectResumedResult{
-			Status:                   "ok",
-			Project:                  project.ID,
-			ActiveHoursOverrideUntil: project.ActiveHoursOverrideUntil,
-		}
-	default:
-		return newProjectResult(project)
-	}
 }
 
 func resolveConfigPath(path string, opts options) (string, error) {

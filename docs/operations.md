@@ -1,62 +1,17 @@
-# Operations report
+# Operations
 
-Read `GET /api/v1/operations` from a runner's local API using the same
-authentication and read scope as the state API. The report includes its
-generation time and producing instance name.
+Use the Hub's MCP tools for current work and recorded operations:
 
-The JSON structure is shared in `internal/operations`. Historical aggregation
-lives in the store; the web layer adds instance identity, current merge-queue
-telemetry, explicit human gates, and issue links.
+- `board_state` reads bounded project and board inventory. Use `explain_item`
+  for an individual issue's current eligibility and evidence freshness.
+- `activity` reads running attempts and recent outcomes with project and runner
+  selectors.
+- `reports` and `time_series` read recorded productivity, usage and timing data
+  for the selected window, including explicit coverage and unavailable fields.
 
-Token efficiency is measured as tokens per merged PR per project per day from
-recorded history, not from dashboard or completion receipt averages. See
-[Token spend diagnosis](diagnosis.md#token-spend) for the sources and merge
-definition.
-
-## Stats
-
-The two windows are the trailing 24 hours and seven days, ending at `data_time`.
-Historical windows include their start and exclude their end.
-
-- Closes count completed efficiency receipts. Merges use the existing
-  cost-per-outcome convention: completed receipts with a positive PR number.
-  Per-day values divide those counts by the window duration in days. These
-  measurements cover recorded completions, not an independent GitHub audit.
-- Cycle time uses the first recorded In Progress entry and first Done entry per
-  project and issue, including In Progress entries before the reporting window.
-  Repeated transitions do not add cycle samples. Median and p75 use linear
-  interpolation. Missing start times are excluded and `cycle_samples` records
-  the denominator; no samples produces null percentiles.
-- Clean-attempt rate is the fraction of completed receipts with exactly one
-  attempt. Tokens per completed issue is the mean total across those receipts.
-  Both values are null without completions.
-- Blocked nights are UTC calendar dates intersecting the window. Each project
-  and issue counts once on each date, even if it enters Blocked repeatedly.
-  Dates with no entries are omitted.
-- Project dispatch counts use selected scheduler decisions; the five most
-  frequent skip reasons are sorted by count, then reason.
-- Queue depth sums the reported native queue depth per project, falling back
-  to queued Merging work for the serialized path. `merge_group_size` and
-  `merge_group_wait_seconds` mirror the repository queue's maximum entries to
-  merge and minimum wait when a native queue entry is observed; both are null
-  without a queue, and unavailable is not zero.
-
-## Actions and decisions
-
-`since` is an optional RFC3339 timestamp, exclusive, applying only to actions.
-It defaults to 24 hours before the current request. Pass the preceding report's
-`data_time` to retrieve actions since that render. One reader never consumes
-another reader's actions.
-
-Only applied lane-ledger writes stamped with the `operator_routine` origin
-appear. The operator routine below produces these writes; the report does not
-execute remediations. Each action includes its ledger ID, project, issue, kind,
-reason, time, and evidence link.
-
-Decisions include current explicit Workpad human actions and other human gates.
-Historical question receipts are excluded from live decisions. Issue and PR
-links provide the context needed to act. Decisions are independent of the
-action cursor.
+See [MCP capabilities](mcp-capabilities.md) and [Hub API](hub-api.md) for
+connection authority and supported reads. Diagnose throughput from recorded
+history; see [Token spend diagnosis](diagnosis.md#token-spend).
 
 ## Operator routine
 
@@ -95,35 +50,6 @@ permission request or operator stop stays in `Blocked`; any other issue is
 returned to a dispatchable lane through the machine retry owner (lane reasons
 such as `cause_blocked_recovery` and `recorded_blocker_recovery`). Historical
 park metadata never keeps an issue in `Blocked`.
-
-## Exporting the page
-
-`detent report --html <path>` writes the same report as a self-contained HTML
-file for readers away from the runner. A launchd agent can keep a copy
-current:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.example.detent-report</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/detent</string>
-    <string>report</string>
-    <string>--html</string>
-    <string>/Users/example/Reports/detent-status.html</string>
-  </array>
-  <key>StartInterval</key><integer>600</integer>
-  <key>EnvironmentVariables</key>
-  <dict><key>DETENT_API_TOKEN</key><string>replace-with-your-token</string></dict>
-</dict>
-</plist>
-```
-
-On Linux, a systemd user timer calling the same command is equivalent.
-
 
 ## Runner service logs
 

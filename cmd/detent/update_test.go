@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/update"
+	"github.com/spf13/cobra"
 )
 
 func TestUpdateCommandCheckJSON(t *testing.T) {
@@ -328,6 +331,55 @@ func TestUpdateCommandPreservesVersionOnError(t *testing.T) {
 			}
 			if status.CurrentVersion == "" || status.CurrentVersion != want {
 				t.Fatalf("version=%q want %q", status.CurrentVersion, want)
+			}
+		})
+	}
+}
+
+func TestUpdateSafetyRefusesRunningInstance(t *testing.T) {
+	for _, state := range []string{"absent", "held", "released"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			configPath := filepath.Join(t.TempDir(), "global.yaml")
+			if state != "absent" {
+				lock, err := instancelock.Acquire(filepath.Join(filepath.Dir(configPath), "detent.db.lock"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := lock.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				if state == "released" {
+					if err := lock.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			root := &cobra.Command{Use: "detent"}
+			root.PersistentFlags().String("config", configPath, "")
+			fake := &fakeUpdater{}
+			cmd := newUpdateCommand(t.Context(), func(context.Context) (updateRunner, error) { return fake, nil })
+			root.AddCommand(cmd)
+			root.SetOut(&bytes.Buffer{})
+			root.SetErr(&bytes.Buffer{})
+			root.SetArgs([]string{"update", "--yes"})
+			err := root.ExecuteContext(t.Context())
+			if state == "held" {
+				if err == nil || !strings.Contains(err.Error(), "stop the running Detent instance") {
+					t.Fatalf("running update error = %v", err)
+				}
+				if fake.applyCalled {
+					t.Fatal("offline apply was called with a running instance")
+				}
+				return
+			}
+			if err != nil || !fake.applyCalled {
+				t.Fatalf("offline update applied=%t, error=%v", fake.applyCalled, err)
+			}
+			if fake.applyOptions.Preflight == nil || fake.applyOptions.RecoveryStatePath != update.RecoveryStatePath(configPath) {
+				t.Fatalf("offline safety options = %+v", fake.applyOptions)
 			}
 		})
 	}

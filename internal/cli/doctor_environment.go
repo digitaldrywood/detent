@@ -751,21 +751,20 @@ type doctorHealthProbe struct {
 type doctorHealthResponse struct {
 	CandidatesMissingVsTracker map[string]*int `json:"candidates_missing_vs_tracker"`
 
-	Status                     string                           `json:"status"`
-	Version                    string                           `json:"version"`
-	Commit                     string                           `json:"commit"`
-	Mode                       string                           `json:"mode"`
-	Checks                     map[string]string                `json:"checks"`
-	Environment                doctorHealthEnvironment          `json:"environment"`
-	Budgets                    []doctorHealthBudget             `json:"budgets"`
-	Workflows                  []doctorHealthWorkflow           `json:"workflows"`
-	LaneSignalWarnings         []telemetry.LaneSignalWarning    `json:"lane_signal_warnings"`
-	StalenessWarnings          []telemetry.StalenessWarning     `json:"staleness_warnings"`
-	StrandedIssues             []telemetry.StrandedIssue        `json:"stranded_active_issues"`
-	Dispatch                   telemetry.DispatchStatus         `json:"dispatch"`
-	DispatchStalls             []telemetry.DispatchStatus       `json:"dispatch_stalls"`
-	HealthNotificationFailures []healthnotify.Failure           `json:"health_notification_failures"`
-	OrphanedAgentProcesses     telemetry.OrphanedAgentProcesses `json:"orphaned_agent_processes"`
+	Status                     string                        `json:"status"`
+	Version                    string                        `json:"version"`
+	Commit                     string                        `json:"commit"`
+	Mode                       string                        `json:"mode"`
+	Checks                     map[string]string             `json:"checks"`
+	Environment                doctorHealthEnvironment       `json:"environment"`
+	Budgets                    []doctorHealthBudget          `json:"budgets"`
+	Workflows                  []doctorHealthWorkflow        `json:"workflows"`
+	LaneSignalWarnings         []telemetry.LaneSignalWarning `json:"lane_signal_warnings"`
+	StalenessWarnings          []telemetry.StalenessWarning  `json:"staleness_warnings"`
+	StrandedIssues             []telemetry.StrandedIssue     `json:"stranded_active_issues"`
+	Dispatch                   telemetry.DispatchStatus      `json:"dispatch"`
+	DispatchStalls             []telemetry.DispatchStatus    `json:"dispatch_stalls"`
+	HealthNotificationFailures []healthnotify.Failure        `json:"health_notification_failures"`
 }
 
 func checkDoctorDetentService(ctx context.Context, cfg BootConfig, installedBuild buildinfo.Info, deps doctorDeps) []doctorCheck {
@@ -789,9 +788,6 @@ func checkDoctorDetentService(ctx context.Context, cfg BootConfig, installedBuil
 			check.Hint = "Review the live diagnostic findings, then rerun detent doctor."
 		}
 		checks := []doctorCheck{check}
-		if probe.Health.OrphanedAgentProcesses.Count > 0 {
-			checks = append(checks, checkDoctorOrphanedAgentProcesses(probe.Health.OrphanedAgentProcesses))
-		}
 		if driftCheck, ok := checkDoctorBuildDrift(buildinfo.Info{Version: version, Commit: commit}, installedBuild); ok {
 			checks = append(checks, driftCheck)
 		}
@@ -806,55 +802,7 @@ func checkDoctorDetentService(ctx context.Context, cfg BootConfig, installedBuil
 		Detail: fmt.Sprintf("remote service at %s did not report its complete build", probe.URL),
 		Hint:   "Upgrade the running Detent service, then rerun detent doctor.",
 	}}
-	if probe.Health.OrphanedAgentProcesses.Count > 0 {
-		checks = append(checks, checkDoctorOrphanedAgentProcesses(probe.Health.OrphanedAgentProcesses))
-	}
 	return checks
-}
-
-func checkDoctorOrphanedAgentProcesses(summary telemetry.OrphanedAgentProcesses) doctorCheck {
-	check := doctorCheck{
-		Name:                   "Orphaned agent processes",
-		Status:                 doctorOK,
-		Detail:                 "no agent processes exist without a corresponding live session",
-		OrphanedAgentProcesses: &summary,
-	}
-	if summary.Count == 0 {
-		return check
-	}
-	details := make([]string, 0, len(summary.Processes))
-	for _, process := range summary.Processes {
-		identity := strings.TrimSpace(process.Identifier)
-		if identity == "" {
-			identity = fmt.Sprintf("session %d", process.SessionID)
-		}
-		details = append(details, fmt.Sprintf(
-			"%s pid=%d age=%s rss=%s",
-			identity,
-			process.PID,
-			(time.Duration(process.AgeSeconds)*time.Second).Round(time.Second),
-			formatWorkerProcessBytes(process.RSSBytes),
-		))
-	}
-	check.Status = doctorWarn
-	check.Detail = fmt.Sprintf(
-		"%d orphaned agent process(es) across %d session(s) hold %s RSS: %s",
-		summary.Count,
-		summary.SessionCount,
-		formatWorkerProcessBytes(summary.TotalRSSBytes),
-		strings.Join(details, "; "),
-	)
-	check.Hint = "Run `detent fix worker-processes --yes` to terminate the listed process groups gracefully, then force any survivors."
-	return check
-}
-
-func formatWorkerProcessBytes(value int64) string {
-	const mebibyte = int64(1024 * 1024)
-	const gibibyte = int64(1024 * 1024 * 1024)
-	if value >= gibibyte {
-		return fmt.Sprintf("%.1f GiB", float64(value)/float64(gibibyte))
-	}
-	return fmt.Sprintf("%.1f MiB", float64(value)/float64(mebibyte))
 }
 
 func checkDoctorBuildDrift(runningBuild buildinfo.Info, installedBuild buildinfo.Info) (doctorCheck, bool) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cli"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/instancelock"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -81,15 +83,7 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 					opts.Confirm = confirmUpdate(cmd)
 					opts.SelectGoInstallAction = selectGoInstallAction(cmd)
 				}
-				if _, local := runner.(*detentupdate.Service); local {
-					var handled bool
-					status, handled, err = cli.ApplyRunningUpdate(runCtx, cmd, opts)
-					if !handled {
-						status, err = runner.Apply(runCtx, opts)
-					}
-				} else {
-					status, err = runner.Apply(runCtx, opts)
-				}
+				status, err = runner.Apply(runCtx, opts)
 			}
 
 			if strings.TrimSpace(status.CurrentVersion) == "" {
@@ -122,6 +116,13 @@ func updateSafetyOptions(cmd *cobra.Command) (detentupdate.BinaryPreflight, stri
 	resolution, err := globalconfig.ResolvePath(configPath)
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve update startup config: %w", err)
+	}
+	inspection, err := instancelock.Inspect(filepath.Join(filepath.Dir(resolution.Path), "detent.db.lock"))
+	if err != nil {
+		return nil, "", fmt.Errorf("inspect running Detent instance: %w", err)
+	}
+	if inspection.Status == instancelock.StatusHeld {
+		return nil, "", errors.New("stop the running Detent instance before applying an offline update")
 	}
 	preflight := detentupdate.CommandPreflight(
 		"--config", resolution.Path,

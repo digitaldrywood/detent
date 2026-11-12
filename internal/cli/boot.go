@@ -1311,7 +1311,6 @@ func bootBanner(version string, displayURL string, isolated *IsolatedRuntimeInfo
 		writeBootBannerLine(&out, "Tracker", isolated.TrackerMode)
 		writeBootBannerLine(&out, "Demo", isolated.Demo)
 		writeBootBannerLine(&out, "Demo clock", isolated.DemoClock)
-		writeBootBannerLine(&out, "Scenario manifest", isolated.ManifestPath)
 		writeBootBannerLine(&out, "Fixture", isolated.FixturePath)
 	}
 	return out.String()

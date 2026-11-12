@@ -12,8 +12,8 @@ for the full command catalog, including subcommands, flags and examples.
 | Hub and runner | `hub`, `cloud`, `attach` |
 | Artifacts and installation | `artifacts`, `update`, `version`, `skill` |
 | Configuration and diagnostics | `config`, `doctor`, `fix`, `logs`, `help`, `completion` |
-| Project operations | `pause`, `unpause`, `resume`, `promote`, `budget`, `capacity`, `exposure` |
-| Application reads and tools | `audit`, `issue`, `mcp`, `state`, `report` |
+| Project operations | `promote`, `budget`, `exposure` |
+| Audit | `audit` |
 | Isolated browser fixtures | `dev-runtime` |
 
 Enroll a runner with `detent hub runner register --service` to install and start
@@ -87,15 +87,6 @@ Stable JSON error codes:
 | <a id="doctor-failed"></a>`doctor_failed` | `https://detent.dev/errors/doctor_failed` | 1 | `ErrDoctorFailed`. |
 | <a id="shutdown-forced"></a>`shutdown_forced` | `https://detent.dev/errors/shutdown_forced` | 1 | `ErrShutdownForced`. |
 | <a id="shutdown-timeout"></a>`shutdown_timeout` | `https://detent.dev/errors/shutdown_timeout` | 1 | `ErrShutdownTimeout`. |
-| <a id="dashboard-unreachable"></a>`dashboard_unreachable` | `https://detent.dev/errors/dashboard_unreachable` | 1 | The configured Detent service is stopped or unreachable. |
-| <a id="dashboard-timeout"></a>`dashboard_timeout` | `https://detent.dev/errors/dashboard_timeout` | 1 | The bounded dashboard API request timed out. |
-| <a id="dashboard-unauthorized"></a>`dashboard_unauthorized` | `https://detent.dev/errors/dashboard_unauthorized` | 2 | The dashboard API rejected the supplied credential. |
-| <a id="dashboard-forbidden"></a>`dashboard_forbidden` | `https://detent.dev/errors/dashboard_forbidden` | 2 | The credential does not allow the requested read. |
-| <a id="ambiguous-reference"></a>`ambiguous_reference` | `https://detent.dev/errors/ambiguous_reference` | 3 | The selected project contains more than one matching identity. |
-| <a id="issue-not-found"></a>`issue_not_found` | `https://detent.dev/errors/issue_not_found` | 4 | The selected project has no matching issue. |
-| <a id="unsupported-model-version"></a>`unsupported_model_version` | `https://detent.dev/errors/unsupported_model_version` | 1 | The CLI and service do not share an issue explanation schema version. |
-| <a id="runtime-unavailable"></a>`runtime_unavailable` | `https://detent.dev/errors/runtime_unavailable` | 1 | The running service cannot currently produce the issue explanation read model. |
-| <a id="dashboard-request-failed"></a>`dashboard_request_failed` | `https://detent.dev/errors/dashboard_request_failed` | 1 | The dashboard API returned another unsuccessful response. |
 
 
 ## Logging
@@ -153,16 +144,11 @@ Structured command objects:
 | --- | --- |
 | `detent version` | `{"version":"v0.55.0","commit":"abc1234","build_date":"2026-08-01T00:00:00Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` |
 | `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
-| `detent pause api --reason "maintenance"` / `detent unpause api` | `{"status":"ok","project":"api","paused":true,"paused_reason":"maintenance"}` |
-| `detent resume api --for 2h` | `{"status":"ok","project":"api","active_hours_override_until":"2026-08-07T21:00:00Z"}` |
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
 | `detent exposure [--project api]` | `{"findings":[{"source_project":"api","source_repository":"example-org/private-api","destination_repository":"example-org/public-project","issue_number":42,"issue_url":"https://github.com/example-org/public-project/issues/42","matched_identifier":"example-org/private-api"}],"warnings":[]}` |
-| `detent issue '#42' --explain --project api` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
-| `detent state [--project api]` | A bounded projection of the public state response, plus `truncation`; internal `board_issues` are excluded. |
 | `detent skill install --target codex --dry-run` | The complete skill install result, including bundle/build stamps, target intent and status, every planned filesystem action, and any rollback actions. |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
-| `detent fix worker-processes --dry-run` / `--yes` | The orphaned process groups reported by the live service, including session identity, PID, PGID, RSS, and the reap outcome when applied. |
 
 ### Doctor token diagnostics
 
@@ -188,39 +174,11 @@ unfinished attempts); window-crossing sessions can produce differences. Use
 `usage_events` as the reconciled reporting source. Unavailable database evidence
 warns; these diagnostics do not change policy, tracker lanes, or runtime state.
 
-### MCP stdio server
+### Hub MCP
 
-`detent mcp` serves the shared typed operator catalog to any MCP client. Modern
-`2026-07-28` requests carry protocol version and client capabilities in `_meta`,
-without an initialization handshake. Clients can probe `server/discover` first.
-Older clients use `initialize` and `notifications/initialized` with
-`2025-11-25`, `2025-06-18`, `2025-03-26`, or `2024-11-05`; an unsupported
-initialization revision negotiates `2025-11-25`, never a modern handshake.
-
-The process reads newline-delimited JSON-RPC from stdin and reserves stdout for
-protocol frames. Diagnostics use stderr. Successful results include serialized
-JSON text; versions from `2025-06-18` also receive `structuredContent`, and modern
-results include `resultType: "complete"`. Arguments, results, frames and catalog
-responses are bounded. `tools/list` returns the complete current authorized
-catalog by default; each shared definition has `_meta["detent/toolset"]` for
-grouping. Request smaller groups with `params._meta["detent/toolsets"]`, an
-array such as `["board", "connection"]`. Discovery never authorizes a call.
-
-The MCP process uses the already-running daemon's authenticated application
-bridge, with the same config, host, port, wildcard-to-loopback mapping and
-API-token precedence as `detent issue --explain`. Set `DETENT_API_TOKEN` to an
-existing scoped credential when needed. Discovery and execution recheck current
-authority in the daemon; a legacy loopback read bridge does not gain write access.
-The bridge opens a default-confirmation application connection and forwards its
-server-issued handle on fixed typed-tool endpoints. Client metadata cannot
-select identity, organization or YOLO, and no arbitrary HTTP path is accepted.
-
-The five existing reads remain `board_state`, `fleet_health`, `telemetry_usage`,
-`recent_activity`, and `explain_item`. Available shared application commands and
-connection/approval reads are permission-filtered by the daemon. Snapshot results
-include `generated_at`, `freshness`, and `expires_at` for last-known results.
-See [generic MCP setup](mcp-capabilities.md#generic-client-setup) for authority,
-organization selection, approval URLs, explicit YOLO and trusted remote access.
+Connect an MCP client to the Hub for operator reads and actions. See
+[generic MCP setup](mcp-capabilities.md#generic-client-setup) for authentication,
+organization selection and the current tool catalog.
 
 ### Operator skill installation
 
@@ -261,91 +219,6 @@ version and SHA-256 plus the running binary's resolved build version, commit,
 date, and dirty state. It contains no credentials, Detent config, or runtime
 filesystem paths.
 
-### Issue explanation reads
-
-`detent issue <ref> --explain --project <project-id>` reads the versioned issue
-explanation model from the running Detent service. `--project` is always
-required, including for `#number`, so issue numbers are never treated as
-globally unique. Issue IDs, canonical identifiers, and full tracker URLs are
-accepted as `<ref>`.
-
-The command resolves the configured host and port, maps wildcard bind hosts to
-loopback for dialing, and uses `DETENT_API_TOKEN` before the resolved
-`api_token`. If either source supplies a credential, the client sends it; a
-rejected credential is reported as `dashboard_unauthorized` and is not retried
-without authentication. Requests have a ten-second client timeout and honor
-caller cancellation.
-
-JSON mode writes exactly one issue explanation DTO to stdout. Pretty mode is a
-human-readable projection of the same DTO. Diagnostics and JSON problem objects
-remain on stderr.
-
-### Fleet state reads
-
-`detent state` reads the public `/api/v1/state` model from the running service
-with `projection=cli`, bounding the response before the client reads it.
-`--project <project-id>` selects the existing project-scoped state route. The
-CLI projection does not expose the fuller internal snapshot's `board_issues`
-array. It preserves `generated_at`, refresh freshness and source degradation,
-and snapshot-unavailable degraded responses.
-
-Every state data array is limited to its first 100 entries in service order. The
-top-level `truncation` object always reports that limit and contains
-`truncated` plus a `collections` array of JSON Pointer paths, original `total`,
-`returned`, and `omitted` counts. The service limits compact JSON, including
-metadata, to 768 KiB (`max_bytes`), and individual encoded scalar values to
-16 KiB (`value_max_bytes`). The byte budget can return fewer than 100 entries.
-Oversized fields or subtrees appear in `omitted_fields` with a JSON Pointer
-`path` and `reason: byte_limit`; an omitted array also records its original
-`total`. Counts and freshness come from the complete scoped snapshot.
-The shared client's hard one-MiB transport limit remains unchanged. Older
-services remain compatible for small states, but large states require updating
-the service to support this projection.
-JSON is written to stdout, pretty output is only a human-readable projection,
-and diagnostics remain on stderr.
-
-### Operations report export
-
-`detent report --html <path>` reads `GET /api/v1/operations` from the running
-service and writes it as one self-contained HTML file: inline styles, no
-scripts, no external assets, so it reads correctly from a synced folder or an
-email attachment away from the tailnet. The page states the producing instance
-and its data time and refreshes itself every five minutes when left open in a
-browser. Service-relative evidence links are rewritten to the service origin.
-The file is written to a temporary sibling and renamed into place, so readers
-never see a partial page. Pretty output reports the path, instance, data time,
-and size; `--format json` returns the same fields.
-
-## Provider capacity recovery
-
-After restoring subscription usage, request full configured dispatch capacity:
-
-```sh
-detent capacity clear --scope codex --recovery immediate
-```
-
-Use `--project api` to select one project. Scope accepts a backend ID, kind,
-provider, or backend/provider; omitting it selects all backend scopes.
-The default `--recovery ramping` and automatic recovery retain the gradual
-progress-based ramp. Immediate recovery also removes a matching ramp left by an
-earlier clear, making repeated clears safe.
-
-Immediate recovery preserves unrelated backend outages and recovery ramps,
-GitHub and tracker holds, project breakers, human holds, configured global,
-project and provider concurrency, and budget limits. It does not reset provider
-usage. A renewed usage-limit response pauses dispatch normally.
-
-The command queues work asynchronously. JSON output reports
-`recovery_requested` (`ramping` or `immediate`) and `recovery_applied: pending`;
-HTTP 202 means accepted, not yet applied. The orchestrator emits a structured
-`backend capacity clear applied` log with `scope`, `recovery_requested`,
-`recovery_applied`, and the number of outages `cleared` when it processes the
-request. Other holds may still prevent dispatch after immediate recovery.
-
-Immediate mode requires a server that supports this option. If an older server
-accepts the clear but ignores the mode, the CLI reports that immediate recovery
-was not acknowledged; that older server may still apply its default ramp.
-
 ### Worker CI trigger labels
 
 `detent hub ci-trigger-label` reapplies the configured pull-request CI label for
@@ -360,10 +233,10 @@ same-version reinstall when the running release build lacks signature evidence.
 `detent update --yes` fetches the release's signed checksums, provenance and
 platform archive, verifies them with the pinned minisign key, executes the
 staged binary to confirm its version and full commit match the signed
-provenance, and installs it atomically. When a local runner service is running,
-its update owner prepares compatible worker artifacts while work is active and
-replaces the controller once idle; capacity, routing, credentials and
-workspaces are preserved. The updater fails closed when the signature,
+provenance, and installs it atomically. Stop the selected runner before applying
+an offline CLI update. For an enrolled running runner, use the Hub
+[`get_runner_update` and `update_apply` tools](mcp-capabilities.md#enrolled-runner-update-application)
+to prepare the release and coordinate draining and restart. The updater fails closed when the signature,
 provenance checksum, repository, tag, commit or required release evidence is
 missing or inconsistent. Do not edit verification metadata to clear a refused
 state; the signed updater can recreate it.
@@ -488,9 +361,9 @@ An omitted `hooks.shell` uses `cmd` on Windows. `hooks.shell: bash` resolves
 executable path, `pwsh` or `powershell` can also be declared. A missing declared
 shell fails the hook instead of falling back to another shell.
 
-`detent update --yes` drains active work, exits, and Task Scheduler restarts the
-updated executable through the task's one-minute restart-on-failure policy. The
-executable must stay at its registered path. On native Windows the Sandbox tier
+Use the Hub runner update tools to coordinate a running runner update, or stop
+the runner task before applying `detent update --yes` and start it afterward.
+The executable must stay at its registered path. On native Windows the Sandbox tier
 and the workspace terminal are unavailable, and the executable is not
 code-signed, so SmartScreen may warn.
 
