@@ -48,6 +48,9 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		if err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
+		if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue); err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
 		evidence, _, _, err := s.readOperatorExplanation(ctx, scope, issue)
 		if err != nil {
 			return tracker.NativeRuntimeEvidence{}, err

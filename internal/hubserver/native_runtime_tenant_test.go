@@ -446,3 +446,20 @@ func TestPostgresRuntimeReportsMissingAttempt(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeRuntimeHidesUnreadableProjectDependencies(t *testing.T) {
+	f := newNativeFixture(t, newPostgresNativeService(t, Config{}), "", "runtime-visible")
+	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "runtime-foreign")
+	for _, key := range []string{"first", "second"} {
+		item := f.create(t, "visible "+key)
+		hidden := foreign.create(t, "hidden "+key)
+		itemPath := f.base + "/work-items/" + string(item.WorkItemID)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "runtime-hidden-" + key}, ExpectedRevision: item.Revision, RelatedWorkItemID: hidden.WorkItemID, Operation: "add"})
+		requireNativeStatus(t, response, http.StatusOK)
+		response = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/runtime", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		if body := response.Body.String(); strings.Contains(body, string(hidden.WorkItemID)) || strings.Contains(body, hidden.Title) {
+			t.Fatalf("runtime evidence leaked dependency from unreadable project: %s", body)
+		}
+	}
+}
