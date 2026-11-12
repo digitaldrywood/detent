@@ -44,7 +44,7 @@ func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (
 			return tokenResponse{}, auth.ErrHostedIdentity
 		}
 		if request.Scope != apiScopeOperator && request.Scope != apiScopeAdmin || (request.Scope == apiScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hostedRoleAllows(issuer.HostedRole, request.KeyScope, "credentials") {
-			return tokenResponse{}, auth.ErrHostedIdentity
+			return tokenResponse{}, nativePublicInvalid("Select a scope allowed by your current role")
 		}
 		if request.ExpiresAt != nil && (!request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(90*24*time.Hour))) {
 			return tokenResponse{}, nativePublicInvalid("Select no expiry or an expiry within 90 days")
