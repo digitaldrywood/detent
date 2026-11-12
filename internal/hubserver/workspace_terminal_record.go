@@ -53,13 +53,13 @@ func (w *workspaceService) beginTerminalRecording(
 		cols, rows = workspacesession.DefaultTerminalCols, workspacesession.DefaultTerminalRows
 	}
 	return &terminalStreamState{
-		id: newNativeID("termrec"), workspaceID: record.ID,
-		organizationID: string(record.OrganizationID), projectID: string(record.ProjectID),
-		relaySessionID: connection.auditID, streamID: stream.id,
-		principalID: connection.principalID, subject: connection.subject,
-		isolation: w.config.Terminal.Isolation, supportReason: connection.supportReason,
-		startedAt: now, cols: cols, rows: rows,
-		recording: workspacesession.NewRecording(cols, rows, now),
+		ID: newNativeID("termrec"), WorkspaceID: record.ID,
+		OrganizationID: string(record.OrganizationID), ProjectID: string(record.ProjectID),
+		RelaySessionID: connection.AuditID, StreamID: stream.ID,
+		PrincipalID: connection.PrincipalID, Subject: connection.Subject,
+		Isolation: w.config.Terminal.Isolation, SupportReason: connection.SupportReason,
+		StartedAt: now, Cols: cols, Rows: rows,
+		Recording: workspacesession.NewRecording(cols, rows, now),
 	}
 }
 
@@ -71,7 +71,7 @@ func (w *workspaceService) beginTerminalRecording(
 // worse answer than one that says which half is which, because a reader would
 // not know they were reading half.
 func (w *workspaceService) recordPersonTerminalFrame(connection *relayConnection, stream *relayStream, frame workspacesession.Frame) {
-	if !w.config.Terminal.RecordEnabled() || stream.channel != workspacesession.ChannelTerminal {
+	if !w.config.Terminal.RecordEnabled() || stream.Channel != workspacesession.ChannelTerminal {
 		return
 	}
 	switch frame.Type {
@@ -88,7 +88,7 @@ func (w *workspaceService) recordPersonTerminalFrame(connection *relayConnection
 			}
 			data = string(decoded)
 		}
-		w.relay.appendTerminalEvent(connection.workspaceID, stream.id, workspacesession.AsciicastInput, data, w.now())
+		w.relay.appendTerminalEvent(connection.WorkspaceID, stream.ID, workspacesession.AsciicastInput, data, w.now())
 	case workspacesession.TypeTerminalResize:
 		var payload workspacesession.TerminalResize
 		if err := json.Unmarshal(frame.Payload, &payload); err != nil {
@@ -98,7 +98,7 @@ func (w *workspaceService) recordPersonTerminalFrame(connection *relayConnection
 		if err != nil {
 			return
 		}
-		w.relay.resizeTerminalRecording(connection.workspaceID, stream.id, size.Cols, size.Rows, w.now())
+		w.relay.resizeTerminalRecording(connection.WorkspaceID, stream.ID, size.Cols, size.Rows, w.now())
 	}
 }
 
@@ -123,7 +123,7 @@ func (w *workspaceService) recordRunnerTerminalFrame(connection *relayConnection
 		}
 		data = string(decoded)
 	}
-	w.relay.appendTerminalEvent(connection.workspaceID, stream.id, workspacesession.AsciicastOutput, data, w.now())
+	w.relay.appendTerminalEvent(connection.WorkspaceID, stream.ID, workspacesession.AsciicastOutput, data, w.now())
 }
 
 // finishTerminalRecordings writes every recording it is given.
@@ -148,10 +148,10 @@ func (w *workspaceService) finishTerminalRecordings(ctx context.Context, states 
 // recording_artifact at where it may be read.
 func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *terminalStreamState) {
 	now := w.now()
-	organization := tracker.OrganizationID(state.organizationID)
-	ref, err := w.prepareRelayOutput(ctx, organization, []byte(state.recording.Cast()))
+	organization := tracker.OrganizationID(state.OrganizationID)
+	ref, err := w.prepareRelayOutput(ctx, organization, []byte(state.Recording.Cast()))
 	if err != nil {
-		w.logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.workspaceID, "stream", state.streamID, "error", err)
+		w.logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.WorkspaceID, "stream", state.StreamID, "error", err)
 		return
 	}
 	var recorded postgres.TerminalRecording
@@ -163,7 +163,7 @@ func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *t
 		if err := writer.LockArchiveAccounting(ctx); err != nil {
 			return err
 		}
-		current, err := owner.TerminalRecording(ctx, tracker.ProjectID(state.projectID), state.id)
+		current, err := owner.TerminalRecording(ctx, tracker.ProjectID(state.ProjectID), state.ID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
@@ -188,11 +188,11 @@ func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *t
 				previous = &object.Reference
 			}
 		}
-		recorded, err = owner.PutTerminalRecording(ctx, postgres.PutTerminalRecordingInput{ExpectedRevision: current.Revision, OrganizationID: organization, ProjectID: tracker.ProjectID(state.projectID), WorkspaceID: state.workspaceID, ID: state.id, RelaySessionID: state.relaySessionID, StreamID: state.streamID, PrincipalID: state.principalID, Subject: state.subject, Isolation: state.isolation, SupportReason: state.supportReason, StartedAt: state.startedAt, FinishedAt: &now, TerminalCols: int32(state.cols), TerminalRows: int32(state.rows), CastObjectKey: ref.Key, CastSha256: ref.SHA256, CastBytes: ref.CompressedSize, CastContentBytes: ref.UncompressedSize, Truncated: state.recording.Truncated(), UpdatedAt: now})
+		recorded, err = owner.PutTerminalRecording(ctx, postgres.PutTerminalRecordingInput{ExpectedRevision: current.Revision, OrganizationID: organization, ProjectID: tracker.ProjectID(state.ProjectID), WorkspaceID: state.WorkspaceID, ID: state.ID, RelaySessionID: state.RelaySessionID, StreamID: state.StreamID, PrincipalID: state.PrincipalID, Subject: state.Subject, Isolation: state.Isolation, SupportReason: state.SupportReason, StartedAt: state.StartedAt, FinishedAt: &now, TerminalCols: int32(state.Cols), TerminalRows: int32(state.Rows), CastObjectKey: ref.Key, CastSha256: ref.SHA256, CastBytes: ref.CompressedSize, CastContentBytes: ref.UncompressedSize, Truncated: state.Recording.Truncated(), UpdatedAt: now})
 		if err != nil {
 			return err
 		}
-		if err := w.server.retainRelayArchive(ctx, writer, organization, tracker.ProjectID(state.projectID), state.id, "workspace-terminal-recording", ref, now); err != nil {
+		if err := w.server.retainRelayArchive(ctx, writer, organization, tracker.ProjectID(state.ProjectID), state.ID, "workspace-terminal-recording", ref, now); err != nil {
 			return err
 		}
 		if previous != nil {
@@ -200,27 +200,27 @@ func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *t
 			if err != nil {
 				return err
 			}
-			if err := writer.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: organization, ArchiveID: object.ID, Kind: "workspace-terminal-recording", ID: actionstore.ArchiveOwnerID(tracker.ProjectID(state.projectID), state.id), CreatedAt: now}); err != nil {
+			if err := writer.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: organization, ArchiveID: object.ID, Kind: "workspace-terminal-recording", ID: actionstore.ArchiveOwnerID(tracker.ProjectID(state.ProjectID), state.ID), CreatedAt: now}); err != nil {
 				return err
 			}
 		}
-		if state.relaySessionID == "" {
+		if state.RelaySessionID == "" {
 			return nil
 		}
-		return owner.AttachRelayRecording(ctx, postgres.AttachRelayRecordingInput{OrganizationID: organization, ProjectID: tracker.ProjectID(state.projectID), WorkspaceID: state.workspaceID, RelaySessionID: state.relaySessionID, RecordingID: state.id, RecordingArtifact: relaySessionRecordingReference(state)})
+		return owner.AttachRelayRecording(ctx, postgres.AttachRelayRecordingInput{OrganizationID: organization, ProjectID: tracker.ProjectID(state.ProjectID), WorkspaceID: state.WorkspaceID, RelaySessionID: state.RelaySessionID, RecordingID: state.ID, RecordingArtifact: relaySessionRecordingReference(state)})
 	})
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		return
 	}
 	if err != nil {
-		w.logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.workspaceID, "stream", state.streamID, "error", err)
+		w.logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.WorkspaceID, "stream", state.StreamID, "error", err)
 		return
 	}
-	w.logger.Info("workspace.terminal_recorded", "workspace_id", state.workspaceID, "stream", state.streamID, "recording_id", state.id, "bytes", recorded.CastContentBytes, "truncated", recorded.Truncated, "isolation", recorded.Isolation)
+	w.logger.Info("workspace.terminal_recorded", "workspace_id", state.WorkspaceID, "stream", state.StreamID, "recording_id", state.ID, "bytes", recorded.CastContentBytes, "truncated", recorded.Truncated, "isolation", recorded.Isolation)
 }
 
 // relaySessionRecordingReference is the path a relay session row points at.
 func relaySessionRecordingReference(state *terminalStreamState) string {
-	return "/api/v2/organizations/" + state.organizationID + "/projects/" + state.projectID +
-		"/workspaces/" + state.workspaceID + "/terminal-recordings?relay_session=" + state.relaySessionID
+	return "/api/v2/organizations/" + state.OrganizationID + "/projects/" + state.ProjectID +
+		"/workspaces/" + state.WorkspaceID + "/terminal-recordings?relay_session=" + state.RelaySessionID
 }

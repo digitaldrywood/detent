@@ -9,8 +9,6 @@ import (
 	"math"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -105,21 +103,21 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	connection := &relayConnection{
-		id: newNativeID("relayconn"), workspaceID: record.ID, socket: socket, scope: scope,
-		principalID: principal.principalID, sessionID: principal.sessionID,
-		out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
+		ID: newNativeID("relayconn"), WorkspaceID: record.ID, Socket: socket, Scope: s.authInput(scope),
+		PrincipalID: principal.principalID, SessionID: principal.sessionID,
+		Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),
 	}
 	if principal.credential.Hosted != nil {
-		connection.subject = principal.credential.Hosted.Subject
+		connection.Subject = principal.credential.Hosted.Subject
 	}
-	connection.sessionHash = principal.credential.SessionHash
-	connection.supportReason = principal.supportReason
-	connection.hostedRole = principal.credential.HostedRole
+	connection.SessionHash = principal.credential.SessionHash
+	connection.SupportReason = principal.supportReason
+	connection.HostedRole = principal.credential.HostedRole
 	// The actor is resolved once here rather than per frame. It changes only
 	// when the principal does, and a principal change closes the connection
 	// (revalidatePerson), so a per-frame lookup would be a database read per
 	// keystroke that could never return a different answer.
-	connection.actor = s.relayActor(ctx, scope.organization, connection, principal)
+	connection.Actor = s.relayActor(ctx, scope.organization, connection, principal)
 	return service.servePerson(c, scope, record, connection, principal)
 }
 
@@ -135,7 +133,7 @@ func (s *Service) relayActor(ctx context.Context, organization tracker.Organizat
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	actor := workspacesession.Actor{
-		PrincipalID: principal.principalID, Subject: principal.subject, ConnectionID: connection.id,
+		PrincipalID: principal.principalID, Subject: principal.subject, ConnectionID: connection.ID,
 	}
 	if principal.credential.Hosted == nil {
 		// An operator token is not a person. It gets the token's name so a
@@ -174,57 +172,12 @@ func (s *Service) relayActor(ctx context.Context, organization tracker.Organizat
 		// real failure is worth a line. Either way the connection opens: a
 		// status is a read and must not depend on an author line.
 		s.config.Logger.Warn("workspace.relay_actor_unresolved",
-			"connection_id", connection.id, "error", err)
+			"connection_id", connection.ID, "error", err)
 	}
 	if actor.Name == "" {
 		actor.Name = principal.subject
 	}
 	return actor
-}
-
-// relayActorName derives the display name a commit is authored under from the
-// acting person's email address.
-//
-// It is derived rather than read because there is nothing to read: the hosted
-// schema carries user_id, email, membership_id and role and no display name
-// anywhere (migration 00017_hosted_identity), and /app/bootstrap's actor
-// serves the email as the person's only human-readable name. The rejected
-// alternative was to fabricate one -- a constant like "Detent user", or the
-// opaque hosted subject -- and a fabricated name is worse here than a derived
-// one, because it lands in a commit's author line and stays in the
-// repository's history naming somebody who does not exist.
-//
-// The derivation is deliberately shallow: the local part, without the +tag a
-// person added for their own routing, with its separators read as word breaks.
-func relayActorName(email string) string {
-	address := strings.TrimSpace(email)
-	if address == "" {
-		return ""
-	}
-	local := address
-	if at := strings.LastIndex(address, "@"); at > 0 {
-		local = address[:at]
-	}
-	if plus := strings.IndexByte(local, '+'); plus > 0 {
-		local = local[:plus]
-	}
-	words := strings.FieldsFunc(local, func(r rune) bool { return r == '.' || r == '_' || r == '-' })
-	parts := make([]string, 0, len(words))
-	for _, word := range words {
-		first, size := utf8.DecodeRuneInString(word)
-		if first == utf8.RuneError {
-			parts = append(parts, word)
-			continue
-		}
-		parts = append(parts, string(unicode.ToUpper(first))+word[size:])
-	}
-	if len(parts) == 0 {
-		// A local part of nothing but separators. The address itself is the
-		// only honest answer left; an empty name would make the runner refuse
-		// a commit this person is entitled to make.
-		return address
-	}
-	return strings.Join(parts, " ")
 }
 
 // servePerson runs one person connection for its whole life: the audit row, the
@@ -243,30 +196,30 @@ func (w *workspaceService) servePerson(c echo.Context, scope nativeScope, record
 		// row; one that could not is a connection nobody could
 		// later account for, which is exactly what the row exists to prevent.
 		w.logger.Warn("workspace.relay_audit_unavailable", "workspace_id", record.ID,
-			"connection_id", connection.id, "error", err)
-		w.closeRelaySocket(connection.socket, "audit_unavailable")
+			"connection_id", connection.ID, "error", err)
+		w.closeRelaySocket(connection.Socket, "audit_unavailable")
 		return nil
 	}
 	if err := w.relay.attachPerson(connection); err != nil {
 		w.closeRelayAudit(context.WithoutCancel(ctx), record, connection, "server_shutdown")
-		w.closeRelaySocket(connection.socket, "server_shutdown")
+		w.closeRelaySocket(connection.Socket, "server_shutdown")
 		return nil
 	}
 	w.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go connection.writeLoop(socketCtx)
+	go connection.WriteLoop(socketCtx)
 	go w.watchPersonAuthority(socketCtx, c, scope, record, connection)
 	go func() {
-		<-connection.done
+		<-connection.Done
 		cancel()
 	}()
 	w.readPerson(socketCtx, connection, record)
-	connection.close("client_closed")
+	connection.Close("client_closed")
 	w.relay.detachPerson(ctx, connection, w.now())
-	reason := connection.reason()
+	reason := connection.Reason()
 	w.closeRelayAudit(context.WithoutCancel(ctx), record, connection, reason)
-	w.closeRelaySocket(connection.socket, reason)
+	w.closeRelaySocket(connection.Socket, reason)
 	return nil
 }
 
@@ -315,11 +268,11 @@ func (w *workspaceService) watchPersonAuthority(ctx context.Context, c echo.Cont
 		select {
 		case <-ctx.Done():
 			return
-		case <-connection.done:
+		case <-connection.Done:
 			return
 		case <-ticker.C:
 			if err := w.revalidatePerson(ctx, c, scope, record, connection); err != nil {
-				connection.revoke()
+				connection.Revoke()
 				return
 			}
 		}
@@ -336,7 +289,7 @@ func (w *workspaceService) revalidatePerson(ctx context.Context, c echo.Context,
 	if err != nil {
 		return err
 	}
-	if principal.principalID != connection.principalID || principal.sessionID != connection.sessionID {
+	if principal.principalID != connection.PrincipalID || principal.sessionID != connection.SessionID {
 		return errors.New("the relay principal changed")
 	}
 	if scope.organization != record.OrganizationID || scope.project != record.ProjectID {
@@ -404,24 +357,24 @@ func (w *workspaceService) revalidatePersonLocally(ctx context.Context, record w
 				return errors.New("the workspace lease is no longer current")
 			}
 		}
-		if connection.sessionHash == "" {
+		if connection.SessionHash == "" {
 			return nil
 		}
-		session, err := r.AccessSession(ctx, connection.sessionHash)
+		session, err := r.AccessSession(ctx, connection.SessionHash)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return fmt.Errorf("read hosted session: %w", err)
 		}
 		if errors.Is(err, corestore.ErrNotFound) || session.RevokedAt != nil || !session.ExpiresAt.After(w.now()) {
 			return errors.New("the hosted session or membership is no longer active")
 		}
-		member, err := r.AccessMember(ctx, connection.subject)
+		member, err := r.AccessMember(ctx, connection.Subject)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return fmt.Errorf("read hosted session: %w", err)
 		}
 		if errors.Is(err, corestore.ErrNotFound) || !member.Active {
 			return errors.New("the hosted session or membership is no longer active")
 		}
-		if _, err := r.AccessProjectGrant(ctx, connection.subject, live.ProjectID); err != nil {
+		if _, err := r.AccessProjectGrant(ctx, connection.Subject, live.ProjectID); err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
 				return errors.New("the project grant has been withdrawn")
 			}
@@ -488,7 +441,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		// person being the wrong person.
 		return workspacesession.CodeReadOnly
 	}
-	if connection.sessionHash == "" {
+	if connection.SessionHash == "" {
 		// A token principal has no hosted session, no membership role and no
 		// project grant row, so none of the checks below can be asked of it.
 		// Its authority is the token, which the middleware already proved on
@@ -505,7 +458,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		return ""
 	}
 	if w.config.Terminal.Isolation == workspacesession.IsolationUser &&
-		connection.hostedRole != "owner" && connection.hostedRole != "admin" {
+		connection.HostedRole != "owner" && connection.HostedRole != "admin" {
 		// `user` isolation runs the shell as the runner's own account, with its
 		// credential store and its other checkouts in reach. The terminal contract
 		// allows it "only when the organization has set
@@ -513,7 +466,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		// owner or admin with the runners grant".
 		return workspacesession.CodeForbidden
 	}
-	if connection.supportReason != "" && w.config.Terminal.Isolation != workspacesession.IsolationContainer {
+	if connection.SupportReason != "" && w.config.Terminal.Isolation != workspacesession.IsolationContainer {
 		// A support actor gets a terminal "only with a support reason recorded
 		// and only at container". The reason is recorded on the
 		// audit row and on the recording already; this is the other half.
@@ -521,7 +474,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 	}
 	var permitted bool
 	err := w.server.accessRead(ctx, record.OrganizationID, func(r tenantstore.Reader) error {
-		member, err := r.AccessMember(ctx, connection.subject)
+		member, err := r.AccessMember(ctx, connection.Subject)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -531,7 +484,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		if !member.Active || member.Role == "viewer" {
 			return nil
 		}
-		grant, err := r.AccessProjectGrant(ctx, connection.subject, record.ProjectID)
+		grant, err := r.AccessProjectGrant(ctx, connection.Subject, record.ProjectID)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -547,7 +500,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		// nobody established, so the refusal stands and the failure is logged
 		// rather than resolved in the person's favour.
 		w.logger.Warn("workspace.relay_terminal_grant_unreadable", "workspace_id", record.ID,
-			"connection_id", connection.id, "error", err)
+			"connection_id", connection.ID, "error", err)
 		return workspacesession.CodeForbidden
 	}
 	if !permitted {
@@ -608,7 +561,7 @@ func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspac
 		// request that was never allowed.
 		return workspacesession.CodeReadOnly
 	}
-	if connection.sessionHash == "" {
+	if connection.SessionHash == "" {
 		// A token principal has no hosted session and no project grant row;
 		// its authority is the token, which the middleware already proved on
 		// the upgrade against the same `write` scope this frame needs. There
@@ -618,7 +571,7 @@ func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspac
 	}
 	var permitted bool
 	err := w.server.accessRead(ctx, record.OrganizationID, func(r tenantstore.Reader) error {
-		member, err := r.AccessMember(ctx, connection.subject)
+		member, err := r.AccessMember(ctx, connection.Subject)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -628,7 +581,7 @@ func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspac
 		if !member.Active || member.Role == "viewer" {
 			return nil
 		}
-		grant, err := r.AccessProjectGrant(ctx, connection.subject, record.ProjectID)
+		grant, err := r.AccessProjectGrant(ctx, connection.Subject, record.ProjectID)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -644,7 +597,7 @@ func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspac
 		// established, so the refusal stands and the failure is logged rather
 		// than resolved in the person's favour.
 		w.logger.Warn("workspace.relay_write_grant_unreadable", "workspace_id", record.ID,
-			"connection_id", connection.id, "error", err)
+			"connection_id", connection.ID, "error", err)
 		return workspacesession.CodeForbidden
 	}
 	if !permitted {
@@ -671,25 +624,25 @@ func (w *workspaceService) readPerson(ctx context.Context, connection *relayConn
 // readFrame reads and decodes one frame, answering a malformed one rather than
 // closing: a client bug on one frame must not cost a person their session.
 func (w *workspaceService) readFrame(ctx context.Context, connection *relayConnection) (workspacesession.Frame, bool) {
-	kind, data, err := connection.socket.Read(ctx)
+	kind, data, err := connection.Socket.Read(ctx)
 	if err != nil {
-		connection.close("client_closed")
+		connection.Close("client_closed")
 		return workspacesession.Frame{}, false
 	}
-	connection.countIn(len(data))
+	connection.CountIn(len(data))
 	if kind != websocket.MessageText {
 		// Binary data rides inside a frame as base64, so a
 		// binary message is not a frame at all.
-		connection.send(workspacesession.ErrorFrame("", "", workspacesession.CodeInvalidFrame, "Frames are JSON text"))
+		connection.Send(workspacesession.ErrorFrame("", "", workspacesession.CodeInvalidFrame, "Frames are JSON text"))
 		return workspacesession.Frame{}, true
 	}
 	var frame workspacesession.Frame
 	if err := json.Unmarshal(data, &frame); err != nil {
-		connection.send(workspacesession.ErrorFrame("", "", workspacesession.CodeInvalidFrame, "Frame is not valid JSON"))
+		connection.Send(workspacesession.ErrorFrame("", "", workspacesession.CodeInvalidFrame, "Frame is not valid JSON"))
 		return workspacesession.Frame{}, true
 	}
 	if err := workspacesession.ValidateFrame(frame); err != nil {
-		connection.send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, workspacesession.CodeInvalidFrame, err.Error()))
+		connection.Send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, workspacesession.CodeInvalidFrame, err.Error()))
 		return workspacesession.Frame{}, true
 	}
 	return frame, true
@@ -714,8 +667,8 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 	// the authority behind it.
 	if err := w.revalidatePersonLocally(ctx, record, connection); err != nil {
 		w.logger.Info("workspace.relay_revoked", "workspace_id", record.ID,
-			"connection_id", connection.id, "reason", err)
-		connection.revoke()
+			"connection_id", connection.ID, "reason", err)
+		connection.Revoke()
 		return
 	}
 	w.touchWorkspace(ctx, record)
@@ -724,14 +677,14 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		return
 	}
 	if code := w.refuseRelayWrite(ctx, record, connection, frame); code != "" {
-		connection.send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, relayCodeMessage(code)))
+		connection.Send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, relayCodeMessage(code)))
 		return
 	}
 	// The terminal's authority is asked before a stream is allocated, so a
 	// refused open never costs the person a stream slot and never reaches a
 	// runner.
 	if code := w.refuseTerminal(ctx, record, connection, frame); code != "" {
-		connection.send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, relayCodeMessage(code)))
+		connection.Send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, relayCodeMessage(code)))
 		return
 	}
 	stream, code := w.resolvePersonStream(connection, record, frame)
@@ -743,7 +696,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		if code == "" {
 			code = workspacesession.CodeInvalidFrame
 		}
-		connection.send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, relayCodeMessage(code)))
+		connection.Send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, relayCodeMessage(code)))
 		return
 	}
 	if frame.Type == workspacesession.TypeClose {
@@ -752,10 +705,10 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		// with a stream must be able to say so whatever the runner is doing;
 		// refusing the close because nothing is serving the workspace would
 		// hold the slot for a stream that has no owner left on either side.
-		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
-		connection.send(workspacesession.Frame{Channel: frame.Channel, Stream: stream.id, Type: workspacesession.TypeClosed})
+		w.relay.closeStream(ctx, connection.WorkspaceID, stream.ID)
+		connection.Send(workspacesession.Frame{Channel: frame.Channel, Stream: stream.ID, Type: workspacesession.TypeClosed})
 	}
-	runner := w.relay.runnerFor(connection.workspaceID)
+	runner := w.relay.runnerFor(connection.WorkspaceID)
 	if runner == nil {
 		if frame.Type == workspacesession.TypeClose {
 			// The stream is already gone and the person has been told; there
@@ -765,7 +718,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		// Nothing is serving the workspace right now. The person is told
 		// rather than left waiting: an unanswered request is indistinguishable
 		// from a slow one, and only the hub knows which this is.
-		connection.send(workspacesession.ErrorFrame(frame.Channel, stream.id, workspacesession.CodeStaleExecution,
+		connection.Send(workspacesession.ErrorFrame(frame.Channel, stream.ID, workspacesession.CodeStaleExecution,
 			"No runner is serving this workspace"))
 		return
 	}
@@ -773,7 +726,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		// The run row is claimed before the frame is forwarded, so a frame the
 		// hub refuses is never executed and a run can only be started once.
 		if code := w.startExecRun(ctx, connection, runner, record, stream, frame); code != "" {
-			connection.send(workspacesession.ErrorFrame(frame.Channel, stream.id, code, relayCodeMessage(code)))
+			connection.Send(workspacesession.ErrorFrame(frame.Channel, stream.ID, code, relayCodeMessage(code)))
 			return
 		}
 	}
@@ -789,7 +742,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 			open, err := decodeTerminalOpen(frame)
 			if err != nil {
 				w.logger.Warn("workspace.terminal_open_not_recorded",
-					"workspace_id", record.ID, "stream", stream.id, "error", err)
+					"workspace_id", record.ID, "stream", stream.ID, "error", err)
 				break
 			}
 			w.relay.beginTerminalRecording(w.beginTerminalRecording(record, connection, stream, open))
@@ -798,13 +751,13 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		}
 	}
 	forwarded := frame
-	forwarded.Stream = stream.id
+	forwarded.Stream = stream.ID
 	forwarded.Seq = w.relay.nextToRunner(stream)
 	// The actor is stamped by the hub and never supplied by the client, so a
 	// runner can audit what it was asked to do and by whom.
-	actor := connection.actor
+	actor := connection.Actor
 	forwarded.Actor = &actor
-	runner.send(forwarded)
+	runner.Send(forwarded)
 }
 
 // resolvePersonStream finds or opens the stream a person frame belongs to.
@@ -911,7 +864,7 @@ func (w *workspaceService) handlePersonAck(connection *relayConnection, frame wo
 func (w *workspaceService) handlePersonResume(connection *relayConnection, frame workspacesession.Frame) {
 	var payload workspacesession.ResumePayload
 	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
-		connection.send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, workspacesession.CodeResumeFailed, "resume is malformed"))
+		connection.Send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, workspacesession.CodeResumeFailed, "resume is malformed"))
 		return
 	}
 	stream, replay, code := w.relay.resumeStream(connection, payload.Stream, payload.LastSeq, w.now())
@@ -919,17 +872,17 @@ func (w *workspaceService) handlePersonResume(connection *relayConnection, frame
 		if code == "" {
 			code = workspacesession.CodeResumeFailed
 		}
-		connection.send(workspacesession.ErrorFrame(frame.Channel, payload.Stream, code, relayCodeMessage(code)))
+		connection.Send(workspacesession.ErrorFrame(frame.Channel, payload.Stream, code, relayCodeMessage(code)))
 		return
 	}
-	resumed, err := workspacesession.Encode(map[string]any{"stream": stream.id, "last_seq": payload.LastSeq})
+	resumed, err := workspacesession.Encode(map[string]any{"stream": stream.ID, "last_seq": payload.LastSeq})
 	if err != nil {
-		connection.send(workspacesession.ErrorFrame(frame.Channel, payload.Stream, workspacesession.CodeResumeFailed, "resume could not be answered"))
+		connection.Send(workspacesession.ErrorFrame(frame.Channel, payload.Stream, workspacesession.CodeResumeFailed, "resume could not be answered"))
 		return
 	}
-	connection.send(workspacesession.Frame{Channel: stream.channel, Stream: stream.id, Type: workspacesession.TypeResumed, Payload: resumed})
+	connection.Send(workspacesession.Frame{Channel: stream.Channel, Stream: stream.ID, Type: workspacesession.TypeResumed, Payload: resumed})
 	for _, buffered := range replay {
-		connection.send(buffered)
+		connection.Send(buffered)
 	}
 }
 
@@ -1030,9 +983,9 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	connection := &relayConnection{
-		id: newNativeID("relayrunner"), workspaceID: record.ID, socket: socket, runner: true, scope: scope, owner: record.owner(),
-		principalID: scope.credential.ID, sessionID: string(record.LeaseID),
-		out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
+		ID: newNativeID("relayrunner"), WorkspaceID: record.ID, Socket: socket, Runner: true, Scope: s.authInput(scope), Owner: record.owner(),
+		PrincipalID: scope.credential.ID, SessionID: string(record.LeaseID),
+		Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),
 	}
 	previous, err := service.relay.attachRunner(connection)
 	if err != nil {
@@ -1043,7 +996,7 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 		// A second runner connection replaces the first. Two runners
 		// answering one workspace would each be serving a different worktree,
 		// so the old one is told exactly why it lost the workspace.
-		previous.sendFinal(workspacesession.ErrorFrame("", "", workspacesession.CodeSuperseded, "Another runner connection took this workspace"),
+		previous.SendFinal(workspacesession.ErrorFrame("", "", workspacesession.CodeSuperseded, "Another runner connection took this workspace"),
 			workspacesession.CodeSuperseded)
 		// The PTYs being recorded were on the connection that just lost the
 		// workspace, so their recordings are complete.
@@ -1052,18 +1005,18 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 	service.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go connection.writeLoop(socketCtx)
+	go connection.WriteLoop(socketCtx)
 	go func() {
-		<-connection.done
+		<-connection.Done
 		cancel()
 	}()
 	service.readRunner(socketCtx, connection)
-	connection.close("runner_closed")
+	connection.Close("runner_closed")
 	// detachRunner fails whatever runs this connection was still serving, so a
 	// runner that went away mid-build leaves a failed run rather than one that
 	// says running for ever.
 	service.relay.detachRunner(ctx, connection)
-	service.closeRelaySocket(socket, connection.reason())
+	service.closeRelaySocket(socket, connection.Reason())
 	return nil
 }
 
@@ -1105,44 +1058,44 @@ func (w *workspaceService) handleRunnerFrame(ctx context.Context, connection *re
 	// Buffering would make a long build overflow a stream with no
 	// reader behind it and kill the very run the hub started.
 	overflow := false
-	if !stream.hubOwned {
-		overflow = w.relay.bufferForPerson(connection.workspaceID, stream, outbound, outbound.Seq)
+	if !stream.HubOwned {
+		overflow = w.relay.bufferForPerson(connection.WorkspaceID, stream, outbound, outbound.Seq)
 	}
-	if stream.channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecOutput {
+	if stream.Channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecOutput {
 		// A person can close the tab as soon as this output reaches them.
 		// Collect it before delivery so teardown cannot finalize the run
 		// without output the person already received.
 		w.recordExecFrame(ctx, connection, stream, frame)
 	}
 	if person != nil {
-		person.send(outbound)
+		person.Send(outbound)
 	}
 	if overflow {
 		// The reader stopped acknowledging and the buffer passed its cap.
 		// Closing the stream is the contract's answer: the alternative is
 		// the hub growing without bound for one reader's convenience.
-		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
+		w.relay.closeStream(ctx, connection.WorkspaceID, stream.ID)
 		if person != nil {
-			person.send(workspacesession.ErrorFrame(stream.channel, stream.id, workspacesession.CodeOverflow, relayCodeMessage(workspacesession.CodeOverflow)))
+			person.Send(workspacesession.ErrorFrame(stream.Channel, stream.ID, workspacesession.CodeOverflow, relayCodeMessage(workspacesession.CodeOverflow)))
 		}
-		connection.send(workspacesession.Frame{Channel: stream.channel, Stream: stream.id, Type: workspacesession.TypeClose})
+		connection.Send(workspacesession.Frame{Channel: stream.Channel, Stream: stream.ID, Type: workspacesession.TypeClose})
 		return
 	}
-	if stream.channel == workspacesession.ChannelTerminal {
+	if stream.Channel == workspacesession.ChannelTerminal {
 		// The hub is not only forwarding a terminal stream, it is recording
 		// it. A recording is the only thing a closed tab
 		// leaves behind, and an owner auditing who was in a worktree has
 		// nothing else to read.
 		w.recordRunnerTerminalFrame(connection, stream, frame)
 	}
-	if stream.channel == workspacesession.ChannelExec && frame.Type != workspacesession.TypeExecOutput {
+	if stream.Channel == workspacesession.ChannelExec && frame.Type != workspacesession.TypeExecOutput {
 		// The hub is not only forwarding an exec stream, it is recording
 		// it: the run row is what a person comes back to after the tab is
 		// closed, and it is the only record a run nobody watched leaves.
 		w.recordExecFrame(ctx, connection, stream, frame)
 	}
 	if frame.Type == workspacesession.TypeClosed || frame.Type == workspacesession.TypeClose {
-		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
+		w.relay.closeStream(ctx, connection.WorkspaceID, stream.ID)
 	}
 }
 
@@ -1168,13 +1121,13 @@ func (w *workspaceService) startExecRun(ctx context.Context, connection, runner 
 	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
 		return workspacesession.CodeInvalidFrame
 	}
-	state, _, code := w.claimRelayExecRun(ctx, record, runner, payload, stream.id)
+	state, _, code := w.claimRelayExecRun(ctx, record, runner, payload, stream.ID)
 	if code != "" {
 		return code
 	}
-	if !w.relay.beginExecRun(connection.workspaceID, stream.id, state, runner) {
+	if !w.relay.beginExecRun(connection.WorkspaceID, stream.ID, state, runner) {
 		w.failExecRuns(ctx, []*execRunState{state}, workspacesession.RunReasonStreamClosed)
-		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
+		w.relay.closeStream(ctx, connection.WorkspaceID, stream.ID)
 		return workspacesession.CodeStaleExecution
 	}
 	return ""
@@ -1202,13 +1155,13 @@ func (w *workspaceService) recordExecFrame(ctx context.Context, connection *rela
 			}
 			data = decoded
 		}
-		w.relay.appendExecOutput(connection.workspaceID, stream.id, data)
+		w.relay.appendExecOutput(connection.WorkspaceID, stream.ID, data)
 	case workspacesession.TypeExecExited:
 		var payload workspacesession.ExecExited
 		if err := json.Unmarshal(frame.Payload, &payload); err != nil {
 			return
 		}
-		state, ok := w.relay.takeExecRun(connection.workspaceID, stream.id)
+		state, ok := w.relay.takeExecRun(connection.WorkspaceID, stream.ID)
 		if !ok {
 			// The run was already ended by a teardown path, or this stream
 			// never carried one. Either way there is nothing to write, and
@@ -1249,18 +1202,18 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 	if state == nil {
 		return
 	}
-	output, err := w.prepareRelayOutput(ctx, state.organization, state.output)
+	output, err := w.prepareRelayOutput(ctx, state.Organization, state.Output)
 	if err != nil {
-		w.logger.Warn("action_run.not_recorded", "run_id", state.runID, "status", status, "error", err)
+		w.logger.Warn("action_run.not_recorded", "run_id", state.RunID, "status", status, "error", err)
 		return
 	}
-	input := postgres.FinishRelayActionRunInput{OrganizationID: state.organization, ProjectID: state.project, ID: state.runID, WorkspaceID: state.workspaceID,
-		RunnerID: &state.runnerID, LeaseID: state.leaseID, FencingToken: state.fencingToken, Claimant: state.claimant,
-		ExpectedRevision: state.revision, ExpectedOutputSequence: state.outputSequence, Status: status, Reason: reason,
-		FinishedAt: w.now(), Truncated: state.truncated}
+	input := postgres.FinishRelayActionRunInput{OrganizationID: state.Organization, ProjectID: state.Project, ID: state.RunID, WorkspaceID: state.WorkspaceID,
+		RunnerID: &state.RunnerID, LeaseID: state.LeaseID, FencingToken: state.FencingToken, Claimant: state.Claimant,
+		ExpectedRevision: state.Revision, ExpectedOutputSequence: state.OutputSequence, Status: status, Reason: reason,
+		FinishedAt: w.now(), Truncated: state.Truncated}
 	input.ExitCode, err = actionRunExitCode(exitCode)
 	if err != nil {
-		w.logger.Warn("action_run.not_recorded", "run_id", state.runID, "status", status, "error", err)
+		w.logger.Warn("action_run.not_recorded", "run_id", state.RunID, "status", status, "error", err)
 		return
 	}
 	if output.Key != "" {
@@ -1270,13 +1223,13 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 		input.OutputContentBytes = output.UncompressedSize
 	}
 	var finished postgres.ActionRun
-	err = w.server.accessWrite(ctx, state.organization, func(writer tenantstore.Writer) error {
+	err = w.server.accessWrite(ctx, state.Organization, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
 			return workItemStorageUnavailable()
 		}
 		if reason == "" {
-			if _, err := readRelayRunnerAuthority(ctx, writer, state.runnerScope, state.leaseID, w.now()); err != nil {
+			if _, err := readRelayRunnerAuthority(ctx, writer, nativeAuthInput(state.RunnerScope), state.LeaseID, w.now()); err != nil {
 				var refusal *nativeError
 				if !errors.Is(err, corestore.ErrNotFound) && (!errors.As(err, &refusal) || refusal.status >= 500) {
 					return err
@@ -1287,14 +1240,14 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 		var err error
 		finished, err = owner.FinishRelayActionRun(ctx, input)
 		if errors.Is(err, corestore.ErrRevisionConflict) && input.Reason == "" {
-			current, readErr := owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: state.organization, ProjectID: state.project, ID: state.runID})
+			current, readErr := owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: state.Organization, ProjectID: state.Project, ID: state.RunID})
 			if readErr != nil {
 				return readErr
 			}
-			if current.Status != "running" || current.Revision != state.revision || current.OutputSequence != state.outputSequence || current.WorkspaceID != state.workspaceID || current.ClaimedBy != state.claimant || current.LeaseID != state.leaseID || current.FencingToken != state.fencingToken {
+			if current.Status != "running" || current.Revision != state.Revision || current.OutputSequence != state.OutputSequence || current.WorkspaceID != state.WorkspaceID || current.ClaimedBy != state.Claimant || current.LeaseID != state.LeaseID || current.FencingToken != state.FencingToken {
 				return err
 			}
-			lease, readErr := writer.Lease(ctx, state.leaseID)
+			lease, readErr := writer.Lease(ctx, state.LeaseID)
 			if readErr != nil {
 				return readErr
 			}
@@ -1302,7 +1255,7 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 			if !ok {
 				return workItemStorageUnavailable()
 			}
-			workspace, readErr := workspaces.WorkspaceSession(ctx, state.project, state.workspaceID)
+			workspace, readErr := workspaces.WorkspaceSession(ctx, state.Project, state.WorkspaceID)
 			if readErr != nil {
 				return readErr
 			}
@@ -1320,7 +1273,7 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 			return err
 		}
 		if output.Key != "" {
-			return w.server.retainRelayArchive(ctx, writer, state.organization, state.project, state.runID, "project-action-run-output", output, input.FinishedAt)
+			return w.server.retainRelayArchive(ctx, writer, state.Organization, state.Project, state.RunID, "project-action-run-output", output, input.FinishedAt)
 		}
 		return nil
 	})
@@ -1328,7 +1281,7 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 		return
 	}
 	if err != nil {
-		w.logger.Warn("action_run.not_recorded", "run_id", state.runID, "status", status, "error", err)
+		w.logger.Warn("action_run.not_recorded", "run_id", state.RunID, "status", status, "error", err)
 		return
 	}
 	w.logger.Info("action_run.finished", "run_id", finished.ID, "action_id", finished.ActionID,
@@ -1342,7 +1295,7 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 func (w *workspaceService) openRelayAudit(ctx context.Context, record workspaceRecord, connection *relayConnection, principal relayPrincipal) error {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	connection.auditID = newNativeID("relaysession")
+	connection.AuditID = newNativeID("relaysession")
 	err := w.server.accessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
@@ -1350,8 +1303,8 @@ func (w *workspaceService) openRelayAudit(ctx context.Context, record workspaceR
 		}
 		_, err := owner.CreateRelaySession(ctx, postgres.CreateRelaySessionInput{
 			OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkspaceID: record.ID,
-			ID: connection.auditID, PrincipalID: principal.principalID, Subject: principal.subject,
-			ConnectionID: connection.id, Channels: []string{}, OpenedAt: w.now(), SupportReason: principal.supportReason,
+			ID: connection.AuditID, PrincipalID: principal.principalID, Subject: principal.subject,
+			ConnectionID: connection.ID, Channels: []string{}, OpenedAt: w.now(), SupportReason: principal.supportReason,
 		})
 		return err
 	})
@@ -1363,12 +1316,12 @@ func (w *workspaceService) openRelayAudit(ctx context.Context, record workspaceR
 
 // closeRelayAudit completes the row with the reason and the byte counters.
 func (w *workspaceService) closeRelayAudit(ctx context.Context, record workspaceRecord, connection *relayConnection, reason string) {
-	if connection.auditID == "" {
+	if connection.AuditID == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	in, out := connection.counters()
+	in, out := connection.Counters()
 	now := w.now()
 	err := w.server.accessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.RelayActionWriter)
@@ -1377,12 +1330,12 @@ func (w *workspaceService) closeRelayAudit(ctx context.Context, record workspace
 		}
 		return owner.CloseRelaySession(ctx, postgres.CloseRelaySessionInput{
 			OrganizationID: record.OrganizationID, ProjectID: record.ProjectID,
-			ID: connection.auditID, ConnectionID: connection.id, ClosedAt: &now,
+			ID: connection.AuditID, ConnectionID: connection.ID, ClosedAt: &now,
 			CloseReason: reason, BytesIn: in, BytesOut: out,
 		})
 	})
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-		w.logger.Warn("workspace.relay_audit_not_closed", "connection_id", connection.id, "error", err)
+		w.logger.Warn("workspace.relay_audit_not_closed", "connection_id", connection.ID, "error", err)
 	}
 }
 
@@ -1475,14 +1428,14 @@ func (w *workspaceService) readRelayWorker(ctx context.Context, reader tenantsto
 }
 
 func (w *workspaceService) claimRelayExecRun(ctx context.Context, record workspaceRecord, runner *relayConnection, payload workspacesession.ExecRun, claimant string) (*execRunState, string, string) {
-	if runner == nil || runner.scope.organization != record.OrganizationID || runner.scope.project != record.ProjectID {
+	if runner == nil || runner.Scope.Organization != record.OrganizationID || runner.Scope.Project != record.ProjectID {
 		return nil, "", workspacesession.CodeStaleExecution
 	}
 	var run postgres.ActionRun
 	var workspace workspaceRecord
 	err := w.server.accessRead(ctx, record.OrganizationID, func(reader tenantstore.Reader) error {
 		var err error
-		workspace, err = w.readRelayWorker(ctx, reader, runner.scope, record.ID, workspaceWorkerIdentity{LeaseID: tracker.LeaseID(runner.sessionID), FencingToken: tracker.FencingToken(runner.owner.FencingToken)})
+		workspace, err = w.readRelayWorker(ctx, reader, nativeAuthInput(runner.Scope), record.ID, workspaceWorkerIdentity{LeaseID: tracker.LeaseID(runner.SessionID), FencingToken: tracker.FencingToken(runner.Owner.FencingToken)})
 		if err != nil {
 			return err
 		}
@@ -1519,7 +1472,7 @@ func (w *workspaceService) claimRelayExecRun(ctx context.Context, record workspa
 		return nil, "", workspacesession.CodeAlreadyRunning
 	}
 	err = w.server.accessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {
-		if _, err := readRelayRunnerAuthority(ctx, writer, runner.scope, string(workspace.LeaseID), w.now()); err != nil {
+		if _, err := readRelayRunnerAuthority(ctx, writer, nativeAuthInput(runner.Scope), string(workspace.LeaseID), w.now()); err != nil {
 			return err
 		}
 		owner, ok := writer.(postgres.RelayActionWriter)
@@ -1547,7 +1500,7 @@ func (w *workspaceService) claimRelayExecRun(ctx context.Context, record workspa
 		w.logger.Warn("action_run.not_started", "workspace_id", record.ID, "run_id", payload.RunID, "error", err)
 		return nil, "", workspacesession.CodeStaleExecution
 	}
-	return &execRunState{runID: run.ID, actionID: run.ActionID, organization: run.OrganizationID, project: run.ProjectID, workspaceID: run.WorkspaceID, runnerID: workspace.RunnerID, leaseID: run.LeaseID, fencingToken: run.FencingToken, claimant: run.ClaimedBy, revision: run.Revision, outputSequence: run.OutputSequence, runnerScope: runner.scope}, string(command), ""
+	return &execRunState{RunID: run.ID, ActionID: run.ActionID, Organization: run.OrganizationID, Project: run.ProjectID, WorkspaceID: run.WorkspaceID, RunnerID: workspace.RunnerID, LeaseID: run.LeaseID, FencingToken: run.FencingToken, Claimant: run.ClaimedBy, Revision: run.Revision, OutputSequence: run.OutputSequence, RunnerScope: runner.Scope}, string(command), ""
 }
 
 func (w *workspaceService) readRelayWorkspaceForActor(ctx context.Context, reader tenantstore.Reader, scope nativeScope, id string) (workspaceRecord, error) {

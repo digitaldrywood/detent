@@ -365,7 +365,7 @@ func (s *Service) readRecordings(ctx context.Context, scope nativeScope, workspa
 	for _, row := range rows {
 		record := terminalRecordingFromPostgres(row)
 		if terminalRecordingReadable(scope, record) {
-			result = append(result, record.resource())
+			result = append(result, record.Resource())
 			if limit > 0 && len(result) >= limit {
 				break
 			}

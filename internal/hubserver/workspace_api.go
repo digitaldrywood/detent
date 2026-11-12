@@ -60,22 +60,6 @@ func (s *Service) requireWorkspaces() (*workspaceService, error) {
 	return s.workspaces, nil
 }
 
-// relayedRequires drops the capabilities this hub never relays to a runner:
-// diff and preview, which have no channel protocol. Requiring one of them would
-// only keep every runner from claiming the workspace, while the surface itself
-// is refused by the relay whatever the runner reports.
-func relayedRequires(requires []string) []string {
-	relayed := make([]string, 0, len(requires))
-	for _, name := range requires {
-		switch name {
-		case workspacesession.CapabilityDiff, workspacesession.CapabilityPreview:
-			continue
-		}
-		relayed = append(relayed, name)
-	}
-	return relayed
-}
-
 // createWorkspace implements POST {nativeBase}/workspaces.
 func (s *Service) createWorkspace(c echo.Context) error {
 	var request workspaceRequest

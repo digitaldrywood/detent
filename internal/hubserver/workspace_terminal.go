@@ -4,12 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 // Terminal recordings.
@@ -39,93 +37,6 @@ import (
 // a terminal has no cap on the wire and must not have one, so the cap lives on
 // the stored copy and a reader is told when the copy is shorter than the
 // session was.
-
-// TerminalRecording is one recorded terminal stream.
-type TerminalRecording struct {
-	ID             string     `json:"id"`
-	WorkspaceID    string     `json:"workspace_id"`
-	StreamID       string     `json:"stream_id"`
-	RelaySessionID string     `json:"relay_session_id"`
-	PrincipalID    string     `json:"principal_id"`
-	Subject        string     `json:"subject"`
-	Isolation      string     `json:"isolation"`
-	SupportReason  string     `json:"support_reason,omitempty"`
-	StartedAt      time.Time  `json:"started_at"`
-	FinishedAt     *time.Time `json:"finished_at"`
-	Cols           int        `json:"cols"`
-	Rows           int        `json:"rows"`
-	// Artifact names where the bytes may be read, the way a run's
-	// output_artifact does. It is a path rather than the
-	// document, because a listing that carried every recording whole would be a
-	// listing nobody could page.
-	Artifact  string `json:"artifact"`
-	Bytes     int64  `json:"bytes"`
-	Truncated bool   `json:"truncated"`
-}
-
-// terminalRecordingRecord is one stored row, cast included.
-type terminalRecordingRecord struct {
-	TerminalRecording
-	OrganizationID string
-	ProjectID      string
-	Cast           string
-}
-
-// resource projects a row onto what a client reads.
-func (r terminalRecordingRecord) resource() TerminalRecording {
-	recording := r.TerminalRecording
-	recording.Artifact = terminalRecordingPath(r)
-	return recording
-}
-
-// terminalRecordingPath is what Artifact holds: the path of the endpoint that
-// serves this recording's bytes, so the receipt and the route can never name
-// different places. It stays empty until there is something to read, because a
-// client handed a link expects bytes behind it.
-func terminalRecordingPath(r terminalRecordingRecord) string {
-	if r.Bytes <= 0 {
-		return ""
-	}
-	return "/api/v2/organizations/" + r.OrganizationID + "/projects/" + r.ProjectID +
-		"/workspaces/" + r.WorkspaceID + "/terminal-recordings/" + r.ID
-}
-
-// terminalRecordingPage bounds one listing.
-const terminalRecordingPage = 50
-
-// terminalRecordingReadable is the terminal contract's audience, and it is deliberately
-// narrower than the issue's.
-//
-// The person who ran the session may always read their own: they were there,
-// and every byte in it either crossed their screen or came off their keyboard.
-// Owners and admins may read a container-isolation recording, which is the
-// level the setting recommends and the one a member may use. A user-isolation
-// recording is owners only, because at that level the shell ran as the runner's
-// own account with its credential store and its other checkouts in reach, so
-// the recording can carry more than any other artifact in the product.
-//
-// Nothing widens it. A viewer never had a terminal at all, and an issue's
-// readers are not an audience for this whatever their grant says.
-func terminalRecordingReadable(scope nativeScope, record terminalRecordingRecord) bool {
-	role := scope.credential.HostedRole
-	if scope.credential.Hosted == nil {
-		// A token principal has no membership and no role to narrow against. It
-		// is an organization-level credential -- the operator or admin token
-		// that administers this hub -- so it reads at the owner's level, which
-		// is the widest this audience ever goes. Narrowing it further would not
-		// protect anything: the same token can read every other resource in the
-		// organization, and a recording it could not read would simply be a
-		// resource with no administrator.
-		return true
-	}
-	if scope.credential.Hosted.Subject != "" && scope.credential.Hosted.Subject == record.Subject {
-		return true
-	}
-	if record.Isolation == workspacesession.IsolationUser {
-		return role == "owner"
-	}
-	return role == "owner" || role == "admin"
-}
 
 // listWorkspaceTerminalRecordings implements
 // GET {nativeBase}/workspaces/:workspace/terminal-recordings.

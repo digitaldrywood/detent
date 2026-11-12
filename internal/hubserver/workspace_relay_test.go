@@ -341,10 +341,7 @@ func (f *relayFixture) dialRunner(t *testing.T) *relayClient {
 
 // attachedConnections reports how many connections have ever joined the relay.
 func (f *relayFixture) attachedConnections() uint64 {
-	relay := f.service.workspaces.relay
-	relay.mu.Lock()
-	defer relay.mu.Unlock()
-	return relay.attachments
+	return f.service.workspaces.relay.Attachments()
 }
 
 // awaitAttached waits until the relay has registered a connection since
@@ -1574,8 +1571,8 @@ func (f *relayFixture) seedHostedMember(t *testing.T, name, role, grant string) 
 		t.Fatal(err)
 	}
 	return &relayConnection{
-		id: "relayconn_" + name, workspaceID: f.workspace, principalID: principal,
-		subject: subject, sessionHash: "session_hash_" + name,
+		ID: "relayconn_" + name, WorkspaceID: f.workspace, PrincipalID: principal,
+		Subject: subject, SessionHash: "session_hash_" + name,
 	}
 }
 
@@ -1651,7 +1648,7 @@ func TestWorkspaceRelayGitWriteAuthority(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			for _, f := range []nativeFixture{first, second} {
 				record := workspaceRecord{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ReadOnly: test.readOnly}
-				connection := &relayConnection{id: "relayconn_token"}
+				connection := &relayConnection{ID: "relayconn_token"}
 				if !test.token {
 					subject := "user_" + strings.ReplaceAll(test.name, " ", "-")
 					principal := "principal_" + subject
@@ -1669,7 +1666,7 @@ func TestWorkspaceRelayGitWriteAuthority(t *testing.T) {
 					}); err != nil {
 						t.Fatal(err)
 					}
-					connection = &relayConnection{id: "relayconn_" + subject, subject: subject, sessionHash: "session_hash_" + subject, hostedRole: test.role}
+					connection = &relayConnection{ID: "relayconn_" + subject, Subject: subject, SessionHash: "session_hash_" + subject, HostedRole: test.role}
 				}
 				frame := gitFrame(test.frameType, "Commit from the authority table")
 				if test.exec {
@@ -1815,7 +1812,7 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			connection := &relayConnection{id: "relayconn_actor"}
+			connection := &relayConnection{ID: "relayconn_actor"}
 			actor := service.relayActor(t.Context(), test.organization, connection, test.principal)
 			if actor.Name != test.wantName || actor.Email != test.wantEmail {
 				t.Fatalf("actor = %+v, want name %q and email %q", actor, test.wantName, test.wantEmail)
@@ -1823,8 +1820,8 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 			if actor.PrincipalID != test.principal.principalID || actor.Subject != test.principal.subject {
 				t.Fatalf("actor = %+v, want the principal's own tuple", actor)
 			}
-			if actor.ConnectionID != connection.id {
-				t.Fatalf("actor connection = %q, want %q", actor.ConnectionID, connection.id)
+			if actor.ConnectionID != connection.ID {
+				t.Fatalf("actor connection = %q, want %q", actor.ConnectionID, connection.ID)
 			}
 		})
 	}
@@ -1999,7 +1996,7 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				value.connection = &relayConnection{id: "connection_" + suffix, workspaceID: workspaceID, principalID: principal.principalID, sessionID: principal.sessionID, sessionHash: principal.credential.SessionHash, subject: subject}
+				value.connection = &relayConnection{ID: "connection_" + suffix, WorkspaceID: workspaceID, PrincipalID: principal.principalID, SessionID: principal.sessionID, SessionHash: principal.credential.SessionHash, Subject: subject}
 				value.scope = nativeScope{organization: organization, project: project, credential: principal.credential}
 				value.record = workspaceRecord{ID: workspaceID, OrganizationID: organization, ProjectID: project, SubjectWorkItemID: value.workspace.SubjectWorkItemID, LeaseID: tracker.LeaseID(value.workspace.LeaseID), FencingToken: tracker.FencingToken(value.workspace.FencingToken)}
 				fixtures = append(fixtures, value)
@@ -2047,14 +2044,14 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 							member.Active = false
 							return w.UpdateAccessMember(t.Context(), member)
 						case "session":
-							return w.RevokeAccessSession(t.Context(), value.connection.sessionHash, base)
+							return w.RevokeAccessSession(t.Context(), value.connection.SessionHash, base)
 						case "grant":
 							return w.DeleteAccessProjectGrant(t.Context(), value.subject, value.scope.project)
 						case "lease_released":
 							_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: value.lease.LeaseID, FencingToken: value.lease.FencingToken}, "example")
 							return err
 						case "token_revoked":
-							return w.RevokeAccessCredential(t.Context(), value.connection.principalID, base)
+							return w.RevokeAccessCredential(t.Context(), value.connection.PrincipalID, base)
 						default:
 							item, err := w.WorkItem(t.Context(), value.scope.project, tracker.NativeWorkItemID(value.record.SubjectWorkItemID))
 							if err != nil {
@@ -2073,9 +2070,9 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 				case "lease_expiry":
 					clock.Store(value.lease.ExpiresAt.UnixNano())
 				case "principal":
-					value.connection.principalID = "other_principal"
+					value.connection.PrincipalID = "other_principal"
 				case "session_id":
-					value.connection.sessionID = "other_session"
+					value.connection.SessionID = "other_session"
 				case "provider_member", "provider_session":
 					provider := value.server.config.Hosted.Provider.(*hostedSecurityProvider)
 					provider.mu.Lock()
@@ -2180,12 +2177,12 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 							return row, err
 						}
 						row, err := readAudit()
-						if err != nil || row.OrganizationID != value.scope.organization || row.ProjectID != value.scope.project || row.WorkspaceID != value.record.ID || row.ID != value.connection.auditID || row.ConnectionID != value.connection.id || row.PrincipalID != principal.principalID || row.Subject != principal.subject || row.SupportReason != principal.supportReason || len(row.Channels) != 0 || !row.OpenedAt.Equal(touchedAt) || row.ClosedAt != nil {
+						if err != nil || row.OrganizationID != value.scope.organization || row.ProjectID != value.scope.project || row.WorkspaceID != value.record.ID || row.ID != value.connection.AuditID || row.ConnectionID != value.connection.ID || row.PrincipalID != principal.principalID || row.Subject != principal.subject || row.SupportReason != principal.supportReason || len(row.Channels) != 0 || !row.OpenedAt.Equal(touchedAt) || row.ClosedAt != nil {
 							t.Fatalf("scoped opened audit=%+v error=%v", row, err)
 						}
-						value.connection.countIn(13)
-						value.connection.countOut(29)
-						wrongConnection := &relayConnection{id: "other_connection", auditID: value.connection.auditID}
+						value.connection.CountIn(13)
+						value.connection.CountOut(29)
+						wrongConnection := &relayConnection{ID: "other_connection", AuditID: value.connection.AuditID}
 						activity.closeRelayAudit(t.Context(), value.record, wrongConnection, "wrong_connection")
 						foreign := value.record
 						if foreign.OrganizationID == "org_startup" {
@@ -2203,8 +2200,8 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 						if err != nil || row.ClosedAt == nil || !row.ClosedAt.Equal(touchedAt) || row.BytesIn != 13 || row.BytesOut != 29 || row.CloseReason != "person_closed" {
 							t.Fatalf("audit close lost exact bytes/reason/time: %+v error=%v", row, err)
 						}
-						value.connection.countIn(7)
-						value.connection.countOut(11)
+						value.connection.CountIn(7)
+						value.connection.CountOut(11)
 						clock.Store(touchedAt.Add(time.Second).UnixNano())
 						activity.closeRelayAudit(t.Context(), value.record, value.connection, "later_close")
 						again, err := readAudit()
@@ -2213,79 +2210,6 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 						}
 					}
 				}
-			}
-		})
-	}
-}
-
-func TestRelayActorName(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name  string
-		email string
-		want  string
-	}{
-		{name: "dotted local part", email: "ada.lovelace@example.test", want: "Ada Lovelace"},
-		{name: "underscores and dashes", email: "grace_brewster-murray@example.test", want: "Grace Brewster Murray"},
-		{name: "single word", email: "ada@example.test", want: "Ada"},
-		{name: "already capitalised", email: "Ada.Lovelace@example.test", want: "Ada Lovelace"},
-		{name: "routing tag", email: "ada.lovelace+detent@example.test", want: "Ada Lovelace"},
-		{name: "surrounding space", email: "  ada@example.test  ", want: "Ada"},
-		{name: "no domain", email: "ada.lovelace", want: "Ada Lovelace"},
-		{name: "separators only", email: "...@example.test", want: "...@example.test"},
-		{name: "non-ascii", email: "ada.ñ@example.test", want: "Ada Ñ"},
-		{name: "empty", email: "", want: ""},
-		{name: "blank", email: "   ", want: ""},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			if got := relayActorName(test.email); got != test.want {
-				t.Fatalf("relayActorName(%q) = %q, want %q", test.email, got, test.want)
-			}
-		})
-	}
-}
-
-// A superseded runner connection keeps reading its socket until the close
-// lands, so every frame it sends must be fenced against the room's current
-// runner rather than routed by workspace and stream id alone.
-func TestWorkspaceRelayRunnerStreamFencesSupersededRunners(t *testing.T) {
-	t.Parallel()
-	current := &relayConnection{id: "relayconn_current", workspaceID: "ws_1", runner: true}
-	superseded := &relayConnection{id: "relayconn_old", workspaceID: "ws_1", runner: true}
-	elsewhere := &relayConnection{id: "relayconn_other", workspaceID: "ws_2", runner: true}
-	person := &relayConnection{id: "relayconn_person", workspaceID: "ws_1"}
-	live := &relayStream{id: "relayconn_person:1", channel: workspacesession.ChannelFiles, connectionID: person.id}
-	parked := &relayStream{id: "relayconn_person:2", channel: workspacesession.ChannelFiles, connectionID: person.id}
-	relay := newWorkspaceRelay(nil)
-	relay.rooms["ws_1"] = &relayRoom{
-		workspaceID: "ws_1",
-		runner:      current,
-		people:      map[string]*relayConnection{person.id: person},
-		streams:     map[string]*relayStream{live.id: live},
-		detached:    map[string]*relayStream{parked.id: parked},
-		terminals:   map[string]*terminalStreamState{},
-	}
-	tests := []struct {
-		name       string
-		runner     *relayConnection
-		stream     string
-		wantStream *relayStream
-		wantPerson *relayConnection
-	}{
-		{name: "current runner reaches a live stream", runner: current, stream: live.id, wantStream: live, wantPerson: person},
-		{name: "current runner reaches a detached stream", runner: current, stream: parked.id, wantStream: parked},
-		{name: "current runner naming no stream", runner: current, stream: "relayconn_person:9"},
-		{name: "superseded runner is refused a live stream", runner: superseded, stream: live.id},
-		{name: "superseded runner is refused a detached stream", runner: superseded, stream: parked.id},
-		{name: "runner of another workspace", runner: elsewhere, stream: live.id},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			stream, owner := relay.runnerStream(test.runner, test.stream)
-			if stream != test.wantStream || owner != test.wantPerson {
-				t.Fatalf("runnerStream = (%v, %v), want (%v, %v)", stream, owner, test.wantStream, test.wantPerson)
 			}
 		})
 	}
@@ -2363,8 +2287,8 @@ func TestWorkspaceRelayTicketNeedsOnlyRead(t *testing.T) {
 				t.Fatalf("mint status = %d, want %d: %s", minted.Code, test.wantMint, minted.Body.String())
 			}
 			connection := &relayConnection{
-				id: "relayconn_" + name, workspaceID: session.ID, subject: user.identity.Subject,
-				sessionHash: "session_hash_" + name, hostedRole: test.role,
+				ID: "relayconn_" + name, WorkspaceID: session.ID, Subject: user.identity.Subject,
+				SessionHash: "session_hash_" + name, HostedRole: test.role,
 			}
 			if code := f.service.workspaces.refuseRelayWrite(t.Context(), record, connection, gitFrame(workspacesession.TypeGitCommit, "commit")); code != test.wantWriteRef {
 				t.Fatalf("git commit refusal = %q, want %q", code, test.wantWriteRef)
@@ -2374,70 +2298,6 @@ func TestWorkspaceRelayTicketNeedsOnlyRead(t *testing.T) {
 			}
 			if code := f.service.workspaces.refuseTerminal(t.Context(), record, connection, terminalOpenFrame()); code != workspacesession.CodeForbidden {
 				t.Fatalf("terminal refusal = %q, want forbidden (no runner grant)", code)
-			}
-		})
-	}
-}
-
-// A resume's last_seq is an acknowledgement: the frames the person already
-// has leave the replay buffer and the relay's memory budget at once, and a
-// later ack of the same seq has nothing left to release.
-func TestWorkspaceRelayResumeReleasesAcknowledgedFrames(t *testing.T) {
-	t.Parallel()
-	const frameBytes = int64(100)
-	for _, test := range []struct {
-		name       string
-		lastSeq    int64
-		wantKept   []int64
-		wantMemory int64
-	}{
-		{name: "nothing seen", lastSeq: 0, wantKept: []int64{1, 2, 3}, wantMemory: 3 * frameBytes},
-		{name: "first frame seen", lastSeq: 1, wantKept: []int64{2, 3}, wantMemory: 2 * frameBytes},
-		{name: "all but the last seen", lastSeq: 2, wantKept: []int64{3}, wantMemory: frameBytes},
-		{name: "everything seen", lastSeq: 3, wantKept: []int64{}, wantMemory: 0},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			relay := newWorkspaceRelay(&workspaceService{config: WorkspaceConfig{RelayMemoryBytes: 1 << 20}})
-			stream := &relayStream{
-				id: "relayconn_old:1", channel: workspacesession.ChannelFiles, connectionID: "relayconn_old",
-				principalID: "principal", sessionID: "session", toPerson: 3, detachedAt: time.Now(),
-				bufferBytes: 3 * frameBytes,
-			}
-			for seq := int64(1); seq <= 3; seq++ {
-				stream.buffer = append(stream.buffer, relayBufferedFrame{seq: seq, bytes: frameBytes})
-			}
-			relay.memory = 3 * frameBytes
-			relay.rooms["ws_1"] = &relayRoom{
-				workspaceID: "ws_1", people: map[string]*relayConnection{},
-				streams: map[string]*relayStream{}, detached: map[string]*relayStream{stream.id: stream},
-				terminals: map[string]*terminalStreamState{},
-			}
-			connection := &relayConnection{id: "relayconn_new", workspaceID: "ws_1", principalID: "principal", sessionID: "session"}
-			resumed, replay, code := relay.resumeStream(connection, stream.id, test.lastSeq, time.Now())
-			if code != "" || resumed != stream {
-				t.Fatalf("resume = %v, %q", resumed, code)
-			}
-			if len(replay) != len(test.wantKept) {
-				t.Fatalf("replayed %d frames, want %d", len(replay), len(test.wantKept))
-			}
-			kept := []int64{}
-			for _, buffered := range stream.buffer {
-				kept = append(kept, buffered.seq)
-			}
-			if !slices.Equal(kept, test.wantKept) {
-				t.Fatalf("buffer holds %v, want %v", kept, test.wantKept)
-			}
-			if stream.bufferBytes != test.wantMemory || relay.memory != test.wantMemory {
-				t.Fatalf("stream bytes = %d, relay memory = %d, want %d", stream.bufferBytes, relay.memory, test.wantMemory)
-			}
-			relay.acknowledge(stream, test.lastSeq)
-			if relay.memory != test.wantMemory {
-				t.Fatalf("an ack of last_seq changed memory to %d", relay.memory)
-			}
-			relay.acknowledge(stream, 3)
-			if len(stream.buffer) != 0 || stream.bufferBytes != 0 || relay.memory != 0 {
-				t.Fatalf("after the final ack: buffer %d, stream bytes %d, relay memory %d", len(stream.buffer), stream.bufferBytes, relay.memory)
 			}
 		})
 	}
@@ -2474,8 +2334,8 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 				f.updateWorkspace(t, func(arg *postgres.WorkspaceUpdate) { arg.State = test.state })
 			}
 			connection := &relayConnection{
-				id: newNativeID("relayconn"), workspaceID: f.workspace, runner: test.runner, scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID},
-				out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
+				ID: newNativeID("relayconn"), WorkspaceID: f.workspace, Runner: test.runner, Scope: f.service.authInput(nativeScope{organization: f.project.OrganizationID, project: f.project.ID}),
+				Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),
 			}
 			relay := f.service.workspaces.relay
 			if test.runner {
@@ -2487,12 +2347,12 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 			}
 			f.service.workspaces.closeIfEndedSinceUpgrade(t.Context(), connection)
 			select {
-			case item := <-connection.out:
+			case item := <-connection.Out:
 				if test.wantCode == "" {
 					t.Fatalf("a connection to a %s workspace was sent %+v", test.state, item)
 				}
-				if item.final != test.wantCode {
-					t.Fatalf("closed with %q, want %q", item.final, test.wantCode)
+				if item.Final != test.wantCode {
+					t.Fatalf("closed with %q, want %q", item.Final, test.wantCode)
 				}
 			default:
 				if test.wantCode != "" {
@@ -2505,49 +2365,6 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 
 func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 	t.Parallel()
-	current := &relayConnection{id: "relayconn_current", workspaceID: "ws_1", runner: true}
-	replaced := &relayConnection{id: "relayconn_old", workspaceID: "ws_1", runner: true}
-	stream := &relayStream{id: "relayhub:1", channel: workspacesession.ChannelExec, connectionID: hubStreamOwner, hubOwned: true}
-	tests := []struct {
-		name      string
-		roomless  bool
-		attached  *relayConnection
-		streamID  string
-		expecting *relayConnection
-		want      bool
-	}{
-		{name: "the runner that was looked up", attached: current, streamID: stream.id, expecting: current, want: true},
-		{name: "any attached runner", attached: current, streamID: stream.id, want: true},
-		{name: "a runner replaced since the lookup", attached: current, streamID: stream.id, expecting: replaced},
-		{name: "a runner that detached", streamID: stream.id, expecting: current},
-		{name: "no runner at all", streamID: stream.id},
-		{name: "a stream closed since it was opened", attached: current, streamID: "relayhub:2", expecting: current},
-		{name: "a workspace no longer served", roomless: true, streamID: stream.id},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			relay := newWorkspaceRelay(nil)
-			if !test.roomless {
-				relay.rooms["ws_1"] = &relayRoom{
-					workspaceID: "ws_1", runner: test.attached,
-					people:   map[string]*relayConnection{},
-					streams:  map[string]*relayStream{stream.id: stream},
-					detached: map[string]*relayStream{},
-					execRuns: map[string]*execRunState{},
-				}
-			}
-			if got := relay.beginExecRun("ws_1", test.streamID, &execRunState{runID: "actionrun_1", actionID: "action_1"}, test.expecting); got != test.want {
-				t.Fatalf("beginExecRun = %v, want %v", got, test.want)
-			}
-			if test.roomless {
-				return
-			}
-			if _, recorded := relay.rooms["ws_1"].execRuns[test.streamID]; recorded != test.want {
-				t.Fatalf("run recorded = %v, want %v", recorded, test.want)
-			}
-		})
-	}
 	t.Run("PostgreSQL runtime owner preserves claim and output", func(t *testing.T) {
 		fixture := newPostgresRelayRuntimeFixture(t, false)
 		for _, v := range fixture.tenants {
@@ -2565,9 +2382,15 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			person := &relayConnection{id: "relayconn_" + string(v.record.OrganizationID), workspaceID: v.record.ID, out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
-			stream := &relayStream{id: person.id + ":1", channel: workspacesession.ChannelExec, connectionID: person.id}
-			fixture.service.relay.rooms[v.record.ID] = &relayRoom{workspaceID: v.record.ID, runner: v.runner, people: map[string]*relayConnection{person.id: person}, streams: map[string]*relayStream{stream.id: stream}, detached: map[string]*relayStream{}, execRuns: map[string]*execRunState{}}
+			person := &relayConnection{ID: "relayconn_" + string(v.record.OrganizationID), WorkspaceID: v.record.ID, Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{})}
+			stream := &relayStream{ID: person.ID + ":1", Channel: workspacesession.ChannelExec, ConnectionID: person.ID}
+			if _, err := fixture.service.relay.attachRunner(v.runner); err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.service.relay.attachPerson(person); err != nil {
+				t.Fatal(err)
+			}
+			fixture.service.relay.Room(v.record.ID).Streams[stream.ID] = stream
 			frame := execRunFrame("actionrun_relay", workspacesession.Action{ID: "action_relay", Command: "printf example"})
 			capture := new(runtimeHistoryTraceCapture)
 			ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
@@ -2584,8 +2407,8 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			if code := fixture.service.startExecRun(t.Context(), person, v.runner, v.record, stream, frame); code != workspacesession.CodeAlreadyRunning {
 				t.Fatalf("duplicate refusal=%s", code)
 			}
-			fixture.service.recordExecFrame(t.Context(), v.runner, stream, execOutputFrame(stream.id, workspacesession.ExecOutput{Data: "example output"}))
-			fixture.service.recordExecFrame(t.Context(), v.runner, stream, execExitedFrame(stream.id, 0))
+			fixture.service.recordExecFrame(t.Context(), v.runner, stream, execOutputFrame(stream.ID, workspacesession.ExecOutput{Data: "example output"}))
+			fixture.service.recordExecFrame(t.Context(), v.runner, stream, execExitedFrame(stream.ID, 0))
 			var row postgres.ActionRun
 			if err := fixture.server.accessRead(t.Context(), v.record.OrganizationID, func(reader tenantstore.Reader) error {
 				var err error
@@ -2594,7 +2417,7 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if row.Status != "succeeded" || row.ClaimedBy != stream.id || row.Revision != 3 || row.OutputSequence != 1 || row.OutputObjectKey == nil || row.OutputContentBytes != int64(len("example output")) {
+			if row.Status != "succeeded" || row.ClaimedBy != stream.ID || row.Revision != 3 || row.OutputSequence != 1 || row.OutputObjectKey == nil || row.OutputContentBytes != int64(len("example output")) {
 				t.Fatalf("real runtime receipt=%+v", row)
 			}
 			ref := attachment.ArchiveReference{Key: *row.OutputObjectKey, SHA256: row.OutputSha256, CompressedSize: row.OutputBytes, UncompressedSize: row.OutputContentBytes, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
@@ -2602,7 +2425,7 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			if err != nil || string(stored) != "example output" {
 				t.Fatalf("stored runtime output=%q error=%v", stored, err)
 			}
-			fixture.service.recordExecFrame(t.Context(), v.runner, stream, execExitedFrame(stream.id, 7))
+			fixture.service.recordExecFrame(t.Context(), v.runner, stream, execExitedFrame(stream.ID, 7))
 			if err := fixture.server.accessRead(t.Context(), v.record.OrganizationID, func(reader tenantstore.Reader) error {
 				got, err := reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_relay"})
 				if err == nil && !reflect.DeepEqual(got, row) {
@@ -2634,8 +2457,8 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			recoveryStream := &relayStream{id: person.id + ":3", channel: workspacesession.ChannelExec, connectionID: person.id}
-			fixture.service.relay.rooms[v.record.ID].streams[recoveryStream.id] = recoveryStream
+			recoveryStream := &relayStream{ID: person.ID + ":3", Channel: workspacesession.ChannelExec, ConnectionID: person.ID}
+			fixture.service.relay.Room(v.record.ID).Streams[recoveryStream.ID] = recoveryStream
 			if code := fixture.service.startExecRun(t.Context(), person, v.runner, v.record, recoveryStream, execRunFrame("actionrun_recovery_exit", workspacesession.Action{ID: "action_relay", Command: "printf example"})); code != "" {
 				t.Fatalf("recovery-exit setup refusal=%s", code)
 			}
@@ -2650,8 +2473,8 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			fixture.service.recordExecFrame(t.Context(), v.runner, recoveryStream, execOutputFrame(recoveryStream.id, workspacesession.ExecOutput{Data: "retained during recovery"}))
-			fixture.service.recordExecFrame(t.Context(), v.runner, recoveryStream, execExitedFrame(recoveryStream.id, 17))
+			fixture.service.recordExecFrame(t.Context(), v.runner, recoveryStream, execOutputFrame(recoveryStream.ID, workspacesession.ExecOutput{Data: "retained during recovery"}))
+			fixture.service.recordExecFrame(t.Context(), v.runner, recoveryStream, execExitedFrame(recoveryStream.ID, 17))
 			if err := fixture.server.accessRead(t.Context(), v.record.OrganizationID, func(reader tenantstore.Reader) error {
 				got, err := reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_recovery_exit"})
 				if err == nil && (got.Status != "failed" || !got.ExitCode.Valid || got.ExitCode.Int32 != 17 || got.Reason != "" || got.LeaseID != v.lease.LeaseID || got.OutputContentBytes != int64(len("retained during recovery"))) {
@@ -2682,18 +2505,18 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			removedStream := &relayStream{id: person.id + ":2", channel: workspacesession.ChannelExec, connectionID: person.id}
-			fixture.service.relay.rooms[v.record.ID].streams[removedStream.id] = removedStream
+			removedStream := &relayStream{ID: person.ID + ":2", Channel: workspacesession.ChannelExec, ConnectionID: person.ID}
+			fixture.service.relay.Room(v.record.ID).Streams[removedStream.ID] = removedStream
 			if code := fixture.service.startExecRun(t.Context(), person, v.runner, v.record, removedStream, execRunFrame("actionrun_removed", workspacesession.Action{ID: "action_relay", Command: "printf example"})); code != "" {
 				t.Fatalf("removed-run setup refusal=%s", code)
 			}
-			fixture.service.recordExecFrame(t.Context(), v.runner, removedStream, execOutputFrame(removedStream.id, workspacesession.ExecOutput{Data: "retained after removal"}))
+			fixture.service.recordExecFrame(t.Context(), v.runner, removedStream, execOutputFrame(removedStream.ID, workspacesession.ExecOutput{Data: "retained after removal"}))
 			if err := fixture.server.accessWrite(t.Context(), v.record.OrganizationID, func(writer tenantstore.Writer) error {
 				return writer.RemoveRunnerIdentity(t.Context(), v.record.RunnerID, fixture.service.now())
 			}); err != nil {
 				t.Fatal(err)
 			}
-			fixture.service.recordExecFrame(t.Context(), v.runner, removedStream, execExitedFrame(removedStream.id, 0))
+			fixture.service.recordExecFrame(t.Context(), v.runner, removedStream, execExitedFrame(removedStream.ID, 0))
 			if err := fixture.server.accessRead(t.Context(), v.record.OrganizationID, func(reader tenantstore.Reader) error {
 				got, err := reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_removed"})
 				if err == nil && (got.Status != "failed" || got.Reason != "stream_closed" || got.ExitCode.Valid || got.OutputContentBytes != int64(len("retained after removal"))) {
@@ -2746,7 +2569,9 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			services[index].relay.rooms[value.record.ID] = &relayRoom{workspaceID: value.record.ID, runner: value.runner, people: map[string]*relayConnection{}, streams: map[string]*relayStream{}, detached: map[string]*relayStream{}, execRuns: map[string]*execRunState{}}
+			if _, err := services[index].relay.attachRunner(value.runner); err != nil {
+				t.Fatal(err)
+			}
 		}
 		assertCounts := func(tenant int, queued, running, failed, tickets int) {
 			t.Helper()
@@ -2830,46 +2655,6 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 		}
 	})
 
-}
-
-func TestWorkspaceRelayDetachPersonClosesItsExecStreamsOnTheRunner(t *testing.T) {
-	t.Parallel()
-	runner := &relayConnection{id: "relayconn_runner", workspaceID: "ws_1", runner: true,
-		out: make(chan relayOutbound, 4), done: make(chan struct{})}
-	person := &relayConnection{id: "relayconn_person", workspaceID: "ws_1"}
-	exec := &relayStream{id: "relayconn_person:1", channel: workspacesession.ChannelExec, connectionID: person.id}
-	files := &relayStream{id: "relayconn_person:2", channel: workspacesession.ChannelFiles, connectionID: person.id}
-	relay := newWorkspaceRelay(nil)
-	relay.rooms["ws_1"] = &relayRoom{
-		workspaceID: "ws_1", runner: runner,
-		people:   map[string]*relayConnection{person.id: person},
-		streams:  map[string]*relayStream{exec.id: exec, files.id: files},
-		detached: map[string]*relayStream{},
-		execRuns: map[string]*execRunState{},
-	}
-
-	relay.detachPerson(t.Context(), person, time.Now())
-
-	room := relay.rooms["ws_1"]
-	if _, parked := room.detached[exec.id]; parked {
-		t.Fatal("the exec stream was parked for a resume, want it closed")
-	}
-	if _, parked := room.detached[files.id]; !parked {
-		t.Fatal("the files stream was not parked for a resume")
-	}
-	select {
-	case sent := <-runner.out:
-		if sent.frame.Type != workspacesession.TypeClose || sent.frame.Stream != exec.id {
-			t.Fatalf("runner received %+v, want a close of the exec stream", sent.frame)
-		}
-	default:
-		t.Fatal("the runner was not told to close the exec stream")
-	}
-	select {
-	case sent := <-runner.out:
-		t.Fatalf("runner received an extra frame %+v", sent.frame)
-	default:
-	}
 }
 
 type postgresRelayRuntimeTenant struct {
@@ -2999,7 +2784,7 @@ func newPostgresRelayRuntimeFixture(t *testing.T, hosted bool) postgresRelayRunt
 		}
 		scope := nativeScope{organization: organization, project: f.project.ID, credential: credential}
 		record := relayWorkspaceRecord(session)
-		connection := &relayConnection{id: "relayrunner_" + string(organization), workspaceID: session.ID, runner: true, scope: scope, owner: record.owner(), principalID: worker, sessionID: lease.LeaseID, out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
+		connection := &relayConnection{ID: "relayrunner_" + string(organization), WorkspaceID: session.ID, Runner: true, Scope: server.authInput(scope), Owner: record.owner(), PrincipalID: worker, SessionID: lease.LeaseID, Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{})}
 		result.tenants = append(result.tenants, postgresRelayRuntimeTenant{fixture: f, workerScope: scope, record: record, runner: connection, lease: lease})
 	}
 	if hosted {

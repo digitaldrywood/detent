@@ -180,12 +180,7 @@ func (f *workspaceLaneFixture) awaitReady(t *testing.T, id string) workspacesess
 		if session.State == workspacesession.StateReady {
 			// Ready describes the worktree; the runner attaches its relay
 			// afterward. Lifecycle tests need both before sending frames.
-			relay := f.service.workspaces.relay
-			relay.mu.Lock()
-			room := relay.rooms[id]
-			attached := room != nil && room.runner != nil
-			relay.mu.Unlock()
-			if attached {
+			if f.service.workspaces.relay.runnerFor(id) != nil {
 				ready = session
 				return nil
 			}
@@ -517,23 +512,6 @@ func TestWorkspaceLaneRunsProjectActions(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ready.WorktreePath, "build-ran")); err != nil {
 		t.Fatalf("the dispatched action did not run in the worktree: %v", err)
-	}
-}
-
-func TestRelayedRequiresDropsOnlyUnservedSurfaces(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		requires []string
-		want     []string
-	}{
-		{requires: []string{"files", "exec"}, want: []string{"files", "exec"}},
-		{requires: []string{"files", "diff"}, want: []string{"files"}},
-		{requires: []string{"terminal", "preview", "git"}, want: []string{"terminal", "git"}},
-	}
-	for _, test := range tests {
-		if got := relayedRequires(test.requires); !slices.Equal(got, test.want) {
-			t.Errorf("relayedRequires(%v) = %v, want %v", test.requires, got, test.want)
-		}
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -419,29 +418,29 @@ func TestWorkspaceRelayRecordsATerminalSession(t *testing.T) {
 			return used
 		}
 		initialUsage := readUsage()
-		state := &terminalStreamState{id: newNativeID("termrec"), workspaceID: f.workspace, organizationID: string(f.project.OrganizationID), projectID: string(f.project.ID), relaySessionID: recording.RelaySessionID, streamID: recording.StreamID + "-correction", principalID: recording.PrincipalID, subject: recording.Subject, isolation: recording.Isolation, supportReason: recording.SupportReason, startedAt: recording.StartedAt, cols: recording.Cols, rows: recording.Rows, recording: workspacesession.NewRecording(recording.Cols, recording.Rows, recording.StartedAt)}
-		state.recording.Append(workspacesession.AsciicastOutput, "first output", recording.StartedAt)
+		state := &terminalStreamState{ID: newNativeID("termrec"), WorkspaceID: f.workspace, OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID), RelaySessionID: recording.RelaySessionID, StreamID: recording.StreamID + "-correction", PrincipalID: recording.PrincipalID, Subject: recording.Subject, Isolation: recording.Isolation, SupportReason: recording.SupportReason, StartedAt: recording.StartedAt, Cols: recording.Cols, Rows: recording.Rows, Recording: workspacesession.NewRecording(recording.Cols, recording.Rows, recording.StartedAt)}
+		state.Recording.Append(workspacesession.AsciicastOutput, "first output", recording.StartedAt)
 		shorter := workspacesession.NewRecording(recording.Cols, recording.Rows, recording.StartedAt)
 		shorter.Append(workspacesession.AsciicastOutput, "first output", recording.StartedAt)
 		f.service.workspaces.finishTerminalRecording(t.Context(), state)
-		state.recording.Append(workspacesession.AsciicastOutput, "second output", recording.StartedAt.Add(time.Microsecond))
+		state.Recording.Append(workspacesession.AsciicastOutput, "second output", recording.StartedAt.Add(time.Microsecond))
 		f.service.workspaces.finishTerminalRecording(t.Context(), state)
-		corrected := readTerminalRecordingsForTest(t, f, state.streamID)
-		if len(corrected) != 1 || corrected[0].Cast != state.recording.Cast() || corrected[0].Bytes != int64(len(state.recording.Cast())) || !strings.Contains(corrected[0].Cast, "second output") {
+		corrected := readTerminalRecordingsForTest(t, f, state.StreamID)
+		if len(corrected) != 1 || corrected[0].Cast != state.Recording.Cast() || corrected[0].Bytes != int64(len(state.Recording.Cast())) || !strings.Contains(corrected[0].Cast, "second output") {
 			t.Fatalf("longer teardown was not retained: %+v", corrected)
 		}
 		beforeUsage := readUsage()
-		state.recording = shorter
+		state.Recording = shorter
 		f.service.workspaces.finishTerminalRecording(t.Context(), state)
 		if used := readUsage(); used != beforeUsage {
 			t.Fatalf("discarded recording charged bytes: got=%d want=%d", used, beforeUsage)
 		}
-		again := readTerminalRecordingsForTest(t, f, state.streamID)
+		again := readTerminalRecordingsForTest(t, f, state.StreamID)
 		if !reflect.DeepEqual(again, corrected) {
 			t.Fatalf("shorter teardown replaced complete recording: got=%+v want=%+v", again, corrected)
 		}
 		if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
-			row, err := reader.(postgres.RelayActionReader).TerminalRecording(t.Context(), f.project.ID, state.id)
+			row, err := reader.(postgres.RelayActionReader).TerminalRecording(t.Context(), f.project.ID, state.ID)
 			if err != nil {
 				return err
 			}
@@ -456,7 +455,7 @@ func TestWorkspaceRelayRecordsATerminalSession(t *testing.T) {
 				t.Fatalf("corrective recording revision=%d want2", row.Revision)
 			}
 			var count int
-			if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND owner_kind='workspace-terminal-recording' AND owner_id=$2", f.project.OrganizationID, actionstore.ArchiveOwnerID(f.project.ID, state.id)).Scan(&count); err != nil {
+			if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND owner_kind='workspace-terminal-recording' AND owner_id=$2", f.project.OrganizationID, actionstore.ArchiveOwnerID(f.project.ID, state.ID)).Scan(&count); err != nil {
 				return err
 			}
 			if count != 1 {
@@ -488,59 +487,6 @@ func TestWorkspaceRelaySkipsRecordingWhenTheSettingIsOff(t *testing.T) {
 
 	if recordings := readTerminalRecordingsForTest(t, f, ""); len(recordings) != 0 {
 		t.Fatalf("recordings = %d, want none with the setting off", len(recordings))
-	}
-}
-
-// TestTerminalRecordingAudience is the terminal contract's audience rule, which is
-// narrower than the issue's on purpose: a recording can carry what the runner
-// account can see.
-func TestTerminalRecordingAudience(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		isolation string
-		role      string
-		subject   string
-		want      bool
-	}{
-		{
-			name:      "the person who ran it reads their own at any level",
-			isolation: workspacesession.IsolationUser,
-			role:      "member",
-			subject:   "user_ran_it",
-			want:      true,
-		},
-		{name: "an owner reads a container recording", isolation: workspacesession.IsolationContainer, role: "owner", want: true},
-		{name: "an admin reads a container recording", isolation: workspacesession.IsolationContainer, role: "admin", want: true},
-		{name: "a member does not read somebody else's", isolation: workspacesession.IsolationContainer, role: "member"},
-		{name: "a viewer never does", isolation: workspacesession.IsolationContainer, role: "viewer"},
-		{
-			// At user isolation the shell ran as the runner's own account, so
-			// the recording can carry its credential store and its other
-			// checkouts. The terminal contract narrows it to owners alone.
-			name:      "an admin does not read a user-isolation recording",
-			isolation: workspacesession.IsolationUser,
-			role:      "admin",
-		},
-		{name: "an owner does read a user-isolation recording", isolation: workspacesession.IsolationUser, role: "owner", want: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			scope := nativeScope{credential: apiCredential{
-				HostedRole: tt.role,
-				Hosted:     &auth.HostedIdentity{Subject: tt.subject},
-			}}
-			record := terminalRecordingRecord{TerminalRecording: TerminalRecording{
-				Isolation: tt.isolation, Subject: "user_ran_it",
-			}}
-			if got := terminalRecordingReadable(scope, record); got != tt.want {
-				t.Fatalf("terminalRecordingReadable() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
 
@@ -738,9 +684,9 @@ func TestRefuseTerminalGrantMatrix(t *testing.T) {
 					cachedRole = tt.role
 				}
 				record := workspaceRecord{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID}
-				connection := &relayConnection{id: "relayconn_test", subject: subject, hostedRole: cachedRole, supportReason: tt.support}
+				connection := &relayConnection{ID: "relayconn_test", Subject: subject, HostedRole: cachedRole, SupportReason: tt.support}
 				if !tt.token {
-					connection.sessionHash = "hash_" + subject
+					connection.SessionHash = "hash_" + subject
 				}
 				got := relay.refuseTerminal(t.Context(), record, connection, terminalOpenFrame())
 				if got != tt.want {

@@ -102,7 +102,7 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := &relayConnection{id: "relayrunner_test", workspaceID: workspace, runner: true, scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: runnerCredential}, owner: bound.Owner, sessionID: string(lease.ID), out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
+	runner := &relayConnection{ID: "relayrunner_test", WorkspaceID: workspace, Runner: true, Scope: f.service.authInput(nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: runnerCredential}), Owner: bound.Owner, SessionID: string(lease.ID), Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{})}
 	if _, err := f.service.workspaces.relay.attachRunner(runner); err != nil {
 		t.Fatal(err)
 	}
@@ -185,8 +185,8 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 			t.Cleanup(func() { cancel(); <-finished })
 			var forwarded workspacesession.Frame
 			select {
-			case outbound := <-runner.out:
-				forwarded = outbound.frame
+			case outbound := <-runner.Out:
+				forwarded = outbound.Frame
 			case got := <-done:
 				t.Fatalf("file read ended before runner request: %v", got.err)
 			}
@@ -237,7 +237,7 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			closed := (<-runner.out).frame
+			closed := (<-runner.Out).Frame
 			if closed.Type != workspacesession.TypeClose || closed.Stream != forwarded.Stream {
 				t.Fatalf("cleanup=%+v", closed)
 			}

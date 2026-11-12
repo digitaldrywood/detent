@@ -2,12 +2,14 @@ package hubserver
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
+	"github.com/digitaldrywood/detent/internal/hubserver/workspacerelay"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -137,4 +139,144 @@ func workspaceClaimable(record workspaceRecord, capabilities workspacesession.Ca
 }
 func terminalIsolationAllowed(requires []string, configured, reported string) bool {
 	return workspacehub.TerminalIsolationAllowed(requires, configured, reported)
+}
+
+type relayRoom = workspacerelay.Room
+type execRunState = workspacerelay.ExecRun
+type terminalStreamState = workspacerelay.TerminalStream
+type relayStream = workspacerelay.Stream
+type relayOutbound = workspacerelay.Outbound
+type relayBufferedFrame = workspacerelay.BufferedFrame
+type relayConnection = workspacerelay.Connection
+
+const (
+	hubStreamOwner    = workspacerelay.HubStreamOwner
+	relayWriteQueue   = workspacerelay.WriteQueue
+	relayWriteTimeout = workspacerelay.WriteTimeout
+	relayReadLimit    = workspacerelay.ReadLimit
+)
+
+type workspaceRelay struct {
+	*workspacerelay.Relay
+	mu                  sync.Mutex
+	actionSweepProject  tracker.ProjectID
+	actionSweepID       string
+	actionDispatchAfter *postgres.ActionRunCursor
+	ticketSweepAfter    string
+}
+
+func newWorkspaceRelay(service *workspaceService) *workspaceRelay {
+	return &workspaceRelay{Relay: workspacerelay.New(workspacerelay.Deps{MemoryBytes: service.config.RelayMemoryBytes, FailExecRuns: service.failExecRuns, FinishTerminalRecordings: service.finishTerminalRecordings, RunReason: service.workspaceRunReason})}
+}
+
+func (w *workspaceService) workspaceRunReason(ctx context.Context, workspaceID string, states []*execRunState) string {
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
+	defer cancel()
+	if len(states) == 0 {
+		return workspacesession.RunReasonWorkspaceEnd
+	}
+	state := states[0]
+	var record postgres.WorkspaceSession
+	err := w.server.accessRead(readCtx, state.Organization, func(reader tenantstore.Reader) error {
+		owner, ok := reader.(postgres.WorkspaceReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		record, err = owner.WorkspaceSession(readCtx, state.Project, workspaceID)
+		return err
+	})
+	if err != nil {
+		return workspacesession.RunReasonWorkspaceEnd
+	}
+	return actionRunReasonFor(record.Reason)
+}
+
+func (r *workspaceRelay) stop(ctx context.Context) { r.Relay.Stop(ctx) }
+func (r *workspaceRelay) closeWorkspace(ctx context.Context, workspaceID, reason string) {
+	r.Relay.CloseWorkspace(ctx, workspaceID, reason)
+}
+func (r *workspaceRelay) sweep(ctx context.Context, now time.Time) { r.Relay.Sweep(ctx, now) }
+func (r *workspaceRelay) attachPerson(connection *relayConnection) error {
+	return r.Relay.AttachPerson(connection)
+}
+func (r *workspaceRelay) detachPerson(ctx context.Context, connection *relayConnection, now time.Time) {
+	r.Relay.DetachPerson(ctx, connection, now)
+}
+func (r *workspaceRelay) attachRunner(connection *relayConnection) (*relayConnection, error) {
+	return r.Relay.AttachRunner(connection)
+}
+func (r *workspaceRelay) detachRunner(ctx context.Context, connection *relayConnection) bool {
+	return r.Relay.DetachRunner(ctx, connection)
+}
+func (r *workspaceRelay) runnerFor(workspaceID string) *relayConnection {
+	return r.Relay.RunnerFor(workspaceID)
+}
+func (r *workspaceRelay) openStream(connection *relayConnection, channel string) (*relayStream, string) {
+	return r.Relay.OpenStream(connection, channel)
+}
+func (r *workspaceRelay) openHubStream(workspaceID, channel string) (*relayStream, string) {
+	return r.Relay.OpenHubStream(workspaceID, channel)
+}
+func (r *workspaceRelay) channelStream(connection *relayConnection, channel string) *relayStream {
+	return r.Relay.ChannelStream(connection, channel)
+}
+func (r *workspaceRelay) lookupStream(connection *relayConnection, id string) *relayStream {
+	return r.Relay.LookupStream(connection, id)
+}
+func (r *workspaceRelay) runnerStream(runner *relayConnection, id string) (*relayStream, *relayConnection) {
+	return r.Relay.RunnerStream(runner, id)
+}
+func (r *workspaceRelay) closeStream(ctx context.Context, workspaceID, id string) {
+	r.Relay.CloseStream(ctx, workspaceID, id)
+}
+func (r *workspaceRelay) resumeStream(connection *relayConnection, id string, lastSeq int64, now time.Time) (*relayStream, []workspacesession.Frame, string) {
+	return r.Relay.ResumeStream(connection, id, lastSeq, now)
+}
+func (r *workspaceRelay) bufferForPerson(workspaceID string, stream *relayStream, frame workspacesession.Frame, seq int64) bool {
+	return r.Relay.BufferForPerson(workspaceID, stream, frame, seq)
+}
+func (r *workspaceRelay) acknowledge(stream *relayStream, through int64) {
+	r.Relay.Acknowledge(stream, through)
+}
+func (r *workspaceRelay) nextToRunner(stream *relayStream) int64 { return r.Relay.NextToRunner(stream) }
+func (r *workspaceRelay) nextToPerson(stream *relayStream) int64 { return r.Relay.NextToPerson(stream) }
+func (r *workspaceRelay) detachedCount(workspaceID string) int {
+	return r.Relay.DetachedCount(workspaceID)
+}
+func (r *workspaceRelay) memoryUsed() int64 { return r.Relay.MemoryUsed() }
+func (r *workspaceRelay) beginTerminalRecording(state *terminalStreamState) {
+	r.Relay.BeginTerminalRecording(state)
+}
+func (r *workspaceRelay) appendTerminalEvent(workspaceID, streamID, code, data string, at time.Time) {
+	r.Relay.AppendTerminalEvent(workspaceID, streamID, code, data, at)
+}
+func (r *workspaceRelay) resizeTerminalRecording(workspaceID, streamID string, cols, rows int, at time.Time) {
+	r.Relay.ResizeTerminalRecording(workspaceID, streamID, cols, rows, at)
+}
+func (r *workspaceRelay) beginExecRun(workspaceID, streamID string, state *execRunState, runner *relayConnection) bool {
+	return r.Relay.BeginExecRun(workspaceID, streamID, state, runner)
+}
+func (r *workspaceRelay) appendExecOutput(workspaceID, streamID string, data []byte) {
+	r.Relay.AppendExecOutput(workspaceID, streamID, data)
+}
+func (r *workspaceRelay) takeExecRun(workspaceID, streamID string) (*execRunState, bool) {
+	return r.Relay.TakeExecRun(workspaceID, streamID)
+}
+func (r *workspaceRelay) failWorkspaceExecRuns(ctx context.Context, workspaceID, reason string) {
+	r.Relay.FailWorkspaceExecRuns(ctx, workspaceID, reason)
+}
+
+type TerminalRecording = workspacerelay.TerminalRecording
+type terminalRecordingRecord = workspacerelay.RecordingRecord
+
+const terminalRecordingPage = workspacerelay.RecordingPage
+
+func terminalRecordingReadable(scope nativeScope, record terminalRecordingRecord) bool {
+	return workspacerelay.RecordingReadable(authCredential(scope.credential), record)
+}
+
+func relayActorName(email string) string { return workspacerelay.ActorName(email) }
+func relayedRequires(requires []string) []string {
+	return workspacehub.RelayedRequires(requires)
 }

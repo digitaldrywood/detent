@@ -35,14 +35,7 @@ func (f *relayFixture) waitedOutTheGrace() { f.advance(actionRunDispatchGrace + 
 // attached and detached. It reads the relay directly because the assertion is
 // about a budget nothing on the wire reports.
 func (f *relayFixture) workspaceStreamCount() int {
-	relay := f.service.workspaces.relay
-	relay.mu.Lock()
-	defer relay.mu.Unlock()
-	room := relay.rooms[f.workspace]
-	if room == nil {
-		return 0
-	}
-	return len(room.streams) + len(room.detached)
+	return f.service.workspaces.relay.StreamCount(f.workspace)
 }
 
 // decodeFramePayload reads a frame's payload into target.

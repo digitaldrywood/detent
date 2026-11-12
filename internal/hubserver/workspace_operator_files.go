@@ -46,18 +46,18 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 	defer cancel()
 	identity := operatortool.ConnectionIdentity(ctx)
 	connection := &relayConnection{
-		id: newNativeID("relayperson"), workspaceID: record.ID,
-		principalID: identity.PrincipalID, sessionID: identity.SessionID,
-		sessionHash: scope.credential.SessionHash, hostedRole: scope.credential.HostedRole,
-		out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
+		ID: newNativeID("relayperson"), WorkspaceID: record.ID,
+		PrincipalID: identity.PrincipalID, SessionID: identity.SessionID,
+		SessionHash: scope.credential.SessionHash, HostedRole: scope.credential.HostedRole,
+		Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),
 	}
 	principal := relayPrincipal{credential: scope.credential, principalID: identity.PrincipalID, sessionID: identity.SessionID, subject: scope.credential.Name}
 	if scope.credential.Hosted != nil {
-		connection.subject = scope.credential.Hosted.Subject
-		principal.subject = connection.subject
+		connection.Subject = scope.credential.Hosted.Subject
+		principal.subject = connection.Subject
 		principal.supportReason = scope.credential.Hosted.SupportReason
 	}
-	connection.actor = s.relayActor(ctx, scope.organization, connection, principal)
+	connection.Actor = s.relayActor(ctx, scope.organization, connection, principal)
 	if err := w.openRelayAudit(ctx, record, connection, principal); err != nil {
 		return nil, err
 	}
@@ -71,10 +71,10 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 	}
 	defer func() {
 		if stream := w.relay.channelStream(connection, workspacesession.ChannelFiles); stream != nil {
-			w.relay.closeStream(ctx, record.ID, stream.id)
-			runner.send(workspacesession.Frame{Channel: stream.channel, Stream: stream.id, Type: workspacesession.TypeClose})
+			w.relay.closeStream(ctx, record.ID, stream.ID)
+			runner.Send(workspacesession.Frame{Channel: stream.Channel, Stream: stream.ID, Type: workspacesession.TypeClose})
 		}
-		connection.close("person_closed")
+		connection.Close("person_closed")
 		w.relay.detachPerson(ctx, connection, w.now())
 	}()
 	length := request.Length
@@ -94,11 +94,11 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 	select {
 	case <-ctx.Done():
 		return nil, errWorkspaceOperationUnavailable
-	case <-runner.done:
+	case <-runner.Done:
 		return result("unavailable", workspacesession.CodeStaleExecution, nil)
-	case <-connection.done:
+	case <-connection.Done:
 		return nil, errWorkspaceOperationUnavailable
-	case response := <-connection.out:
+	case response := <-connection.Out:
 		ctx, err = operatortool.AuthorizeCurrent(ctx, workspaceRequirement(name, request, false))
 		if err != nil {
 			return nil, operatortool.ErrAccessDenied
@@ -110,7 +110,7 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 		if err != nil || live.LeaseID != record.LeaseID || live.FencingToken != record.FencingToken || live.RunnerID != record.RunnerID || live.AttemptID != record.AttemptID || live.SubjectWorkItemID != record.SubjectWorkItemID || !w.channelPermitted(live, workspacesession.ChannelFiles) {
 			return result("unavailable", workspacesession.CodeStaleExecution, nil)
 		}
-		frame := response.frame
+		frame := response.Frame
 		if frame.Type == workspacesession.TypeError {
 			var refusal workspacesession.ErrorPayload
 			if json.Unmarshal(frame.Payload, &refusal) != nil {
@@ -124,7 +124,7 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 			}
 			return result("unavailable", refusal.Code, nil)
 		}
-		if response.final != "" || frame.Channel != workspacesession.ChannelFiles || frame.Type != responseType {
+		if response.Final != "" || frame.Channel != workspacesession.ChannelFiles || frame.Type != responseType {
 			return nil, errWorkspaceOperationUnavailable
 		}
 		if name == "workspace_file_list" {

@@ -200,23 +200,23 @@ func relayEndReason(state string, servingRunner bool) (string, bool) {
 // after the commit and this read sees the ended state.
 func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connection *relayConnection) {
 	var record postgres.WorkspaceSession
-	err := w.server.accessRead(ctx, connection.scope.organization, func(reader tenantstore.Reader) error {
+	err := w.server.accessRead(ctx, connection.Scope.Organization, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.WorkspaceReader)
 		if !ok {
 			return workItemStorageUnavailable()
 		}
 		var err error
-		record, err = owner.WorkspaceSession(ctx, connection.scope.project, connection.workspaceID)
+		record, err = owner.WorkspaceSession(ctx, connection.Scope.Project, connection.WorkspaceID)
 		return err
 	})
 	if err != nil {
 		// The periodic authority re-check reads the same row and closes the
 		// connection when it can, so a failed read here is logged, not fatal.
-		w.logger.Warn("workspace.relay_attach_recheck_failed", "workspace_id", connection.workspaceID,
-			"connection_id", connection.id, "error", err)
+		w.logger.Warn("workspace.relay_attach_recheck_failed", "workspace_id", connection.WorkspaceID,
+			"connection_id", connection.ID, "error", err)
 		return
 	}
-	if reason, ends := relayEndReason(record.State, connection.runner); ends {
+	if reason, ends := relayEndReason(record.State, connection.Runner); ends {
 		w.relay.closeWorkspace(ctx, record.ID, reason)
 	}
 }
