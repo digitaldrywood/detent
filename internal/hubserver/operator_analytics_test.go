@@ -572,7 +572,7 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 		event := nativeStartedEvent(lease)
 		event.Data.Identity.Role = "merge"
 		base := f.service.config.now().UTC().Truncate(time.Microsecond)
-		event.Data.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: base, Phases: []tracker.NativePhase{{Name: "planning", StartedAt: base.Add(-time.Minute), FinishedAt: base}}, Identity: agentidentity.RuntimeUpdate("merge-model", "openai", "high", "", base), Pipeline: []gate.PipelineTiming{gate.Interval("rebase", base.Add(-time.Minute), base, "completed")}}
+		event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: base, Phases: []tracker.NativePhase{{Name: "planning", StartedAt: base.Add(-time.Minute), FinishedAt: base}}, Identity: agentidentity.RuntimeUpdate("merge-model", "openai", "high", "", base), Pipeline: []gate.PipelineTiming{gate.Interval("rebase", base.Add(-time.Minute), base, "clean")}}
 		event.Data.Runtime.Identity.Role = "merge"
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
 		credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
@@ -704,7 +704,7 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 		if err != nil || workedPartial || len(workedUnavailable) != 0 || len(worked) != 1 || worked[0].Item != string(emptyItem.WorkItemID) || worked[0].Kind != "worked" || !worked[0].At.Equal(base.Add(-time.Minute)) || workedReads.Load() == 0 {
 			t.Fatalf("declared-role worked population=%+v partial=%v unavailable=%v reads=%d error=%v", worked, workedPartial, workedUnavailable, workedReads.Load(), err)
 		}
-		if _, err := emptyDB.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,updated_at) SELECT $1,$2,$3,$4::timestamptz+n*interval '1 millisecond','','',1,$4 FROM generate_series(0,1000)n`, emptyScope.organization, emptyScope.project, emptyAttempt, base); err != nil {
+		if _, err := emptyDB.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,$2,$3,$4::timestamptz+n*interval '1 millisecond','','',1,0,0,0,'',$4 FROM generate_series(0,1000)n`, emptyScope.organization, emptyScope.project, emptyAttempt, base); err != nil {
 			t.Fatal(err)
 		}
 		emptyHead, emptyNext, err := f.service.readNativeAnalyticsUsagePopulationTenant(t.Context(), emptyScope, window)
