@@ -14,6 +14,9 @@ import (
 const githubBatchMaintenanceLimit = 100
 
 func (s *Service) maintainGitHubBatches(ctx context.Context) error {
+	if s.config.ImportBackend == nil {
+		return nil
+	}
 	if s.config.TenantRepository == nil || s.database == nil {
 		return ErrPostgresFeatureUnavailable
 	}
