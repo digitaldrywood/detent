@@ -512,8 +512,15 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 	assertReportedSkill()
 	if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		machine, err := r.Machine(t.Context(), string(runner.binding.MachineID))
-		if err == nil && (machine.Capacity != 4 || machine.Version != "v2") {
+		if err != nil {
+			return err
+		}
+		if machine.Capacity != 2 || machine.Version != "v2" {
 			return fmt.Errorf("partial heartbeat machine = %#v", machine)
+		}
+		identity, err := r.RunnerIdentity(t.Context(), runner.binding.RunnerID)
+		if err == nil && identity.ReportedCapacity != 4 {
+			return fmt.Errorf("partial heartbeat reported capacity = %d, want 4", identity.ReportedCapacity)
 		}
 		return err
 	}); err != nil {
