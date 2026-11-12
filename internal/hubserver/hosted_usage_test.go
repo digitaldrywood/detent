@@ -1507,7 +1507,7 @@ func TestBuildUsageReportBuckets(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 10, 13, 25, 0, 0, time.UTC)
 	rows := []usageRow{
-		{AttemptID: "a1", Period: time.Date(2026, 9, 10, 1, 0, 0, 0, time.UTC), Provider: "codex", Model: "gpt-6-astra", Input: 10, Cost: 1, Currency: "USD"},
+		{AttemptID: "a1", Period: time.Date(2026, 9, 10, 1, 0, 0, 0, time.UTC), Provider: "codex", Model: "gpt-6-astra", Input: 10, Cost: 1, Currency: "usd"},
 		{AttemptID: "a1", Period: time.Date(2026, 9, 10, 2, 0, 0, 0, time.UTC), Provider: "codex", Model: "gpt-6-astra", Input: 10, Cost: 2, Currency: "USD"},
 		{AttemptID: "a2", Period: time.Date(2026, 9, 10, 2, 0, 0, 0, time.UTC), Provider: "codex", Model: "gpt-6-astra", Input: 10, Cost: 5, Currency: "EUR"},
 	}

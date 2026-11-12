@@ -519,7 +519,7 @@ func buildUsageReport(window usageWindow, rows []usageRow, limits map[string]usa
 		// A hub reports in one currency. A row stored under another (the
 		// table's currency changed since) still counts its tokens, but its
 		// cost cannot be added without a conversion the hub does not have.
-		if row.Currency != "" && row.Currency != report.Currency {
+		if row.Currency != "" && !strings.EqualFold(row.Currency, report.Currency) {
 			row.Cost = 0
 			row.CacheSavings = 0
 		}
