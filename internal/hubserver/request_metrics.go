@@ -46,7 +46,7 @@ func NewRequestMetrics(repository metricsstore.Repository) (*RequestMetrics, err
 }
 
 func (m *RequestMetrics) Record(tenant hubmaintenance.Tenant, now time.Time, route, kind, caller string, status int, elapsed time.Duration) bool {
-	if tenant.Organization == "" || len(tenant.Organization) > 128 || tenant.Generation <= 0 || len(route) > 1024 || len(caller) > 256 || status < 100 || status >= 600 || elapsed < 0 {
+	if now.IsZero() || tenant.Organization == "" || len(tenant.Organization) > 128 || tenant.Generation <= 0 || len(route) > 1024 || len(caller) > 256 || status < 100 || status >= 600 || elapsed < 0 {
 		return false
 	}
 	switch kind {
@@ -205,6 +205,9 @@ type tenantRequestMetrics struct {
 }
 
 func (m *tenantRequestMetrics) record(now time.Time, route, kind, caller string, status int, elapsed time.Duration) {
+	if now.IsZero() {
+		return
+	}
 	key := requestMetricKey{now.Unix() / 60 * 60, route, kind, caller, status / 100}
 	m.mu.Lock()
 	defer m.mu.Unlock()

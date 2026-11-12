@@ -135,6 +135,27 @@ func TestMetricRouteBoundsKeys(t *testing.T) {
 	}
 }
 
+func TestRequestMetricsRejectInvalidClock(t *testing.T) {
+	for _, now := range []time.Time{{}, time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)} {
+		t.Run(now.String(), func(t *testing.T) {
+			shared, err := NewRequestMetrics(sharedMetricRepository{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			accepted := shared.Record(hubmaintenance.Tenant{Organization: "org_example", Generation: 1}, now, "GET /example", "browser", "example", 500, time.Millisecond)
+			local := &tenantRequestMetrics{pending: make(map[requestMetricKey]requestLatency)}
+			local.record(now, "GET /example", "browser", "example", 500, time.Millisecond)
+			want := 1
+			if now.IsZero() {
+				want = 0
+			}
+			if accepted != (want == 1) || len(shared.pending) != want || len(local.pending) != want {
+				t.Fatalf("accepted=%v shared=%d local=%d want=%d", accepted, len(shared.pending), len(local.pending), want)
+			}
+		})
+	}
+}
+
 func TestRequestHistoryKeepsBusiestRoutes(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)

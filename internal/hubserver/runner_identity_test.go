@@ -347,40 +347,6 @@ func TestRunnerConcurrentRotationHasOneWinner(t *testing.T) {
 	}
 }
 
-func TestRunnerEnrollmentValidationAndClock(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name   string
-		change func(*runnerFixture, *time.Time)
-		want   int
-	}{
-		{"valid", func(*runnerFixture, *time.Time) {}, http.StatusCreated},
-		{"just before expiry", func(r *runnerFixture, now *time.Time) { *now = r.enrollment.ExpiresAt.Add(-time.Nanosecond) }, http.StatusCreated},
-		{"expiry boundary", func(r *runnerFixture, now *time.Time) { *now = r.enrollment.ExpiresAt }, http.StatusUnauthorized},
-		{"expired", func(r *runnerFixture, now *time.Time) { *now = r.enrollment.ExpiresAt.Add(time.Second) }, http.StatusUnauthorized},
-		{"clock before issuance", func(_ *runnerFixture, now *time.Time) { *now = now.Add(-time.Nanosecond) }, http.StatusUnauthorized},
-		{"invalid clock", func(_ *runnerFixture, now *time.Time) { *now = time.Time{} }, http.StatusInternalServerError},
-		{"wrong machine", func(r *runnerFixture, _ *time.Time) { r.redemption.MachineID = runnerauth.NewBinding().MachineID }, http.StatusUnauthorized},
-		{"wrong runner", func(r *runnerFixture, _ *time.Time) { r.redemption.RunnerID = runnerauth.NewBinding().RunnerID }, http.StatusUnauthorized},
-		{"wrong organization", func(r *runnerFixture, _ *time.Time) { r.base = "/api/v2/organizations/" + newNativeID("org") }, http.StatusUnauthorized},
-		{"weak credential", func(r *runnerFixture, _ *time.Time) { r.redemption.Credential = "example-provider-secret" }, http.StatusUnprocessableEntity},
-		{"enrollment reused as identity", func(r *runnerFixture, _ *time.Time) { r.redemption.Credential = r.enrollment.Token }, http.StatusUnprocessableEntity},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			clock := &leaseTestClock{value: now}
-			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}), "", "clock")
-			r := prepareRunner(t, f, runnerauth.Read)
-			test.change(&r, &now)
-			clock.mu.Lock()
-			clock.value = now
-			clock.mu.Unlock()
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments/redeem", r.enrollment.Token, r.redemption), test.want)
-		})
-	}
-}
-
 func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	t.Parallel()
 	clock := &leaseTestClock{value: time.Date(2026, 9, 29, 0, 31, 39, 0, time.UTC)}

@@ -3,6 +3,7 @@ package runnerenroll
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -19,6 +20,9 @@ func (s *Service) RedeemTenant(ctx context.Context, organization tracker.Organiz
 	var result runnerauth.Identity
 	err := s.deps.Repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 		now := s.deps.Now().UTC()
+		if now.IsZero() {
+			return &hubapi.Error{Code: "internal_error", Message: "Runner enrollment clock is invalid", Status: http.StatusInternalServerError}
+		}
 		enrollment, err := w.RunnerEnrollmentByTokenHash(ctx, apikey.HashToken(token))
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {

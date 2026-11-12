@@ -120,3 +120,35 @@ func TestRunnerEnrollmentScopeRevocationAndCollisions(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments/redeem", competing.Token, r.redemption), http.StatusConflict)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments", f.admin.Token, request), http.StatusConflict)
 }
+
+func TestRunnerEnrollmentValidationAndClock(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		change func(*httpRunnerFixture, *time.Time)
+		want   int
+	}{
+		{"valid", func(*httpRunnerFixture, *time.Time) {}, http.StatusCreated},
+		{"just before expiry", func(r *httpRunnerFixture, now *time.Time) { *now = r.enrollment.ExpiresAt.Add(-time.Nanosecond) }, http.StatusCreated},
+		{"expiry boundary", func(r *httpRunnerFixture, now *time.Time) { *now = r.enrollment.ExpiresAt }, http.StatusUnauthorized},
+		{"expired", func(r *httpRunnerFixture, now *time.Time) { *now = r.enrollment.ExpiresAt.Add(time.Second) }, http.StatusUnauthorized},
+		{"clock before issuance", func(_ *httpRunnerFixture, now *time.Time) { *now = now.Add(-time.Nanosecond) }, http.StatusUnauthorized},
+		{"invalid clock", func(_ *httpRunnerFixture, now *time.Time) { *now = time.Time{} }, http.StatusInternalServerError},
+		{"wrong machine", func(r *httpRunnerFixture, _ *time.Time) { r.redemption.MachineID = runnerauth.NewBinding().MachineID }, http.StatusUnauthorized},
+		{"wrong runner", func(r *httpRunnerFixture, _ *time.Time) { r.redemption.RunnerID = runnerauth.NewBinding().RunnerID }, http.StatusUnauthorized},
+		{"wrong organization", func(r *httpRunnerFixture, _ *time.Time) { r.base = "/api/v2/organizations/" + hubapi.NewID("org") }, http.StatusUnauthorized},
+		{"weak credential", func(r *httpRunnerFixture, _ *time.Time) { r.redemption.Credential = "example-provider-secret" }, http.StatusUnprocessableEntity},
+		{"enrollment reused as identity", func(r *httpRunnerFixture, _ *time.Time) { r.redemption.Credential = r.enrollment.Token }, http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+			clock := hubtest.NewClock(now)
+			f := newEnrollmentHTTP(t, clock)
+			r := prepareHTTPRunner(t, f, runnerauth.Read)
+			test.change(&r, &now)
+			clock.Set(now)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments/redeem", r.enrollment.Token, r.redemption), test.want)
+		})
+	}
+}
