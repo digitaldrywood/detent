@@ -64,7 +64,7 @@ func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativ
 					otherScope := scope
 					otherScope.project = other.ProjectID
 					authErr := s.authorizeAccessScope(ctx, r, otherScope, false)
-					if errors.Is(authErr, accessstore.ErrDenied) || errors.Is(authErr, auth.ErrHostedIdentity) || errors.Is(authErr, corestore.ErrNotFound) {
+					if errors.Is(authErr, accessstore.ErrDenied) || errors.Is(authErr, auth.ErrHostedIdentity) || errors.Is(authErr, corestore.ErrNotFound) || isNativeNotFound(authErr) {
 						return operatortool.ErrProjectScopeRequired
 					}
 					if authErr != nil {
