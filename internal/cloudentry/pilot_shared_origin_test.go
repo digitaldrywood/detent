@@ -1121,7 +1121,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			want             int
 		}{
 			{"other organization token", alpha.projectAPI() + "/work-items", fayCSRF[beta.id], http.StatusForbidden},
-			{"project under other organization", "/api/v2/organizations/" + beta.id + "/projects/" + alpha.project + "/work-items", fayCSRF[beta.id], http.StatusForbidden},
+			{"project under other organization", "/api/v2/organizations/" + beta.id + "/projects/" + alpha.project + "/work-items", fayCSRF[beta.id], http.StatusNotFound},
 			{"missing token", alpha.projectAPI() + "/work-items", "", http.StatusForbidden},
 		} {
 			response := fay.json(http.MethodPost, test.path, test.csrf, issue)
@@ -1213,7 +1213,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			{"member lists alpha artifacts", func() pilotResponse { return fay.get(item + "/artifacts") }, http.StatusOK},
 			{"alpha item under beta", func() pilotResponse {
 				return fay.get("/api/v2/organizations/" + beta.id + "/projects/" + alpha.project + "/work-items/" + string(alphaIssue.WorkItemID) + "/artifacts")
-			}, http.StatusForbidden},
+			}, http.StatusNotFound},
 			{"read grant with beta token", func() pilotResponse {
 				return fay.json(http.MethodPost, item+"/artifacts/artifact_missing/access", fayCSRF[beta.id], map[string]int64{"revision": 1})
 			}, http.StatusForbidden},
@@ -1238,8 +1238,8 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			name, path string
 			want       int
 		}{
-			{"alpha project under beta", "/organizations/" + beta.id + "/projects/" + alpha.project + "/events", http.StatusForbidden},
-			{"beta project under alpha", "/organizations/" + alpha.id + "/projects/" + beta.project + "/events", http.StatusForbidden},
+			{"alpha project under beta", "/organizations/" + beta.id + "/projects/" + alpha.project + "/events", http.StatusNotFound},
+			{"beta project under alpha", "/organizations/" + alpha.id + "/projects/" + beta.project + "/events", http.StatusNotFound},
 		} {
 			stream := fay.stream(t, test.path)
 			if stream.status != test.want {

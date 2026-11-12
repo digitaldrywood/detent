@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/dispatch"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -149,6 +150,9 @@ func sleepContext(ctx context.Context, duration time.Duration) bool {
 }
 
 func newTestScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
+	if config.Machine.BackendIsolation == nil {
+		config.Machine.BackendIsolation = isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}
+	}
 	clock := config.Now
 	if clock == nil {
 		clock = time.Now

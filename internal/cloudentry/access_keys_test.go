@@ -238,6 +238,9 @@ func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 
 func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 	f := newEntryFixture(t)
+	if err := f.service.closeAllocator(); err != nil {
+		t.Fatal(err)
+	}
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
@@ -1064,7 +1067,7 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 						token, targetProject, wantStatus := key.Token, project, http.StatusUnauthorized
 						switch denial {
 						case "cross-project":
-							targetProject, wantStatus = otherProject, http.StatusForbidden
+							targetProject, wantStatus = otherProject, http.StatusNotFound
 							if failure == "pre-handler audit" {
 								wantStatus = http.StatusInternalServerError
 							}

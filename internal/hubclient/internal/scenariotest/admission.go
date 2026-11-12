@@ -26,7 +26,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
-	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -272,6 +271,14 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			}
 			latestFence := attempt.FencingToken
 			if test.laterLease != "" {
+				laterRunner, laterMachine := attempt.RunnerID, attempt.MachineID
+				if test.laterLease == "active" {
+					identity, err := h.otherWorker(t).Transport().RunnerIdentity(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					laterRunner, laterMachine = identity.RunnerID, identity.MachineID
+				}
 				var later leasestore.Lease
 				seedLater := func(w tenantstore.Writer) error {
 					item, err := w.WorkItem(t.Context(), h.project, blocked.WorkItemID)
@@ -282,15 +289,12 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 					if test.laterLease == "expired" {
 						ttl = time.Minute
 					}
-					later, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(attempt.MachineID), SessionID: "later-session", LeaseID: "later-lease-" + issue.ID, TTL: ttl})
+					later, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(laterMachine), RunnerID: laterRunner, SessionID: "later-session", LeaseID: "later-lease-" + issue.ID, TTL: ttl})
 					if err != nil {
 						return err
 					}
 					latestFence = tracker.FencingToken(later.FencingToken)
 					if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: h.organization, ProjectID: h.project, LeaseID: tracker.LeaseID(later.LeaseID), PolicyID: h.descriptor.ID, BoundAt: h.clock()}); err != nil {
-						return err
-					}
-					if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: h.organization, LeaseID: later.LeaseID, RunnerID: attempt.RunnerID, AssignedAt: h.clock()}); err != nil {
 						return err
 					}
 					if test.laterLease == "attempt" {

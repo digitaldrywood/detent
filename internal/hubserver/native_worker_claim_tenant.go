@@ -733,7 +733,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				return err
 			}
 			if availableCapacity <= 0 {
-				return ErrNoClaimableWork
+				return providerWait("runner_capacity", "Runner has no available execution slots")
 			}
 			machine, err := w.LockMachine(ctx, string(identity.MachineID))
 			if err != nil {
@@ -755,10 +755,10 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				return err
 			}
 			if machine.Capacity <= 0 || usage.Host >= machine.Capacity {
-				return ErrNoClaimableWork
+				return providerWait("host_capacity", "Runner host has no available execution slots")
 			}
 			if usage.Runner >= int64(availableCapacity) || projectCapacityConfigured && usage.Project >= int64(projectCapacity) {
-				return ErrNoClaimableWork
+				return providerWait("runner_capacity", "Runner has no available execution slots")
 			}
 		} else {
 			monthlyLease, err := w.BillingMonthlyLease(ctx, tracker.LeaseID(replay.LeaseID))

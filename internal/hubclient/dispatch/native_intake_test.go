@@ -409,7 +409,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	}
 	_, err = foreignStore.CreateIntakeIssue(t.Context(), draft)
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden || apiErr.Code != "access_denied" {
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound || apiErr.Code != "not_found" {
 		t.Fatalf("foreign authority = %v", err)
 	}
 	readOnlyPath := filepath.Join(t.TempDir(), "private", "identity.json")

@@ -326,7 +326,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		scope, project       string
 		wantRead, wantUpload int
 	}{
-		{"read", project, 200, 404}, {"write", project, 200, 201}, {"write", otherProject, 404, 403},
+		{"read", project, 200, 404}, {"write", project, 200, 201}, {"write", otherProject, 404, 404},
 	} {
 		scope := test.scope
 		token := createTestAccessKey(t, alice, "project", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{test.project}}}}, "", scope)
@@ -400,7 +400,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		{name: "missing attempt evidence", method: http.MethodPost, path: strings.TrimSuffix(base, "/attachments") + "/attempts/attempt_example/evidence", client: alice, headers: map[string]string{"X-CSRF-Token": csrf}, want: 400},
 		{name: "malformed attempt evidence", method: http.MethodPost, path: strings.TrimSuffix(base, "/attachments") + "/attempts/attempt_example/evidence", client: alice, headers: map[string]string{"X-CSRF-Token": csrf, "X-Detent-Evidence": "!"}, want: 400},
 		{name: "cross org write", method: http.MethodPost, path: base, client: alice, headers: map[string]string{"X-CSRF-Token": betaCSRF}, want: 404},
-		{name: "another project write", method: http.MethodPost, path: strings.Replace(base, project, betaProject, 1), client: alice, headers: map[string]string{"X-CSRF-Token": csrf}, want: 403},
+		{name: "another project write", method: http.MethodPost, path: strings.Replace(base, project, betaProject, 1), client: alice, headers: map[string]string{"X-CSRF-Token": csrf}, want: 404},
 		{name: "metadata injection", method: http.MethodPost, path: "/api/v2/organizations/org_alpha/projects/" + project + "/attachment-metadata", client: alice, want: 404},
 		{name: "private metadata read", method: http.MethodGet, path: "/api/v2/organizations/org_alpha/projects/" + project + "/attachment-metadata/" + record.ID, client: alice, want: 404},
 	} {

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -92,6 +93,9 @@ func NativeChangeWorker(t *testing.T, cfg hubserver.Config, project tracker.Proj
 			return err
 		}
 		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: id, MachineID: machine, TokenID: credentialID, DisplayName: "Example runner", EnrollmentID: enrollment.ID, Scope: "projects", State: "active", Operations: enrollment.Operations, ProjectIDs: enrollment.ProjectIDs, CapacityLimit: 1, ReportedCapacity: 1, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+			return err
+		}
+		if err := w.ReplaceRunnerBackendIsolation(t.Context(), id, isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}); err != nil {
 			return err
 		}
 		return w.UpdateRunnerCapacityConfig(t.Context(), id, runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: now})

@@ -457,7 +457,7 @@ func TestNativeAgentEvidence(t *testing.T) {
 				fence                tracker.FencingToken
 				status               int
 			}{
-				{"cross-project", foreignProject, credential, lease.FencingToken, http.StatusForbidden},
+				{"cross-project", foreignProject, credential, lease.FencingToken, http.StatusNotFound},
 				{"unauthorized", o.project, "invalid-worker-token", lease.FencingToken, http.StatusUnauthorized},
 			} {
 				authority := attachment.EvidenceRequest{Mutation: tracker.Mutation{IdempotencyKey: test.name, LeaseID: lease.ID, FencingToken: test.fence}, AttemptID: pending.Attempt.AttemptID, WorkItemID: issue.WorkItemID, Caption: "Refused evidence"}
