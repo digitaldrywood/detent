@@ -39,10 +39,10 @@ func acceptReceipt(state runnerstore.UpdateState, urgent runnerstore.UrgentUpdat
 	if reflect.DeepEqual(next, previous) {
 		return true, true
 	}
-	if previous.Applied != nil && next.Applied == nil || previous.VerifiedTarget != nil && next.VerifiedTarget == nil && next.Applied == nil || previous.Running != nil && next.Running == nil {
+	if previous.Applied != nil && next.Applied == nil || previous.VerifiedTarget != nil && next.VerifiedTarget == nil && next.Applied == nil || previous.Running != nil && next.Running == nil || previous.ExecutionArtifact && !next.ExecutionArtifact {
 		return true, false
 	}
-	if next.Applied != nil && previous.Applied == nil || next.Running != nil && previous.Running == nil {
+	if next.Applied != nil && previous.Applied == nil || next.Running != nil && previous.Running == nil || next.ExecutionArtifact && !previous.ExecutionArtifact {
 		return true, true
 	}
 	if next.Status == previous.Status {
