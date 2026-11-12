@@ -1870,6 +1870,7 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 
 func TestZZSpriteBootstrapProbe(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
+	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://hub.example.test"}
 	scope := placementFixtureScope(t, f)
 	scope.project = ""
 	if err := f.service.updateSpritePool(t.Context(), scope, spritePoolSettings{MaxRunners: 1, Bootstrap: "true"}, nil); err != nil {
