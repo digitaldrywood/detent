@@ -20,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/platformusers"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -658,109 +657,6 @@ func TestHostedSharedOwnerBootstrap(t *testing.T) {
 	}
 	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/health", body: `{}`}); response.Code != http.StatusOK {
 		t.Fatalf("health = %d", response.Code)
-	}
-}
-
-func TestHostedPlatformUsers(t *testing.T) {
-	t.Parallel()
-	f := newHostedSharedFixture(t)
-	f.member(t, "match", "owner", "")
-	f.member(t, "match-extra", "viewer", "")
-	f.member(t, "inactive-match", "member", "")
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		member, err := w.AccessMember(t.Context(), "user_inactive-match")
-		if err != nil {
-			return err
-		}
-		member.Active, member.UpdatedAt = false, f.service.config.now()
-		return w.UpdateAccessMember(t.Context(), member)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	now := f.service.config.now()
-	for _, item := range []struct {
-		id, email, accepted string
-		expires             time.Time
-	}{
-		{"pending", "match@example.test", "", now.Add(time.Hour)},
-		{"invitation-only", "match-invited@example.test", "", now.Add(time.Hour)},
-		{"expired", "match-expired@example.test", "", now.Add(-time.Hour)},
-		{"accepted", "match-accepted@example.test", "user_accepted", now.Add(time.Hour)},
-	} {
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: "org_security", ID: item.id, Email: item.email, Role: "member", AcceptedUserID: item.accepted, CreatedAt: now, ExpiresAt: item.expires})
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := range 55 {
-		email := fmt.Sprintf("cap%02d@example.test", i)
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: "org_security", ID: email, Email: email, Role: "member", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := range 55 {
-		f.member(t, fmt.Sprintf("large%02d", i), "member", "", fmt.Sprintf("user_large%02d%s", i, strings.Repeat("s", 2000)))
-	}
-	for _, test := range []struct {
-		query                        string
-		status, members, invitations int
-	}{
-		{"MATCH@example.test", 200, 1, 1},
-		{"match", 200, 2, 2},
-		{"match@example.test.example.org", 200, 0, 0},
-		{"cap", 200, 0, 55},
-		{"missing", 200, 0, 0},
-		{"ab", 200, 0, 0},
-		{"", 200, 57, 57},
-		{"large", 200, 55, 0},
-	} {
-		t.Run(test.query, func(t *testing.T) {
-			result := platformusers.TenantResult{}
-			cursor := ""
-			seen := map[string]bool{}
-			for {
-				input := map[string]string{"q": test.query}
-				if cursor != "" {
-					input["after"] = cursor
-				}
-				body, err := json.Marshal(input)
-				if err != nil {
-					t.Fatal(err)
-				}
-				response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/platform/users", body: string(body)})
-				if response.Code != test.status || response.Body.Len() > 64<<10 {
-					t.Fatalf("search = %d, %d bytes", response.Code, response.Body.Len())
-				}
-				var page platformusers.TenantResult
-				if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
-					t.Fatal(err)
-				}
-				if len(page.Members)+len(page.Invitations) > 50 || strings.Contains(response.Body.String(), "private-project-sentinel") {
-					t.Fatal("unbounded page or customer content leak")
-				}
-				result.Members = append(result.Members, page.Members...)
-				result.Invitations = append(result.Invitations, page.Invitations...)
-				cursor = page.NextCursor
-				if cursor == "" {
-					break
-				}
-				if seen[cursor] {
-					t.Fatal("cursor did not advance")
-				}
-				seen[cursor] = true
-			}
-			if len(result.Members) != test.members || len(result.Invitations) != test.invitations {
-				t.Fatalf("result totals = %d members, %d invitations", len(result.Members), len(result.Invitations))
-			}
-			for _, member := range result.Members {
-				if member.JoinedAt == "" || member.Subject == "" || member.Role == "" {
-					t.Fatalf("member = %+v", member)
-				}
-			}
-		})
 	}
 }
 

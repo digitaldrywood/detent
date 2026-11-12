@@ -1,12 +1,16 @@
-package hubserver
+package accessdirectory
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -15,28 +19,28 @@ import (
 	"github.com/digitaldrywood/detent/internal/platformusers"
 )
 
-func (s *Service) hostedPlatformUsers(c echo.Context) error {
-	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
-		return s.nativeAPIError(c, nativeNotFound())
+func (s *Service) ServeHTTP(c echo.Context) error {
+	if claims, ok := s.deps.Claims(c); !ok || claims.Kind != cloudassert.KindService {
+		return s.deps.Error(c, hubapi.NotFound())
 	}
 	var input platformusers.Query
-	if err := decodeAPIJSON(c, &input); err != nil {
-		return s.invalidAPIRequest(c, err)
+	if err := hubapi.DecodeJSON(c, &input); err != nil {
+		return s.deps.Invalid(c, err)
 	}
 	query := platformusers.Parse(input.Text)
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	result := platformusers.TenantResult{Members: []platformusers.TenantMember{}, Invitations: []platformusers.TenantInvitation{}}
 
-	return s.hostedAccessPlatformUsers(c, ctx, query, input, result)
+	return s.Search(c, ctx, query, input, result)
 }
 
-type hostedPlatformUserCandidate struct {
+type candidate struct {
 	cursor, email, subject, role, at string
 }
 
-func (s *Service) hostedAccessPlatformUsers(c echo.Context, ctx context.Context, query platformusers.Query, input platformusers.Query, result platformusers.TenantResult) error {
-	candidates := make([]hostedPlatformUserCandidate, 0, 2*(platformusers.Limit+1))
+func (s *Service) Search(c echo.Context, ctx context.Context, query platformusers.Query, input platformusers.Query, result platformusers.TenantResult) error {
+	candidates := make([]candidate, 0, 2*(platformusers.Limit+1))
 	memberAfter, memberLimit := platformUserCursorRange(input.After, "m:")
 	invitationAfter, invitationLimit := platformUserCursorRange(input.After, "i:")
 	match := func(email string) bool {
@@ -46,7 +50,7 @@ func (s *Service) hostedAccessPlatformUsers(c echo.Context, ctx context.Context,
 		}
 		return strings.Contains(email, query.Text)
 	}
-	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+	err := s.read(ctx, func(r tenantstore.Reader) error {
 		if memberLimit > 0 {
 			after := memberAfter
 			for lenMemberMatches(candidates) < memberLimit {
@@ -58,7 +62,7 @@ func (s *Service) hostedAccessPlatformUsers(c echo.Context, ctx context.Context,
 					if member.Active && match(member.Email) {
 						cursor := "m:" + member.UserID
 						if cursor > input.After {
-							candidates = append(candidates, hostedPlatformUserCandidate{cursor: cursor, email: member.Email, subject: member.UserID, role: member.Role, at: formatHubTime(member.CreatedAt)})
+							candidates = append(candidates, candidate{cursor: cursor, email: member.Email, subject: member.UserID, role: member.Role, at: member.CreatedAt.UTC().Format(time.RFC3339Nano)})
 						}
 					}
 				}
@@ -76,10 +80,10 @@ func (s *Service) hostedAccessPlatformUsers(c echo.Context, ctx context.Context,
 					return err
 				}
 				for _, invitation := range page {
-					if invitation.AcceptedUserID == "" && invitation.ExpiresAt.After(s.config.now()) && match(invitation.Email) {
+					if invitation.AcceptedUserID == "" && invitation.ExpiresAt.After(s.deps.Now()) && match(invitation.Email) {
 						cursor := "i:" + invitation.ID
 						if cursor > input.After {
-							candidates = append(candidates, hostedPlatformUserCandidate{cursor: cursor, email: invitation.Email, at: formatHubTime(invitation.ExpiresAt)})
+							candidates = append(candidates, candidate{cursor: cursor, email: invitation.Email, at: invitation.ExpiresAt.UTC().Format(time.RFC3339Nano)})
 						}
 					}
 				}
@@ -129,7 +133,7 @@ func (s *Service) hostedAccessPlatformUsers(c echo.Context, ctx context.Context,
 	return c.JSON(http.StatusOK, result)
 }
 
-func lenMemberMatches(candidates []hostedPlatformUserCandidate) int {
+func lenMemberMatches(candidates []candidate) int {
 	count := 0
 	for _, candidate := range candidates {
 		if strings.HasPrefix(candidate.cursor, "m:") {
@@ -139,7 +143,7 @@ func lenMemberMatches(candidates []hostedPlatformUserCandidate) int {
 	return count
 }
 
-func lenInvitationMatches(candidates []hostedPlatformUserCandidate) int {
+func lenInvitationMatches(candidates []candidate) int {
 	count := 0
 	for _, candidate := range candidates {
 		if strings.HasPrefix(candidate.cursor, "i:") {
@@ -157,4 +161,22 @@ func platformUserCursorRange(after, prefix string) (string, int) {
 		return "", platformusers.Limit + 1
 	}
 	return "", 0
+}
+
+type Deps struct {
+	Repository   tenantstore.Repository
+	Organization tracker.OrganizationID
+	Now          func() time.Time
+	Claims       func(echo.Context) (cloudassert.Claims, bool)
+	Error        func(echo.Context, error) error
+	Invalid      func(echo.Context, error) error
+}
+type Service struct{ deps Deps }
+
+func New(deps Deps) *Service { return &Service{deps: deps} }
+func (s *Service) read(ctx context.Context, read func(tenantstore.Reader) error) error {
+	if s.deps.Repository == nil {
+		return hubapi.WorkItemStorageUnavailable()
+	}
+	return s.deps.Repository.ReadTenant(ctx, s.deps.Organization, corestore.Serving, read)
 }
