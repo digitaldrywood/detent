@@ -1,4 +1,4 @@
-package hubserver
+package runnerenroll
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -14,26 +15,26 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) redeemRunnerEnrollmentTenant(ctx context.Context, organization tracker.OrganizationID, token string, request runnerauth.Redemption) (runnerauth.Identity, error) {
+func (s *Service) RedeemTenant(ctx context.Context, organization tracker.OrganizationID, token string, request runnerauth.Redemption) (runnerauth.Identity, error) {
 	var result runnerauth.Identity
-	err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
-		now := s.config.now().UTC()
+	err := s.deps.Repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+		now := s.deps.Now().UTC()
 		enrollment, err := w.RunnerEnrollmentByTokenHash(ctx, apikey.HashToken(token))
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
-				return runnerUnauthorized()
+				return Unauthorized()
 			}
 			return err
 		}
 		bound := runnerauth.Binding{RunnerID: enrollment.RunnerID, MachineID: enrollment.MachineID}
 		unbound := bound == (runnerauth.Binding{})
 		if enrollment.OrganizationID != organization || !unbound && bound != request.Binding || enrollment.RedeemedAt != nil || enrollment.RevokedAt != nil || !now.Before(enrollment.ExpiresAt) || now.Before(enrollment.CreatedAt) || !runnerauth.ValidOperations(enrollment.Operations) {
-			return runnerUnauthorized()
+			return Unauthorized()
 		}
 		binding := request.Binding
 		if err := w.RunnerBindingAvailable(ctx, binding.RunnerID, binding.MachineID, enrollment.SharedMachine); err != nil {
 			if errors.Is(err, runnerstore.ErrIdentityCollision) {
-				return runnerCollision()
+				return Collision()
 			}
 			return err
 		}
@@ -44,22 +45,22 @@ func (s *Service) redeemRunnerEnrollmentTenant(ctx context.Context, organization
 					return err
 				}
 				if machine.Hostname != request.SpriteName {
-					return nativePublicInvalid("Sprite name must match the runner hostname")
+					return hubapi.PublicInvalid("Sprite name must match the runner hostname")
 				}
 			}
 		}
 		expiresAt := now.Add(runnerauth.CredentialTTL)
 		hash := apikey.HashToken(request.Credential)
-		if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: organization, ID: binding.RunnerID, Name: binding.RunnerID, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: string(apiScopeWorker), NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expiresAt, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: organization, ID: binding.RunnerID, Name: binding.RunnerID, Hash: hash, Fingerprint: s.deps.TokenFingerprint(hash), Scope: s.deps.WorkerScope, NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expiresAt, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			if errors.Is(err, corestore.ErrUniqueViolation) {
-				return runnerCollision()
+				return Collision()
 			}
 			return err
 		}
 		if !enrollment.SharedMachine {
 			if err := w.RegisterMachine(ctx, leasestore.Machine{OrganizationID: organization, ID: string(binding.MachineID), Hostname: request.Hostname, DisplayName: request.DisplayName, Capacity: int64(request.Capacity), Version: request.Version, SpriteName: request.SpriteName}); err != nil {
 				if errors.Is(err, corestore.ErrUniqueViolation) {
-					return runnerCollision()
+					return Collision()
 				}
 				return err
 			}
@@ -68,18 +69,18 @@ func (s *Service) redeemRunnerEnrollmentTenant(ctx context.Context, organization
 			project, err := w.ProjectRecord(ctx, projectID)
 			if err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
-					return runnerUnauthorized()
+					return Unauthorized()
 				}
 				return err
 			}
 			if project.Core.DeletedAt != nil {
-				return runnerUnauthorized()
+				return Unauthorized()
 			}
 			if err := w.CreateAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: organization, TokenID: binding.RunnerID, ProjectID: projectID}); err != nil {
 				return err
 			}
 		}
-		if err := s.checkRunnerAdmission(ctx, w, now, 0, "registered_runners", "connected_runners"); err != nil {
+		if err := s.deps.CheckAdmission(ctx, w, now, 0, "registered_runners", "connected_runners"); err != nil {
 			return err
 		}
 		tags := []string{}
@@ -94,13 +95,13 @@ func (s *Service) redeemRunnerEnrollmentTenant(ctx context.Context, organization
 		identity := runnerstore.Identity{OrganizationID: organization, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: binding.RunnerID, EnrollmentID: enrollment.ID, Scope: enrollment.Scope, Operations: append([]string(nil), enrollment.Operations...), DisplayName: request.DisplayName, CapacityLimit: int64(request.Capacity), ReportedCapacity: int64(request.Capacity), OS: request.OS, Architecture: request.Architecture, Tags: tags, IsolationTier: request.IsolationTier, CreatedAt: now, ExpiresAt: expiresAt, LastHeartbeatAt: now}
 		if err := w.RedeemRunnerEnrollment(ctx, enrollment.ID, binding.RunnerID, binding.MachineID, now); err != nil {
 			if errors.Is(err, corestore.ErrRevisionConflict) {
-				return runnerUnauthorized()
+				return Unauthorized()
 			}
 			return err
 		}
 		if err := w.CreateRunnerIdentity(ctx, identity); err != nil {
 			if errors.Is(err, corestore.ErrUniqueViolation) {
-				return runnerCollision()
+				return Collision()
 			}
 			return err
 		}
@@ -110,7 +111,7 @@ func (s *Service) redeemRunnerEnrollmentTenant(ctx context.Context, organization
 		if err := w.RecordRunnerIdentityEvent(ctx, runnerstore.Event{OrganizationID: organization, RunnerID: binding.RunnerID, ActorID: enrollment.CreatedBy, Kind: "enrolled", OccurredAt: now}); err != nil {
 			return err
 		}
-		if err := s.applyRunnerTenantUsage(ctx, w, now, newNativeID("runner_redemption"), false, false); err != nil {
+		if err := s.deps.ApplyUsage(ctx, w, now, s.deps.NewID("runner_redemption"), false, false); err != nil {
 			return err
 		}
 		result = runnerauth.Identity{Binding: binding, Scope: enrollment.Scope, OrganizationID: organization, ProjectIDs: append([]tracker.ProjectID(nil), enrollment.ProjectIDs...), Operations: append([]string(nil), enrollment.Operations...), ExpiresAt: expiresAt}

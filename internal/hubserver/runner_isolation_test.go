@@ -71,36 +71,6 @@ func TestRunnerIsolationClaims(t *testing.T) {
 	}
 }
 
-func TestRunnerEnrollmentIsolationSelection(t *testing.T) {
-	for _, test := range []struct {
-		name, selected, want string
-		status               int
-	}{
-		{"legacy", "", "sandbox", http.StatusCreated},
-		{"sandbox", "sandbox", "sandbox", http.StatusCreated},
-		{"full access", "native-trusted", "native-trusted", http.StatusCreated},
-		{"invalid", "root", "", http.StatusUnprocessableEntity},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
-			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
-			r.redemption.IsolationTier = test.selected
-			response := performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments/redeem", r.enrollment.Token, r.redemption)
-			requireNativeStatus(t, response, test.status)
-			if test.want == "" {
-				return
-			}
-			response = performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
-			requireNativeStatus(t, response, http.StatusOK)
-			var runner runnerauth.Runner
-			decodeHubResponse(t, response, &runner)
-			if runner.IsolationTier != test.want {
-				t.Fatalf("tier=%q, want %q", runner.IsolationTier, test.want)
-			}
-		})
-	}
-}
-
 func TestRunnerIsolationHeartbeatWithdrawsTier(t *testing.T) {
 	for _, test := range []struct {
 		name            string

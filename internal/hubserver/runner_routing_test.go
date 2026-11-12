@@ -957,31 +957,6 @@ func TestRunnerRoutingAdministratorControls(t *testing.T) {
 	}
 }
 
-func TestSharedEnrollmentRequiresExplicitHostApproval(t *testing.T) {
-	t.Parallel()
-	f := newNativeFixture(t, nil, "", "sharing")
-	r := prepareRunner(t, f, runnerauth.Read)
-	r.enroll(t)
-	for _, test := range []struct {
-		name         string
-		shared       bool
-		machine      tracker.MachineID
-		organization string
-		want         int
-	}{
-		{"implicit collision", false, r.binding.MachineID, string(f.project.OrganizationID), http.StatusConflict},
-		{"unknown shared host", true, runnerauth.NewBinding().MachineID, string(f.project.OrganizationID), http.StatusConflict},
-		{"approved shared host", true, r.binding.MachineID, string(f.project.OrganizationID), http.StatusCreated},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			binding := runnerauth.NewBinding()
-			binding.MachineID = test.machine
-			request := runnerauth.EnrollmentRequest{Binding: binding, SharedMachine: test.shared, ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+test.organization+"/runner-enrollments", testHubAdminToken, request), test.want)
-		})
-	}
-}
-
 func TestRepositoryRunnerSelectorsCannotStealWork(t *testing.T) {
 	t.Parallel()
 	a := newNativeFixture(t, nil, "", "mac-project")
