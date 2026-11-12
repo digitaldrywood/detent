@@ -298,5 +298,5 @@ func TestTeamThreadUnreadSummaryBoundsHistoryWork(t *testing.T) {
 		})
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"/unread?project_id="+string(second.project.ID), f.token, nil), 403)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, threadBase(foreign)+"/unread", f.token, nil), http.StatusUnauthorized)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, threadBase(foreign)+"/unread", f.token, nil), http.StatusNotFound)
 }

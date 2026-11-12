@@ -459,7 +459,7 @@ func TestSpriteUsageAPI(t *testing.T) {
 		{name: "own project", token: f.token, path: f.base + "/usage/monthly?month=2026-02", status: http.StatusOK, want: 40_000},
 		{name: "runner budget consumer reads project", token: runner.redemption.Credential, path: f.base + "/usage/monthly?month=2026-02", status: http.StatusOK, want: 40_000},
 		{name: "other project", token: other.token, path: other.base + "/usage/monthly?month=2026-02", status: http.StatusOK},
-		{name: "project grant cannot read sibling", token: other.token, path: f.base + "/usage/monthly?month=2026-02", status: http.StatusForbidden},
+		{name: "project grant cannot read sibling", token: other.token, path: f.base + "/usage/monthly?month=2026-02", status: http.StatusNotFound},
 		{name: "org total counts project once", token: testHubAdminToken, path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/usage/monthly?month=2026-02", status: http.StatusOK, want: 40_000},
 		{name: "operator cannot read org total", token: f.token, path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/usage/monthly?month=2026-02", status: http.StatusForbidden},
 		{name: "bad month", token: f.token, path: f.base + "/usage/monthly?month=2026-13", status: http.StatusUnprocessableEntity},
