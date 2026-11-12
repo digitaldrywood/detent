@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -124,6 +125,12 @@ func (s *Service) readSpriteAllocationProjects(ctx context.Context, scope native
 var errSpriteReservationStale = errors.New("project Sprite count changed before this member was ready")
 
 func spriteAllocationRunnerAllowedRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, record runnerstore.RoutingRecord) (bool, error) {
+	identity := record.Record.Identity
+	granted := identity.Scope == "organization" || slices.Contains(identity.ProjectIDs, scope.project)
+	return spriteAllocationRunnerAllowedFacts(ctx, r, scope, identity, record.Record.Machine, granted)
+}
+
+func spriteAllocationRunnerAllowedFacts(ctx context.Context, r tenantstore.Reader, scope nativeScope, identity runnerstore.Identity, machine leasestore.Machine, granted bool) (bool, error) {
 	owner, ok := r.(postgres.SpriteReader)
 	if !ok {
 		return false, workItemStorageUnavailable()
@@ -133,7 +140,6 @@ func spriteAllocationRunnerAllowedRecord(ctx context.Context, r tenantstore.Read
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return false, err
 	}
-	identity, machine := record.Record.Identity, record.Record.Machine
 	member, err := r.RunnerSpriteMembershipByEnrollment(ctx, identity.EnrollmentID)
 	if errors.Is(err, corestore.ErrNotFound) {
 		if !managed {
@@ -168,7 +174,6 @@ func spriteAllocationRunnerAllowedRecord(ctx context.Context, r tenantstore.Read
 	if err != nil {
 		return false, err
 	}
-	granted := identity.Scope == "organization" || slices.Contains(identity.ProjectIDs, scope.project)
 	if member.State != "enrolled" || identity.State != "active" || allocation.DesiredCount <= 0 || !granted || member.AllocationProjectID != scope.project && !pool.ShareIdleCapacity {
 		return false, nil
 	}

@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -544,6 +546,75 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope n
 		}
 	}
 	return result, nil
+}
+
+var errClaimPlacementSnapshotRequired = errors.New("local-first claim placement requires a placement snapshot")
+
+type claimPlacementSnapshot struct {
+	snapshot *placementSnapshot
+}
+
+func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope nativeScope, identity runnerstore.Identity, machine leasestore.Machine, plan nativeClaimPlan, overrides []tracker.NativeCapacityCandidate, workspace bool, joining string, now time.Time, snapshot *placementSnapshot) (bool, string, error) {
+	allowed, err := spriteAllocationRunnerAllowedFacts(ctx, r, scope, identity, machine, true)
+	if err != nil {
+		return false, "", err
+	}
+	if !allowed {
+		return false, "Project Sprite allocation excludes this runner", nil
+	}
+	if workspace {
+		return true, "Project Sprite allocation permits this runner", nil
+	}
+	placement, _, err := readPlacementPolicy(ctx, r)
+	if err != nil {
+		return false, "", err
+	}
+	if machine.SpriteName != machine.Hostname || !validSpritesSlug(machine.SpriteName) {
+		return placement.Mode != "sprites_only", "Resolved placement " + placement.Mode + " governs local eligibility", nil
+	}
+	used, err := readPlacementSpriteUsage(ctx, r, scope, now, joining)
+	if err != nil {
+		return false, "", err
+	}
+	if limit := placement.SpriteLimit(); limit > 0 && used >= limit {
+		return false, "Configured maximum Sprite concurrency is full", nil
+	}
+	if placement.Mode != "local_first" {
+		return true, "Resolved placement " + placement.Mode + " permits Sprite runners", nil
+	}
+	if snapshot == nil {
+		return false, "", errClaimPlacementSnapshotRequired
+	}
+	id := tracker.WorkItemID(plan.item.ID)
+	if snapshot.Local[id] > 0 {
+		return false, "Local-first placement has compatible free local capacity", nil
+	}
+	_, ready := snapshot.Items[id]
+	if !ready && snapshot.resolver != nil {
+		issue := plan.issue
+		identity, err := snapshot.resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
+		if err != nil {
+			return false, "Configured provider requirement is unavailable", nil
+		}
+		requirement := providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
+		for _, candidate := range overrides {
+			if candidate.WorkItemID == plan.item.NativeID && int64(candidate.Revision) == plan.item.Revision {
+				requirement = candidate.Requirement
+			}
+		}
+		for _, runner := range snapshot.Runners {
+			if !runner.Sprite && newPlacementCapacity().available(runner, scope.project, snapshot.Requirements, requirement, now, false) > 0 {
+				return false, "Local-first placement has compatible free local capacity", nil
+			}
+		}
+		ready = !strings.EqualFold(issue.State, "Todo") && snapshot.ReadyTodo >= placement.TodoThreshold && used < placement.OverflowSlots
+	}
+	allowed = ready && snapshot.ReadyTodo >= placement.TodoThreshold && used < placement.SpriteLimit()
+	reason := snapshot.Reason
+	if allowed {
+		reason = "Local-first overflow is eligible for this candidate"
+	}
+	return allowed, fmt.Sprintf("%s: ready Todo=%d, threshold=%d, local free=%d, Sprite used=%d, overflow slots=%d", reason, snapshot.ReadyTodo, placement.TodoThreshold, snapshot.LocalFree, used, placement.OverflowSlots), nil
 }
 
 func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope nativeScope, now time.Time) (placementSnapshot, error) {

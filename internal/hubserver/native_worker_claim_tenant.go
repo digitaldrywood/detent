@@ -59,6 +59,7 @@ type nativeClaimPlan struct {
 	landingPending       bool
 	landingRequired      bool
 	replay               *leasestore.Lease
+	placement            *claimPlacementSnapshot
 }
 
 const nativeClaimCandidatePageSize = 100
@@ -104,8 +105,10 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 		position := scan.cursor.Position
 		var descriptor *policy.Descriptor
 		var budgetRefusal error
+		placement := &claimPlacementSnapshot{}
 		for _, rows := range scan.plans {
 			candidate := rows.candidate
+			rows.placement = placement
 			plan, err := s.hydrateNativeClaimPlan(ctx, scope, request, now, rows, descriptor)
 			if errors.Is(err, ErrNoClaimableWork) {
 				position = claimCandidateCursor(candidate)
@@ -530,7 +533,13 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 	}
 	var lease leasestore.Lease
 	var isolationRefused bool
-	err = s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
+	var placementRefusal string
+	placement := plan.placement
+	if placement == nil {
+		placement = &claimPlacementSnapshot{}
+	}
+	write := func(ctx context.Context, w tenantstore.Writer) error {
+		placementRefusal = ""
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -781,6 +790,18 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			if usage.Runner >= int64(availableCapacity) || projectCapacityConfigured && usage.Project >= int64(projectCapacity) {
 				return providerWait("runner_capacity", "Runner has no available execution slots")
 			}
+			joining := ""
+			if batch != "" {
+				joining = landingCapacityKey(identity.MachineID, string(scope.project), request.SessionID)
+			}
+			allowed, reason, err := claimPlacementAllowed(ctx, w, scope, identity, machine, plan, request.ProviderCandidates, workspaceItem, joining, authoritativeNow, placement.snapshot)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				placementRefusal = reason
+				return ErrNoClaimableWork
+			}
 		} else {
 			monthlyLease, err := w.BillingMonthlyLease(ctx, tracker.LeaseID(replay.LeaseID))
 			if err == nil {
@@ -913,7 +934,21 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			}
 		}
 		return nil
-	})
+	}
+	err = s.writeNativeClaimCommand(ctx, scope, write)
+	if errors.Is(err, errClaimPlacementSnapshotRequired) && placement.snapshot == nil {
+		snapshot, snapshotErr := s.readPlacementSnapshot(ctx, scope, now, request.ProviderCandidates)
+		if snapshotErr != nil {
+			return leasestore.Lease{}, snapshotErr
+		}
+		placement.snapshot = &snapshot
+		err = s.writeNativeClaimCommand(ctx, scope, write)
+	}
+	if placementRefusal != "" && errors.Is(err, ErrNoClaimableWork) {
+		s.config.Logger.DebugContext(ctx, "native claim candidate skipped",
+			"organization_id", scope.organization, "project_id", scope.project,
+			"work_item_id", plan.candidate.WorkItemID, "runner_id", scope.credential.Runner.RunnerID, "reason", placementRefusal)
+	}
 	if errors.Is(err, ErrNoClaimableWork) && isolationRefused {
 		if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, false); recordErr != nil {
 			return leasestore.Lease{}, recordErr

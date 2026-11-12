@@ -723,6 +723,57 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 	}
 }
 
+func TestPlacementClaimTenantBoundaries(t *testing.T) {
+	t.Parallel()
+	f := placementNativeFixture(t, Config{})
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	second := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
+	approveHubTestPolicy(t, f.service, second.base+"/policy", hubTestPolicy())
+	seedPostgresHubAdmin(t, f.service.config.TenantRepository, f.service, nativeOrganization{ID: "org_placement_other", Name: "Other placement organization", Slug: "other-placement"})
+	other := newNativeFixture(t, f.service, "org_placement_other", "other")
+	approveHubTestPolicy(t, f.service, other.base+"/policy", hubTestPolicy())
+	setPlacementFixture(t, f, policy.Placement{Mode: "sprites_only"}, 2)
+	setPlacementAllocationFixture(t, f, 1, 0)
+	sprite := placementFixtureRunnerWithScope(t, f, "sprite-runner", "sprite", true, 4, "organization", "gpt-6.1-sol", "test-model")
+	placementFixtureMember(t, f, sprite, sprite.redemption.Hostname, "enrolled")
+	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
+		return w.ReplaceRunnerLocalChecks(t.Context(), sprite.binding.RunnerID, f.project.ID, runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: f.service.config.now()})
+	})
+	local := placementFixtureRunnerWithScope(t, f, "local-runner", "local", false, 4, "organization", "gpt-6.1-sol", "test-model")
+	otherLocal := placementFixtureRunnerWithScope(t, other, "other-local", "other", false, 2, "projects", "gpt-6.1-sol", "test-model")
+	for _, runner := range []runnerFixture{sprite, local, otherLocal} {
+		if len(runner.redemption.BackendIsolation) == 0 {
+			t.Fatalf("runner %s enrolled without a backend isolation report", runner.binding.RunnerID)
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		project nativeFixture
+		runner  runnerFixture
+		status  int
+	}{
+		{"allocated Sprite claims its project", f, sprite, http.StatusOK},
+		{"allocated Sprite is refused outside its allocation", second, sprite, http.StatusConflict},
+		{"local runner is refused by Sprites-only placement", f, local, http.StatusConflict},
+		{"local runner is refused in an unallocated project of the same organization", second, local, http.StatusConflict},
+		{"local runner in another organization keeps its default placement", other, otherLocal, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := test.project.create(t, test.name)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, test.project.base+"/claims", test.runner.redemption.Credential, providerClaim(test.runner, issue, newNativeID("session")))
+			requireNativeStatus(t, response, test.status)
+			if test.status == http.StatusOK {
+				return
+			}
+			var refusal nativeError
+			decodeHubResponse(t, response, &refusal)
+			if refusal.Code != "no_claimable_work" {
+				t.Fatalf("refusal code=%q, want no_claimable_work", refusal.Code)
+			}
+		})
+	}
+}
+
 func TestPlacementIgnoresExhaustedSubscriptionQuota(t *testing.T) {
 	for _, claimant := range []string{"local", "sprite"} {
 		t.Run(claimant, func(t *testing.T) {
