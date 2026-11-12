@@ -355,7 +355,11 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.DELETE(nativeBase+"/policy", s.revokeProjectPolicy, policyAdmin)
 	e.POST(nativeBase+"/policy/observed", s.observeProjectPolicy, worker)
 	e.GET("/api/v2/capabilities", s.nativeCapabilities, s.requireAPIScope(apiScopeWorker, apiScopeOperator))
-	e.GET("/api/v2/organizations", s.nativeOrganizations, s.requireAPIScope(apiScopeAdmin))
+	organizationRead := s.requireAPIScope(apiScopeAdmin)
+	if s.config.Hosted == nil {
+		organizationRead = admin
+	}
+	e.GET("/api/v2/organizations", s.nativeOrganizations, organizationRead)
 	e.POST("/api/v2/organizations", s.createNativeOrganization, admin)
 	if s.config.Hosted != nil {
 		e.POST("/api/v2/organizations/:organization/projects", s.createHostedProjectJSON, admin)
