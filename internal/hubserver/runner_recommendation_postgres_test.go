@@ -37,6 +37,11 @@ import (
 func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Hour)
 	f := newSharedRouteFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now } })
+	for _, service := range f.services {
+		if err := service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	var first *Service
 	for _, service := range f.services {
