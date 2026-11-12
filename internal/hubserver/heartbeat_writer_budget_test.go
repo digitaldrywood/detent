@@ -215,6 +215,11 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 					t.Fatal(err)
 				}
 				f.service.requestMetrics = metrics
+				t.Cleanup(func() {
+					if err := f.service.Close(); err != nil {
+						t.Error(err)
+					}
+				})
 				f.service.echo.Use(f.service.hostedBoundary)
 			}
 			var injected atomic.Bool

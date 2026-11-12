@@ -180,6 +180,11 @@ func TestNativeEventWriterBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.service.requestMetrics = metrics
+			t.Cleanup(func() {
+				if err := f.service.Close(); err != nil {
+					t.Error(err)
+				}
+			})
 			f.service.echo.Use(f.service.hostedBoundary)
 			for _, name := range []string{"start", "batch", "replay", "landing", "maximum batch", "finish", "finish replay"} {
 				t.Run(name, func(t *testing.T) {
@@ -411,6 +416,11 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service.requestMetrics = metrics
+	t.Cleanup(func() {
+		if err := f.service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	f.service.echo.Use(f.service.hostedBoundary)
 	var uploaded atomic.Int64
 	start := make(chan struct{})
