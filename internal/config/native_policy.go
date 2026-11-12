@@ -184,6 +184,9 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 		if err != nil {
 			return Workflow{}, err
 		}
+		if err := validateLocalPolicySnapshot(workflow, descriptor); err != nil {
+			return Workflow{}, err
+		}
 		return applyAuthoredNativePolicy(workflow, shared)
 	}
 	if descriptor.Configuration == nil {
@@ -223,6 +226,33 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	return workflow, nil
 }
 
+func validateLocalPolicySnapshot(workflow Workflow, descriptor policy.Descriptor) error {
+	if workflow.DefinitionSources == nil || descriptor.Authored == nil || len(descriptor.Authored.Files) == 0 {
+		return nil
+	}
+	local, err := nativeAuthoredSources(*workflow.DefinitionSources, NativePolicyCanonicalizationVersion)
+	if err != nil {
+		return err
+	}
+	approved, err := nativeAuthoredSources(sourcesFromAuthoredFiles(descriptor.Authored.Files), NativePolicyCanonicalizationVersion)
+	if err != nil {
+		return err
+	}
+	if local.HasLocalWorkflow && !bytes.Equal(local.LocalWorkflow, approved.LocalWorkflow) || local.HasLocalConfig && !bytes.Equal(local.LocalConfig, approved.LocalConfig) {
+		return errors.New("policy_mismatch: machine-local policy differs from approved inputs")
+	}
+	if !local.HasLocalWorkflow && approved.HasLocalWorkflow {
+		document, err := splitProjectWorkflow(approved.LocalWorkflow)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(document.prompt)) != "" {
+			return errors.New("policy_mismatch: approved machine-local instructions are unavailable")
+		}
+	}
+	return nil
+}
+
 func applyAuthoredNativePolicy(workflow, shared Workflow) (Workflow, error) {
 	localPrompt, err := nativeMachinePrompt(workflow)
 	if err != nil {
@@ -242,7 +272,7 @@ func nativeMachinePrompt(workflow Workflow) (string, error) {
 	if workflow.machinePrompt != "" {
 		return workflow.machinePrompt, nil
 	}
-	if workflow.DefinitionSources != nil && workflow.DefinitionSources.HasLocalWorkflow {
+	if workflow.DefinitionSources != nil && workflow.DefinitionSources.HasLocalWorkflow && !workflow.DefinitionSources.localDigestOnly {
 		local, err := splitProjectWorkflow(workflow.DefinitionSources.LocalWorkflow)
 		if err != nil {
 			return "", fmt.Errorf("parse machine workflow instructions: %w", err)
@@ -312,10 +342,25 @@ func resolveAuthoredNativePolicy(descriptor policy.Descriptor) (Workflow, policy
 		return Workflow{}, policy.Descriptor{}, errors.New("policy_mismatch: authored inputs do not match their digests")
 	}
 	authored.Files = authoredSourceFiles(sources)
-	shared, err := ParseHistoricalProjectDefinition(sources)
+	parseSources := sources
+	if sources.HasLocalWorkflow {
+		document, err := splitProjectWorkflow(sources.LocalWorkflow)
+		if err != nil {
+			return Workflow{}, policy.Descriptor{}, err
+		}
+		if prompt := strings.TrimSpace(string(document.prompt)); prompt != "" {
+			if err := validateLocalWorkflowDigest(prompt); err != nil {
+				return Workflow{}, policy.Descriptor{}, err
+			}
+		}
+		document.prompt = nil
+		parseSources.LocalWorkflow = legacyWorkflowBytes(document)
+	}
+	shared, err := ParseHistoricalProjectDefinition(parseSources)
 	if err != nil {
 		return Workflow{}, policy.Descriptor{}, err
 	}
+	shared.DefinitionSources = &sources
 	shared.Config = shared.Config.ForNativeTracker()
 	shared.Authored = authored
 	shared.Definition = ProjectDefinition{}

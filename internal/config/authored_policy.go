@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +54,9 @@ func nativeAuthoredSources(sources ProjectDefinitionSources, version int) (Proje
 				return sources, err
 			}
 			node = *expanded
+			if input.present != nil {
+				clearAuthoredComments(&node)
+			}
 			root := node.Content[0]
 			retainAuthoredKeys(root, "schema", "review", "runners", "workpad", "deliverable", "dependencies", "recovery", "agent", "gate", "plan", "budget", "release", "retro", "operator", "backlog_admission", "tracker", "server", "worker")
 			retainAuthoredPath(root, []string{"tracker"}, "kind", "repository", "lanes", "active_states", "observed_states", "terminal_states", "state_map", "priority_map", "dependency_auto_unblock", "blocked_recovery", "blocker_auto_promote")
@@ -74,15 +78,47 @@ func nativeAuthoredSources(sources ProjectDefinitionSources, version int) (Proje
 			*input.raw = []byte{}
 			continue
 		}
+		if input.raw == &sources.LocalWorkflow && empty && strings.TrimSpace(string(document.prompt)) != "" {
+			document.hasFrontmatter = false
+		}
+		prompt := strings.TrimSpace(string(normalizeProjectDefinitionPrompt(document.prompt)))
+		if input.raw == &sources.LocalWorkflow && prompt != "" {
+			if sources.localDigestOnly {
+				if err := validateLocalWorkflowDigest(prompt); err != nil {
+					return sources, err
+				}
+			} else {
+				prompt = "sha256:" + policy.Digest([]byte(prompt))
+			}
+		}
 		if input.markdown && document.hasFrontmatter {
-			*input.raw = append(append(append([]byte("---\n"), raw...), []byte("---\n")...), []byte(strings.TrimSpace(string(normalizeProjectDefinitionPrompt(document.prompt))))...)
+			*input.raw = append(append(append([]byte("---\n"), raw...), []byte("---\n")...), []byte(prompt)...)
 		} else if input.markdown {
-			*input.raw = []byte(strings.TrimSpace(string(normalizeProjectDefinitionPrompt(document.prompt))))
+			*input.raw = []byte(prompt)
 		} else {
 			*input.raw = raw
 		}
 	}
+	sources.localDigestOnly = true
 	return sources, nil
+}
+
+func clearAuthoredComments(node *yaml.Node) {
+	node.HeadComment, node.LineComment, node.FootComment = "", "", ""
+	for _, child := range node.Content {
+		clearAuthoredComments(child)
+	}
+}
+
+func validateLocalWorkflowDigest(value string) error {
+	digest, ok := strings.CutPrefix(value, "sha256:")
+	if !ok || len(digest) != 64 || digest != strings.ToLower(digest) {
+		return errors.New("policy_mismatch: invalid local workflow digest")
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return errors.New("policy_mismatch: invalid local workflow digest")
+	}
+	return nil
 }
 
 func emptyAuthoredOverlay(node *yaml.Node) bool {
@@ -204,7 +240,7 @@ func authoredSourceFiles(sources ProjectDefinitionSources) map[string]string {
 }
 
 func sourcesFromAuthoredFiles(files map[string]string) ProjectDefinitionSources {
-	sources := ProjectDefinitionSources{Workflow: []byte(files["WORKFLOW.md"]), WorkflowPath: "WORKFLOW.md", ConfigPath: "detent.yaml"}
+	sources := ProjectDefinitionSources{localDigestOnly: true, Workflow: []byte(files["WORKFLOW.md"]), WorkflowPath: "WORKFLOW.md", ConfigPath: "detent.yaml"}
 	value, present := files["detent.yaml"]
 	sources.Config, sources.HasConfig = []byte(value), present
 	value, present = files["WORKFLOW.local.md"]

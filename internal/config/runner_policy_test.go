@@ -395,8 +395,8 @@ func TestNativeSharedPolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, present := descriptor.Authored.Files["WORKFLOW.local.md"]; !present {
-				t.Fatal("previous approval lost its authored overlay")
+			if strings.Contains(descriptor.Authored.Files["WORKFLOW.local.md"], "/previous/workspaces") {
+				t.Fatal("previous approval disclosed its installation overlay")
 			}
 			resolved, err := ResolveSharedPolicy(descriptor)
 			if err != nil || resolved.ID != descriptor.ID {
@@ -467,14 +467,14 @@ func TestNativeSharedPolicy(t *testing.T) {
 				t.Fatalf("policy match = %v, want %t", descriptor.Match(approved), tt.match)
 			}
 			resolved, err := ApplyNativePolicy(local, approved)
+			if tt.name == "machine instructions" {
+				if err == nil {
+					t.Fatal("approved configuration accepted changed machine instructions")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
-			}
-			if tt.name == "machine instructions" {
-				reapplied, err := ApplyNativePolicy(resolved, approved)
-				if err != nil || reapplied.Prompt != resolved.Prompt || !strings.HasSuffix(strings.TrimSpace(reapplied.Prompt), "Machine bootstrap instructions.") {
-					t.Fatalf("approved configuration discarded or duplicated machine instructions: %q, %v", reapplied.Prompt, err)
-				}
 			}
 			resolved.Config = resolved.Config.WithWorkerDefaults(WorkerDefaults{AllowLocalBinding: new(true)})
 			if resolved.Config.KanbanTransitionAllowed("Todo", "Done") || !resolved.Config.KanbanTransitionAllowed("Todo", "In Progress") {
@@ -611,5 +611,112 @@ func TestNativeSharedPolicyBehavior(t *testing.T) {
 	changedDefaults.Gates.SecurityAudit = true
 	if equal, err := SameSharedPolicyBehavior(approved, changedDefaults); err != nil || equal {
 		t.Fatalf("changed effective default equivalent=%t, error=%v", equal, err)
+	}
+}
+
+func TestRunnerPolicyLocalPrivacy(t *testing.T) {
+	t.Parallel()
+	sources := ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\ngate:\n  run: echo 1\n"), HasConfig: true}
+	load := func(s ProjectDefinitionSources) (Workflow, policy.Descriptor) {
+		t.Helper()
+		workflow, err := ParseProjectDefinition(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		descriptor, err := ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return workflow, descriptor
+	}
+	baseWorkflow, baseline := load(sources)
+	if baseline.Authored.Digest != "c021fe8bc5d3d194edfcd455138383651ef5c097dc53985c3e3371da82e02186" {
+		t.Fatalf("no-overlay pre-change digest changed: %s", baseline.Authored.Digest)
+	}
+	if baseline.Authored.Files["WORKFLOW.md"] != "Run the work." || baseline.Authored.Files["detent.yaml"] != "gate:\n    run: echo 1\nschema: 1\ntracker:\n    kind: hub_native\n" {
+		t.Fatal("no-overlay canonical source bytes changed")
+	}
+	for _, test := range []struct {
+		name, prompt, local string
+		changed             bool
+	}{
+		{"private prompt", "overlay-private-marker", "", true},
+		{"changed private prompt", "overlay-private-marker-edited", "", true},
+		{"credentials only", "", "schema: 1\ntracker:\n  api_key: local-secret-marker\n  github_app_private_key: local-secret-marker\n  github_webhook_secret: local-secret-marker\nworker:\n  github_token: local-secret-marker\nworkspace:\n  root: /private-install-marker\nhooks:\n  before_run: /private-install-marker\n", false},
+		{"private YAML comment", "", "schema: 1\n# local-secret-marker\nreview:\n  human: true\n", true},
+		{"policy override", "", "schema: 1\nreview:\n  human: true\n", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := sources
+			candidate.LocalWorkflow, candidate.HasLocalWorkflow = []byte(test.prompt), test.prompt != ""
+			candidate.LocalConfig, candidate.HasLocalConfig = []byte(test.local), test.local != ""
+			workflow, descriptor := load(candidate)
+			raw, err := json.Marshal(descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, private := range []string{"overlay-private-marker", "local-secret-marker", "/private-install-marker"} {
+				if strings.Contains(string(raw), private) {
+					t.Errorf("descriptor disclosed %s", private)
+				}
+			}
+			if (descriptor.Authored.Digest != baseline.Authored.Digest) != test.changed || (descriptor.Match(baseline) != nil) != test.changed {
+				t.Error("local policy change did not invalidate approval as expected")
+			}
+			if test.changed {
+				if _, err := ApplyNativePolicy(workflow, baseline); err == nil {
+					t.Error("shared approval accepted an unapproved local overlay")
+				}
+				execution, err := NewExecutionConfiguration(baseWorkflow, baseline, ModelSelection{Sources: map[string]string{"authority": "cloud"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ApplyExecutionConfiguration(workflow, baseline, execution); err == nil {
+					t.Error("execution configuration accepted an unapproved local overlay")
+				}
+			}
+			resolved, err := ResolveSharedPolicy(descriptor)
+			if err != nil || !reflect.DeepEqual(resolved, descriptor) {
+				t.Fatalf("shared policy round trip changed descriptor: %v", err)
+			}
+			applied, err := ApplyNativePolicy(workflow, descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.prompt != "" && !strings.Contains(applied.Prompt, test.prompt) {
+				t.Error("lost machine instructions")
+			}
+			if strings.Contains(applied.Prompt, "sha256:") {
+				t.Error("digest became execution instructions")
+			}
+			actual, err := ResolvePolicy(applied)
+			if err != nil || actual.Match(descriptor) != nil {
+				t.Fatalf("applied policy changed identity: %v", err)
+			}
+			if test.prompt != "" {
+				shared, err := ResolveNativePolicy(descriptor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sharedWorkflow, err := shared.Workflow()
+				if err != nil {
+					t.Fatal(err)
+				}
+				execution, err := NewExecutionConfiguration(sharedWorkflow, descriptor, ResolveCloudModelSelection(ModelSelection{}, ModelSelection{}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ApplyExecutionConfiguration(Workflow{Config: Default()}, descriptor, execution); err == nil {
+					t.Error("execution accepted unavailable private instructions")
+				}
+			}
+			if test.prompt != "" {
+				candidate.LocalWorkflow = append(candidate.LocalWorkflow, '!')
+				_, changed := load(candidate)
+				if changed.Authored.Digest == descriptor.Authored.Digest || changed.Match(descriptor) == nil {
+					t.Error("editing private instructions retained approval")
+				}
+			}
+		})
 	}
 }

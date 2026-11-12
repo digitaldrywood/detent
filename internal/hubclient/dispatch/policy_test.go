@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -289,6 +290,16 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	privateSources := *workflow.DefinitionSources
+	privateSources.LocalWorkflow, privateSources.HasLocalWorkflow = []byte("Private machine instructions.\n"), true
+	privateWorkflow, err := workflowconfig.ParseProjectDefinition(privateSources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePolicy, err := workflowconfig.ResolvePolicy(privateWorkflow)
+	if err != nil {
+		t.Fatal(err)
+	}
 	legacyWorkflow := workflow
 	legacyWorkflow.Authored, legacyWorkflow.DefinitionSources = nil, nil
 	legacy, err := workflowconfig.ResolvePolicy(legacyWorkflow)
@@ -312,7 +323,8 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 		wantLost     bool
 		reports      int
 	}{
-		{name: "authored external load retains approved configuration", loadApproved: true, approved: &current, status: http.StatusOK, local: current, reports: 1},
+		{name: "authored external load retains approved configuration", loadApproved: true, approved: &privatePolicy, status: http.StatusOK, local: privatePolicy, reports: 1},
+		{name: "authored external load refuses unapproved instructions", loadApproved: true, approved: &current, status: http.StatusOK, local: current, reports: 1},
 		{name: "verified authored source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40)}, approved: &current, status: http.StatusOK, local: current, reports: 1},
 		{name: "legacy external load retains approved configuration", loadApproved: true, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "verified legacy source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
@@ -449,6 +461,12 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 					}
 					continue
 				}
+				if test.name == "authored external load refuses unapproved instructions" && layout != workflowconfig.ProjectDefinitionCloud {
+					if err == nil || !strings.Contains(err.Error(), "policy_mismatch") {
+						t.Fatalf("unapproved private instructions were accepted: %v", err)
+					}
+					continue
+				}
 				if test.approved != nil && (test.approved.Configuration != nil || test.approved.Authored != nil) && test.provenance == nil && layout != workflowconfig.ProjectDefinitionCloud {
 					if err != nil {
 						t.Fatal(err)
@@ -545,6 +563,89 @@ func TestFleetProjectEligibilityRequiresApproval(t *testing.T) {
 				}
 			} else if err == nil || fleetReads != 0 || len(result.Runners) != 0 {
 				t.Fatalf("missing approval evaluated runner eligibility: %+v, %v; fleet reads=%d", result, err, fleetReads)
+			}
+		})
+	}
+}
+
+func TestPolicyRequestsKeepLocalProsePrivate(t *testing.T) {
+	t.Parallel()
+	for _, local := range []struct{ name, prompt, config string }{
+		{"workflow", "outbound-private-marker", "schema: 1\nreview:\n  human: true\n"},
+		{"yaml secrets", "", "schema: 1\ntracker:\n  api_key: outbound-private-marker\nworker:\n  github_token: outbound-private-marker\n"},
+		{"yaml comment", "", "schema: 1\n# outbound-private-marker\nreview:\n  human: true\n"},
+	} {
+		t.Run(local.name, func(t *testing.T) {
+			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+				Workflow: []byte("Shared instructions.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n"), HasConfig: true,
+				LocalWorkflow: []byte(local.prompt), HasLocalWorkflow: local.prompt != "", LocalConfig: []byte(local.config), HasLocalConfig: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor, err := workflowconfig.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, operation := range []string{"scheduler observation", "native observation", "native approval", "repository approval"} {
+				t.Run(operation, func(t *testing.T) {
+					calls := 0
+					client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+						calls++
+						raw, err := io.ReadAll(r.Body)
+						if err != nil {
+							return nil, err
+						}
+						if strings.Contains(string(raw), "outbound-private-marker") {
+							t.Error("outbound request disclosed machine-local content")
+						}
+						var sent struct {
+							policy.Descriptor
+							Policy policy.Descriptor `json:"policy"`
+						}
+						if err := json.Unmarshal(raw, &sent); err != nil {
+							return nil, err
+						}
+						actual := sent.Descriptor
+						if r.Method == http.MethodPut {
+							actual = sent.Policy
+						}
+						if actual.ID != descriptor.ID || actual.Authored.Digest != descriptor.Authored.Digest {
+							t.Error("request lost effective policy identity")
+						}
+						w := httptest.NewRecorder()
+						if r.Method == http.MethodPost {
+							w.WriteHeader(http.StatusNoContent)
+						} else if err := json.NewEncoder(w).Encode(policy.Approval{Policy: descriptor}); err != nil {
+							return nil, err
+						}
+						return w.Result(), nil
+					})}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					native, err := client.Native("org_example", "prj_example")
+					if err != nil {
+						t.Fatal(err)
+					}
+					switch operation {
+					case "scheduler observation":
+						scheduler := &Scheduler{client: client, nativeProjects: map[string]*NativeConnector{"project": fixtureConnector(native)}}
+						err = scheduler.CheckProjectPolicy(t.Context(), "project", "example-org/example-project", descriptor)
+					case "native observation":
+						err = native.ReportObservedPolicy(t.Context(), descriptor)
+					case "native approval":
+						_, err = native.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor})
+					case "repository approval":
+						_, err = client.ApproveProjectPolicy(t.Context(), "example-org/example-project", policy.Change{Policy: descriptor})
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if calls != 1 {
+						t.Fatalf("requests = %d, want 1", calls)
+					}
+				})
 			}
 		})
 	}

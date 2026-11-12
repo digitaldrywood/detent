@@ -58,6 +58,7 @@ type ProjectDefinitionSources struct {
 	AgentsPath        string
 	Agents            []byte
 	HasAgents         bool
+	localDigestOnly   bool
 }
 
 type ProjectDefinitionError struct {

@@ -49,6 +49,9 @@ func ApplyExecutionConfiguration(workflow Workflow, descriptor policy.Descriptor
 	if err := descriptor.Validate(); err != nil {
 		return Workflow{}, err
 	}
+	if err := validateLocalPolicySnapshot(workflow, descriptor); err != nil {
+		return Workflow{}, err
+	}
 	var values executionValues
 	decoder := json.NewDecoder(bytes.NewReader(execution.Values))
 	decoder.UseNumber()
@@ -80,6 +83,19 @@ func ApplyExecutionConfiguration(workflow Workflow, descriptor policy.Descriptor
 	localPrompt, err := nativeMachinePrompt(workflow)
 	if err != nil {
 		return Workflow{}, err
+	}
+	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
+		local, err := splitProjectWorkflow([]byte(descriptor.Authored.Files["WORKFLOW.local.md"]))
+		if err != nil {
+			return Workflow{}, err
+		}
+		digest := ""
+		if prompt := strings.TrimSpace(localPrompt); prompt != "" {
+			digest = "sha256:" + policy.Digest([]byte(prompt))
+		}
+		if digest != strings.TrimSpace(string(local.prompt)) {
+			return Workflow{}, errors.New("policy_mismatch: machine-local instructions differ from approved inputs")
+		}
 	}
 	workflow.Config = values.Behavior.apply(workflow.Config)
 	workflow.Config.Agents.ModelSelection = values.ModelSelection
