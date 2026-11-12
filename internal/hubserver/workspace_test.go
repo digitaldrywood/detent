@@ -1772,7 +1772,7 @@ func (f *workspaceRunnerFixture) reportRunner(t *testing.T, capacity int, capabi
 	t.Helper()
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", f.runner.redemption.Credential,
 		map[string]any{"id": f.runner.binding.MachineID, "hostname": "customer-host", "display_name": "Runner",
-			"capacity": capacity, "version": "test", "workspace_capabilities": capabilities,
+			"backend_isolation": f.runner.redemption.BackendIsolation, "capacity": capacity, "version": "test", "workspace_capabilities": capabilities,
 			"workspace_isolation": isolation}), http.StatusOK)
 }
 
@@ -1887,7 +1887,7 @@ func (f *workspaceRunnerFixture) reportProviderCapacity(t *testing.T, capacity i
 		Models: []string{"gpt-6-astra"}, MaxConcurrent: 4, Availability: "available", ObservedAt: f.service.config.now().UTC()}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
 		f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential,
-		map[string]any{"display_name": "Runner", "capacity": capacity, "version": "test",
+		map[string]any{"display_name": "Runner", "capacity": capacity, "version": "test", "backend_isolation": f.runner.redemption.BackendIsolation,
 			"provider_reports": []providercapacity.Report{report}}), http.StatusOK)
 }
 

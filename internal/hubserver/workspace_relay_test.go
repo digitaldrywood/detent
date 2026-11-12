@@ -215,7 +215,7 @@ func (f *relayFixture) reportCapabilities(t *testing.T, capabilities workspacese
 	response := performHubAPIRequest(t, f.service, http.MethodPost,
 		f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential,
 		map[string]any{
-			"display_name": "runner", "capacity": 8, "version": "test",
+			"display_name": "runner", "capacity": 8, "version": "test", "backend_isolation": f.runner.redemption.BackendIsolation,
 			"provider_reports": []providercapacity.Report{report}, "workspace_capabilities": capabilities,
 			"workspace_isolation":    workspacesession.IsolationContainer,
 			"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.at()},
