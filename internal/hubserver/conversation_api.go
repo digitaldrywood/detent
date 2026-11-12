@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -934,8 +935,21 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nativeScope, record conversationRecord) ([]conversationQuestionRecord, []skills.ProviderSkill, error) {
 
 	var questions []conversationQuestionRecord
+	projectSkills := []skills.ProviderSkill{}
 	contentReferences := map[string]conversationstore.ContentObject{}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		reports, err := reader.RunnerProjectSkills(ctx, record.ProjectID, record.Execution.Owner.RunnerID, s.config.now().UTC(), runnerstore.MaxProjectSkills)
+		if err != nil {
+			return err
+		}
+		seen := map[string]bool{}
+		for _, report := range reports {
+			name := strings.ToLower(report.Skill.Name)
+			if !seen[name] {
+				seen[name] = true
+				projectSkills = append(projectSkills, report.Skill)
+			}
+		}
 		stored, err := reader.Questions(ctx, record.ID, record.Execution.Owner.AttemptID, conversationSnapshotQuestions)
 		if err != nil {
 			return err
@@ -970,7 +984,7 @@ func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nat
 			question.Prompts, question.Answers = content.Prompts, content.Answers
 		}
 	}
-	return questions, []skills.ProviderSkill{}, translateConversationError(err)
+	return questions, projectSkills, translateConversationError(err)
 }
 
 func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest) (json.RawMessage, error) {
