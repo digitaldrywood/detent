@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -88,70 +87,6 @@ func normalizeCostObservation(o *costObservation, now time.Time) error {
 	return nil
 }
 
-func recordCostObservation(ctx context.Context, tx *sql.Tx, organization, project string, o costObservation, now time.Time) (bool, error) {
-	if err := normalizeCostObservation(&o, now); err != nil {
-		return false, err
-	}
-	encoded, err := json.Marshal(o)
-	if err != nil {
-		return false, fmt.Errorf("encode cost observation: %w", err)
-	}
-	var previous string
-	var previousProject string
-	var revision int64
-	identity := []any{organization, o.Provider, o.ProviderAccount, o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout)}
-	err = tx.QueryRowContext(ctx, `SELECT project_id, revision, observation_json FROM usage_cost_observations
-WHERE organization_id=? AND provider=? AND provider_account=? AND source_id=? AND period_start=? AND period_end=? ORDER BY revision DESC LIMIT 1`, identity...).Scan(&previousProject, &revision, &previous)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("read cost observation: %w", err)
-	}
-	if err == nil {
-		var old costObservation
-		if err := json.Unmarshal([]byte(previous), &old); err != nil {
-			return false, fmt.Errorf("decode cost observation: %w", err)
-		}
-
-		if old.AttemptID != "" {
-			o.RunnerID, o.MachineID, o.Placement = old.RunnerID, old.MachineID, old.Placement
-			encoded, err = json.Marshal(o)
-			if err != nil {
-				return false, err
-			}
-		}
-		if previousProject != project || old.ResourceID != o.ResourceID || old.Bucket != o.Bucket || old.Metric != o.Metric || old.Unit != o.Unit || old.Currency != o.Currency || old.AttemptID != o.AttemptID || old.WorkItemID != o.WorkItemID || old.Model != o.Model || old.UsageKind != o.UsageKind {
-			return false, nativePublicInvalid("Corrections preserve original attribution, metric, unit and currency")
-		}
-		if o.Revision < revision {
-			return false, nil
-		}
-		if o.Revision == revision {
-			if previous != string(encoded) {
-				return false, nativeConflict(0)
-			}
-			return false, nil
-		}
-	}
-	var overlaps bool
-	if overlaps, err = costOverlaps(ctx, tx, `SELECT u.voided,CASE WHEN u.voided IS NULL THEN u.observation_json END FROM usage_cost_observations u
-WHERE u.organization_id=? AND u.provider=? AND u.provider_account=? AND u.resource_id=? AND u.bucket=? AND u.metric=?
-AND (u.voided=0 OR u.voided IS NULL)
-AND u.period_start<? AND u.period_end>? AND NOT (u.source_id=? AND u.period_start=? AND u.period_end=?)
-AND NOT EXISTS (SELECT 1 FROM usage_cost_observations newer WHERE newer.organization_id=u.organization_id AND newer.provider=u.provider AND newer.provider_account=u.provider_account AND newer.source_id=u.source_id AND newer.period_start=u.period_start AND newer.period_end=u.period_end AND newer.revision>u.revision)`,
-		organization, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.To.Format(costTimeLayout), o.From.Format(costTimeLayout), o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout)); err != nil {
-		return false, fmt.Errorf("check cost source coverage: %w", err)
-	}
-	if overlaps {
-		return false, nativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO usage_cost_observations
-(organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at,voided)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, organization, project, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout), o.Revision, string(encoded), now.UTC().Format(costTimeLayout), o.Voided)
-	if err != nil {
-		return false, fmt.Errorf("record cost observation: %w", err)
-	}
-	return true, nil
-}
-
 func costMonth(value string, now time.Time) (usageWindow, error) {
 	if value == "" {
 		value = now.UTC().Format("2006-01")
@@ -207,33 +142,4 @@ func allocateCostMicros(amount int64, from, to, start, end time.Time) int64 {
 		return product.Quo(product, duration)
 	}
 	return new(big.Int).Sub(boundary(end), boundary(start)).Int64()
-}
-
-func costOverlaps(ctx context.Context, query nativeQueryer, statement string, args ...any) (bool, error) {
-	rows, err := query.QueryContext(ctx, statement, args...)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var voided sql.NullBool
-		var raw sql.NullString
-		if err := rows.Scan(&voided, &raw); err != nil {
-			return false, err
-		}
-		if voided.Valid {
-			if !voided.Bool {
-				return true, nil
-			}
-			continue
-		}
-		fields, err := evaluatedHostedImportFields(ctx, query, "usage_cost_observations", raw.String)
-		if err != nil {
-			return false, err
-		}
-		if !fields.voided {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
 }

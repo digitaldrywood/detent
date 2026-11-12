@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -30,24 +29,6 @@ func costTestObservation(metric string, from, to time.Time) costObservation {
 		unit = "CPU-hour"
 	}
 	return costObservation{Provider: "fly_sprites", ProviderAccount: "customer", ResourceID: "sprite-immutable-id", ResourceName: "worker", Bucket: spriteCostBucket, Metric: metric, SourceID: "meter-" + metric, Revision: 1, From: from, To: to, Quantity: &quantity, Unit: unit, QuantityBasis: "measured", Currency: "USD", Basis: "estimated", UnitPriceMicros: &rate, RateSource: "https://fly.io/sprites/", RateEffectiveAt: from.AddDate(0, -1, 0), EvidenceSource: "measurement-batch-1", ObservedAt: to, FreshUntil: to.AddDate(1, 0, 0), Coverage: "complete"}
-}
-
-func recordTestCost(t *testing.T, db *sql.DB, organization, project string, o costObservation, now time.Time) (bool, error) {
-	t.Helper()
-	ctx, err := prepareHostedImportFields(t.Context(), db, "usage_cost_observations", `organization_id=? AND project_id=? AND resource_id=?`, organization, project, o.ResourceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	changed, err := recordCostObservation(ctx, tx, organization, project, o, now)
-	if err != nil {
-		return changed, err
-	}
-	return changed, tx.Commit()
 }
 
 func TestMonthlyCostAggregation(t *testing.T) {
