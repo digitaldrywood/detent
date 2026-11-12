@@ -255,7 +255,7 @@ func TestGoTestReceiptAuthorityRejectsNonRunnerCredentials(t *testing.T) {
 	for _, scope := range []hubauth.TokenScope{hubauth.Admin, hubauth.Operator, hubauth.Worker} {
 		t.Run(string(scope), func(t *testing.T) {
 			service := &Service{}
-			_, err := service.RequireReceiptAuthority(t.Context(), nil, hubauth.Input{Credential: hubauth.Credential{Scope: scope}}, time.Now())
+			_, err := service.requireGoTestReceiptTenantAuthority(t.Context(), nil, hubauth.Input{Credential: hubauth.Credential{Scope: scope}}, time.Now())
 			var unavailable *hubapi.Error
 			if !errors.As(err, &unavailable) || unavailable.Status != http.StatusNotFound {
 				t.Fatalf("non-runner authority: %v", err)

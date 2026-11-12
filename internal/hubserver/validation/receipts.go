@@ -60,7 +60,7 @@ func (s *Service) AttestReceipts(c echo.Context) error {
 		if err := s.deps.Authorize(ctx, w, scope, true); err != nil {
 			return err
 		}
-		runner, err := s.RequireReceiptAuthority(ctx, w, scope, now)
+		runner, err := s.requireGoTestReceiptTenantAuthority(ctx, w, scope, now)
 		if err != nil {
 			return err
 		}
@@ -95,7 +95,7 @@ func (s *Service) RecordReceipt(c echo.Context) error {
 		if err := s.deps.Authorize(ctx, w, scope, true); err != nil {
 			return err
 		}
-		runner, err := s.RequireReceiptAuthority(ctx, w, scope, now)
+		runner, err := s.requireGoTestReceiptTenantAuthority(ctx, w, scope, now)
 		if err != nil {
 			return err
 		}
@@ -120,7 +120,7 @@ func (s *Service) RecordReceipt(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) RequireReceiptAuthority(ctx context.Context, reader tenantstore.Reader, scope hubauth.Input, now time.Time) (string, error) {
+func (s *Service) requireGoTestReceiptTenantAuthority(ctx context.Context, reader tenantstore.Reader, scope hubauth.Input, now time.Time) (string, error) {
 	if scope.Credential.Scope != hubauth.Worker || scope.Credential.Runner.RunnerID == "" || !scope.Credential.Runner.Valid() {
 		return "", hubapi.NotFound()
 	}

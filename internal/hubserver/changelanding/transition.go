@@ -12,7 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TransitionReference(item corestore.WorkItem, change eventstore.Change, version eventstore.Version, attempt leasestore.Attempt, event eventstore.Event) *tracker.NativeChangeReference {
+func landingTransitionReference(item corestore.WorkItem, change eventstore.Change, version eventstore.Version, attempt leasestore.Attempt, event eventstore.Event) *tracker.NativeChangeReference {
 	if attempt.OrganizationID != item.OrganizationID || attempt.IssueID != item.ID || attempt.WorkItemRevision != item.Revision || attempt.DispatchGeneration != item.DispatchGeneration || event.OrganizationID != item.OrganizationID || event.ProjectID != item.ProjectID || event.WorkItemID != item.NativeID || event.AttemptID != attempt.ID || change.OrganizationID != item.OrganizationID || change.ProjectID != item.ProjectID || change.WorkItemID != item.NativeID || change.CurrentVersionID == nil || *change.CurrentVersionID != version.ID || version.OrganizationID != item.OrganizationID || version.ChangeID != change.ID || version.ID == "" || version.HeadSHA == "" || event.LandingChangeID != change.ID || event.LandingVersionID != version.ID || event.LandingHeadSHA != version.HeadSHA {
 		return nil
 	}
@@ -47,7 +47,7 @@ func (s *Service) TransitionSource(ctx context.Context, scope hubapi.Scope, item
 		if err != nil {
 			return err
 		}
-		reference = TransitionReference(item, change, version, attempt, event)
+		reference = landingTransitionReference(item, change, version, attempt, event)
 		return nil
 	})
 	return reference, err

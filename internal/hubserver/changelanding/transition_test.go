@@ -44,7 +44,7 @@ func TestLandingTransitionReference(t *testing.T) {
 			if test.mutate != nil {
 				test.mutate(&item, &change, &version, &attempt, &event)
 			}
-			ref := TransitionReference(item, change, version, attempt, event)
+			ref := landingTransitionReference(item, change, version, attempt, event)
 			if (ref != nil) != test.want || ref != nil && *ref != (tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}) {
 				t.Fatalf("transition source=%+v, want current=%t", ref, test.want)
 			}
