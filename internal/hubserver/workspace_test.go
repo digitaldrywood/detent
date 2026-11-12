@@ -1467,7 +1467,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 			if claimable != test.want || reason != test.reason {
 				t.Fatalf("workspaceClaimable() = %v, %q, want %v, %q", claimable, reason, test.want, test.reason)
 			}
-			f := newWorkspaceRunnerFixture(t)
+			f := workspaceRunnerFixtureOn(t, newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50, RetainAfterRun: defaultWorkspaceRetainAfterRun}))
 			admin := hostedPostgresAdmin(t, f.service)
 			f.service.workspaces.config.Terminal.Isolation = test.configured
 			heartbeat := func(capabilities workspacesession.Capabilities, isolation string) {
