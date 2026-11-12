@@ -63,5 +63,9 @@ func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope nativeScop
 		return nil, nativePublicInvalid("Expected revision must be positive")
 	}
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/verification"), Item: item, Feature: "collaboration"}
-	return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
+	result, err := s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
+	if err == nil && request.Result == tracker.VerifyResultNotFixed {
+		s.wakeSpriteRunnersAfter(scope, result)
+	}
+	return result, err
 }

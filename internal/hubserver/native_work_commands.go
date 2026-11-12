@@ -30,7 +30,11 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	if request.ChallengeToken != "" {
 		operation += "/duplicate-confirmation"
 	}
-	return s.executeWorkItemRecordMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "")
+	result, err := s.executeWorkItemRecordMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "")
+	if err == nil {
+		s.wakeSpriteRunnersAfter(scope, result)
+	}
+	return result, err
 }
 
 func nativeIssueCreationOperation(scope nativeScope) string {
