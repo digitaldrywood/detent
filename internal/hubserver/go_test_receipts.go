@@ -25,10 +25,6 @@ const (
 	goTestReceiptKeyPurpose     = "detent go test receipt digest v1"
 )
 
-func selectedGoTestReceiptRoute(path string) bool {
-	return path == nativeBase+"/go-test-receipts" || path == nativeBase+"/go-test-receipts/attestations"
-}
-
 func (s *Service) lookupGoTestReceipts(c echo.Context) error {
 	key := c.QueryParam("key")
 	if !gotestreceipt.ValidKey(key) {
