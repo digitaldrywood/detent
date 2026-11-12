@@ -63,7 +63,10 @@ func (s *Service) PutReceipt(ctx context.Context, scope hubapi.Scope, runnerID s
 		if err != nil {
 			return err
 		}
-		known, accepted := acceptReceipt(state, urgent, &request.Receipt, request.Running)
+		known, accepted, err := s.acceptStoredReceipt(ctx, w, runnerID, state, urgent, &request.Receipt, request.Running)
+		if err != nil {
+			return err
+		}
 		if !known {
 			return hubapi.Conflict(0)
 		}

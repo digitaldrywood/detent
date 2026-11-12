@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -47,7 +48,10 @@ func (s *Service) StoreObservation(ctx context.Context, writer tenantstore.Write
 		if err != nil {
 			return err
 		}
-		known, accepted := acceptReceipt(state, urgent, report.Receipt, report.Running)
+		known, accepted, err := s.acceptStoredReceipt(ctx, writer, identity.RunnerID, state, urgent, report.Receipt, report.Running)
+		if err != nil {
+			return err
+		}
 		if !known || !accepted {
 			return nil
 		}
@@ -178,7 +182,7 @@ func (s *Service) Apply(ctx context.Context, scope hubapi.Scope, runnerID string
 		receipt, err := reader.Receipt(ctx, scope.CredentialID, operation, request.IdempotencyKey)
 		if err == nil {
 			if receipt.RequestHash != hash {
-				return hubapi.Conflict(0)
+				return &hubapi.Error{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, Public: true}
 			}
 			existing = &receipt
 			return nil
@@ -192,7 +196,7 @@ func (s *Service) Apply(ctx context.Context, scope hubapi.Scope, runnerID string
 		return nil, err
 	}
 	if existing != nil {
-		raw, err := content.Receipt(ctx, *existing)
+		raw, err := s.replayReceipt(ctx, content, *existing)
 		return raw, err
 	}
 	preparedAt := canonicalTime(s.deps.Now())
@@ -225,6 +229,7 @@ func (s *Service) Apply(ctx context.Context, scope hubapi.Scope, runnerID string
 	if err != nil {
 		return nil, err
 	}
+	preparedReceipt.ResponseReplayUntilNs = preparedAt.Add(receiptstore.ReplayRetention).UnixNano()
 	usageHash, err := hubapi.CommandHash([]string{string(scope.Organization), scope.CredentialID, operation, request.IdempotencyKey})
 	if err != nil {
 		return nil, err
@@ -238,7 +243,7 @@ func (s *Service) Apply(ctx context.Context, scope hubapi.Scope, runnerID string
 		receipt, err := writer.Receipt(ctx, scope.CredentialID, operation, request.IdempotencyKey)
 		if err == nil {
 			if receipt.RequestHash != hash {
-				return hubapi.Conflict(0)
+				return &hubapi.Error{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, Public: true}
 			}
 			replay = &receipt
 			return nil
@@ -280,7 +285,7 @@ func (s *Service) Apply(ctx context.Context, scope hubapi.Scope, runnerID string
 	})
 	if err == nil {
 		if replay != nil {
-			raw, err := content.Receipt(ctx, *replay)
+			raw, err := s.replayReceipt(ctx, content, *replay)
 			return raw, err
 		}
 		return json.RawMessage(responseRaw), nil
@@ -290,7 +295,7 @@ func (s *Service) Apply(ctx context.Context, scope hubapi.Scope, runnerID string
 		return nil, readErr
 	}
 	if found {
-		raw, readErr := content.Receipt(ctx, latestReceipt)
+		raw, readErr := s.replayReceipt(ctx, content, latestReceipt)
 		return raw, readErr
 	}
 	return nil, err
@@ -315,7 +320,7 @@ func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request Ur
 		receipt, err := reader.Receipt(ctx, scope.CredentialID, operation, request.IdempotencyKey)
 		if err == nil {
 			if receipt.RequestHash != hash {
-				return hubapi.Conflict(0)
+				return &hubapi.Error{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, Public: true}
 			}
 			existing = &receipt
 			return nil
@@ -342,7 +347,7 @@ func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request Ur
 		return nil, err
 	}
 	if existing != nil {
-		raw, err := content.Receipt(ctx, *existing)
+		raw, err := s.replayReceipt(ctx, content, *existing)
 		return raw, err
 	}
 	preparedAt := canonicalTime(s.deps.Now())
@@ -363,6 +368,11 @@ func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request Ur
 	if err != nil {
 		return nil, err
 	}
+	preparedReceipt.ResponseReplayUntilNs = preparedAt.Add(receiptstore.ReplayRetention).UnixNano()
+	preparedReceipt.ResponseReconciliationHash, err = hubapi.CommandHash(*value.Request)
+	if err != nil {
+		return nil, err
+	}
 	usageHash, err := hubapi.CommandHash([]string{string(scope.Organization), scope.CredentialID, operation, request.IdempotencyKey})
 	if err != nil {
 		return nil, err
@@ -376,7 +386,7 @@ func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request Ur
 		receipt, err := writer.Receipt(ctx, scope.CredentialID, operation, request.IdempotencyKey)
 		if err == nil {
 			if receipt.RequestHash != hash {
-				return hubapi.Conflict(0)
+				return &hubapi.Error{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, Public: true}
 			}
 			replay = &receipt
 			return nil
@@ -413,7 +423,7 @@ func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request Ur
 	})
 	if err == nil {
 		if replay != nil {
-			raw, readErr := content.Receipt(ctx, *replay)
+			raw, readErr := s.replayReceipt(ctx, content, *replay)
 			return raw, readErr
 		}
 		return value, nil
@@ -426,7 +436,7 @@ func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request Ur
 			receipt, readErr := reader.Receipt(ctx, scope.CredentialID, operation, request.IdempotencyKey)
 			if readErr == nil {
 				if receipt.RequestHash != hash {
-					return hubapi.Conflict(0)
+					return &hubapi.Error{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, Public: true}
 				}
 				replay = &receipt
 			}
@@ -436,7 +446,7 @@ func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request Ur
 			return nil, readErr
 		}
 		if replay != nil {
-			raw, readErr := content.Receipt(ctx, *replay)
+			raw, readErr := s.replayReceipt(ctx, content, *replay)
 			return raw, readErr
 		}
 	}
@@ -445,7 +455,7 @@ func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request Ur
 		return nil, readErr
 	}
 	if found {
-		raw, readErr := content.Receipt(ctx, latestReceipt)
+		raw, readErr := s.replayReceipt(ctx, content, latestReceipt)
 		return raw, readErr
 	}
 	if errors.Is(err, corestore.ErrRevisionConflict) {
@@ -482,7 +492,7 @@ func (s *Service) readCommandReceipt(ctx context.Context, scope hubapi.Scope, op
 		}
 		found = true
 		if receipt.RequestHash != hash {
-			return hubapi.Conflict(0)
+			return &hubapi.Error{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, Public: true}
 		}
 		return nil
 	})
@@ -490,4 +500,11 @@ func (s *Service) readCommandReceipt(ctx context.Context, scope hubapi.Scope, op
 		return eventstore.Receipt{}, false, err
 	}
 	return receipt, found, nil
+}
+
+func (s *Service) replayReceipt(ctx context.Context, content *eventstore.Content, receipt eventstore.Receipt) (json.RawMessage, error) {
+	if receipt.ResponseExpired || receipt.ResponseReplayUntilNs > 0 && s.deps.Now().UnixNano() >= receipt.ResponseReplayUntilNs {
+		return nil, &hubapi.Error{Code: "idempotency_expired", Message: receiptstore.ErrExpired.Error(), Status: http.StatusGone, Public: true}
+	}
+	return content.Receipt(ctx, receipt)
 }

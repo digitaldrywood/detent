@@ -1,11 +1,33 @@
 package runnerupdate
 
 import (
+	"context"
+	"errors"
 	"reflect"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
+
+func (s *Service) acceptStoredReceipt(ctx context.Context, reader tenantstore.Reader, runnerID string, state runnerstore.UpdateState, urgent runnerstore.UrgentUpdate, next *runnerauth.UpdateReceipt, running runnerauth.BuildEvidence) (bool, bool, error) {
+	known, accepted := acceptReceipt(state, urgent, next, running)
+	if known {
+		return known, accepted, nil
+	}
+	record, err := reader.RunnerUpdateRequest(ctx, next.Request.ID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if !record.Request.Matches(next.Request) || record.RunnerID != runnerID && (record.RunnerID != "" || !record.Request.Urgent) {
+		return false, false, nil
+	}
+	return true, state.Observation == nil || state.Observation.Receipt == nil, nil
+}
 
 func acceptReceipt(state runnerstore.UpdateState, urgent runnerstore.UrgentUpdate, next *runnerauth.UpdateReceipt, running runnerauth.BuildEvidence) (bool, bool) {
 	var previous *runnerauth.UpdateReceipt
