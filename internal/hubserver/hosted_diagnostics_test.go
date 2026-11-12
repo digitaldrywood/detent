@@ -94,6 +94,7 @@ func diagnosticsPostgresFixtures(t *testing.T) []diagnosticsPostgresFixture {
 		hosted.service.outbox.stop()
 		hosted.service.stopHostedBilling()
 		hosted.service.stopIssueMailer()
+		hosted.service.config.TenantRepository, hosted.service.config.AccessRepository = repository, repository
 		fixtures = append(fixtures, diagnosticsPostgresFixture{repository: repository, admin: admin, details: details, hosted: hosted, owner: owner, organization: organization, queries: capture})
 	}
 	return fixtures
