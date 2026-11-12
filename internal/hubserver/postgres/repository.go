@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgcore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -102,29 +102,12 @@ func (r *Repository) transaction(ctx context.Context, organization tracker.Organ
 	return r.transactionIsolation(ctx, organization, workload, readOnly, pgx.ReadCommitted, run)
 }
 
-type transactionTimingKey struct{}
-
-type transactionTiming struct {
-	span      func(string, time.Time)
-	statement func(time.Time, string)
-}
-
 func WithTransactionTiming(ctx context.Context, observe func(string, time.Time), statements ...func(time.Time, string)) context.Context {
-	timing := transactionTiming{span: observe}
-	if len(statements) > 0 {
-		timing.statement = statements[0]
-	}
-	return context.WithValue(ctx, transactionTimingKey{}, timing)
+	return pgcore.WithTransactionTiming(ctx, observe, statements...)
 }
 
 func transactionSpan(ctx context.Context, name string) func() {
-	timing, ok := ctx.Value(transactionTimingKey{}).(transactionTiming)
-	observe := timing.span
-	if !ok || observe == nil {
-		return func() {}
-	}
-	started := time.Now()
-	return func() { observe(name, started) }
+	return pgcore.TransactionSpan(ctx, name)
 }
 
 func (r *Repository) transactionIsolation(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, isolation pgx.TxIsoLevel, run func(*session) error) (resultErr error) {
@@ -231,11 +214,12 @@ type session struct {
 	queries            *pgquery.Queries
 }
 
+func (s *session) transactionHandle() pgcore.Transaction {
+	return pgcore.Transaction{Organization: s.organization, DB: s.db, Queries: s.queries}
+}
+
 func (s *session) checkOrganization(organization tracker.OrganizationID) error {
-	if organization != s.organization {
-		return corestore.ErrTenantMismatch
-	}
-	return nil
+	return s.transactionHandle().CheckOrganization(organization)
 }
 
 func checkPage(limit int) error {
@@ -246,68 +230,13 @@ func checkPage(limit int) error {
 }
 
 func affected(ctx context.Context, rows int64, err error) error {
-	if err != nil {
-		return mapError(ctx, err)
-	}
-	if rows == 0 {
-		return corestore.ErrNotFound
-	}
-	return nil
+	return pgcore.Affected(ctx, rows, err)
 }
 
 func updated(ctx context.Context, err error) error {
-	if errors.Is(err, pgx.ErrNoRows) {
-		return corestore.ErrRevisionConflict
-	}
-	return mapError(ctx, err)
+	return pgcore.Updated(ctx, err)
 }
 
 func mapError(ctx context.Context, err error) error {
-	if err == nil {
-		return nil
-	}
-	if ctx.Err() != nil && (errors.Is(err, pgx.ErrTxClosed) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-		return fmt.Errorf("PostgreSQL operation: %w", ctx.Err())
-	}
-	var state interface{ SQLState() string }
-	if errors.As(err, &state) {
-		var domain error
-		switch state.SQLState() {
-		case "23505":
-			domain = corestore.ErrUniqueViolation
-		case "40001", "40P01":
-			domain = corestore.ErrSerializationFailure
-		case "57014":
-			domain = ctx.Err()
-			if domain == nil {
-				domain = context.Canceled
-			}
-		}
-		return &storageError{cause: err, domain: domain, state: state.SQLState()}
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return &storageError{cause: err, domain: corestore.ErrNotFound}
-	}
-	return err
-}
-
-type storageError struct {
-	cause  error
-	domain error
-	state  string
-}
-
-func (e *storageError) Error() string {
-	if e.domain != nil {
-		return e.domain.Error()
-	}
-	return "PostgreSQL operation failed with SQLSTATE " + e.state
-}
-
-func (e *storageError) Unwrap() error {
-	return e.cause
-}
-
-func (e *storageError) Is(target error) bool {
-	return errors.Is(e.domain, target)
+	return pgcore.MapError(ctx, err)
 }
