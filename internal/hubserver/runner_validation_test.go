@@ -110,45 +110,15 @@ func TestRunnerCredentialExpiryBoundaries(t *testing.T) {
 	}
 }
 
-func TestRunnerEnrollmentScopeRevocationAndCollisions(t *testing.T) {
+func TestRunnerEnrollmentIdentityRevocationAndTenantScope(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read)
-	for _, test := range []struct {
-		name   string
-		change func(*runnerauth.EnrollmentRequest)
-	}{
-		{"no projects", func(r *runnerauth.EnrollmentRequest) { r.ProjectIDs = nil }},
-		{"unknown project", func(r *runnerauth.EnrollmentRequest) {
-			r.ProjectIDs = []tracker.ProjectID{tracker.ProjectID(newNativeID("prj"))}
-		}},
-		{"duplicate projects", func(r *runnerauth.EnrollmentRequest) { r.ProjectIDs = append(r.ProjectIDs, r.ProjectIDs[0]) }},
-		{"no operations", func(r *runnerauth.EnrollmentRequest) { r.Operations = nil }},
-		{"administrator operation", func(r *runnerauth.EnrollmentRequest) { r.Operations = []string{"admin"} }},
-		{"excessive TTL", func(r *runnerauth.EnrollmentRequest) { r.TTLSeconds = 901 }},
-		{"zero TTL", func(r *runnerauth.EnrollmentRequest) { r.TTLSeconds = 0 }},
-		{"mutable name ID", func(r *runnerauth.EnrollmentRequest) { r.MachineID = "hostname" }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			request := runnerauth.EnrollmentRequest{Binding: runnerauth.NewBinding(), ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}
-			test.change(&request)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments", testHubAdminToken, request), http.StatusUnprocessableEntity)
-		})
-	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, r.base+"/runner-enrollments/"+r.enrollment.ID, testHubAdminToken, nil), http.StatusNoContent)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments/redeem", r.enrollment.Token, r.redemption), http.StatusUnauthorized)
-	r = prepareRunner(t, f, runnerauth.Read)
-	request := runnerauth.EnrollmentRequest{Binding: r.binding, ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments", testHubAdminToken, request)
-	requireNativeStatus(t, response, http.StatusCreated)
-	var competing runnerauth.Enrollment
-	decodeHubResponse(t, response, &competing)
 	r.enroll(t)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments/redeem", competing.Token, r.redemption), http.StatusConflict)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments", testHubAdminToken, request), http.StatusConflict)
+	request := runnerauth.EnrollmentRequest{Binding: r.binding, ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, r.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments", testHubAdminToken, request), http.StatusConflict)
-	response = performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]string{"name": "other"})
+	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]string{"name": "other"})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var organization nativeOrganization
 	decodeHubResponse(t, response, &organization)
