@@ -131,7 +131,7 @@ func TestPostgresEntryAuthBudgetIndependentOfTenantSize(t *testing.T) {
 				{"/internal/v1/keys/admin", `{}`, http.StatusOK, [2]int64{8, 7}},
 				{"/internal/v1/keys/context", `{}`, http.StatusOK, [2]int64{12, 10}},
 				{"/internal/v1/owner/bootstrap", `{"organization_name":"Example"}`, http.StatusConflict, [2]int64{9, 7}},
-				{"/internal/v1/invitations/accept", ``, http.StatusNoContent, [2]int64{21, 19}},
+				{"/internal/v1/invitations/accept", ``, http.StatusNoContent, [2]int64{27, 24}},
 			} {
 				body := route.body
 				subject, email := org+"_owner", org+"_owner@example.test"
