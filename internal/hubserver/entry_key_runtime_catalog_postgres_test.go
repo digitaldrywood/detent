@@ -77,6 +77,13 @@ func TestPostgresEntryKeyRuntimeCatalog(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, test := range []struct{ name, arguments, want string }{
+			{operatortool.BoardReceipt, `"reference":"#1"`, `"attempt_id":"attempt_0123456789abcdef0123456789abcdef"`},
+			{operatortool.BoardSession, `"reference":"#1"`, `"attempt_id":"attempt_0123456789abcdef0123456789abcdef"`},
+			{operatortool.GetChange, `"work_item_id":"item","change_id":"change"`, `"change_id":"change"`},
+			{operatortool.GetChangeVersion, `"work_item_id":"item","change_id":"change","version_id":"version"`, `"change_id":"change"`},
+			{operatortool.ArtifactServices, ``, `"organization_id":"` + org + `"`},
+			{operatortool.ArtifactReferences, `"work_item_id":"item"`, `"organization_id":"` + org + `"`},
+
 			{operatortool.WorkAttemptReceipt, `"reference":"#1","native_attempt_id":"attempt_0123456789abcdef0123456789abcdef"`, `"attempt_id":"attempt_0123456789abcdef0123456789abcdef"`},
 			{operatortool.GitHubScopeTimings, `"reference":"#1","native_attempt_id":"attempt_0123456789abcdef0123456789abcdef","runner_id":"runner_catalog"`, `"scope":"` + org + `"`},
 			{operatortool.BoardSessionHistory, `"reference":"#1","native_attempt_id":"attempt_0123456789abcdef0123456789abcdef"`, `"id":"` + org + `"`},
@@ -95,7 +102,11 @@ func TestPostgresEntryKeyRuntimeCatalog(t *testing.T) {
 				if !entryKeyHasDefinition(definitions, test.name) {
 					t.Errorf("%s missing from signed catalog", test.name)
 				}
-				body := fmt.Sprintf(`{"name":%q,"arguments":{"project_id":"project",%s},"connection_id":"runtime_catalog"}`, test.name, test.arguments)
+				arguments := `"project_id":"project"`
+				if test.arguments != "" {
+					arguments += "," + test.arguments
+				}
+				body := fmt.Sprintf(`{"name":%q,"arguments":{%s},"connection_id":"runtime_catalog"}`, test.name, arguments)
 				response := f.request(t, org, "/internal/v1/keys/call", body, keyClaims)
 				requireNativeStatus(t, response, http.StatusOK)
 				if !strings.Contains(response.Body.String(), test.want) {

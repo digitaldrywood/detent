@@ -99,20 +99,12 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 			}
 		}
 	}
-	if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: operatortool.ListChanges}); err == nil {
-		definition, _ := operatortool.Lookup(operatortool.ListChanges)
-		definitions = append(definitions, definition)
+	changes, err := (hubOperatorExecutor{service: s}).ListTools(ctx)
+	if err != nil {
+		return nil, err
 	}
-	for _, name := range []string{operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange} {
-		required := apikey.ScopeWrite
-		if name == operatortool.ReviewChange && s.config.Hosted != nil {
-			required = apikey.ScopeAdmin
-		}
-		if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, ResourceKind: "work_item", Action: name}); err == nil {
-			definition, _ := operatortool.ChangeDefinition(name)
-			definitions = append(definitions, definition)
-		}
-	}
+	definitions = append(definitions, changes...)
+
 	if s.administration != nil {
 		administration, err := s.administrationCatalog(ctx)
 		if err != nil {
@@ -138,7 +130,14 @@ func (s *Service) entryKeyBillingTools(ctx context.Context) []operatortool.Defin
 		if !entryKeyToolSupported(definition.Name) {
 			continue
 		}
-		if _, err := s.catalogBillingCredential(ctx, "billing", !definition.Annotations.ReadOnly); err != nil {
+		kind := "billing"
+		switch definition.Name {
+		case operatortool.HostedPlan:
+			kind = "plan"
+		case operatortool.HostedUsage:
+			kind = ""
+		}
+		if _, err := s.catalogBillingCredential(ctx, kind, !definition.Annotations.ReadOnly); err != nil {
 			continue
 		}
 		if (definition.Name == operatortool.CreditCheckout || definition.Name == operatortool.CreditAutoFund) && !s.creditAvailable() {
@@ -185,24 +184,32 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 	if err != nil {
 		return false, err
 	}
-	switch name {
-	case operatortool.OrganizationSession, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationEdit, operatortool.InvitationResend, operatortool.MemberRole, operatortool.MemberGrant:
+	if operatortool.IsAdministration(name) {
 		if s.administration == nil {
 			return false, nil
 		}
 		definitions, err := s.administrationCatalog(ctx)
 		return entryKeyHasDefinition(definitions, name), err
-	case operatortool.ExplainItem, operatortool.BoardState, operatortool.Dashboard:
-		return catalog.credential.HostedRole != "account", nil
-	case operatortool.Reports, operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerHost, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate:
+	}
+	if hubFleetTool(name) {
 		definitions, err := (hubFleetExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
-	case "set_project_icon", "set_organization_logo", "approve_project_policy", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", "save_onboarding", operatortool.GetOrganizationModelSelection, operatortool.UpdateOrganizationModelSelection, operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics:
+	}
+	if definition, ok := operatortool.Lookup(name); ok && (definition.Meta.Toolset == "projects" || definition.Meta.Toolset == "local_projects") {
 		definitions, err := (hubProjectExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
-	case operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
+	}
+	if _, ok := operatortool.ChangeDefinition(name); ok {
+		definitions, err := (hubOperatorExecutor{service: s}).ListTools(ctx)
+		return entryKeyHasDefinition(definitions, name), err
+	}
+
+	switch name {
+	case operatortool.ExplainItem, operatortool.BoardState, operatortool.Dashboard:
+		return catalog.credential.HostedRole != "account", nil
+	case operatortool.BillingUsage, operatortool.HostedPlan, operatortool.HostedUsage, operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
 		return entryKeyHasDefinition(s.entryKeyBillingTools(ctx), name), nil
-	case operatortool.WorkList, operatortool.WorkItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings:
+	case operatortool.BoardReceipt, operatortool.BoardSession, operatortool.WorkList, operatortool.WorkItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings:
 		_, found := entryKeyDefinition(operatortool.WorkReadCatalog(), name)
 		return found && catalog.credential.HostedRole != "account", nil
 	case operatortool.StopRun, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.VerifyFix, operatortool.EditComment, operatortool.RestoreItem, operatortool.TransferItem, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.SetDependency:
@@ -211,18 +218,6 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			return false, nil
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: projectToolScope(name, definition.Annotations.ReadOnly), ResourceKind: "work_item", Action: name})
-		return err == nil, operatorAuthorizationError(err)
-	case "list_projects", "get_native_project", "get_project_policy":
-		definitions := append(operatortool.ProjectCatalog(), operatortool.LocalProjectCatalog()...)
-		definition, found := entryKeyDefinition(definitions, name)
-		if !found {
-			return false, nil
-		}
-		requirement := operatortool.Requirement{Scope: projectToolScope(name, definition.Annotations.ReadOnly)}
-		if requirement.Scope == apikey.ScopeWrite {
-			requirement.ResourceKind = "project"
-		}
-		_, err := s.authorizeCatalog(ctx, requirement)
 		return err == nil, operatorAuthorizationError(err)
 	case operatortool.AppUpdates, operatortool.AppBootstrapPayload:
 		if s.config.Hosted == nil || s.database == nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
@@ -264,25 +259,26 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ResourceKind: "comment", Action: name})
 		return err == nil, operatorAuthorizationError(err)
-	case operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange:
-		required := apikey.ScopeWrite
-		if name == operatortool.ReviewChange && s.config.Hosted != nil {
-			required = apikey.ScopeAdmin
-		}
-		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, ResourceKind: "work_item", Action: name})
-		return err == nil, operatorAuthorizationError(err)
-	case operatortool.ListChanges:
-		if _, found := operatortool.Lookup(name); !found {
-			return false, nil
-		}
-		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: name})
-		return err == nil, operatorAuthorizationError(err)
 	default:
 		return false, nil
 	}
 }
 
 func entryKeyToolSupported(name string) bool {
+	if operatortool.IsAdministration(name) {
+		return name != operatortool.MemberRemove && name != operatortool.InvitationRevoke
+	}
+	if hubFleetTool(name) {
+		return name != operatortool.OutboxHealth
+	}
+	if definition, ok := operatortool.Lookup(name); ok && (definition.Meta.Toolset == "projects" || definition.Meta.Toolset == "local_projects") {
+		return name != "repository_freshness" && name != "revoke_project_policy"
+	}
+	switch name {
+	case operatortool.GetChange, operatortool.GetChangeVersion, operatortool.DiscussChange, operatortool.ListWorkItemPullRequests, operatortool.GetChangeReviewPolicy, operatortool.ArtifactServices, operatortool.ArtifactReferences, operatortool.GetArtifactReference, operatortool.ArtifactAccess, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BillingUsage, operatortool.HostedPlan, operatortool.HostedUsage:
+		return true
+	}
+
 	if entryKeyWorkspaceTool(name) || operatortool.IsAttachmentTool(name) {
 		return true
 	}
