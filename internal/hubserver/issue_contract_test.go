@@ -116,7 +116,7 @@ func TestNativeIssueContractPolicyDriftKeepsCurrentAuthority(t *testing.T) {
 	}
 	machine := workerCredential.Runner.MachineID
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": machine, "hostname": "runner", "display_name": "Policy runner", "capacity": 1, "version": "test"}), http.StatusOK)
-	reportRunnerCapacity(t, f.service, f.base, worker, machine, "Policy runner", nil, 1)
+	reportRunnerCapacity(t, f.service, f.base, worker, machine, "Policy runner", isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, 1)
 	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, PolicyID: drifted.ID, MachineID: machine, SessionID: "policy-recovery", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim)
 	requireNativeStatus(t, response, http.StatusOK)

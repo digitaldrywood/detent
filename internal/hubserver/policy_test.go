@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -926,7 +927,7 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	}
 	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, MachineID: credential.Runner.MachineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": claim.MachineID, "hostname": "runner", "capacity": 2, "version": "test"}), http.StatusOK)
-	reportRunnerCapacity(t, f.service, f.base, worker, claim.MachineID, "runner", nil, 2)
+	reportRunnerCapacity(t, f.service, f.base, worker, claim.MachineID, "runner", isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, 2)
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	runner.enroll(t)
 	for _, token := range []string{worker, f.token, runner.redemption.Credential} {
@@ -1386,7 +1387,7 @@ func TestPolicyRequirementsNeverEnrollOrGrantCapabilities(t *testing.T) {
 			descriptor = descriptor.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": credential.Runner.MachineID, "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
-			reportRunnerCapacity(t, f.service, f.base, worker, credential.Runner.MachineID, "runner", nil, 1)
+			reportRunnerCapacity(t, f.service, f.base, worker, credential.Runner.MachineID, "runner", isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, 1)
 			if test.name == "forged matching machine" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_abc", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusNotFound)
 			}
@@ -2547,7 +2548,7 @@ func claimPolicyTestAttempt(t *testing.T, f nativeFixture, worker, hostname, ses
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": credential.Runner.MachineID, "hostname": hostname, "version": "test", "capacity": 1}), http.StatusOK)
-	reportRunnerCapacity(t, f.service, f.base, worker, credential.Runner.MachineID, hostname, nil, 1)
+	reportRunnerCapacity(t, f.service, f.base, worker, credential.Runner.MachineID, hostname, isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, 1)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: policyID, WorkItemID: item, MachineID: credential.Runner.MachineID, SessionID: session, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
