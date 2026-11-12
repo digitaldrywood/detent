@@ -412,7 +412,7 @@ func (f hostedSecurityFixture) seedIssue(t *testing.T, number int) tracker.Nativ
 	t.Helper()
 	organization := f.service.accessOrganization()
 	now := f.service.config.now()
-	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: f.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: number, Revision: 1}, State: "Todo", Title: "private-issue-sentinel", Body: "private-body-sentinel", CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: f.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: number, Revision: 1, Profile: "native"}, State: "Todo", Title: "private-issue-sentinel", Body: "private-body-sentinel", CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
 	fields, err := f.service.prepareWorkItemFields(t.Context(), organization, workItemRecordPlan{issue: issue, create: true})
 	if err != nil {
 		t.Fatal(err)
