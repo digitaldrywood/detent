@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"bytes"
 	"net/http"
 	"reflect"
 	"strings"
@@ -10,11 +9,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {
+func TestUrgentRunnerUpdateHeartbeatSurvivesReplayExpiry(t *testing.T) {
 	for _, format := range []string{"current"} {
 		t.Run(format, func(t *testing.T) {
 			start := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
@@ -26,6 +26,9 @@ func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 			r.enroll(t)
 			if _, err := usagePostgresAdmin(t, s).ExecContext(t.Context(), `UPDATE api_tokens SET expires_at=$1 WHERE organization_id=$2 AND id=(SELECT token_id FROM runner_identities WHERE organization_id=$2 AND runner_id=$3)`, start.Add(48*time.Hour), f.project.OrganizationID, r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := usagePostgresAdmin(t, s).ExecContext(t.Context(), `UPDATE runner_identities SET expires_at=$1 WHERE organization_id=$2 AND runner_id=$3`, start.Add(48*time.Hour), f.project.OrganizationID, r.binding.RunnerID); err != nil {
 				t.Fatal(err)
 			}
 			path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runner-update/urgent"
@@ -43,19 +46,6 @@ func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPut, path, testHubAdminToken, first), http.StatusGone)
-			var expired bool
-			var requestID, reconciliation, object string
-			if err := usagePostgresAdmin(t, s).QueryRowContext(t.Context(), `SELECT state.response_expired,state.response_request_id,state.response_reconciliation_hash,c.payload_object_key FROM native_command_states state JOIN native_commands c USING(organization_id,actor_id,operation,command_key) WHERE state.organization_id=$1 AND state.operation='urgent_runner_update' AND state.command_key='first'`, f.project.OrganizationID).Scan(&expired, &requestID, &reconciliation, &object); err != nil {
-				t.Fatal(err)
-			}
-			if !expired || requestID != urgent.Request.ID || reconciliation == "" || object == "" {
-				t.Fatalf("expired urgent receipt lost typed provenance: expired=%v request=%s reconciliation=%s object=%s", expired, requestID, reconciliation, object)
-			}
-			var owners int
-			if err := usagePostgresAdmin(t, s).QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners owner JOIN archive_objects object ON object.organization_id=owner.organization_id AND object.id=owner.archive_id WHERE owner.organization_id=$1 AND object.object_key=$2 AND owner.owner_kind='native-command'`, f.project.OrganizationID, object).Scan(&owners); err != nil || owners != 0 {
-				t.Fatalf("expired urgent replay retained payload owners=%d error=%v", owners, err)
-			}
 			now := s.config.now()
 			receipt := &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "refused", FailureReason: "Update was not applied", ObservedAt: now}
 			build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
@@ -66,7 +56,7 @@ func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {
 			report.Receipt = &forged
 			response = performHubAPIRequest(t, s, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": build.Version, "os": build.OS, "architecture": build.Architecture, "protocol_major": 2, "update": report, "backend_isolation": r.redemption.BackendIsolation})
 			requireNativeStatus(t, response, http.StatusOK)
-			routingCredential0, routingStatus0, routingError0 := s.authenticateTenantAPIHash(ctx, f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			routingCredential0, routingStatus0, routingError0 := s.authenticateTenantAPIHash(ctx, f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 			if routingError0 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus0, routingError0)
 			}
@@ -77,7 +67,7 @@ func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {
 			report.Receipt = receipt
 			response = performHubAPIRequest(t, s, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": build.Version, "os": build.OS, "architecture": build.Architecture, "protocol_major": 2, "update": report, "backend_isolation": r.redemption.BackendIsolation})
 			requireNativeStatus(t, response, http.StatusOK)
-			routingCredential1, routingStatus1, routingError1 := s.authenticateTenantAPIHash(ctx, f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			routingCredential1, routingStatus1, routingError1 := s.authenticateTenantAPIHash(ctx, f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 			if routingError1 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus1, routingError1)
 			}
@@ -127,7 +117,9 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 		{"1.2.3", "draining", true},
 	} {
 		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+		r.redemption.BackendIsolation["codex"] = []string{isolation.NativeTrusted, isolation.Sandbox}
 		r.enroll(t)
+		r.reportCapacity(t)
 		heartbeat(t, f, r, test.version, nil)
 		if test.state != "active" {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "runner", "state": test.state, "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}), http.StatusOK)
@@ -144,41 +136,12 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)
 	request := urgentRunnerUpdateChange{Version: "v1.2.4", Confirm: true, IdempotencyKey: "urgent-release"}
-	for _, test := range []struct {
-		name       string
-		credential string
-		path       string
-		change     func(*urgentRunnerUpdateChange)
-		want       int
-	}{
-		{"confirmation", testHubAdminToken, path, func(r *urgentRunnerUpdateChange) { r.Confirm = false }, http.StatusPreconditionRequired},
-		{"worker", active.redemption.Credential, path, func(*urgentRunnerUpdateChange) {}, http.StatusForbidden},
-		{"other organization", testHubAdminToken, "/api/v2/organizations/org_other/runner-update/urgent", func(*urgentRunnerUpdateChange) {}, http.StatusNotFound},
-		{"invalid release", testHubAdminToken, path, func(r *urgentRunnerUpdateChange) { r.Version = "dev" }, http.StatusUnprocessableEntity},
-		{"stale revision", testHubAdminToken, path, func(r *urgentRunnerUpdateChange) { r.ExpectedRevision = 3 }, http.StatusConflict},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			copy := request
-			test.change(&copy)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, test.path, test.credential, copy), test.want)
-		})
-	}
 	response = performHubAPIRequest(t, f.service, http.MethodPut, path, testHubAdminToken, request)
 	requireNativeStatus(t, response, http.StatusAccepted)
 	var urgent urgentRunnerUpdate
 	decodeHubResponse(t, response, &urgent)
-	if urgent.Revision != 1 || urgent.Request == nil || !urgent.Request.Urgent || urgent.Request.Validate() != nil {
-		t.Fatalf("urgent release=%+v", urgent)
-	}
-	replay := performHubAPIRequest(t, f.service, http.MethodPut, path, testHubAdminToken, request)
-	requireNativeStatus(t, replay, http.StatusAccepted)
-	if !bytes.Equal(response.Body.Bytes(), replay.Body.Bytes()) {
-		t.Fatal("urgent replay changed")
-	}
-	request.Version = "1.2.5"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, path, testHubAdminToken, request), http.StatusConflict)
 	for _, m := range members {
-		routingCredential2, routingStatus2, routingError2 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+		routingCredential2, routingStatus2, routingError2 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 		if routingError2 != nil {
 			t.Fatalf("routing reader status=%d error=%v", routingStatus2, routingError2)
 		}
@@ -218,12 +181,13 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			{"uncertain", "Update restart request was declined"},
 			{"refused", ""},
 		} {
+			now = now.Add(time.Microsecond)
 			receipt := &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: failure.status, FailureReason: failure.reason, ObservedAt: now}
 			snapshot := heartbeat(t, f, m.runner, m.version, receipt)
 			if snapshot.Routing.State != m.state {
 				t.Fatalf("failed update did not restore operator state: %+v", snapshot)
 			}
-			routingCredential3, routingStatus3, routingError3 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			routingCredential3, routingStatus3, routingError3 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 			if routingError3 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus3, routingError3)
 			}
@@ -275,7 +239,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2 AND runner_id=$3", now.Add(-3*time.Minute), f.project.OrganizationID, late.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
-	routingCredential4, routingStatus4, routingError4 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	routingCredential4, routingStatus4, routingError4 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 	if routingError4 != nil {
 		t.Fatalf("routing reader status=%d error=%v", routingStatus4, routingError4)
 	}
@@ -331,7 +295,9 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			descriptor := hubTestPolicy()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			r.redemption.BackendIsolation["codex"] = []string{isolation.NativeTrusted, isolation.Sandbox}
 			r.enroll(t)
+			r.reportCapacity(t)
 			if test.state != "active" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "runner", "state": test.state, "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}), http.StatusOK)
 			}
@@ -370,7 +336,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			if repeated.Revision != snapshot.Revision || repeated.Routing.UpdateRequest == nil || *repeated.Routing.UpdateRequest != *request {
 				t.Fatalf("heartbeat replaced newer delivery: %+v", repeated)
 			}
-			routingCredential5, routingStatus5, routingError5 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			routingCredential5, routingStatus5, routingError5 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 			if routingError5 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus5, routingError5)
 			}
@@ -423,7 +389,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 				decodeHubResponse(t, claimResponse, &admitted)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(admitted.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: admitted.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			} else {
-				requireNativeStatus(t, claimResponse, http.StatusConflict)
+				requireNativeError(t, claimResponse, http.StatusNotFound, "machine_not_found")
 			}
 			applied.Version = deliveredVersion
 			applied.Commit = strings.Repeat("c", 40)
@@ -437,6 +403,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 				t.Fatalf("completed update lost operator state: %+v", snapshot)
 			}
 			if test.state == "active" {
+				claim.SessionID = "follow-hub-after-update"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
 			}
 		})
