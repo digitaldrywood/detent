@@ -58,6 +58,8 @@ func TestOperatorMembershipProviderAvailability(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			provider := &operatorMembershipProvider{HostedProvider: f.provider, remote: f.provider}
+			f.service.config.Hosted.Provider = provider
 			captured := make(chan context.Context, 4)
 			const route = "/api/v2/organizations/org_security/membership-authority-test"
 			f.service.echo.GET(route, func(c echo.Context) error {
@@ -98,7 +100,7 @@ func TestOperatorMembershipProviderAvailability(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.service.config.Hosted.Provider = operatorMembershipProvider{HostedProvider: f.provider, remote: remote}
+			provider.remote = remote
 			if test.cached {
 				if _, err := f.service.hostedMembership(t.Context(), user.identity.Hosted); err != nil {
 					t.Fatal(err)
