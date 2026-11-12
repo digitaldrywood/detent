@@ -127,13 +127,25 @@ func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker
 		ttl = duration[0]
 	}
 	f := runner.nativeFixture
+	var issueID int64
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		item, err := r.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
+		issueID = item.ID
+		return err
+	}); err != nil {
+		t.Fatalf("read attempt work item %s: %v", issue.WorkItemID, err)
+	}
+	cancellation, err := f.service.prepareExpiredNativeLeaseCancellation(t.Context(), nativeScope{organization: issue.OrganizationID, project: issue.ProjectID}, issueID, true)
+	if err != nil {
+		t.Fatalf("prepare lost attempt cancellation: %v", err)
+	}
 	var claimed leasestore.Lease
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		item, err := w.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
 		if err != nil {
 			return fmt.Errorf("read attempt work item %s: %w", issue.WorkItemID, err)
 		}
-		claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(runner.binding.MachineID), SessionID: session, LeaseID: newNativeID("lease"), TTL: ttl})
+		claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(runner.binding.MachineID), SessionID: session, LeaseID: newNativeID("lease"), TTL: ttl, PreviousAttemptCancellation: cancellation.attemptCancellation()})
 		if err != nil {
 			return fmt.Errorf("claim work item: %w", err)
 		}
