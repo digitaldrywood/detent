@@ -275,7 +275,7 @@ func entryKeyToolSupported(name string) bool {
 		return name != "repository_freshness" && name != "revoke_project_policy"
 	}
 	switch name {
-	case operatortool.GetChange, operatortool.GetChangeVersion, operatortool.DiscussChange, operatortool.ListWorkItemPullRequests, operatortool.GetChangeReviewPolicy, operatortool.ArtifactServices, operatortool.ArtifactReferences, operatortool.GetArtifactReference, operatortool.ArtifactAccess, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BillingUsage, operatortool.HostedPlan, operatortool.HostedUsage:
+	case operatortool.GetAttemptDiff, operatortool.GetWorkItemDiff, operatortool.GetNativeRun, operatortool.ChangeViewedFiles, operatortool.ViewChangeFile, operatortool.ApproveChangeReviewPolicy, operatortool.GetChange, operatortool.GetChangeVersion, operatortool.DiscussChange, operatortool.ListWorkItemPullRequests, operatortool.GetChangeReviewPolicy, operatortool.ArtifactServices, operatortool.ArtifactReferences, operatortool.GetArtifactReference, operatortool.ArtifactAccess, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BillingUsage, operatortool.HostedPlan, operatortool.HostedUsage:
 		return true
 	}
 

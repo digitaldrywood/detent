@@ -76,13 +76,43 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 	switch name {
 	case operatortool.ListChanges:
 		return a.readChangeListRecords(ctx, args)
-	case operatortool.ListWorkItemPullRequests, operatortool.GetChangeReviewPolicy, operatortool.ArtifactServices, operatortool.ArtifactReferences, operatortool.GetArtifactReference:
+	case operatortool.GetAttemptDiff, operatortool.GetWorkItemDiff, operatortool.GetNativeRun, operatortool.ChangeViewedFiles, operatortool.ListWorkItemPullRequests, operatortool.GetChangeReviewPolicy, operatortool.ArtifactServices, operatortool.ArtifactReferences, operatortool.GetArtifactReference:
 		scope, err := a.authorized(ctx, args, false)
 		if err != nil {
 			return operatortool.ChangeResult{}, err
 		}
 		value = a.result(scope, args)
 		switch name {
+		case operatortool.GetAttemptDiff, operatortool.GetWorkItemDiff:
+			source := args.Source
+			if source == "" {
+				source = tracker.DiffSourceAttempt
+			}
+			var diff *tracker.AttemptDiff
+			if name == operatortool.GetAttemptDiff {
+				var stored tracker.AttemptDiff
+				stored, err = a.service.readAttemptDiff(ctx, scope, args.ItemID, args.AttemptID, source, args.Sequence)
+				if err == nil {
+					diff = &stored
+				}
+			} else {
+				var stored tracker.WorkItemDiff
+				stored, err = a.service.readWorkItemDiff(ctx, scope, args.ItemID, source)
+				diff = stored.Diff
+			}
+			if err != nil {
+				err = projectRecordError(err)
+			}
+			value.Diff, value.NextOffset = operatortool.ChangeDiffPage(diff, args)
+		case operatortool.GetNativeRun:
+			var attempt tracker.NativeAttempt
+			attempt, err = a.service.readNativeAttempt(ctx, scope, args.ItemID, args.AttemptID)
+			if err == nil {
+				value.Attempt = &attempt
+			}
+		case operatortool.ChangeViewedFiles:
+			value.Viewed, err = a.service.readChangeViewedFileRecords(ctx, scope, args.ItemID, args.ChangeID, args.VersionID)
+			value.Viewed, value.NextOffset = operatortool.ChangePage(value.Viewed, args)
 		case operatortool.ListWorkItemPullRequests:
 			value.PullRequests, err = a.service.readWorkItemPullRequests(ctx, scope, args.ItemID, "")
 		case operatortool.GetChangeReviewPolicy:
@@ -155,6 +185,27 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	scope.action = name
 	ctx = isolateContentContext(s.runDetailContext(ctx))
 	switch name {
+	case operatortool.ViewChangeFile:
+		if args.Bundle == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		request := tracker.ViewChangeFile{Mutation: command, Bundle: *args.Bundle, FileSHA256: args.FileSHA256, Viewed: args.Viewed}
+		result.Receipt, err = s.viewChangeFileRecordCommand(ctx, scope, args.ItemID, args.ChangeID, args.VersionID, http.MethodPost+" "+result.URL+"/versions/"+url.PathEscape(args.VersionID)+"/viewed-files", request)
+		if err != nil {
+			return result, err
+		}
+	case operatortool.ApproveChangeReviewPolicy:
+		if args.Policy == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		if scope.credential.Hosted != nil {
+			scope.requireHostedAdmin = true
+		}
+		request := tracker.ApproveChangeReviewPolicy{Mutation: command, ExpectedID: args.ExpectedPolicyID, Policy: *args.Policy}
+		result.Receipt, err = s.approveChangeReviewPolicyRecordCommand(ctx, scope, http.MethodPut+" "+result.URL+"/change-review-policy", request)
+		if err != nil {
+			return result, err
+		}
 	case operatortool.CreateChange:
 		request := tracker.CreateChange{Mutation: command, Title: args.Title, Body: args.Body, LinkedIssues: args.LinkedIssues}
 		result.Receipt, err = s.createChangeRecordCommand(ctx, scope, args.ItemID, http.MethodPost+" "+result.URL+"/changes", request)

@@ -42,32 +42,38 @@ func (s *Service) currentChangePolicyRows(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracker.ApproveChangeReviewPolicy) error {
-	scope := nativeRequestScope(c)
-	if request.Policy.PolicyID == "" {
-		return s.nativeAPIError(c, nativePublicInvalid("An approved repository policy identity is required"))
-	}
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
-	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
-	}
-	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	hash, err := nativeCommandHash(request)
+	response, err := s.approveChangeReviewPolicyRecordCommand(c.Request().Context(), nativeRequestScope(c), c.Request().Method+" "+c.Request().URL.EscapedPath(), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	return c.JSONBlob(http.StatusOK, response)
+}
+
+func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, scope nativeScope, operation string, request tracker.ApproveChangeReviewPolicy) (json.RawMessage, error) {
+	if request.Policy.PolicyID == "" {
+		return nil, nativePublicInvalid("An approved repository policy identity is required")
+	}
+	ctx = isolateContentContext(s.runDetailContext(ctx))
+	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	hash, err := nativeCommandHash(request)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	replay, found, err := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if found {
-		return c.JSONBlob(http.StatusOK, replay)
+		return replay, nil
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	var rows currentChangePolicyRows
@@ -80,31 +86,31 @@ func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracke
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
 	approval, err := hydrateChangeSummaryPolicy(ctx, content, scope, rows)
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
 	if request.Policy.PolicyID != approval.Policy.ID {
-		return s.nativeAPIError(c, policyMismatch("Review policy must name the current repository policy"))
+		return nil, policyMismatch("Review policy must name the current repository policy")
 	}
 	current, currentStored = rows.Review, rows.hasReview
 	oldRules = approval.ReviewPolicy
 	if oldRules.ID != request.ExpectedID && (request.ExpectedID != "" || !followsRepositoryGate(oldRules)) {
-		return s.nativeAPIError(c, policyMismatch("Review policy changed; supply its current identity"))
+		return nil, policyMismatch("Review policy changed; supply its current identity")
 	}
 	rules := request.Policy
 	rules.ID = changerequest.PolicyID(rules)
 	if err := changerequest.ValidatePolicy(rules, approval.Policy); err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		return nil, nativeInvalid(err.Error())
 	}
 	if err := s.validateReviewPolicyPrincipals(ctx, scope, rules, now); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	record, err := content.PrepareReviewPolicy(ctx, eventstore.ReviewPolicy{OrganizationID: scope.organization, ProjectID: scope.project, PolicyRevisionID: approval.Policy.ID, Revision: current.Revision + 1, UpdatedBy: scope.actor().PrincipalID, UpdatedAt: now}, rules)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	var expected string
 	if currentStored {
@@ -112,11 +118,11 @@ func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracke
 	}
 	response, err := json.Marshal(rules)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
@@ -162,21 +168,21 @@ func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracke
 	if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
 		replay, found, readErr := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
 		if readErr != nil {
-			return s.nativeAPIError(c, readErr)
+			return nil, readErr
 		}
 		if found {
-			return c.JSONBlob(http.StatusOK, replay)
+			return replay, nil
 		}
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
 	select {
 	case s.boardRefresh <- struct{}{}:
 	default:
 	}
-	return c.JSONBlob(http.StatusOK, response)
+	return response, nil
 }
 
 func (s *Service) validateReviewPolicyPrincipals(ctx context.Context, scope nativeScope, rules tracker.ChangeReviewPolicy, now time.Time) error {

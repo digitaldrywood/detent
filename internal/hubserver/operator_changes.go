@@ -264,7 +264,7 @@ func hubSafeChangeError(err error) error {
 	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
 		return operatortool.ErrProviderUnavailable
 	}
-	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) || errors.Is(err, sql.ErrNoRows) {
 		return operatortool.ErrAccessDenied
 	}
 	var failure *nativeError

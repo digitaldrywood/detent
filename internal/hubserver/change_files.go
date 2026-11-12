@@ -40,35 +40,42 @@ func (s *Service) validateReviewBundleRecord(ctx context.Context, scope nativeSc
 func (s *Service) changeViewedFiles(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
-	change, err := s.readChangeRecord(ctx, scope, c.Param("item"), c.Param("change"))
+	result, err := s.readChangeViewedFileRecords(ctx, nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	version, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
+	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) readChangeViewedFileRecords(ctx context.Context, scope nativeScope, item, changeID, versionID string) ([]tracker.ChangeViewedFile, error) {
+	change, err := s.readChangeRecord(ctx, scope, item, changeID)
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, err
+	}
+	version, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, versionID)
+	if err != nil {
+		return nil, projectRecordError(err)
 	}
 	var rows []eventstore.ViewedFile
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		rows, err = r.ViewedFiles(ctx, c.Param("version"), scope.credential.ID, 4097)
+		rows, err = r.ViewedFiles(ctx, versionID, scope.credential.ID, 4097)
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
 	if len(rows) > 4096 {
-		return s.nativeAPIError(c, corestore.ErrInvalidPage)
+		return nil, corestore.ErrInvalidPage
 	}
 	result := make([]tracker.ChangeViewedFile, 0, len(rows))
 	for _, row := range rows {
 		if row.ChangeID != change.ID || row.VersionID != version.ID || row.PrincipalID != scope.credential.ID {
-			return s.nativeAPIError(c, corestore.ErrTenantMismatch)
+			return nil, corestore.ErrTenantMismatch
 		}
 		result = append(result, tracker.ChangeViewedFile{ManifestSHA256: row.ManifestSHA256, FileSHA256: row.FileSHA256, Viewed: row.Viewed})
 	}
-	return c.JSON(http.StatusOK, result)
+	return result, nil
 }
 
 func (s *Service) viewChangeFile(c echo.Context) error {
@@ -83,45 +90,51 @@ func (s *Service) viewChangeFile(c echo.Context) error {
 }
 
 func (s *Service) viewChangeFileRecord(c echo.Context, request tracker.ViewChangeFile) error {
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
-	scope := nativeRequestScope(c)
+	response, err := s.viewChangeFileRecordCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"), c.Request().Method+" "+c.Request().URL.EscapedPath(), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, response)
+}
+
+func (s *Service) viewChangeFileRecordCommand(ctx context.Context, scope nativeScope, item, changeID, versionID, operation string, request tracker.ViewChangeFile) (json.RawMessage, error) {
+	ctx = isolateContentContext(s.runDetailContext(ctx))
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if !artifact.ValidHash(request.FileSHA256, 64) {
-		return s.nativeAPIError(c, nativePublicInvalid("An opaque file digest is required"))
+		return nil, nativePublicInvalid("An opaque file digest is required")
 	}
 	hash, err := nativeCommandHash(request)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
 	replay, found, err := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if found {
-		return c.JSONBlob(http.StatusOK, replay)
+		return replay, nil
 	}
-	change, err := s.readChangeRecord(ctx, scope, c.Param("item"), c.Param("change"))
+	change, err := s.readChangeRecord(ctx, scope, item, changeID)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	versionRecord, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
+	versionRecord, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, versionID)
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	version, err := content.Version(ctx, versionRecord)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err := s.validateReviewBundleRecord(ctx, scope, change, version, request.Bundle, now); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	var artifactReference artifact.Reference
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -130,16 +143,16 @@ func (s *Service) viewChangeFileRecord(c echo.Context, request tracker.ViewChang
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
 	views := tracker.ChangeViewedFile{ManifestSHA256: request.Bundle.SHA256, FileSHA256: request.FileSHA256, Viewed: request.Viewed}
 	response, err := json.Marshal(views)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -195,20 +208,20 @@ func (s *Service) viewChangeFileRecord(c echo.Context, request tracker.ViewChang
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
 			replay, found, readErr := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
 			if readErr != nil {
-				return s.nativeAPIError(c, readErr)
+				return nil, readErr
 			}
 			if found {
-				return c.JSONBlob(http.StatusOK, replay)
+				return replay, nil
 			}
 			continue
 		}
 		if errors.Is(err, corestore.ErrRevisionConflict) {
-			return s.nativeAPIError(c, nativeConflict(change.Revision))
+			return nil, nativeConflict(change.Revision)
 		}
 		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return nil, projectRecordError(err)
 		}
 		break
 	}
-	return c.JSONBlob(http.StatusOK, response)
+	return response, nil
 }

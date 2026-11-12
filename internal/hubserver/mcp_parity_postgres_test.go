@@ -83,9 +83,8 @@ func TestPostgresMCPChangeParity(t *testing.T) {
 			ctx := parityNativeContext(t, f.service, f.project.OrganizationID)
 			for _, name := range []string{
 				operatortool.GetChange, operatortool.GetChangeVersion, operatortool.DiscussChange,
-				operatortool.ViewChangeFile, operatortool.ChangeViewedFiles, operatortool.ApproveChangeReviewPolicy,
-				operatortool.GetChangeReviewPolicy, operatortool.GetAttemptDiff, operatortool.GetWorkItemDiff,
-				operatortool.GetNativeRun, operatortool.ListWorkItemPullRequests, operatortool.ArtifactServices,
+				operatortool.GetChangeReviewPolicy,
+				operatortool.ListWorkItemPullRequests, operatortool.ArtifactServices,
 				operatortool.ArtifactReferences, operatortool.AssociateReleasePick, operatortool.PublishReleasePick,
 				operatortool.BindArtifactService,
 			} {
@@ -94,7 +93,7 @@ func TestPostgresMCPChangeParity(t *testing.T) {
 					call := parityToolCall(t, name, args)
 					result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, call)
 					switch name {
-					case operatortool.ViewChangeFile, operatortool.ChangeViewedFiles, operatortool.ApproveChangeReviewPolicy, operatortool.GetAttemptDiff, operatortool.GetWorkItemDiff, operatortool.GetNativeRun, operatortool.AssociateReleasePick, operatortool.PublishReleasePick, operatortool.BindArtifactService:
+					case operatortool.AssociateReleasePick, operatortool.PublishReleasePick, operatortool.BindArtifactService:
 						if !errors.Is(err, operatortool.ErrServiceUnavailable) {
 							t.Fatalf("incomplete PostgreSQL handler: %v", err)
 						}
@@ -507,24 +506,24 @@ func TestPostgresMCPCatalogAuthorities(t *testing.T) {
 		{"billing_usage.hosted_usage_report", "owner shared member viewer staff admin"},
 		{"board_receipt", "local owner shared member viewer admin"},
 		{"board_session", "local owner shared member viewer admin"},
-		{"approve_change_review_policy", ""},
+		{"approve_change_review_policy", "local owner shared staff admin"},
 		{"artifact_access", "local owner shared member viewer staff admin"},
 		{"artifact_references", "local owner shared member viewer staff admin"},
 		{"artifact_services", "local owner shared member viewer staff admin"},
 		{"associate_release_pick", ""},
 		{"bind_artifact_service", ""},
-		{"change_viewed_files", ""},
+		{"change_viewed_files", "local owner shared member viewer staff admin"},
 		{"discuss_change", "local owner shared member admin"},
 		{"get_artifact_reference", "local owner shared member viewer staff admin"},
-		{"get_attempt_diff", ""},
+		{"get_attempt_diff", "local owner shared member viewer staff admin"},
 		{"get_change", "local owner shared member viewer staff admin"},
 		{"get_change_review_policy", "local owner shared member viewer staff admin"},
 		{"get_change_version", "local owner shared member viewer staff admin"},
-		{"get_native_run", ""},
-		{"get_work_item_diff", ""},
+		{"get_native_run", "local owner shared member viewer staff admin"},
+		{"get_work_item_diff", "local owner shared member viewer staff admin"},
 		{"list_work_item_pull_requests", "local owner shared member viewer staff admin"},
 		{"publish_release_pick", ""},
-		{"view_change_file", ""},
+		{"view_change_file", "local owner shared member admin"},
 		{"session_logout", "owner member viewer staff admin"},
 		{"credential_create", "owner shared member viewer admin"},
 		{"credential_list", "local owner shared member viewer admin"},
