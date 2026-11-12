@@ -83,6 +83,9 @@ func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (
 				return auth.ErrHostedIdentity
 			}
 			for _, project := range request.ProjectIDs {
+				if !hostedSafeID(project) {
+					return nativeNotFound()
+				}
 				scope.project = tracker.ProjectID(project)
 				if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
 					return err
