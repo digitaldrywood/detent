@@ -258,9 +258,20 @@ func (s *session) fleetRecordProviderViews(ctx context.Context, record runnersto
 		if state := report.State(now); state == "exhausted" || state == "unknown" && view.State != "exhausted" {
 			view.State = state
 		}
+		view.Reason = providerViewReason(view)
 		views = append(views, view)
 	}
 	return views, nil
+}
+
+func providerViewReason(view providercapacity.View) string {
+	switch {
+	case view.MaxConcurrent > 0 && view.Used >= view.MaxConcurrent:
+		return "Shared provider concurrency is fully reserved; wait for lease release or expiry"
+	case view.MaxConcurrent == 0:
+		return "No provider account concurrency limit is configured; runner and host limits apply"
+	}
+	return "Declared provider concurrency is available"
 }
 
 func (s *session) RunnerRoutingRecords(ctx context.Context, limit, offset int, now time.Time) ([]runnerstore.RoutingRecord, error) {
@@ -358,6 +369,7 @@ WHERE selected.organization_id=$1 AND selected.runner_id=ANY($2)`, s.organizatio
 			if state := report.State(now); state == "exhausted" || state == "unknown" && view.State != "exhausted" {
 				view.State = state
 			}
+			view.Reason = providerViewReason(view)
 			routing.Providers = append(routing.Providers, view)
 		}
 		result = append(result, routing)
@@ -505,7 +517,7 @@ FROM provider_runners r LEFT JOIN runner_provider_reports p ON p.organization_id
 		if ordinal > int64(limit) && !slices.Contains(selected, id) || !backend.Valid {
 			continue
 		}
-		report := providercapacity.Report{Backend: backend.String, Provider: provider.String, AccountAlias: alias.String, SharedAccountAlias: shared.String, Billing: billing.String, MaxConcurrent: int(concurrent.Int64), Availability: state.String, ObservedAt: observed.Time, Models: models}
+		report := providercapacity.Report{Backend: backend.String, Provider: provider.String, AccountAlias: alias.String, SharedAccountAlias: shared.String, Billing: billing.String, MaxConcurrent: int(concurrent.Int64), Availability: state.String, ObservedAt: observed.Time, Models: models, ModelDetails: []providercapacity.ModelDetail{}, UsageWindows: []providercapacity.UsageWindow{}}
 		if reset.Valid {
 			report.ResetAt = reset.Time
 		}

@@ -114,7 +114,7 @@ func (s *session) runnerRoutingProjects(ctx context.Context, identity *runnersto
 	}
 	defer rows.Close()
 	projects := make([]tracker.ProjectID, 0)
-	identity.Availability.Windows = nil
+	identity.Availability.Windows = []string{}
 	identity.Availability.WindowSlots = make(map[string]int)
 	identity.ProjectCapacityLimits = make(map[tracker.ProjectID]int)
 	identity.ProjectRanks = make(map[tracker.ProjectID]int)
