@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -480,6 +481,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		shared           bool
 		wantErr          error
 		wantError        string
+		withheldError    string
 		credentialStatus int
 		want             string
 	}{
@@ -567,7 +569,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 			},
 		},
 		{
-			name: "shared member read failure", account: "owner", shared: true, want: conversationClosedServerError, wantError: "SQLSTATE 42P01",
+			name: "shared member read failure", account: "owner", shared: true, want: conversationClosedServerError, wantErr: operatortool.ErrServiceUnavailable, withheldError: "SQLSTATE",
 			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
 				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "ALTER TABLE hosted_members RENAME TO unavailable_members"); err != nil {
 					t.Fatal(err)
@@ -715,6 +717,9 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 			}
 			if tt.wantError != "" && !strings.Contains(err.Error(), tt.wantError) {
 				t.Fatalf("reauthorization error = %v, want %q", err, tt.wantError)
+			}
+			if tt.withheldError != "" && strings.Contains(err.Error(), tt.withheldError) {
+				t.Fatalf("reauthorization error = %v leaks %q", err, tt.withheldError)
 			}
 			for _, failure := range []error{err, fmt.Errorf("reauthorize: %w", err)} {
 				if got := conversationStreamCloseReason(failure); got != tt.want {
