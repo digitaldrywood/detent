@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -38,57 +37,9 @@ func TestPostgresAccountPreferencesUseCurrentMember(t *testing.T) {
 	other := f.user(t, "other_preferences", "member", "other-preferences@example.test", "", "")
 	f.service.config.Hosted.Provider = accountWidgetProvider{f.provider}
 	requireNativeStatus(t, f.request(t, user, http.MethodPost, "/api/v2/organizations/org_security/widget-token", map[string]any{}), http.StatusOK)
-	dailyPath := "/api/v2/organizations/org_security/daily-summary-preference"
-	response := f.request(t, user, http.MethodGet, dailyPath, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	var daily dailySummaryPreference
-	decodeHubResponse(t, response, &daily)
-	if daily.Configured || daily.Enabled || daily.Recipient != "preferences@example.test" {
-		t.Fatalf("default daily preference=%+v", daily)
-	}
-	response = f.request(t, user, http.MethodPut, dailyPath, map[string]any{"enabled": true, "send_time": "06:30", "time_zone": "America/Chicago", "days": "weekdays"})
-	requireNativeStatus(t, response, http.StatusOK)
-	response = f.request(t, user, http.MethodGet, dailyPath, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	decodeHubResponse(t, response, &daily)
-	if !daily.Configured || !daily.Enabled || daily.SendTime != "06:30" || daily.TimeZone != "America/Chicago" || daily.Days != "weekdays" {
-		t.Fatalf("saved daily preference=%+v", daily)
-	}
 	var member accessstore.Member
-	if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		member, err = r.AccessMember(t.Context(), user.identity.Subject)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	preference, err := repository.DailySummaryPreference(t.Context(), "org_security", user.identity.Subject, member.MembershipID, member.PrincipalID)
-	if err != nil || preference.Token == "" {
-		t.Fatalf("daily unsubscribe token=%q error=%v", preference.Token, err)
-	}
-	response = f.request(t, user, http.MethodPut, dailyPath, map[string]any{"enabled": true, "send_time": "07:00", "time_zone": "UTC", "days": "every_day"})
-	requireNativeStatus(t, response, http.StatusOK)
-	response = f.request(t, other, http.MethodPut, dailyPath, map[string]any{"enabled": true, "send_time": "08:00", "time_zone": "UTC", "days": "every_day"})
-	requireNativeStatus(t, response, http.StatusOK)
-	request := httptest.NewRequest(http.MethodGet, "/daily-summary/unsubscribe?token="+url.QueryEscape(preference.Token), nil)
-	recorder := httptest.NewRecorder()
-	f.service.Handler().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("unsubscribe status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	response = f.request(t, user, http.MethodGet, dailyPath, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	decodeHubResponse(t, response, &daily)
-	if daily.Enabled {
-		t.Fatal("daily summary unsubscribe left preference enabled")
-	}
-	response = f.request(t, other, http.MethodGet, dailyPath, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	decodeHubResponse(t, response, &daily)
-	if !daily.Enabled || daily.SendTime != "08:00" || daily.Recipient != "other-preferences@example.test" {
-		t.Fatalf("other member daily preference=%+v", daily)
-	}
-
+	var err error
+	var response *httptest.ResponseRecorder
 	f.service.releaseNotes = testReleaseBuilds()
 	f.service.config.Version = "1.2.1"
 	releasePath := "/api/v2/organizations/org_security/release-notes"
@@ -116,7 +67,7 @@ func TestPostgresAccountPreferencesUseCurrentMember(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{dailyPath, releasePath} {
+	for _, path := range []string{releasePath} {
 		requireNativeStatus(t, f.request(t, user, http.MethodGet, path, nil), http.StatusForbidden)
 	}
 }

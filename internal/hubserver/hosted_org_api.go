@@ -86,8 +86,7 @@ func (s *Service) registerHostedAccountPreferenceRoutes(e *echo.Echo) {
 	e.PUT(hostedOrganizationBase+"/release-notes/seen", s.releaseNotesAPI, session)
 	e.GET(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
 	e.PUT(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
-	e.GET(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
-	e.PUT(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
+	s.registerDailySummaryPreferenceRoutes(e)
 }
 
 func (s *Service) registerOrganizationSettingsRecordRoutes(e *echo.Echo) {
