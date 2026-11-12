@@ -150,7 +150,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							}
 							key, err := f.service.createAPITokenFor(t.Context(), request)
 							if access == hostedProjectsSelected && scenario == "no projects at creation" {
-								if !errors.Is(err, accessstore.ErrDenied) {
+								if !isNativeNotFound(err) {
 									t.Fatalf("selected key without an active project=%v", err)
 								}
 								return
