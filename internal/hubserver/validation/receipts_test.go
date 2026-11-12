@@ -1,7 +1,9 @@
-package hubserver
+package validation
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -14,9 +16,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/gotestreceiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -25,7 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func attestGoTestReceipts(t *testing.T, service *Service, base, token string) gotestreceipt.Attestation {
+func attestGoTestReceipts(t *testing.T, service *hubtest.HTTPHarness, base, token string) gotestreceipt.Attestation {
 	t.Helper()
 	response := performHubAPIRequest(t, service, http.MethodPost, base+"/go-test-receipts/attestations", token, nil)
 	requireNativeStatus(t, response, http.StatusCreated)
@@ -37,7 +43,7 @@ func attestGoTestReceipts(t *testing.T, service *Service, base, token string) go
 	return attestation
 }
 
-func lookupGoTestReceipts(t *testing.T, service *Service, base, token, key string) []gotestreceipt.Candidate {
+func lookupGoTestReceipts(t *testing.T, service *hubtest.HTTPHarness, base, token, key string) []gotestreceipt.Candidate {
 	t.Helper()
 	response := performHubAPIRequest(t, service, http.MethodGet, base+"/go-test-receipts?key="+key, token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -49,10 +55,24 @@ func lookupGoTestReceipts(t *testing.T, service *Service, base, token, key strin
 }
 
 func TestGoTestReceiptRoutesUseSelectedTenantStoreWithoutSQLite(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository := hubtest.Repository(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := &Service{database: &database{}, echo: echo.New(), secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, SecretKeys: secretTestKeys(t, "1", "1"), Logger: discardLogger(), now: func() time.Time { return now }}}
-	service.registerNativeRoutes(service.echo)
+	var receiptService *Service
+	var organization tracker.OrganizationID
+	service := hubtest.NewHTTP(t, hubtest.HTTPOptions{Repository: repository, Now: func() time.Time { return now }}, func(group *echo.Group, deps hubtest.HTTPDeps) {
+		receiptService = New(Deps{Repository: repository, Now: func() time.Time { return now }, SecretKeys: receiptTestKeys(t), Organization: func() tracker.OrganizationID { return organization },
+			Scope: func(c echo.Context) hubauth.Input {
+				credential, _ := hubauth.RequestCredential(c)
+				scope := hubauth.RequestScope(c)
+				return hubauth.Input{Organization: scope.Organization, Project: scope.Project, Credential: credential}
+			},
+			Authorize: deps.Auth.Authorize, Error: deps.Error, InvalidRequest: func(c echo.Context, err error) error { return deps.Error(c, hubapi.Invalid(err.Error())) },
+		})
+		base := "/api/v2/organizations/:organization/projects/:project"
+		group.GET(base+"/go-test-receipts", receiptService.LookupReceipts, deps.Native(hubauth.Worker, hubauth.Admin, hubauth.Operator))
+		group.POST(base+"/go-test-receipts/attestations", receiptService.AttestReceipts, deps.Native(hubauth.Worker))
+		group.POST(base+"/go-test-receipts", receiptService.RecordReceipt, deps.Native(hubauth.Worker))
+	})
 	var credentials = map[tracker.OrganizationID]string{}
 	var projects = map[tracker.OrganizationID]tracker.ProjectID{}
 	for _, organization := range []tracker.OrganizationID{"org_receipt_first", "org_receipt_second"} {
@@ -74,10 +94,10 @@ func TestGoTestReceiptRoutesUseSelectedTenantStoreWithoutSQLite(t *testing.T) {
 			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization)}); err != nil {
 				return err
 			}
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example", Slug: "example", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example", Slug: "example", Profile: "native"}, States: hubtest.States()}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "worker", Name: "Example runner", Hash: tokenHash, Scope: string(apiScopeWorker), Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "worker", Name: "Example runner", Hash: tokenHash, Scope: string(hubauth.Worker), Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
 				return err
 			}
 			if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "worker", ProjectID: project}); err != nil {
@@ -95,21 +115,22 @@ func TestGoTestReceiptRoutesUseSelectedTenantStoreWithoutSQLite(t *testing.T) {
 		}
 		credentials[organization] = token
 		projects[organization] = project
-		credential, status, err := service.authenticateTenantAPIHash(t.Context(), organization, tokenHash, "", "")
+		credential, status, err := service.Deps.Auth.AuthenticateRepositoryAPIHash(t.Context(), repository, organization, tokenHash, "", "")
 		if err != nil || status != http.StatusOK {
 			t.Fatalf("authenticate organization %s: status=%d err=%v", organization, status, err)
 		}
-		scope := nativeScope{organization: organization, project: project, credential: credential}
-		if err := service.authorizeProjectRecord(t.Context(), scope, true); err != nil {
+		scope := hubauth.Input{Organization: organization, Project: project, Credential: credential}
+		if err := service.Deps.Auth.AuthorizeProject(t.Context(), scope, true); err != nil {
 			t.Fatalf("authorize organization %s: %v", organization, err)
 		}
-		if _, err := service.readProjectRecord(t.Context(), scope); err != nil {
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error { _, err := r.ProjectRecord(t.Context(), scope.Project); return err }); err != nil {
 			t.Fatalf("read project %s: %v", project, err)
 		}
 	}
 	key := strings.Repeat("a", 64)
 	var previousDigestKey []byte
-	for organization, token := range credentials {
+	for currentOrganization, token := range credentials {
+		organization = currentOrganization
 		base := "/api/v2/organizations/" + string(organization) + "/projects/" + string(projects[organization])
 		attestation := attestGoTestReceipts(t, service, base, token)
 		repeated := attestGoTestReceipts(t, service, base, token)
@@ -182,11 +203,11 @@ func TestGoTestReceiptRoutesUseSelectedTenantStoreWithoutSQLite(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		service.config.Hosted = &HostedConfig{OrganizationID: string(organization)}
-		if err := service.expireGoTestReceipts(t.Context(), now.Add(goTestReceiptRetention+time.Hour), time.Now); err != nil {
+
+		if err := receiptService.ExpireReceipts(t.Context(), now.Add(ReceiptRetention+time.Hour), time.Now); err != nil {
 			t.Fatal(err)
 		}
-		service.config.Hosted = nil
+
 		if candidates := lookupGoTestReceipts(t, service, base, token, key); len(candidates) != 0 {
 			t.Fatalf("pruned candidates: %+v", candidates)
 		}
@@ -201,10 +222,10 @@ func TestGoTestReceiptOperationsRequireTypedOwner(t *testing.T) {
 					t.Fatalf("receipt operation accessed missing legacy storage: %v", recovered)
 				}
 			}()
-			service := &Service{config: Config{Logger: discardLogger(), now: time.Now}}
+			service := New(Deps{Now: time.Now, Scope: func(echo.Context) hubauth.Input { return hubauth.Input{} }, Error: hubtest.HTTPError})
 			if operation == "prune" {
-				var unavailable *nativeError
-				if err := service.expireGoTestReceipts(t.Context(), time.Now(), time.Now); !errors.As(err, &unavailable) || unavailable.status != http.StatusServiceUnavailable {
+				var unavailable *hubapi.Error
+				if err := service.ExpireReceipts(t.Context(), time.Now(), time.Now); !errors.As(err, &unavailable) || unavailable.Status != http.StatusServiceUnavailable {
 					t.Fatalf("missing typed owner error = %v", err)
 				}
 				return
@@ -217,11 +238,11 @@ func TestGoTestReceiptOperationsRequireTypedOwner(t *testing.T) {
 			var err error
 			switch operation {
 			case "lookup":
-				err = service.lookupGoTestReceipts(ctx)
+				err = service.LookupReceipts(ctx)
 			case "attest":
-				err = service.attestGoTestReceipts(ctx)
+				err = service.AttestReceipts(ctx)
 			case "record":
-				err = service.recordGoTestReceipt(ctx)
+				err = service.RecordReceipt(ctx)
 			}
 			if err != nil || response.Code != http.StatusServiceUnavailable {
 				t.Fatalf("missing typed owner status=%d error=%v", response.Code, err)
@@ -231,14 +252,50 @@ func TestGoTestReceiptOperationsRequireTypedOwner(t *testing.T) {
 }
 
 func TestGoTestReceiptAuthorityRejectsNonRunnerCredentials(t *testing.T) {
-	for _, scope := range []apiScope{apiScopeAdmin, apiScopeOperator, apiScopeWorker} {
+	for _, scope := range []hubauth.TokenScope{hubauth.Admin, hubauth.Operator, hubauth.Worker} {
 		t.Run(string(scope), func(t *testing.T) {
 			service := &Service{}
-			_, err := service.requireGoTestReceiptTenantAuthority(t.Context(), nil, nativeScope{credential: apiCredential{Scope: scope}}, time.Now())
-			var unavailable *nativeError
-			if !errors.As(err, &unavailable) || unavailable.status != http.StatusNotFound {
+			_, err := service.RequireReceiptAuthority(t.Context(), nil, hubauth.Input{Credential: hubauth.Credential{Scope: scope}}, time.Now())
+			var unavailable *hubapi.Error
+			if !errors.As(err, &unavailable) || unavailable.Status != http.StatusNotFound {
 				t.Fatalf("non-runner authority: %v", err)
 			}
 		})
+	}
+}
+
+func TestMain(m *testing.M) { hubtest.Main(m) }
+
+func receiptTestKeys(t *testing.T) *hubsecrets.Keyring {
+	t.Helper()
+	keys, err := hubsecrets.FromEnvironment(func(name string) string {
+		switch name {
+		case "DETENT_HUB_SECRET_KEYS":
+			return `{"1":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x6b}, 32)) + `"}`
+		case "DETENT_HUB_SECRET_KEY_VERSION":
+			return "1"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keys
+}
+
+func performHubAPIRequest(t *testing.T, service *hubtest.HTTPHarness, method, path, token string, payload any) *httptest.ResponseRecorder {
+	t.Helper()
+	return service.Request(t, hubtest.HTTPActor{Token: token}, method, path, payload).Recorder
+}
+func requireNativeStatus(t *testing.T, response *httptest.ResponseRecorder, expected int) {
+	t.Helper()
+	if response.Code != expected {
+		t.Fatalf("status=%d body=%s want=%d", response.Code, response.Body.String(), expected)
+	}
+}
+func decodeHubResponse(t *testing.T, response *httptest.ResponseRecorder, value any) {
+	t.Helper()
+	if err := json.Unmarshal(response.Body.Bytes(), value); err != nil {
+		t.Fatal(err)
 	}
 }
