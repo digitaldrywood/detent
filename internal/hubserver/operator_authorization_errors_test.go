@@ -46,6 +46,8 @@ func TestOperatorAuthorizationFailures(t *testing.T) {
 		{"cancelled", context.Canceled, 503, "service_unavailable"},
 		{"deadline", fmt.Errorf("read: %w", context.DeadlineExceeded), 503, "service_unavailable"},
 		{"nested authorization", &operatortool.AuthorizationError{Stage: "check", Cause: context.DeadlineExceeded}, 503, "service_unavailable"},
+		{"nested missing resource", &operatortool.AuthorizationError{Stage: "workflow", Cause: nativeNotFound()}, 403, "access_denied"},
+		{"nested forbidden resource", &operatortool.AuthorizationError{Stage: "workflow", Cause: &nativeError{Code: "forbidden", Message: "customer-secret", status: http.StatusForbidden}}, 403, "access_denied"},
 		{"serialization", corestore.ErrSerializationFailure, 503, "service_unavailable"},
 		{"pool", &pgconn.PgError{Code: "53300", Message: "customer-secret"}, 503, "service_unavailable"},
 		{"connection", &pgconn.PgError{Code: "08006", Message: "customer-secret"}, 503, "service_unavailable"},

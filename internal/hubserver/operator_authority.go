@@ -47,6 +47,10 @@ func operatorAuthorizationError(err error) error {
 			return operatortool.ErrAccessDenied
 		}
 	}
+	var denied *operatortool.AuthorizationError
+	if errors.As(err, &denied) && errors.As(denied.Cause, &native) {
+		return operatorAuthorizationError(denied.Cause)
+	}
 	classified := hubauth.Classify(err)
 	var moved *hubauth.AuthorizationFailure
 	if errors.As(classified, &moved) {
