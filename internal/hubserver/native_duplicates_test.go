@@ -363,8 +363,8 @@ func TestNativeDuplicateFiling(t *testing.T) {
 				t.Fatal("confirmation replay changed")
 			}
 			if fault != nil {
-				if fault.failures.Load() != 2 || !slices.Contains(created.OmittedFields, "web_url") {
-					t.Fatalf("post-commit failure was not disclosed: failures=%d response=%s", fault.failures.Load(), response.Body.String())
+				if fault.failures.Load() != 0 || slices.Contains(created.OmittedFields, "web_url") {
+					t.Fatalf("receipt performed a late browser path read: failures=%d response=%s", fault.failures.Load(), response.Body.String())
 				}
 				fault.enabled.Store(false)
 				if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil || count != 2 {
@@ -480,8 +480,8 @@ func TestNativeDuplicateChallengeLifetime(t *testing.T) {
 	}{
 		{"fresh", 0, http.StatusOK},
 		{"before expiry", time.Hour - time.Second, http.StatusOK},
-		{"expiry boundary", time.Hour, http.StatusUnprocessableEntity},
-		{"expired", time.Hour + time.Second, http.StatusUnprocessableEntity},
+		{"expiry boundary", time.Hour, http.StatusGone},
+		{"expired", time.Hour + time.Second, http.StatusGone},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
@@ -621,6 +621,12 @@ type nativeBrowserPathReader struct {
 
 func (r *nativeBrowserPathReader) WorkItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (corestore.WorkItem, error) {
 	value, err := r.Reader.WorkItem(ctx, project, item)
+	r.sawWorkItem = err == nil
+	return value, err
+}
+
+func (r *nativeBrowserPathReader) WorkItemByNativeID(ctx context.Context, item tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	value, err := r.Reader.WorkItemByNativeID(ctx, item)
 	r.sawWorkItem = err == nil
 	return value, err
 }
@@ -848,19 +854,19 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				t.Fatalf("confirmation lost committed item: %s", raw)
 			}
 			if fault != nil {
-				if fault.failures.Load() != 1 || !slices.Contains(created.OmittedFields, "web_url") || created.WebURL != "" {
-					t.Fatalf("post-commit failure was not disclosed: failures=%d response=%s", fault.failures.Load(), raw)
+				if fault.failures.Load() != 0 || slices.Contains(created.OmittedFields, "web_url") || created.WebURL != "" {
+					t.Fatalf("receipt performed a late browser path read: failures=%d response=%s", fault.failures.Load(), raw)
 				}
 				for _, failing := range []bool{true, false} {
 					fault.enabled.Store(failing)
 					raw = call(operatortool.FileIssue, args)
 					var replay tracker.NativeIssue
-					if err := json.Unmarshal(raw, &replay); err != nil || replay.WorkItemID != created.WorkItemID || slices.Contains(replay.OmittedFields, "web_url") != failing {
+					if err := json.Unmarshal(raw, &replay); err != nil || replay.WorkItemID != created.WorkItemID || slices.Contains(replay.OmittedFields, "web_url") || replay.WebURL != created.WebURL {
 						t.Fatalf("replay after post-commit failure=%s: %v", raw, err)
 					}
 				}
-				if fault.failures.Load() != 2 {
-					t.Fatalf("replay did not exercise post-commit failure: %d", fault.failures.Load())
+				if fault.failures.Load() != 0 {
+					t.Fatalf("replay performed a late browser path read: %d", fault.failures.Load())
 				}
 			}
 			var count int
