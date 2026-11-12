@@ -1944,3 +1944,24 @@ func (w coordinatorActionFailureWriter) Release(ctx context.Context, fence lease
 	}
 	return row, err
 }
+
+func TestBindCoordinatorConnectionWithoutOperatorChat(t *testing.T) {
+	t.Parallel()
+	service := &Service{}
+	ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: operatortool.Identity{PrincipalID: "user_example", OrganizationID: "org_example", CredentialID: "credential_example"}, Resolve: func(context.Context) (operatortool.Authority, error) { return operatortool.Authority{}, nil }})
+	for _, test := range []struct {
+		name    string
+		key     string
+		wantErr error
+	}{
+		{name: "keyed command", key: "command-key", wantErr: chat.ErrUnavailable},
+		{name: "unkeyed command", key: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := service.bindCoordinatorConnection(ctx, test.key)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("bindCoordinatorConnection error = %v, want %v", err, test.wantErr)
+			}
+		})
+	}
+}

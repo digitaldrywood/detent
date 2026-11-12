@@ -45,6 +45,9 @@ func (s *Service) bindCoordinatorConnection(ctx context.Context, key string) (co
 	connection.ID = "luna_" + hex.EncodeToString(digest[:])
 	connection.Client = "Luna"
 	ctx = operatortool.WithConnection(ctx, connection)
+	if s.operatorChat == nil {
+		return ctx, fmt.Errorf("bind coordinator connection: %w", chat.ErrUnavailable)
+	}
 	return ctx, s.operatorChat.AttachConnection(ctx)
 }
 
