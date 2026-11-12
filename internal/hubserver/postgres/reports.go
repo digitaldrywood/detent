@@ -127,8 +127,8 @@ func (s *session) ReadOverviewFacts(ctx context.Context, query reportstore.Overv
      SELECT 1 FROM native_attempts a JOIN runner_lease_assignments r ON r.organization_id=a.organization_id AND r.lease_id=a.lease_id
      WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at < $5 AND a.updated_at >= $4 AND r.runner_id=ANY($11::text[])
    ))
- AND (coalesce(cardinality($13::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND f.model=ANY($13::text[])))
- AND (coalesce(cardinality($14::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND f.role=ANY($14::text[])))
+ AND (coalesce(cardinality($13::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND coalesce(nullif(trim(f.model),''),'Unavailable')=ANY($13::text[])))
+ AND (coalesce(cardinality($14::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND coalesce(nullif(trim(f.role),''),'Unavailable')=ANY($14::text[])))
  ORDER BY i.created_at,i.project_id,i.native_id LIMIT $12
 )
 SELECT i.project_id,i.native_id,i.title,i.created_at,coalesce(i.workflow_state_name,''),
@@ -360,8 +360,8 @@ WHERE a.organization_id=$1 AND i.project_id=ANY($2::text[]) AND ($3='' OR i.acto
   AND (coalesce(cardinality($8::text[]),0)=0 OR i.actor_principal_id=ANY($8::text[]))
   AND (coalesce(cardinality($9::text[]),0)=0 OR EXISTS (SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY($9::text[])))
   AND (coalesce(cardinality($10::text[]),0)=0 OR r.runner_id=ANY($10::text[]))
-AND (coalesce(cardinality($12::text[]),0)=0 OR f.model=ANY($12::text[]))
-AND (coalesce(cardinality($13::text[]),0)=0 OR f.role=ANY($13::text[]))
+AND (coalesce(cardinality($12::text[]),0)=0 OR coalesce(nullif(trim(f.model),''),'Unavailable')=ANY($12::text[]))
+AND (coalesce(cardinality($13::text[]),0)=0 OR coalesce(nullif(trim(f.role),''),'Unavailable')=ANY($13::text[]))
 ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages)
 	if err != nil {
 		return nil, mapError(ctx, err)
