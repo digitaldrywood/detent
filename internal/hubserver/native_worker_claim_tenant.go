@@ -127,7 +127,12 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 			candidateRequest := request
 			candidateRequest.WorkItemID = candidate.WorkItemID
 			scan.cursor.Position = position
-			return s.claimNativeIssueTenantWithPlan(ctx, scope, candidateRequest, ttl, now, plan, &scan.cursor)
+			lease, err := s.claimNativeIssueTenantWithPlan(ctx, scope, candidateRequest, ttl, now, plan, &scan.cursor)
+			if errors.Is(err, ErrNoClaimableWork) || errors.Is(err, tracker.ErrLeaseConflict) {
+				position = claimCandidateCursor(candidate)
+				continue
+			}
+			return lease, err
 		}
 		if len(scan.plans) == 0 && scan.cursor.Position == (claimstore.CandidateCursor{}) && scan.pageNext == (claimstore.CandidateCursor{}) {
 			return leasestore.Lease{}, ErrNoClaimableWork
