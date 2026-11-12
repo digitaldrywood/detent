@@ -418,11 +418,15 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if len(members) == 0 {
-		prepared, err = s.prepareAccessMember(ctx, identity)
-		if err != nil {
-			return s.nativeAPIError(c, err)
+	if len(members) > 0 {
+		if len(members) == 1 && members[0].UserID == claims.Subject && members[0].Role == "owner" && members[0].Active {
+			return c.NoContent(http.StatusNoContent)
 		}
+		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+	}
+	prepared, err = s.prepareAccessMember(ctx, identity)
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
