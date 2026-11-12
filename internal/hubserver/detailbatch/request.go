@@ -1,4 +1,4 @@
-package hubserver
+package detailbatch
 
 import (
 	"bytes"
@@ -22,19 +22,27 @@ type requestDetailStore struct {
 	reserved int64
 }
 
-func (s *Service) withRequestDetails(ctx context.Context) context.Context {
-	if ctx.Value(detailBatchContextKey{}) != nil || s.runDetailStore() == nil {
+type Deps struct {
+	Store func() attachment.DetailStore
+}
+
+type Service struct{ deps Deps }
+
+func New(deps Deps) *Service { return &Service{deps: deps} }
+
+func (s *Service) WithRequest(ctx context.Context) context.Context {
+	if ctx.Value(detailBatchContextKey{}) != nil || s.deps.Store() == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, detailBatchContextKey{}, &requestDetailStore{owner: s.runDetailStore(), entries: map[attachment.ArchiveReference]*detailBatchEntry{}})
+	return WithStore(ctx, s.deps.Store())
 }
-func (s *Service) runDetailStoreFor(ctx context.Context) attachment.DetailStore {
+func (s *Service) StoreFor(ctx context.Context) attachment.DetailStore {
 	if store, ok := ctx.Value(detailBatchContextKey{}).(*requestDetailStore); ok {
 		return store
 	}
-	return s.runDetailStore()
+	return s.deps.Store()
 }
-func (s *Service) prefetchDetails(ctx context.Context, organization string, refs []attachment.ArchiveReference) {
+func (s *Service) Prefetch(ctx context.Context, organization string, refs []attachment.ArchiveReference) {
 	if store, ok := ctx.Value(detailBatchContextKey{}).(*requestDetailStore); ok {
 		store.prefetch(ctx, organization, refs)
 	}
@@ -110,4 +118,11 @@ func (s *requestDetailStore) prefetch(ctx context.Context, organization string, 
 			close(entry.ready)
 		}
 	}
+}
+
+func Clear(ctx context.Context) context.Context {
+	return context.WithValue(ctx, detailBatchContextKey{}, nil)
+}
+func WithStore(ctx context.Context, owner attachment.DetailStore) context.Context {
+	return context.WithValue(ctx, detailBatchContextKey{}, &requestDetailStore{owner: owner, entries: map[attachment.ArchiveReference]*detailBatchEntry{}})
 }

@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"log/slog"
 	"sync"
 
@@ -63,7 +64,7 @@ func (s *Service) MaintainProjectPage(ctx context.Context, org tracker.Organizat
 	if candidate.Ready {
 		return next, false, nil
 	}
-	ctx = context.WithValue(ctx, detailBatchContextKey{}, nil)
+	ctx = detailbatch.Clear(ctx)
 	ctx = context.WithValue(ctx, changeContentKey{}, nil)
 	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
 	page := projectstore.Page{}

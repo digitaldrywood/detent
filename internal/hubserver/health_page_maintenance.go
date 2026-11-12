@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"io/fs"
 	"log/slog"
 	"slices"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
@@ -148,7 +148,7 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 	if s.runDetailStore() == nil {
 		return workItemStorageUnavailable()
 	}
-	ctx = context.WithValue(ctx, detailBatchContextKey{}, &requestDetailStore{owner: hubmaintenance.LimitDetails(s.runDetailStore()), entries: map[attachment.ArchiveReference]*detailBatchEntry{}})
+	ctx = detailbatch.WithStore(ctx, hubmaintenance.LimitDetails(s.runDetailStore()))
 
 	projectErr := s.maintainHealthProject(ctx, organization, &cursor.project)
 	runnerErr := s.maintainHealthRunner(ctx, organization, &cursor.runner)

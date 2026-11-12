@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"slices"
 	"strconv"
 	"time"
@@ -78,7 +79,7 @@ func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.
 	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
 		return after, false, errors.New("maintenance requires byte-limited payload storage")
 	}
-	ctx = context.WithValue(ctx, detailBatchContextKey{}, nil)
+	ctx = detailbatch.Clear(ctx)
 	ctx = context.WithValue(ctx, changeContentKey{}, nil)
 	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
 	return s.maintainBoardRecord(ctx, organization, after, attempted...)

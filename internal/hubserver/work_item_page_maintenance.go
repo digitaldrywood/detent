@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"log/slog"
 	"strconv"
 
@@ -59,7 +60,7 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 		return err
 	}
 
-	ctx = context.WithValue(ctx, detailBatchContextKey{}, nil)
+	ctx = detailbatch.Clear(ctx)
 	ctx = context.WithValue(ctx, changeContentKey{}, nil)
 	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
 	var candidate viewstore.PageCandidate
