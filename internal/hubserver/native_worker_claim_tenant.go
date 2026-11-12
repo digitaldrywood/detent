@@ -189,7 +189,13 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 		return result, err
 	}
 	if len(page.Items) != 0 {
-		return result, corestore.ErrRevisionConflict
+		report, err := r.RunnerBackendIsolation(ctx, identity.RunnerID)
+		if err != nil {
+			return result, err
+		}
+		if report.SupportsOn(identity.IsolationTier, identity.OS) {
+			return result, corestore.ErrRevisionConflict
+		}
 	}
 	change, err := r.LatestChange(ctx, scope.project, request.WorkItemID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -497,6 +503,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		}
 	}
 	var lease leasestore.Lease
+	var isolationRefused bool
 	err = s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
@@ -513,6 +520,14 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return policyMismatch(err.Error())
 		}
 		if identity.State != "active" || identity.CapacityConfig == nil || !authoritativeNow.Before(identity.CapacityConfig.ObservedAt.Add(runnerauth.HeartbeatTimeout)) || authoritativeNow.Before(identity.CapacityConfig.ObservedAt) {
+			return ErrNoClaimableWork
+		}
+		isolationReport, err := w.RunnerBackendIsolation(ctx, identity.RunnerID)
+		if err != nil {
+			return err
+		}
+		isolationRefused = !isolationReport.SupportsOn(identity.IsolationTier, identity.OS)
+		if isolationRefused {
 			return ErrNoClaimableWork
 		}
 		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, authoritativeNow)
@@ -870,6 +885,11 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		}
 		return nil
 	})
+	if errors.Is(err, ErrNoClaimableWork) && isolationRefused {
+		if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now); recordErr != nil {
+			return leasestore.Lease{}, recordErr
+		}
+	}
 	return lease, err
 }
 

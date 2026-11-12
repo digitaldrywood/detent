@@ -26,35 +26,47 @@ func TestRunnerIsolationClaims(t *testing.T) {
 		{"sandbox", isolation.Report{"codex": {"sandbox", "native-trusted"}}, "sandbox", http.StatusOK, nil, false},
 		{"native cannot sandbox", isolation.Report{"codex": {"native-trusted"}}, "sandbox", http.StatusConflict, nil, false},
 		{"trusted", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusOK, nil, false},
+		{"trusted missing report", nil, "native-trusted", http.StatusConflict, nil, false},
+		{"later heartbeat restores sandbox", isolation.Report{"codex": {"native-trusted"}}, "sandbox", http.StatusConflict, nil, false},
 		{"sandbox project selector excludes trusted runner", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusConflict, []string{"sandbox"}, false},
 		{"mixed backends", isolation.Report{"codex": {"sandbox"}, "claude": {"native-trusted"}}, "sandbox", http.StatusConflict, nil, false},
 		{"probe failed", isolation.Report{"codex": {}}, "sandbox", http.StatusConflict, nil, false},
 		{"stale permissive policy cannot bypass current selector", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusConflict, []string{"sandbox"}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
-			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-			r.redemption.BackendIsolation = test.report
-			r.enroll(t)
-			r.reportCapacity(t)
-			issue := f.create(t, "queued")
-			settings := map[string]any{"expected_revision": 1, "display_name": "Runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}, "isolation_tier": test.tier}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
-			permissive := hubTestPolicy()
-			if test.stalePolicy {
-				approveHubTestPolicy(t, f.service, f.base+"/policy", permissive)
+			service := newPostgresNativeService(t, Config{})
+			for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+				t.Run(string(organization), func(t *testing.T) {
+					f := newNativeFixture(t, service, organization, "Example project")
+					r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+					r.redemption.BackendIsolation = test.report
+					r.enroll(t)
+					r.reportCapacity(t)
+					issue := f.create(t, "queued")
+					settings := map[string]any{"expected_revision": 1, "display_name": "Runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}, "isolation_tier": test.tier}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
+					permissive := hubTestPolicy()
+					if test.stalePolicy {
+						approveHubTestPolicy(t, f.service, f.base+"/policy", permissive)
+					}
+					descriptor := hubTestPolicy()
+					descriptor.Requirements = policy.Requirements{RequiredTags: test.requiredTags}
+					descriptor.ID = ""
+					descriptor = descriptor.WithID()
+					approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+					claimPolicy := descriptor.ID
+					if test.stalePolicy {
+						claimPolicy = permissive.ID
+					}
+					claim := tracker.NativeClaim{PolicyID: claimPolicy, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
+					if test.name == "later heartbeat restores sandbox" {
+						r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}
+						r.reportCapacity(t)
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
+					}
+				})
 			}
-			descriptor := hubTestPolicy()
-			descriptor.Requirements = policy.Requirements{RequiredTags: test.requiredTags}
-			descriptor.ID = ""
-			descriptor = descriptor.WithID()
-			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-			claimPolicy := descriptor.ID
-			if test.stalePolicy {
-				claimPolicy = permissive.ID
-			}
-			claim := tracker.NativeClaim{PolicyID: claimPolicy, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
 		})
 	}
 }

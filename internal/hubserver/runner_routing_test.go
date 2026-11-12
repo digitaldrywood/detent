@@ -257,9 +257,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 					t.Fatalf("invalid request changed recorded %d decisions: %v", count, err)
 				}
 			}
-			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=$1", issue.WorkItemID); err != nil {
-				t.Fatal(err)
-			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "advance-revision"}, ExpectedRevision: issue.Revision, Title: new("Updated issue")}), http.StatusOK)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
 			readDecision()
 			if evidence.LatestDecision.ID == decisionID || evidence.LatestDecision.Data.Decision.WorkItemRevision != issue.Revision+1 {
