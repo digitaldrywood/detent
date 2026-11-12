@@ -112,6 +112,10 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 }
 
 func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
+	return s.readBoardProjection(ctx, scope, params, legacy, false)
+}
+
+func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, params url.Values, legacy, compact bool) (tracker.NativeIssuePage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
@@ -143,7 +147,7 @@ func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, pa
 			return err
 		}
 		var err error
-		page, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy)
+		page, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy, compact)
 		return err
 	}
 	var err error
@@ -162,7 +166,7 @@ func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, pa
 	return page, err
 }
 
-func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values, legacy, compact bool) (tracker.NativeIssuePage, error) {
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return page, workItemStorageUnavailable()
@@ -362,7 +366,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	returned := make([]viewstore.BoardRecord, 0, len(records))
 	used := 0
 	for _, row := range records {
-		if selection.Compact && used+row.ListBytes > operatortool.WorkListPageBytes {
+		if selection.Compact && !compact && used+row.ListBytes > operatortool.WorkListPageBytes {
 			if len(page.Items) == 0 {
 				return page, operatortool.ErrResultTooLarge
 			}
@@ -373,11 +377,42 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 		if err != nil {
 			return page, err
 		}
+		oversized := false
+		if compact {
+			card.Issue.LatestTransitionReason = row.Display.Reason
+			card.Issue.OmittedFields = slices.DeleteFunc(slices.Clone(card.Issue.OmittedFields), func(field string) bool { return field == "latest_transition_reason" })
+			candidate := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: append(slices.Clone(page.Items), card.Issue)}, Total: page.Total}
+			next := cursor
+			next.Issues = boardRecordCursor(row, selection.ClosedOrder, snapshot.Sequence)
+			candidate.NextCursor, err = encodeNativeCursor(next, key)
+			if err != nil {
+				return page, err
+			}
+			raw, err := json.Marshal(operatortool.NativeSummaryPageView(candidate))
+			if err != nil {
+				return page, err
+			}
+			oversized = len(raw) > operatortool.WorkListPageBytes
+			if oversized {
+				if len(page.Items) > 0 {
+					hasMore = true
+					break
+				}
+				card.Issue, err = operatortool.BoundNativeListIssue(card.Issue)
+				if err != nil {
+					return page, err
+				}
+			}
+		}
 		used += row.ListBytes
 		page.Items = append(page.Items, card.Issue)
 		returned = append(returned, row)
 		if includeBoard {
 			page.Cards = append(page.Cards, card)
+		}
+		if oversized {
+			hasMore = len(returned) < len(records) || hasMore
+			break
 		}
 	}
 	if includeWork {
