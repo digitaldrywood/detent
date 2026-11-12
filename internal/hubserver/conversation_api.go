@@ -147,34 +147,7 @@ func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 }
 
 func (s *Service) authorizeConversationOrganization(ctx context.Context, scope nativeScope) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	if scope.credential.Hosted != nil {
-		if string(scope.organization) != s.config.Hosted.OrganizationID {
-			return nativeNotFound()
-		}
-		return nil
-	}
-
-	if s.config.AccessRepository == nil {
-		return nativeNotFound()
-	}
-	return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
-		if _, err := r.AccessTenant(ctx); err != nil {
-			return err
-		}
-		if scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly || scope.credential.Scope == apiScopeOperator && !scope.credential.NativeOnly {
-			return nil
-		}
-		grants, err := r.AccessTokenGrants(ctx, scope.credential.ID, "", 1)
-		if err != nil {
-			return err
-		}
-		if len(grants) == 0 {
-			return nativeNotFound()
-		}
-		return nil
-	})
+	return fromFeatureError(s.requestAuth().AuthorizeOrganization(ctx, s.authInput(scope)))
 }
 
 // Request and response shapes.

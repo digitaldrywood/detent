@@ -7,8 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 
 	"github.com/labstack/echo/v4"
 
@@ -26,54 +27,7 @@ import (
 )
 
 func runnerOperationAllowed(c echo.Context, operations []string) bool {
-	path := c.Path()
-	if (path == runnerBase+"/:runner" || path == runnerBase+"/:runner/routing") && c.Request().Method == http.MethodGet || path == runnerBase+"/:runner/renew" || path == runnerBase+"/:runner/rotate" {
-		return true
-	}
-	operation := ""
-	switch {
-	case path == runnerBase+"/:runner/update/receipt":
-		operation = runnerauth.Heartbeat
-	case path == "/api/v2/capabilities":
-		operation = runnerauth.Read
-	case !strings.HasPrefix(path, nativeBase):
-		return false
-	case path == nativeBase+"/claims", path == nativeBase+"/claims/preview", path == nativeBase+"/claims/wait", path == nativeBase+"/leases/:lease/renew", path == nativeBase+"/leases/:lease/release", path == nativeBase+"/leases/:lease/validate":
-		operation = runnerauth.Claim
-	case c.Request().Method == http.MethodGet:
-		operation = runnerauth.Read
-	case path == nativeBase+"/runner-sessions/find":
-		operation = runnerauth.Read
-	case path == nativeBase+"/runner-sessions", path == nativeBase+"/security-audits/dispositions":
-		operation = runnerauth.Events
-	case path == nativeBase+"/attempts/:attempt/diff", path == nativeBase+"/attempts/:attempt/diff/check":
-		// The diff is written by the runner holding the attempt's lease;
-		// postAttemptDiff re-checks that lease and its fencing token.
-		operation = runnerauth.Claim
-	case path == nativeBase+"/onboarding/issue-intake/result", path == nativeBase+"/onboarding/repositories/report":
-		operation = runnerauth.Heartbeat
-	case path == nativeBase+"/work-items/:item/source-intake":
-		operation = runnerauth.Claim
-	case path == nativeBase+"/machines/register", path == nativeBase+"/machines/:machine/heartbeat", path == nativeBase+"/policy/observed":
-		operation = runnerauth.Heartbeat
-	case strings.HasPrefix(path, nativeBase+"/workspaces/:workspace/worker/"):
-		// Binding, heartbeating and serving a workspace session is the same
-		// authority as claiming work: the runner is taking and holding a
-		// dispatched item, and the item happens to be a worktree rather than
-		// a turn.
-		operation = runnerauth.Claim
-	case path == nativeBase+"/work-items/:item/events", path == nativeBase+"/conversations/:conversation/turn-events" && c.Request().Method == http.MethodPost:
-		operation = runnerauth.Events
-	case path == nativeBase+"/attempts/:attempt/evidence", path == nativeBase+"/attempts/:attempt/evidence/check":
-		operation = runnerauth.Events
-	case path == nativeBase+"/go-test-receipts", path == nativeBase+"/go-test-receipts/attestations":
-		operation = runnerauth.Events
-	case strings.HasPrefix(path, attachmentMetadataBase):
-		operation = runnerauth.Collaborate
-	case strings.HasPrefix(path, nativeBase+"/work-items"):
-		operation = runnerauth.Collaborate
-	}
-	return operation != "" && slices.Contains(operations, operation)
+	return hubauth.RunnerOperationAllowed(c, operations)
 }
 
 func authenticatedRunner(c echo.Context) (apiCredential, error) {

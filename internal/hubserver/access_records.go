@@ -2,22 +2,14 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"fmt"
-	"net/http"
-	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -43,163 +35,19 @@ func (s *Service) accessOrganization() tracker.OrganizationID {
 }
 
 func (s *Service) accessAuthority(scope nativeScope, write bool) accessstore.Authority {
-	authority := accessstore.Authority{CredentialID: scope.credential.ID, Hash: scope.credential.Hash, SessionHash: scope.credential.SessionHash, ProjectID: scope.project, Write: write, Admin: scope.requireHostedAdmin, Action: scope.action, Role: scope.credential.HostedRole}
-	if scope.credential.Hosted != nil && (scope.credential.EntryKey == nil || scope.credential.EntryKey.Kind != "service") {
-		authority.UserID = scope.credential.Hosted.Subject
-		authority.MembershipID = scope.credential.HostedMembership
-	}
-	return authority
+	return hubauth.Authority(s.authInput(scope), write)
 }
 
 func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader, scope nativeScope, write bool) error {
-	if scope.integrationRepository != "" {
-		reader, ok := r.(projectstore.Reader)
-		if !ok {
-			return accessstore.ErrDenied
-		}
-		project, err := reader.ProjectRecord(ctx, scope.project)
-		if err != nil {
-			return err
-		}
-		if project.Core.DeletedAt != nil || project.Core.Profile != "native" || !strings.EqualFold(project.Settings.Repository, scope.integrationRepository) && !strings.EqualFold(project.Settings.CheckoutRepository, scope.integrationRepository) {
-			return accessstore.ErrDenied
-		}
-		if fence := scope.githubIntakeRevision; fence != nil {
-			if fence.batchID != "" {
-				owner, ok := r.(projectstore.IntakeBatchReader)
-				if !ok {
-					return accessstore.ErrDenied
-				}
-				batch, err := owner.ProjectIntakeBatch(ctx, scope.project)
-				if err != nil {
-					return err
-				}
-				if batch.ID != fence.batchID || batch.Revision != fence.revision || batch.Status != "discovering" && batch.Status != "importing" {
-					return corestore.ErrRevisionConflict
-				}
-				if fence.authority == nil {
-					return operatortool.ErrAccessDenied
-				}
-				reader, ok := r.(tenantstore.Reader)
-				if !ok {
-					return ErrPostgresFeatureUnavailable
-				}
-				if err := s.gitHubBatchRequestAuthority(ctx, reader, *fence.authority, fence.requireAdminKey); err != nil {
-					return err
-				}
-				if fence.reporter != nil {
-					if err := s.requireGitHubBatchRunner(ctx, reader, *fence.reporter, fence.reporter.credential.Runner.RunnerID, scope.integrationRepository, s.config.now()); err != nil {
-						return err
-					}
-				}
-
-			}
-			if fence.importID != "" {
-				owner, ok := r.(projectstore.GitHubImportReader)
-				if !ok {
-					return accessstore.ErrDenied
-				}
-				job, err := owner.GitHubImport(ctx, scope.project, fence.importID)
-				if err != nil {
-					return err
-				}
-				if job.Revision != fence.revision {
-					return corestore.ErrRevisionConflict
-				}
-			}
-		}
-		if scope.integrationOwned {
-			return nil
-		}
-	}
-	if s.config.Hosted != nil && scope.organization != s.accessOrganization() {
-		return nativeNotFound()
-	}
-	if scope.credential.EntryKey != nil {
-		if scope.project != "" && !scope.credential.EntryKey.Allows(string(scope.project)) {
-			return nativeNotFound()
-		}
-		required := apikey.ScopeRead
-		if write {
-			required = apikey.ScopeWrite
-		}
-		if scope.requireHostedAdmin {
-			required = apikey.ScopeAdmin
-		}
-		if !hostedKeyAllows(scope.credential.HostedKeyScope, required) || !hostedRoleAllows(scope.credential.HostedRole, required, scope.action) {
-			return s.hiddenAccessDenial(ctx, r, scope, write, auth.ErrHostedIdentity)
-		}
-	}
-	member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, write), s.config.now())
-	if err != nil {
-		return s.hiddenAccessDenial(ctx, r, scope, write, err)
-	}
-	if scope.credential.Hosted != nil && member.UserID != "" {
-		role := lesserHostedRole(member.Role, scope.credential.HostedRole)
-		if scope.requireHostedAdmin && role != "owner" && role != "admin" {
-			return auth.ErrHostedIdentity
-		}
-	}
-	return nil
+	return fromFeatureError(s.requestAuth().Authorize(ctx, r, s.authInput(scope), write))
 }
 
 func (s *Service) hiddenAccessDenial(ctx context.Context, r accessstore.Reader, scope nativeScope, write bool, denial error) error {
-	if scope.project == "" || !errors.Is(denial, accessstore.ErrDenied) && !errors.Is(denial, auth.ErrHostedIdentity) || errors.Is(denial, tenantauth.ErrUnavailable) {
-		return denial
-	}
-	visibility := s.accessAuthority(scope, false)
-	visibility.Admin, visibility.Action = false, ""
-	if write || scope.requireHostedAdmin {
-		if _, err := r.AuthorizeAccess(ctx, visibility, s.config.now()); err == nil {
-			return denial
-		} else if !errors.Is(err, accessstore.ErrDenied) || errors.Is(err, tenantauth.ErrUnavailable) {
-			return err
-		}
-	}
-	visibility.ProjectID = ""
-	if _, err := r.AuthorizeAccess(ctx, visibility, s.config.now()); err != nil {
-		return err
-	}
-	return nativeNotFound()
+	return fromFeatureError(s.requestAuth().HiddenDenial(ctx, r, s.authInput(scope), write, denial))
 }
 
 func (s *Service) accessWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
-	var row accessstore.Session
-	revokedMember := false
-	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-		var err error
-		row, err = r.AccessSession(ctx, hash)
-		if !errors.Is(err, corestore.ErrNotFound) {
-			return err
-		}
-		owner, ok := r.(accessstore.SessionRevocationReader)
-		if !ok {
-			return err
-		}
-		revoked, revokedErr := owner.AccessSessionMemberRevoked(ctx, hash)
-		if revokedErr != nil {
-			return revokedErr
-		}
-		revokedMember = revoked
-		return err
-	})
-	if errors.Is(err, tenantauth.ErrUnavailable) {
-		return auth.Session{}, err
-	}
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-		if revokedMember {
-			return auth.Session{}, errors.Join(auth.ErrInvalidSession, auth.ErrHostedIdentity)
-		}
-		return auth.Session{}, auth.ErrInvalidSession
-	}
-	if err != nil {
-		return auth.Session{}, fmt.Errorf("read hosted session: %w", err)
-	}
-	if row.RevokedAt != nil || !row.ExpiresAt.After(now) || !row.IdentityExpiresAt.After(now) {
-		return auth.Session{}, auth.ErrInvalidSession
-	}
-	identity := &auth.HostedIdentity{Subject: row.Subject, OrganizationID: row.ProviderOrganizationID, SessionID: row.SessionID, CreatedAt: row.IdentityCreatedAt, ExpiresAt: row.IdentityExpiresAt, SupportActor: row.SupportActor, SupportReason: row.SupportReason}
-	return auth.Session{Email: row.Email, Identity: identity, ExpiresAt: row.ExpiresAt}, nil
+	return s.requestAuth().WebSession(ctx, hash, now)
 }
 
 func (s *Service) createAccessWebSession(ctx context.Context, record auth.SessionRecord) error {
@@ -220,127 +68,11 @@ func (s *Service) createAccessWebSession(ctx context.Context, record auth.Sessio
 }
 
 func (s *Service) accessMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
-	if session.Identity == nil || !auth.ValidOrganizationRole(membership.Role.Slug) {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	if s.config.Hosted != nil && s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, SessionHash: hash, HostedRole: membership.Role.Slug, HostedMembership: membership.ID}
-	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-		tenant, err := r.AccessTenant(ctx)
-		if err != nil {
-			return err
-		}
-		if tenant.ProviderID != session.Identity.OrganizationID {
-			return auth.ErrHostedIdentity
-		}
-		member, err := r.AccessMember(ctx, session.Identity.Subject)
-		if err != nil {
-			return err
-		}
-		if !member.Active || member.MembershipID != membership.ID || !auth.ValidOrganizationRole(member.Role) {
-			return auth.ErrHostedIdentity
-		}
-		principal, err := r.AccessCredential(ctx, member.PrincipalID)
-		if err != nil {
-			return err
-		}
-		if principal.RevokedAt != nil {
-			return auth.ErrHostedIdentity
-		}
-		credential.ID, credential.Hash, credential.HostedPrincipal = principal.ID, principal.Hash, principal.ID
-		credential.HostedRole = lesserHostedRole(credential.HostedRole, member.Role)
-		return nil
-	})
-	if errors.Is(err, tenantauth.ErrUnavailable) {
-		return apiCredential{}, http.StatusServiceUnavailable, err
-	}
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	if err != nil {
-		return apiCredential{}, http.StatusInternalServerError, err
-	}
-	return credential, http.StatusOK, nil
+	return nativeCredentialResult(s.requestAuth().MemberCredential(ctx, session, hash, membership))
 }
 
 func (s *Service) authenticateAccessHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
-	_, authorityAvailable := s.config.AccessRepository.(tenantauth.Reader)
-	_, runnerAuthorityAvailable := s.config.AccessRepository.(runnerAuthorityReader)
-	if authorityAvailable || runnerAuthorityAvailable {
-		credential, status, err := s.authenticateRepositoryAPIHash(ctx, s.config.AccessRepository, s.accessOrganization(), hash, renewalRunner, renewalOrganization)
-		if err == nil && status == http.StatusOK && s.config.Hosted == nil && (credential.Hosted != nil || credential.HostedMembership != "") {
-			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
-		}
-		return credential, status, err
-	}
-	var token accessstore.Credential
-	var member accessstore.Member
-	var runner runnerauth.Identity
-	var provider string
-	var runnerRenewal bool
-	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-		var err error
-		token, err = r.CredentialByHash(ctx, hash)
-		if err != nil {
-			return err
-		}
-		if s.config.Hosted == nil && (token.UserID != "" || token.MembershipID != "") {
-			return accessstore.ErrDenied
-		}
-		record, identityErr := r.RunnerIdentityByCredential(ctx, token.ID)
-		if identityErr == nil {
-			if record.OrganizationID != s.accessOrganization() || record.RemovedAt != nil || token.Scope != string(apiScopeWorker) || token.Kind != "service" {
-				return accessstore.ErrDenied
-			}
-			now := s.config.now()
-			runnerRenewal = renewalRunner == record.RunnerID && renewalOrganization == string(record.OrganizationID)
-			if !validRunnerCredentialForRenewal(token, hash, now, runnerRenewal) || !record.ExpiresAt.After(now) && !runnerRenewal {
-				return accessstore.ErrDenied
-			}
-			runner, err = runnerIdentityRecord(ctx, r, record)
-			if err != nil {
-				return err
-			}
-		} else if !errors.Is(identityErr, corestore.ErrNotFound) {
-			return identityErr
-		} else {
-			member, err = r.AuthorizeAccess(ctx, accessstore.Authority{CredentialID: token.ID, Hash: hash, UserID: token.UserID, MembershipID: token.MembershipID}, s.config.now())
-			if err != nil {
-				return err
-			}
-		}
-		if s.config.Hosted == nil {
-			return nil
-		}
-		tenant, err := r.AccessTenant(ctx)
-		provider = tenant.ProviderID
-		return err
-	})
-	if err != nil {
-		if errors.Is(err, tenantauth.ErrUnavailable) {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) {
-			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
-		}
-		return apiCredential{}, http.StatusServiceUnavailable, err
-	}
-	credential := apiCredential{ID: token.ID, Name: token.Name, Scope: apiScope(token.Scope), Hash: hash, NativeOnly: token.NativeOnly, HostedMembership: token.MembershipID, HostedPrincipal: member.PrincipalID, HostedRole: member.Role, HostedKeyKind: token.Kind, HostedProjectAccess: hostedProjectAccess(token.ProjectAccess), Runner: runner, runnerRenewal: runnerRenewal}
-	if token.UserID != "" {
-		credential.Hosted = &auth.HostedIdentity{Subject: token.UserID, OrganizationID: provider}
-		current, err := s.hostedMembership(ctx, credential.Hosted)
-		if err != nil && errors.Is(err, tenantauth.ErrUnavailable) {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		if err != nil || current.ID != token.MembershipID {
-			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
-		}
-		credential.HostedRole = lesserHostedRole(current.Role.Slug, member.Role)
-		credential.HostedKeyScope = apikey.Scope(token.KeyScope)
-	}
-	return credential, http.StatusOK, nil
+	return nativeCredentialResult(s.requestAuth().AuthenticateAccessHash(ctx, hash, renewalRunner, renewalOrganization))
 }
 
 func (s *Service) activeAccessMember(ctx context.Context, user string) (accessstore.Member, error) {

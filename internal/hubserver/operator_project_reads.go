@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -315,32 +317,7 @@ func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r 
 }
 
 func projectAccessFilter(credential apiCredential, project tracker.ProjectID, after tracker.ProjectID, limit int) accessstore.ProjectAccessFilter {
-	filter := accessstore.ProjectAccessFilter{
-		UserID:        hostedSubject(credential),
-		PrincipalID:   credential.HostedPrincipal,
-		CredentialID:  credential.ID,
-		KeyKind:       credential.HostedKeyKind,
-		ProjectAccess: string(credential.HostedProjectAccess),
-		After:         after,
-		Only:          project,
-		Limit:         limit,
-	}
-	if credential.EntryKey != nil {
-		filter.KeyKind = credential.EntryKey.Kind
-		filter.ProjectAccess = credential.EntryKey.Access
-		filter.Projects = make([]tracker.ProjectID, len(credential.EntryKey.Projects))
-		for i, id := range credential.EntryKey.Projects {
-			filter.Projects[i] = tracker.ProjectID(id)
-		}
-		filter.BlockedProjects = make([]tracker.ProjectID, len(credential.EntryKey.BlockedProjects))
-		for i, id := range credential.EntryKey.BlockedProjects {
-			filter.BlockedProjects[i] = tracker.ProjectID(id)
-		}
-		filter.RequireCredentialGrant = false
-	} else {
-		filter.RequireCredentialGrant = credential.HostedProjectAccess == hostedProjectsSelected
-	}
-	return filter
+	return hubauth.ProjectFilter(authCredential(credential), project, after, limit)
 }
 
 func (s *Service) grantedAccessProjects(ctx context.Context, r accessstore.Reader, organization tracker.OrganizationID, credential apiCredential, projects []accessstore.ProjectAccess) ([]accessstore.ProjectAccess, error) {

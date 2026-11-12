@@ -2,12 +2,10 @@ package hubserver
 
 import (
 	"context"
-	"errors"
-	"net/http"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -18,14 +16,7 @@ import (
 )
 
 func runnerIdentityRecord(ctx context.Context, reader tenantstore.Reader, record runnerstore.Identity) (runnerauth.Identity, error) {
-	projects, err := reader.RunnerProjects(ctx, record.RunnerID, runnerstore.MaxRunnerProjectList)
-	if err != nil {
-		return runnerauth.Identity{}, err
-	}
-	return runnerauth.Identity{
-		Binding: runnerauth.Binding{RunnerID: record.RunnerID, MachineID: record.MachineID}, Scope: record.Scope,
-		OrganizationID: record.OrganizationID, ProjectIDs: projects, Operations: append([]string(nil), record.Operations...), ExpiresAt: record.ExpiresAt,
-	}, nil
+	return hubauth.RunnerIdentityRecord(ctx, reader, record)
 }
 
 type runnerAuthorityReader interface {
@@ -37,99 +28,7 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 }
 
 func (s *Service) authenticateRepositoryAPIHash(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
-	if repository == nil || organization == "" {
-		return apiCredential{}, http.StatusServiceUnavailable, nativeRunEventStorageUnavailable()
-	}
-	var token accessstore.Credential
-	var member accessstore.Member
-	var runner runnerauth.Identity
-	var provider string
-	var runnerRenewal bool
-	var err error
-	authority, authorityAvailable := repository.(tenantauth.Reader)
-	runnerAuthority, runnerAuthorityAvailable := repository.(runnerAuthorityReader)
-	var requestCapacity *int
-	if authorityAvailable || runnerAuthorityAvailable {
-		var scope tenantauth.Scope
-		input := tenantauth.RequestIdentity{Local: s.config.Hosted == nil, Organization: organization, CredentialHash: hash, RenewalRunner: renewalRunner, RenewalOrganization: tracker.OrganizationID(renewalOrganization)}
-		if authorityAvailable {
-			scope, err = authority.ReadTenantAuthority(ctx, input)
-		} else {
-			var capacity int
-			scope, capacity, err = runnerAuthority.ReadRunnerAuthority(ctx, input, s.config.now)
-			requestCapacity = &capacity
-		}
-		if err == nil {
-			principal := scope.Principal()
-			if scope.Organization() != organization || scope.ValidAt(s.config.now()) != nil {
-				err = accessstore.ErrDenied
-			} else {
-				token = accessstore.Credential{ID: principal.CredentialID, Name: principal.Name, Scope: principal.Scope, NativeOnly: principal.NativeOnly, UserID: principal.UserID, MembershipID: principal.MembershipID, KeyScope: principal.KeyScope, ProjectAccess: principal.ProjectAccess, Kind: principal.Kind}
-				member = accessstore.Member{PrincipalID: principal.PrincipalID, Role: principal.Role}
-				runner, runnerRenewal, provider = scope.Runner(), scope.Renewal(), principal.ProviderID
-			}
-		}
-	} else {
-		err = repository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			var err error
-			token, err = reader.CredentialByHash(ctx, hash)
-			if err != nil {
-				return err
-			}
-			record, err := reader.RunnerIdentityByCredential(ctx, token.ID)
-			if err == nil {
-				if record.OrganizationID != organization || record.RemovedAt != nil || token.Scope != string(apiScopeWorker) || token.Kind != "service" {
-					return accessstore.ErrDenied
-				}
-				now := s.config.now()
-				runnerRenewal = renewalRunner != "" && renewalRunner == record.RunnerID && renewalOrganization == string(record.OrganizationID)
-				if !validRunnerCredentialForRenewal(token, hash, now, runnerRenewal) || !record.ExpiresAt.After(now) && !runnerRenewal {
-					return accessstore.ErrDenied
-				}
-				runner, err = runnerIdentityRecord(ctx, reader, record)
-				return err
-			}
-			if !errors.Is(err, corestore.ErrNotFound) {
-				return err
-			}
-			member, err = reader.AuthorizeAccess(ctx, accessstore.Authority{CredentialID: token.ID, Hash: hash, UserID: token.UserID, MembershipID: token.MembershipID}, s.config.now())
-			if err != nil {
-				return err
-			}
-			tenant, err := reader.AccessTenant(ctx)
-			if err != nil {
-				return err
-			}
-			provider = tenant.ProviderID
-			return nil
-		})
-	}
-	if err != nil {
-		if errors.Is(err, tenantauth.ErrUnavailable) {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) {
-			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
-		}
-		return apiCredential{}, http.StatusServiceUnavailable, err
-	}
-	credential := apiCredential{ID: token.ID, Name: token.Name, Scope: apiScope(token.Scope), Hash: hash, NativeOnly: token.NativeOnly, HostedMembership: token.MembershipID, HostedPrincipal: member.PrincipalID, HostedRole: member.Role, HostedKeyKind: token.Kind, HostedProjectAccess: hostedProjectAccess(token.ProjectAccess), Runner: runner, runnerRenewal: runnerRenewal, requestCapacity: requestCapacity}
-	if token.UserID != "" {
-		if s.config.Hosted == nil || provider == "" {
-			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
-		}
-		credential.Hosted = &auth.HostedIdentity{Subject: token.UserID, OrganizationID: provider}
-		current, err := s.hostedMembership(ctx, credential.Hosted)
-		if errors.Is(err, tenantauth.ErrUnavailable) {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		if err != nil || current.ID != token.MembershipID {
-			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
-		}
-		credential.HostedRole = lesserHostedRole(current.Role.Slug, member.Role)
-		credential.HostedKeyScope = apikey.Scope(token.KeyScope)
-	}
-	return credential, http.StatusOK, nil
+	return nativeCredentialResult(s.requestAuth().AuthenticateRepositoryAPIHash(ctx, repository, organization, hash, renewalRunner, renewalOrganization))
 }
 
 func (s *Service) readRunnerIdentityTenant(ctx context.Context, organization tracker.OrganizationID, runnerID string) (runnerauth.Identity, error) {
@@ -152,13 +51,5 @@ func (s *Service) readRunnerIdentityTenant(ctx context.Context, organization tra
 }
 
 func validRunnerCredentialForRenewal(token accessstore.Credential, hash string, now time.Time, allowExpired bool) bool {
-	if token.Valid(hash, now) {
-		return true
-	}
-	if !allowExpired || token.ExpiresAt == nil {
-		return false
-	}
-	copy := token
-	copy.ExpiresAt = nil
-	return copy.Valid(hash, now)
+	return hubauth.ValidRunnerCredentialForRenewal(token, hash, now, allowExpired)
 }

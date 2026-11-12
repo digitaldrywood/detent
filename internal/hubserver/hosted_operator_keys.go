@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -77,11 +78,11 @@ func resolveHostedProjectAccess(access hostedProjectAccess, projects []string) (
 }
 
 func hostedKeyAllows(scope, required apikey.Scope) bool {
-	return apikey.ValidScope(scope) && apikey.HasScope([]string{string(scope)}, required)
+	return hubauth.KeyAllows(scope, required)
 }
 
 func hostedRoleAllows(role string, scope apikey.Scope, action ...string) bool {
-	return accessstore.RoleAllows(role, scope, action...)
+	return hubauth.RoleAllows(role, scope, action...)
 }
 
 func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCredential, created string, expires sql.NullString) (apiCredential, error) {

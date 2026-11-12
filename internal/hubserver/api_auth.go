@@ -3,20 +3,17 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type apiScope string
@@ -95,59 +92,7 @@ type tokenResponse struct {
 }
 
 func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			credential, status, err := s.authenticateAPIRequest(c)
-			if err != nil {
-				if isNativeNotFound(err) {
-					return s.nativeAPIError(c, err)
-				}
-				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-					return s.nativeAPIError(c, operatorAuthorizationError(err))
-				}
-				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
-			}
-			if s.config.Hosted != nil {
-				if credential.Hosted != nil && c.Path() == runnerBase+"/:runner/routing" && c.Request().Method == http.MethodGet {
-					return s.requireHostedAdministration(next)(c)
-				}
-				if credential.Hosted == nil && credential.Runner.RunnerID == "" && c.Path() != "/health" && !s.hostedArtifactPublisher(c, credential) && !s.hostedChangeCheckPrincipal(c, credential) {
-					return s.nativeAPIError(c, nativeNotFound())
-				}
-				hostedRoute := c.Path() == "/api/v2/capabilities" || strings.HasPrefix(c.Path(), nativeBase) || c.Path() == "/api/v2/organizations" && c.Request().Method == http.MethodGet || c.Path() == nativeOrganizationIssuePath && hostedReadRequest(c)
-				if configurationRankRequest(c) {
-					hostedRoute = true
-				}
-				if credential.Hosted != nil && (!hostedRoute || strings.HasSuffix(c.Path(), "/checks")) {
-					return s.nativeAPIError(c, nativeNotFound())
-				}
-			}
-			if credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite) && !hostedReadRequest(c) {
-				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API key permission does not permit writes", nil)
-			}
-			if credential.Runner.RunnerID != "" && !runnerOperationAllowed(c, credential.Runner.Operations) {
-				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "Runner does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
-			}
-			if strings.HasPrefix(c.Path(), "/api/v1/") {
-				if credential.NativeOnly {
-					return s.refusedAPIError(c, http.StatusForbidden, "native_protocol_required", "Scoped tokens require the native protocol", apiErrorResponse{Code: "native_protocol_required", Message: "Scoped tokens require the native protocol"})
-				}
-				if err := s.requireCompatibilityResource(c); err != nil {
-					return err
-				}
-			}
-			for _, scope := range allowed {
-				if credential.Scope == scope || credential.Scope == apiScopeAdmin {
-					c.Set("hub_api_credential", credential)
-					if err := s.admitRunnerRequest(c, credential); err != nil || c.Response().Committed {
-						return err
-					}
-					return next(c)
-				}
-			}
-			return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
-		}
-	}
+	return s.requireHubauthAPI(allowed...)
 }
 
 func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, error) {
@@ -155,47 +100,7 @@ func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, er
 }
 
 func (s *Service) authenticateAPIRequestContext(ctx context.Context, c echo.Context) (apiCredential, int, error) {
-	if credential, ok := entryBoardCredential(ctx); ok {
-		return credential, http.StatusOK, nil
-	}
-	if s.config.Hosted == nil && (c.Request().Header.Get(echo.HeaderAuthorization) == "" || strings.HasPrefix(c.Request().Header.Get(echo.HeaderAuthorization), "Basic ")) {
-		credential, status, err := s.localAppCredentialContext(ctx, c)
-		if status == http.StatusUnauthorized {
-			c.Response().Header().Set("WWW-Authenticate", `Basic realm="Detent Hub", charset="UTF-8"`)
-		}
-		return credential, status, err
-	}
-	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindKey {
-		return s.entryKeyCredential(c.Request().Context(), claims)
-	}
-	if s.config.Hosted != nil && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
-		return s.hostedCredential(c.Request().Context(), c)
-	}
-	token, err := apiBearerToken(c)
-	if err != nil {
-		return apiCredential{}, http.StatusUnauthorized, err
-	}
-	renewalRunner, renewalOrganization := "", ""
-	if c.Request().Method == http.MethodPost && c.Path() == runnerBase+"/:runner/renew" {
-		renewalRunner, renewalOrganization = c.Param("runner"), c.Param("organization")
-	}
-	organization := c.Param("organization")
-	if organization == "" && c.Path() == "/api/v2/capabilities" {
-		organization = strings.TrimSpace(c.Request().Header.Get("X-Detent-Organization"))
-		if organization == "" && s.config.Hosted != nil {
-			organization = s.config.Hosted.OrganizationID
-		}
-	}
-	if s.config.TenantRepository != nil && organization != "" {
-		if hinted := strings.TrimSpace(c.Request().Header.Get("X-Detent-Organization")); hinted != "" && hinted != organization {
-			return apiCredential{}, http.StatusUnauthorized, fmt.Errorf("%w: organization scope does not match request", operatortool.ErrAccessDenied)
-		}
-		if runnerEventCommandRoute(c) {
-			ctx = context.WithValue(ctx, runnerEventAuthorityKey{}, true)
-		}
-		return s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(token), renewalRunner, renewalOrganization)
-	}
-	return s.authenticateAPIToken(ctx, token, renewalRunner, renewalOrganization)
+	return nativeCredentialResult(s.requestAuth().AuthenticateRequest(ctx, c))
 }
 
 // authenticateAPIToken is shared by HTTP authentication and operator execution.
@@ -223,23 +128,7 @@ func (credential apiCredential) timeValid(now time.Time, created string, expires
 }
 
 func apiBearerToken(c echo.Context) (string, error) {
-	if c == nil || c.Request() == nil {
-		return "", fmt.Errorf("%w: request is required", operatortool.ErrAccessDenied)
-	}
-	authorizations := c.Request().Header.Values(echo.HeaderAuthorization)
-	if len(authorizations) != 1 {
-		return "", fmt.Errorf("%w: one authorization header is required", operatortool.ErrAccessDenied)
-	}
-	value := strings.TrimSpace(authorizations[0])
-	scheme, token, ok := strings.Cut(value, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return "", fmt.Errorf("%w: bearer authorization is required", operatortool.ErrAccessDenied)
-	}
-	token = strings.TrimSpace(token)
-	if token == "" || len(token) > maxBearerTokenBytes {
-		return "", fmt.Errorf("%w: bearer token is invalid", operatortool.ErrAccessDenied)
-	}
-	return token, nil
+	return hubauth.BearerToken(c)
 }
 
 func (s *Service) createAPIToken(c echo.Context) error {

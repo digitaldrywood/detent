@@ -11,13 +11,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -101,47 +102,7 @@ func (s *Service) hostedMembership(ctx context.Context, identity *auth.HostedIde
 }
 
 func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCredential, int, error) {
-	session, hash, err := s.hostedSession(ctx, c)
-	if err != nil {
-		if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		if errors.Is(err, auth.ErrInvalidSession) && errors.Is(err, auth.ErrHostedIdentity) {
-			return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-		}
-		if errors.Is(err, auth.ErrInvalidSession) {
-			return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
-		}
-		return apiCredential{}, http.StatusServiceUnavailable, errors.Join(tenantauth.ErrUnavailable, err)
-	}
-	var credential apiCredential
-	var status int
-	read := func() (apiCredential, int, error) {
-		if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
-			return s.hostedSharedCredential(ctx, session, hash, claims.Role)
-		}
-		return s.hostedSessionCredential(ctx, session, hash)
-	}
-	credential, status, err = read()
-	if status == http.StatusForbidden {
-		completed, completionErr := s.completePendingHostedInvitation(ctx, session)
-		if completionErr != nil {
-			return apiCredential{}, http.StatusServiceUnavailable, completionErr
-		}
-		if completed {
-			credential, status, err = read()
-		}
-	}
-	if err != nil && status >= http.StatusInternalServerError {
-		return apiCredential{}, http.StatusServiceUnavailable, errors.Join(tenantauth.ErrUnavailable, err)
-	}
-	if err == nil {
-		c.Set("hub_api_credential", credential)
-	}
-	if status == http.StatusForbidden && c.Path() == "/api/v2/organizations" && c.Request().Method == http.MethodGet && session.Identity != nil && session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-		return apiCredential{}, http.StatusNotFound, nativeNotFound()
-	}
-	return credential, status, err
+	return nativeCredentialResult(s.requestAuth().HostedCredential(ctx, c))
 }
 
 // hostedSharedCredential builds a browser credential from the shared entry's
@@ -149,27 +110,7 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 // so the tenant does not call the provider on the request path; membership
 // removal reaches the tenant through the entry's revocation of the binding.
 func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Session, hash, role string) (apiCredential, int, error) {
-	var member accessstore.Member
-	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-		var err error
-		member, err = r.AccessMember(ctx, session.Identity.Subject)
-		return err
-	})
-	if errors.Is(err, tenantauth.ErrUnavailable) {
-		return apiCredential{}, http.StatusServiceUnavailable, err
-	}
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) || errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	if err != nil {
-		return apiCredential{}, http.StatusServiceUnavailable, errors.Join(tenantauth.ErrUnavailable, err)
-	}
-	if !member.Active || !auth.ValidOrganizationRole(role) {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	membership := auth.Membership{ID: member.MembershipID}
-	membership.Role.Slug = lesserHostedRole(role, member.Role)
-	return s.accessMemberCredential(ctx, session, hash, membership)
+	return nativeCredentialResult(s.requestAuth().SharedCredential(ctx, session, hash, role))
 }
 
 // completePendingHostedInvitation finishes an invitation the provider already
@@ -239,14 +180,7 @@ func lesserHostedRole(a, b string) string {
 }
 
 func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Session, hash string) (apiCredential, int, error) {
-	membership, err := s.hostedMembership(ctx, session.Identity)
-	if err != nil {
-		if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		return apiCredential{}, http.StatusForbidden, err
-	}
-	return s.hostedMemberCredential(ctx, session, hash, membership)
+	return nativeCredentialResult(s.requestAuth().SessionCredential(ctx, session, hash))
 }
 
 func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
@@ -275,7 +209,7 @@ func (s *Service) hostedCSRFValid(c echo.Context) bool {
 }
 
 func hostedReadRequest(c echo.Context) bool {
-	return c.Request().Method == http.MethodGet || c.Request().Method == http.MethodHead
+	return hubauth.ReadRequest(c)
 }
 
 type hostedMutationContext struct{}
