@@ -3,6 +3,8 @@ package hubserver
 import (
 	"context"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+
 	"github.com/digitaldrywood/detent/internal/tracker"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -229,22 +231,42 @@ func (s *Service) requireHubauthAPI(allowed ...apiScope) echo.MiddlewareFunc {
 	}
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			return s.requestAuth().RequireAPI(hubauth.APIOptions{
-				Classify: operatorAuthorizationError,
-				Error:    func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
-				Refuse: func(c echo.Context, status int, code, message string, body any) error {
-					return s.refusedAPIError(c, status, code, message, body)
-				},
-				IsNotFound:           func(err error) bool { return isNativeNotFound(fromFeatureError(err)) },
-				HostedAdministration: s.requireHostedAdministration,
-				ArtifactPublisher: func(c echo.Context, v hubauth.Credential) bool {
-					return s.hostedArtifactPublisher(c, nativeCredential(v))
-				},
-				ChangePrincipal: func(c echo.Context, v hubauth.Credential) bool {
-					return s.hostedChangeCheckPrincipal(c, nativeCredential(v))
-				},
-				ConfigurationRank: configurationRankRequest, CompatibilityResource: s.requireCompatibilityResource,
-				AdmitRunner: func(c echo.Context, v hubauth.Credential) error { return s.admitRunnerRequest(c, nativeCredential(v)) },
+			return s.requestAuth().RequireAPI(s.hubauthAPIOptions(), roles...)(next)(c)
+		}
+	}
+}
+
+func (s *Service) hubauthAPIOptions() hubauth.APIOptions {
+	return hubauth.APIOptions{
+		Classify: operatorAuthorizationError,
+		Error:    func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		Refuse: func(c echo.Context, status int, code, message string, body any) error {
+			return s.refusedAPIError(c, status, code, message, body)
+		},
+		IsNotFound:           func(err error) bool { return isNativeNotFound(fromFeatureError(err)) },
+		HostedAdministration: s.requireHostedAdministration,
+		ArtifactPublisher: func(c echo.Context, v hubauth.Credential) bool {
+			return s.hostedArtifactPublisher(c, nativeCredential(v))
+		},
+		ChangePrincipal: func(c echo.Context, v hubauth.Credential) bool {
+			return s.hostedChangeCheckPrincipal(c, nativeCredential(v))
+		},
+		ConfigurationRank: configurationRankRequest, CompatibilityResource: s.requireCompatibilityResource,
+		AdmitRunner: func(c echo.Context, v hubauth.Credential) error { return s.admitRunnerRequest(c, nativeCredential(v)) },
+	}
+}
+
+func (s *Service) requireHubauthNative(allowed ...apiScope) echo.MiddlewareFunc {
+	roles := make([]hubauth.TokenScope, len(allowed))
+	for i, role := range allowed {
+		roles[i] = hubauth.TokenScope(role)
+	}
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			return s.requestAuth().Native(hubauth.NativeMiddlewareOptions{API: s.hubauthAPIOptions(), Authorize: s.authorizeNativeReadRequest,
+				ArchiveContext: func(c echo.Context, _ hubapi.Scope) context.Context {
+					return s.archiveRequestContext(c, nativeRequestScope(c))
+				}, Audit: s.hostedAudit,
 			}, roles...)(next)(c)
 		}
 	}

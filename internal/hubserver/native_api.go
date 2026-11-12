@@ -465,25 +465,7 @@ func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
 }
 
 func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return s.requireAPIScope(roles...)(func(c echo.Context) error {
-			if err := s.authorizeNativeReadRequest(c); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			scope := nativeRequestScope(c)
-			if c.Request().Method == http.MethodGet {
-				ctx := s.archiveRequestContext(c, scope)
-				c.SetRequest(c.Request().WithContext(ctx))
-			}
-			c.Response().Header().Set("Cache-Control", "no-store")
-			if scope.credential.Hosted != nil && (!hostedReadRequest(c) || scope.credential.Hosted.SupportActor != "") {
-				if err := s.hostedAudit(c.Request().Context(), scope.credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
-					return s.nativeAPIError(c, err)
-				}
-			}
-			return next(c)
-		})
-	}
+ return s.requireHubauthNative(roles...)
 }
 
 func (s *Service) resolveNativeRequestScope(readCtx context.Context, c echo.Context) error {
