@@ -77,7 +77,7 @@ func newRunnerEventFacts(s *session, writer tenantstore.Writer, c eventstore.Run
 		lock = " FOR UPDATE"
 	}
 	queueRunFact(b, &f.item, `SELECT * FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=COALESCE(NULLIF($3,''),(SELECT issue_id FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$4),(SELECT i.native_id FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE l.organization_id=$1 AND l.lease_id=$5 AND i.project_id=$2))`+lock, s.organization, c.Project, c.WorkItem, c.SessionID, c.LeaseID)
-	queueRunFact(b, &f.lease, `SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason,project_id,runner_id FROM leases WHERE organization_id=$1 AND lease_id=$2`+lock, s.organization, c.LeaseID)
+	queueRunFact(b, &f.lease, `SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason,project_id,runner_id,isolation_tier FROM leases WHERE organization_id=$1 AND lease_id=$2`+lock, s.organization, c.LeaseID)
 	var authorityClock *time.Time
 	if s.leaseClock != nil {
 		f.now = s.leaseClock().UTC()

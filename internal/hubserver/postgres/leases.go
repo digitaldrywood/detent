@@ -74,7 +74,7 @@ func (s *session) LeaseBySession(ctx context.Context, sessionID string) (leasest
 	if strings.TrimSpace(sessionID) == "" {
 		return leasestore.Lease{}, tracker.ErrInvalidClaimRequest
 	}
-	statement := `SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason,project_id,runner_id
+	statement := `SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason,project_id,runner_id,isolation_tier
  FROM leases WHERE organization_id=$1 AND session_id=$2`
 	if !s.readOnly {
 		statement += ` FOR UPDATE`
@@ -82,7 +82,7 @@ func (s *session) LeaseBySession(ctx context.Context, sessionID string) (leasest
 	var row leasestore.Lease
 	err := s.db.QueryRow(ctx, statement, s.organization, sessionID).Scan(
 		&row.OrganizationID, &row.LeaseID, &row.FencingToken, &row.IssueID, &row.MachineID, &row.SessionID,
-		&row.WorkItemRevision, &row.LandingCapacity, &row.AcquiredAt, &row.RenewedAt, &row.ExpiresAt, &row.ReleasedAt, &row.ReleaseReason, &row.ProjectID, &row.RunnerID,
+		&row.WorkItemRevision, &row.LandingCapacity, &row.AcquiredAt, &row.RenewedAt, &row.ExpiresAt, &row.ReleasedAt, &row.ReleaseReason, &row.ProjectID, &row.RunnerID, &row.IsolationTier,
 	)
 	if err != nil {
 		return leasestore.Lease{}, mapError(ctx, err)
@@ -283,6 +283,7 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 	if request.IssueID <= 0 || request.ExpectedRevision <= 0 || strings.TrimSpace(request.LeaseID) == "" || strings.TrimSpace(request.MachineID) == "" || strings.TrimSpace(request.SessionID) == "" || request.TTL < time.Microsecond || request.LandingCapacity < 0 {
 		return leasestore.Lease{}, tracker.ErrInvalidClaimRequest
 	}
+	var isolationTier *string
 	if request.RunnerID != "" {
 		identity, err := s.runnerIdentityRow(ctx, `runner_id=$2`, request.RunnerID)
 		if err != nil {
@@ -291,6 +292,7 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 		if string(identity.MachineID) != request.MachineID || identity.RemovedAt != nil {
 			return leasestore.Lease{}, corestore.ErrNotFound
 		}
+		isolationTier = new(identity.IsolationTier)
 	}
 	issue, err := s.queries.LockClaimIssue(ctx, pgquery.LockClaimIssueParams{OrganizationID: s.organization, ID: request.IssueID})
 	if err != nil {
@@ -343,7 +345,7 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 		OrganizationID: s.organization, LeaseID: request.LeaseID, IssueID: request.IssueID,
 		MachineID: request.MachineID, SessionID: request.SessionID, WorkItemRevision: issue.Revision,
 		LandingCapacity: request.LandingCapacity, Now: now, ExpiresAt: now.Add(request.TTL),
-		ProjectID: new(issue.ProjectID), RunnerID: request.RunnerID,
+		ProjectID: new(issue.ProjectID), RunnerID: request.RunnerID, IsolationTier: isolationTier,
 	})
 	if err != nil {
 		return leasestore.Lease{}, mapError(ctx, err)
@@ -354,7 +356,7 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 		WorkItemRevision: row.WorkItemRevision, LandingCapacity: row.LandingCapacity,
 		AcquiredAt: row.AcquiredAt, RenewedAt: row.RenewedAt, ExpiresAt: row.ExpiresAt,
 		ReleasedAt: row.ReleasedAt, ReleaseReason: row.ReleaseReason,
-		ProjectID: row.LeaseProjectID, RunnerID: row.RunnerID,
+		ProjectID: row.LeaseProjectID, RunnerID: row.RunnerID, IsolationTier: row.IsolationTier,
 	}, s.heartbeat(ctx, row.MachineID, now)
 }
 
@@ -469,7 +471,7 @@ func (s *session) mutateLease(ctx context.Context, fence leasestore.Fence, opera
 		WorkItemRevision: row.WorkItemRevision, LandingCapacity: row.LandingCapacity,
 		AcquiredAt: row.AcquiredAt, RenewedAt: row.RenewedAt, ExpiresAt: row.ExpiresAt,
 		ReleasedAt: row.ReleasedAt, ReleaseReason: row.ReleaseReason,
-		ProjectID: row.LeaseProjectID, RunnerID: row.RunnerID,
+		ProjectID: row.LeaseProjectID, RunnerID: row.RunnerID, IsolationTier: row.IsolationTier,
 	}, nil
 }
 

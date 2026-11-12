@@ -23,13 +23,13 @@ SELECT clock_timestamp()::timestamptz AS now;
 
 -- name: InsertLease :one
 WITH lease_created AS (
- INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,project_id,runner_id)
- VALUES ($1,$2,$3,$4,$5,$6,sqlc.arg(landing_capacity),sqlc.arg(now),sqlc.arg(now),sqlc.arg(expires_at),sqlc.arg(project_id),NULLIF(sqlc.arg(runner_id)::text,'')) RETURNING *
+ INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,project_id,runner_id,isolation_tier)
+ VALUES ($1,$2,$3,$4,$5,$6,sqlc.arg(landing_capacity),sqlc.arg(now),sqlc.arg(now),sqlc.arg(expires_at),sqlc.arg(project_id),NULLIF(sqlc.arg(runner_id)::text,''),sqlc.narg(isolation_tier)::text) RETURNING *
 ), assigned AS (
  INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at)
  SELECT organization_id,lease_id,runner_id,acquired_at FROM lease_created WHERE runner_id IS NOT NULL
 )
-SELECT lease_created.organization_id, lease_created.lease_id, lease_created.fencing_token, lease_created.issue_id, lease_created.machine_id, lease_created.session_id, lease_created.work_item_revision, lease_created.landing_capacity, lease_created.acquired_at, lease_created.renewed_at, lease_created.expires_at, lease_created.released_at, lease_created.release_reason, lease_created.project_id AS lease_project_id, lease_created.runner_id FROM lease_created;
+SELECT lease_created.organization_id, lease_created.lease_id, lease_created.fencing_token, lease_created.issue_id, lease_created.machine_id, lease_created.session_id, lease_created.work_item_revision, lease_created.landing_capacity, lease_created.acquired_at, lease_created.renewed_at, lease_created.expires_at, lease_created.released_at, lease_created.release_reason, lease_created.project_id AS lease_project_id, lease_created.runner_id, lease_created.isolation_tier FROM lease_created;
 
 -- name: UpdateLeaseLandingCapacity :one
 UPDATE leases SET landing_capacity=GREATEST(landing_capacity,sqlc.arg(landing_capacity)::bigint)
@@ -215,8 +215,8 @@ WITH lease_locked AS MATERIALIZED (
  UPDATE machines m SET last_heartbeat_at=greatest(m.last_heartbeat_at,at.now),updated_at=greatest(m.updated_at,at.now)
  FROM lease_changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND sqlc.arg(operation)::text<>'expire'
 )
-SELECT lease_changed.organization_id,lease_changed.lease_id,lease_changed.fencing_token,lease_changed.issue_id,lease_changed.machine_id,lease_changed.session_id,lease_changed.work_item_revision,lease_changed.landing_capacity,lease_changed.acquired_at,lease_changed.renewed_at,lease_changed.expires_at,lease_changed.released_at,lease_changed.release_reason,lease_changed.project_id AS lease_project_id,lease_changed.runner_id,true AS applied FROM lease_changed
-UNION ALL SELECT lease_locked.organization_id,lease_locked.lease_id,lease_locked.fencing_token,lease_locked.issue_id,lease_locked.machine_id,lease_locked.session_id,lease_locked.work_item_revision,lease_locked.landing_capacity,lease_locked.acquired_at,lease_locked.renewed_at,lease_locked.expires_at,lease_locked.released_at,lease_locked.release_reason,lease_locked.project_id AS lease_project_id,lease_locked.runner_id,false AS applied FROM lease_locked WHERE NOT EXISTS (SELECT 1 FROM lease_changed);
+SELECT lease_changed.organization_id,lease_changed.lease_id,lease_changed.fencing_token,lease_changed.issue_id,lease_changed.machine_id,lease_changed.session_id,lease_changed.work_item_revision,lease_changed.landing_capacity,lease_changed.acquired_at,lease_changed.renewed_at,lease_changed.expires_at,lease_changed.released_at,lease_changed.release_reason,lease_changed.project_id AS lease_project_id,lease_changed.runner_id,lease_changed.isolation_tier,true AS applied FROM lease_changed
+UNION ALL SELECT lease_locked.organization_id,lease_locked.lease_id,lease_locked.fencing_token,lease_locked.issue_id,lease_locked.machine_id,lease_locked.session_id,lease_locked.work_item_revision,lease_locked.landing_capacity,lease_locked.acquired_at,lease_locked.renewed_at,lease_locked.expires_at,lease_locked.released_at,lease_locked.release_reason,lease_locked.project_id AS lease_project_id,lease_locked.runner_id,lease_locked.isolation_tier,false AS applied FROM lease_locked WHERE NOT EXISTS (SELECT 1 FROM lease_changed);
 
 -- name: LeaseMutationFacts :one
 SELECT sqlc.embed(l),sqlc.embed(i)

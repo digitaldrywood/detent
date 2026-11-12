@@ -2047,6 +2047,7 @@ type Lease struct {
 	ReleaseReason    string
 	ProjectID        *tracker.ProjectID
 	RunnerID         *string
+	IsolationTier    *string
 }
 
 type LeasePolicyBinding struct {

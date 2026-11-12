@@ -150,6 +150,7 @@ type Lease struct {
 	ReleaseReason    string
 	ProjectID        *tracker.ProjectID `json:"-"`
 	RunnerID         *string            `json:"-"`
+	IsolationTier    *string            `json:"-"`
 }
 
 type Attempt struct {

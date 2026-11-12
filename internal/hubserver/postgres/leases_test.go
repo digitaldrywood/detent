@@ -1009,6 +1009,49 @@ func TestLeaseClaimReplayOnlyRaisesLandingCapacity(t *testing.T) {
 	}
 }
 
+func TestLeaseIsolationTierConstraint(t *testing.T) {
+	admin := template.Database(t)
+	r, _ := repositoryFor(t, admin, smallPool())
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedLeaseFamily(t, r, organization)
+		lease := claimLease(t, r, organization, leaseClaim(1))
+		for _, test := range []struct {
+			name  string
+			tier  *string
+			valid bool
+		}{
+			{"sandbox", new("sandbox"), true},
+			{"native trusted", new("native-trusted"), true},
+			{"legacy null", nil, true},
+			{"empty", new(""), false},
+			{"unknown", new("root"), false},
+		} {
+			t.Run(string(organization)+"/"+test.name, func(t *testing.T) {
+				_, err := admin.ExecContext(t.Context(), `UPDATE leases SET isolation_tier=$3 WHERE organization_id=$1 AND lease_id=$2`, organization, lease.LeaseID, test.tier)
+				if !test.valid {
+					var state interface{ SQLState() string }
+					if !errors.As(err, &state) || state.SQLState() != "23514" {
+						t.Fatalf("invalid tier error = %v, want check violation", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := r.ReadLeases(t.Context(), organization, corestore.Serving, func(reader leasestore.Reader) error {
+					stored, err := reader.Lease(t.Context(), lease.LeaseID)
+					if err == nil && ((stored.IsolationTier == nil) != (test.tier == nil) || test.tier != nil && *stored.IsolationTier != *test.tier) {
+						t.Fatalf("stored tier = %v, want %v", stored.IsolationTier, test.tier)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
 func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
 	for _, scenario := range []string{"repeated observations", "issue across days"} {
 		t.Run(scenario, func(t *testing.T) {

@@ -309,9 +309,13 @@ func (p tenantNativeRunEventParticipant) NativeLeaseResponse(ctx context.Context
 	} else if !errors.Is(err, corestore.ErrNotFound) {
 		return NativeLeaseResponseDetails{}, err
 	}
+	tier := identity.IsolationTier
+	if lease.IsolationTier != nil {
+		tier = *lease.IsolationTier
+	}
 	return NativeLeaseResponseDetails{
 		WorkItemID: item.NativeID, PolicyID: pinned.PolicyID,
-		IsolationPolicy:     &isolation.Policy{Tier: identity.IsolationTier, HostServices: slices.Clone(identity.HostServices)},
+		IsolationPolicy:     &isolation.Policy{Tier: tier, HostServices: slices.Clone(identity.HostServices)},
 		ProviderReservation: reservation,
 	}, nil
 }

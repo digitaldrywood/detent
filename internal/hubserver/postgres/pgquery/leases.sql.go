@@ -134,7 +134,7 @@ AND NOT EXISTS (
  SELECT 1 FROM native_attempts a WHERE a.organization_id=l.organization_id AND a.lease_id=l.lease_id
  AND a.fencing_token=l.fencing_token AND a.status='running'
 )
-RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id
+RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id, l.isolation_tier
 `
 
 type ExpireLeaseParams struct {
@@ -168,12 +168,13 @@ func (q *Queries) ExpireLease(ctx context.Context, arg ExpireLeaseParams) (Lease
 		&i.ReleaseReason,
 		&i.ProjectID,
 		&i.RunnerID,
+		&i.IsolationTier,
 	)
 	return i, err
 }
 
 const getActiveIssueLease = `-- name: GetActiveIssueLease :one
-SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id FROM leases
+SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id, isolation_tier FROM leases
 WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL AND expires_at>COALESCE($3::timestamptz,clock_timestamp())
 `
 
@@ -202,6 +203,7 @@ func (q *Queries) GetActiveIssueLease(ctx context.Context, arg GetActiveIssueLea
 		&i.ReleaseReason,
 		&i.ProjectID,
 		&i.RunnerID,
+		&i.IsolationTier,
 	)
 	return i, err
 }
@@ -334,7 +336,7 @@ func (q *Queries) GetLatestIssueAttemptsByIssues(ctx context.Context, arg GetLat
 }
 
 const getLease = `-- name: GetLease :one
-SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id FROM leases WHERE organization_id=$1 AND lease_id=$2
+SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id, isolation_tier FROM leases WHERE organization_id=$1 AND lease_id=$2
 `
 
 type GetLeaseParams struct {
@@ -361,6 +363,7 @@ func (q *Queries) GetLease(ctx context.Context, arg GetLeaseParams) (Lease, erro
 		&i.ReleaseReason,
 		&i.ProjectID,
 		&i.RunnerID,
+		&i.IsolationTier,
 	)
 	return i, err
 }
@@ -515,13 +518,13 @@ func (q *Queries) InsertAttemptReceipt(ctx context.Context, arg InsertAttemptRec
 
 const insertLease = `-- name: InsertLease :one
 WITH lease_created AS (
- INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,project_id,runner_id)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,NULLIF($11::text,'')) RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id
+ INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,project_id,runner_id,isolation_tier)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,NULLIF($11::text,''),$12::text) RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id, isolation_tier
 ), assigned AS (
  INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at)
  SELECT organization_id,lease_id,runner_id,acquired_at FROM lease_created WHERE runner_id IS NOT NULL
 )
-SELECT lease_created.organization_id, lease_created.lease_id, lease_created.fencing_token, lease_created.issue_id, lease_created.machine_id, lease_created.session_id, lease_created.work_item_revision, lease_created.landing_capacity, lease_created.acquired_at, lease_created.renewed_at, lease_created.expires_at, lease_created.released_at, lease_created.release_reason, lease_created.project_id AS lease_project_id, lease_created.runner_id FROM lease_created
+SELECT lease_created.organization_id, lease_created.lease_id, lease_created.fencing_token, lease_created.issue_id, lease_created.machine_id, lease_created.session_id, lease_created.work_item_revision, lease_created.landing_capacity, lease_created.acquired_at, lease_created.renewed_at, lease_created.expires_at, lease_created.released_at, lease_created.release_reason, lease_created.project_id AS lease_project_id, lease_created.runner_id, lease_created.isolation_tier FROM lease_created
 `
 
 type InsertLeaseParams struct {
@@ -536,6 +539,7 @@ type InsertLeaseParams struct {
 	ExpiresAt        time.Time
 	ProjectID        *tracker.ProjectID
 	RunnerID         string
+	IsolationTier    *string
 }
 
 type InsertLeaseRow struct {
@@ -554,6 +558,7 @@ type InsertLeaseRow struct {
 	ReleaseReason    string
 	LeaseProjectID   *tracker.ProjectID
 	RunnerID         *string
+	IsolationTier    *string
 }
 
 func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (InsertLeaseRow, error) {
@@ -569,6 +574,7 @@ func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (Inser
 		arg.ExpiresAt,
 		arg.ProjectID,
 		arg.RunnerID,
+		arg.IsolationTier,
 	)
 	var i InsertLeaseRow
 	err := row.Scan(
@@ -587,6 +593,7 @@ func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (Inser
 		&i.ReleaseReason,
 		&i.LeaseProjectID,
 		&i.RunnerID,
+		&i.IsolationTier,
 	)
 	return i, err
 }
@@ -675,7 +682,7 @@ func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttempt
 }
 
 const leaseMutationFacts = `-- name: LeaseMutationFacts :one
-SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id,i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id, i.doctor_identity_revision, i.terminal_entered_at, i.archive_restored_at, i.archive_restore_known, i.source_revision, i.source_scheduled, i.source_observed_at
+SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id, l.isolation_tier,i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id, i.doctor_identity_revision, i.terminal_entered_at, i.archive_restored_at, i.archive_restore_known, i.source_revision, i.source_scheduled, i.source_observed_at
 FROM leases l
 JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id AND p.deleted_at IS NULL
@@ -712,6 +719,7 @@ func (q *Queries) LeaseMutationFacts(ctx context.Context, arg LeaseMutationFacts
 		&i.Lease.ReleaseReason,
 		&i.Lease.ProjectID,
 		&i.Lease.RunnerID,
+		&i.Lease.IsolationTier,
 		&i.Issue.OrganizationID,
 		&i.Issue.ID,
 		&i.Issue.NativeID,
@@ -970,7 +978,7 @@ func (q *Queries) LocalAttemptMatches(ctx context.Context, arg LocalAttemptMatch
 }
 
 const lockActiveLease = `-- name: LockActiveLease :one
-SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id FROM leases WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL FOR UPDATE
+SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id, isolation_tier FROM leases WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL FOR UPDATE
 `
 
 type LockActiveLeaseParams struct {
@@ -997,6 +1005,7 @@ func (q *Queries) LockActiveLease(ctx context.Context, arg LockActiveLeaseParams
 		&i.ReleaseReason,
 		&i.ProjectID,
 		&i.RunnerID,
+		&i.IsolationTier,
 	)
 	return i, err
 }
@@ -1056,7 +1065,7 @@ func (q *Queries) LockClaimIssue(ctx context.Context, arg LockClaimIssueParams) 
 }
 
 const lockLease = `-- name: LockLease :one
-SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE
+SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id, isolation_tier FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE
 `
 
 type LockLeaseParams struct {
@@ -1083,6 +1092,7 @@ func (q *Queries) LockLease(ctx context.Context, arg LockLeaseParams) (Lease, er
 		&i.ReleaseReason,
 		&i.ProjectID,
 		&i.RunnerID,
+		&i.IsolationTier,
 	)
 	return i, err
 }
@@ -1095,7 +1105,7 @@ WITH locked_project AS MATERIALIZED (
  WHERE l.organization_id=$1 AND l.lease_id=$2 AND l.fencing_token=$3
  FOR SHARE OF p
 )
-SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id FROM leases l
+SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id, l.isolation_tier FROM leases l
 JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 JOIN locked_project p ON p.organization_id=i.organization_id AND p.id=i.project_id
 WHERE l.organization_id=$1 AND l.lease_id=$2 AND l.fencing_token=$3
@@ -1127,6 +1137,7 @@ func (q *Queries) LockLeaseExpiryScope(ctx context.Context, arg LockLeaseExpiryS
 		&i.ReleaseReason,
 		&i.ProjectID,
 		&i.RunnerID,
+		&i.IsolationTier,
 	)
 	return i, err
 }
@@ -1189,7 +1200,7 @@ func (q *Queries) LockRunnerHostRevision(ctx context.Context, arg LockRunnerHost
 
 const mutateLeaseCommand = `-- name: MutateLeaseCommand :one
 WITH lease_locked AS MATERIALIZED (
- SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id FROM leases l
+ SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id, l.isolation_tier FROM leases l
  WHERE l.organization_id=$1 AND l.lease_id=$2
  FOR UPDATE OF l
 ), at AS MATERIALIZED (
@@ -1219,7 +1230,7 @@ WITH lease_locked AS MATERIALIZED (
   WHERE a.organization_id=lease_locked.organization_id AND a.issue_id=lease_locked.issue_id
   AND a.lease_id=lease_locked.lease_id AND a.fencing_token=lease_locked.fencing_token AND a.status='running'
  ))
- RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id
+ RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id, l.isolation_tier
 ), cancelled AS (
  UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,updated_at=c.released_at
  FROM lease_changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
@@ -1228,8 +1239,8 @@ WITH lease_locked AS MATERIALIZED (
  UPDATE machines m SET last_heartbeat_at=greatest(m.last_heartbeat_at,at.now),updated_at=greatest(m.updated_at,at.now)
  FROM lease_changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND $4::text<>'expire'
 )
-SELECT lease_changed.organization_id,lease_changed.lease_id,lease_changed.fencing_token,lease_changed.issue_id,lease_changed.machine_id,lease_changed.session_id,lease_changed.work_item_revision,lease_changed.landing_capacity,lease_changed.acquired_at,lease_changed.renewed_at,lease_changed.expires_at,lease_changed.released_at,lease_changed.release_reason,lease_changed.project_id AS lease_project_id,lease_changed.runner_id,true AS applied FROM lease_changed
-UNION ALL SELECT lease_locked.organization_id,lease_locked.lease_id,lease_locked.fencing_token,lease_locked.issue_id,lease_locked.machine_id,lease_locked.session_id,lease_locked.work_item_revision,lease_locked.landing_capacity,lease_locked.acquired_at,lease_locked.renewed_at,lease_locked.expires_at,lease_locked.released_at,lease_locked.release_reason,lease_locked.project_id AS lease_project_id,lease_locked.runner_id,false AS applied FROM lease_locked WHERE NOT EXISTS (SELECT 1 FROM lease_changed)
+SELECT lease_changed.organization_id,lease_changed.lease_id,lease_changed.fencing_token,lease_changed.issue_id,lease_changed.machine_id,lease_changed.session_id,lease_changed.work_item_revision,lease_changed.landing_capacity,lease_changed.acquired_at,lease_changed.renewed_at,lease_changed.expires_at,lease_changed.released_at,lease_changed.release_reason,lease_changed.project_id AS lease_project_id,lease_changed.runner_id,lease_changed.isolation_tier,true AS applied FROM lease_changed
+UNION ALL SELECT lease_locked.organization_id,lease_locked.lease_id,lease_locked.fencing_token,lease_locked.issue_id,lease_locked.machine_id,lease_locked.session_id,lease_locked.work_item_revision,lease_locked.landing_capacity,lease_locked.acquired_at,lease_locked.renewed_at,lease_locked.expires_at,lease_locked.released_at,lease_locked.release_reason,lease_locked.project_id AS lease_project_id,lease_locked.runner_id,lease_locked.isolation_tier,false AS applied FROM lease_locked WHERE NOT EXISTS (SELECT 1 FROM lease_changed)
 `
 
 type MutateLeaseCommandParams struct {
@@ -1259,6 +1270,7 @@ type MutateLeaseCommandRow struct {
 	ReleaseReason    string
 	LeaseProjectID   *tracker.ProjectID
 	RunnerID         *string
+	IsolationTier    *string
 	Applied          bool
 }
 
@@ -1290,6 +1302,7 @@ func (q *Queries) MutateLeaseCommand(ctx context.Context, arg MutateLeaseCommand
 		&i.ReleaseReason,
 		&i.LeaseProjectID,
 		&i.RunnerID,
+		&i.IsolationTier,
 		&i.Applied,
 	)
 	return i, err
@@ -1595,7 +1608,7 @@ const updateLeaseLandingCapacity = `-- name: UpdateLeaseLandingCapacity :one
 UPDATE leases SET landing_capacity=GREATEST(landing_capacity,$1::bigint)
 WHERE organization_id=$2 AND lease_id=$3
 AND fencing_token=$4::bigint AND released_at IS NULL
-RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id
+RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id, isolation_tier
 `
 
 type UpdateLeaseLandingCapacityParams struct {
@@ -1629,6 +1642,7 @@ func (q *Queries) UpdateLeaseLandingCapacity(ctx context.Context, arg UpdateLeas
 		&i.ReleaseReason,
 		&i.ProjectID,
 		&i.RunnerID,
+		&i.IsolationTier,
 	)
 	return i, err
 }
