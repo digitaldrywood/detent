@@ -541,7 +541,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return tracker.ErrMachineNotFound
 		}
 		if err := plan.descriptor.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
-			return policyMismatch(err.Error())
+			return &nativeError{Code: "selector_no_match", Message: err.Error(), status: http.StatusConflict}
 		}
 		if identity.State != "active" || identity.CapacityConfig == nil || !authoritativeNow.Before(identity.CapacityConfig.ObservedAt.Add(runnerauth.HeartbeatTimeout)) || authoritativeNow.Before(identity.CapacityConfig.ObservedAt) {
 			return ErrNoClaimableWork
