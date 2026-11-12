@@ -341,7 +341,11 @@ func (s *Service) executeSpritePoolSettingsCommand(ctx context.Context, scope na
 				}
 			}
 			if oldBootstrapKey != nil {
-				object, err := w.ArchiveObject(ctx, contentArchiveID(string(scope.organization), attachment.ArchiveReference{Key: *oldBootstrapKey}))
+				archives, ok := w.(attemptArchiveReader)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				object, err := archives.ArchiveObjectByKey(ctx, *oldBootstrapKey)
 				if err != nil {
 					return err
 				}
@@ -806,7 +810,11 @@ func (s *Service) readSpritePoolSnapshot(ctx context.Context, scope nativeScope,
 			return err
 		}
 		if row.BootstrapObjectKey != nil {
-			object, err := r.ArchiveObject(ctx, contentArchiveID(string(scope.organization), attachment.ArchiveReference{Key: *row.BootstrapObjectKey}))
+			archives, ok := r.(attemptArchiveReader)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			object, err := archives.ArchiveObjectByKey(ctx, *row.BootstrapObjectKey)
 			if err != nil {
 				return err
 			}
