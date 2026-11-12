@@ -1044,9 +1044,13 @@ func updateReporterProject(t *testing.T, service *Service, project tracker.Proje
 		if err != nil {
 			return err
 		}
+		visual := record.Settings.RequireVisualAttachments
 		update(&record)
-		_, err = w.UpdateProjectRecord(t.Context(), record)
-		return err
+		updated, err := w.UpdateProjectRecord(t.Context(), record)
+		if err != nil || record.Settings.RequireVisualAttachments == visual {
+			return err
+		}
+		return w.UpdateProjectContent(t.Context(), project, updated.Core.ContentSettingsRevision, record.Settings.RequireVisualAttachments)
 	}); err != nil {
 		t.Fatal(err)
 	}
