@@ -22,10 +22,6 @@ func snapshotPage(cursor string, total int, next bool) map[string]any {
 }
 
 func TestFetchIssueSnapshot(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name, token                 string
@@ -99,10 +95,6 @@ func TestFetchIssueSnapshot(t *testing.T) {
 }
 
 func TestFetchIssueSnapshotBoundsCompleteDiscussion(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

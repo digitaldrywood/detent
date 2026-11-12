@@ -1,12 +1,13 @@
 package procgroup
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -61,10 +62,6 @@ func TestSandboxCapabilityChild(t *testing.T) {
 }
 
 func TestConfigureSandboxCapabilities(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	parent := sandboxCapabilityState(t)
 	var ordinary map[string]string
 	for _, tier := range []string{"", isolation.NativeTrusted, isolation.Sandbox} {
@@ -75,7 +72,7 @@ func TestConfigureSandboxCapabilities(t *testing.T) {
 			}
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSandboxCapabilityChild$", "--", "literal argument")
 			cmd.Dir = t.TempDir()
-			cmd.Env = append(os.Environ(), "DETENT_CAPABILITY_TEST_CHILD=1", "DETENT_CAPABILITY_TEST_VALUE=kept")
+			cmd.Env = append(os.Environ(), "DETENT_CAPABILITY_TEST_CHILD=1", "DETENT_CAPABILITY_TEST_VALUE=kept", "GOCOVERDIR="+t.TempDir())
 			originalPath, originalArgs := cmd.Path, strings.Join(cmd.Args, "\x00")
 			Configure(ctx, cmd)
 			Configure(ctx, cmd)
@@ -128,20 +125,50 @@ func TestConfigureSandboxCapabilities(t *testing.T) {
 	})
 
 	t.Run("sandbox_without_inheritance", func(t *testing.T) {
-		inherited, err := strconv.ParseUint(parent["CapInh"], 16, 64)
+		ctx := isolation.WithPolicy(t.Context(), isolation.Policy{Tier: isolation.Sandbox})
+		cmd := exec.CommandContext(ctx, os.Args[0])
+		cmd.Env = append(os.Environ(), "DETENT_CAPABILITY_ZERO_HELPER=1", "GOCOVERDIR="+t.TempDir(),
+			"DETENT_CAPABILITY_EMPTY_PATH="+t.TempDir(), "DETENT_CAPABILITY_ZERO_PATH="+filepath.Join(t.TempDir(), "does-not-run"))
+		Configure(ctx, cmd)
+		input, err := cmd.StdinPipe()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if inherited != 0 {
-			t.Skip("parent has inherited capabilities; covered by real drop fixture")
+		output, err := cmd.StdoutPipe()
+		if err != nil {
+			input.Close()
+			t.Fatal(err)
 		}
-		ctx := isolation.WithPolicy(t.Context(), isolation.Policy{Tier: isolation.Sandbox})
-		cmd := exec.CommandContext(ctx, filepath.Join(t.TempDir(), "does-not-run"))
-		originalPath := cmd.Path
-		t.Setenv("PATH", t.TempDir())
-		Configure(ctx, cmd)
-		if cmd.Err != nil || cmd.Path != originalPath {
-			t.Fatal("zero-capability launch unnecessarily requires drop utility")
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Start(); err != nil {
+			input.Close()
+			t.Fatal(err)
+		}
+		finished := false
+		t.Cleanup(func() {
+			input.Close()
+			if !finished {
+				cmd.Process.Kill()
+				cmd.Wait()
+			}
+		})
+		marker := make([]byte, len("ready\n"))
+		if _, err := io.ReadFull(output, marker); err != nil {
+			waitErr := cmd.Wait()
+			finished = true
+			t.Fatalf("zero-capability helper readiness: %v; exit = %v, stderr = %s", err, waitErr, &stderr)
+		}
+		if string(marker) != "ready\n" {
+			t.Fatalf("zero-capability helper marker = %q", marker)
+		}
+		if _, err := io.WriteString(input, "exit\n"); err != nil {
+			t.Fatal(err)
+		}
+		err = cmd.Wait()
+		finished = true
+		if err != nil {
+			t.Fatalf("zero-capability helper: %v: %s", err, &stderr)
 		}
 	})
 }

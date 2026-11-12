@@ -58,9 +58,6 @@ type nativeLandingCIState struct {
 
 func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, mergeStatus int, sourceConflict, currentBase bool, ci ...*nativeLandingCIState) *nativeLandingJourney {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("real git and native landing integration")
-	}
 	if mergeStatus == 0 {
 		mergeStatus = http.StatusMethodNotAllowed
 	}

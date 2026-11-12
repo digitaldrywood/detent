@@ -1,3 +1,5 @@
+//go:build !windows
+
 package dispatch
 
 import (
@@ -5,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -17,14 +18,8 @@ import (
 )
 
 func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable PostgreSQL integration")
-	}
-
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture runs POSIX setup hooks")
-	}
+
 	h := newNativeChangeHub(t, true)
 	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "setup failure must not claim this", Body: issueContractTestSections, State: "Todo"})
 	if err != nil {

@@ -24,10 +24,6 @@ import (
 )
 
 func TestHubPolicyCommandsAndDoctor(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	fixture := newEnrolledPolicyProject(t, "---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  repository: example-org/orders\n---\nWork the issue.\n")
 	configPath, root := fixture.configPath, filepath.Dir(fixture.configPath)

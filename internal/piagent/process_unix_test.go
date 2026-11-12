@@ -23,10 +23,6 @@ import (
 // pipes, protocol failure, timeout, and cancellation. Readiness is a pipe ack,
 // and each assertion observes actual process identity rather than a sleep.
 func TestRunTurnReapsProcessGroup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	for _, mode := range []string{"complete", "dead_parent", "protocol", "cancel", "timeout", "stall"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
@@ -92,10 +88,6 @@ func TestRunTurnReapsProcessGroup(t *testing.T) {
 }
 
 func TestPiLifecycleProcess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	mode := os.Getenv("DETENT_PI_LIFECYCLE")
 	if mode == "" {
 		return
@@ -171,10 +163,6 @@ func TestPiLifecycleProcess(t *testing.T) {
 
 // A startup error must retain stderr without interpreting diagnostics as RPC.
 func TestRunTurnCapturesStderr(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	backend, err := NewAgentBackend(Options{CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
 		return exec.CommandContext(ctx, "sh", "-c", "echo fixture-startup-error >&2; exit 1")
 	}})

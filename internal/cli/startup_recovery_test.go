@@ -156,10 +156,6 @@ func TestRootCommandHandlesBootFailureWithStartupRecovery(t *testing.T) {
 }
 
 func TestStartupCrashLoopNotifierUsesHealthWebhook(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var body bytes.Buffer

@@ -22,7 +22,22 @@ var (
 
 func runWorkspaceTests(m *testing.M) int {
 	stubReapProcessScanner()
-	var err error
+	packageTemp, err := os.MkdirTemp("", "workspace-tests-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer func() {
+		if err := os.RemoveAll(packageTemp); err != nil {
+			fmt.Fprintf(os.Stderr, "remove package temp: %v\n", err)
+		}
+	}()
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		if err := os.Setenv(key, packageTemp); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
 	sourceRepoSeedDir, err = os.MkdirTemp("", "workspace-source-seed-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -63,10 +78,6 @@ func buildSourceRepoSeed(ctx context.Context, dir string) error {
 }
 
 func TestSourceRepoFixturesAreIndependent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	for _, name := range []string{"existing directory", "nested directory"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

@@ -658,10 +658,6 @@ func TestRuntimeGitHubTokenRefresherUsesCurrentGlobalConfig(t *testing.T) {
 }
 
 func TestRuntimeGitHubTokenRefresherResolvesConfiguredGHSentinelWithoutActionsToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service, profiling, or filesystem watcher integration")
-	}
-
 	tests := []struct {
 		name      string
 		expire    bool

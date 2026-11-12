@@ -8,10 +8,6 @@ import (
 )
 
 func TestLocalGitMergePreservesRemoteHistory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name        string

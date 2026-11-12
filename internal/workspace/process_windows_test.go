@@ -46,10 +46,6 @@ func TestWindowsScratchProcessAlive(t *testing.T) {
 }
 
 func TestWindowsScratchInspectionConfirmsProcessExit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	scratch := t.TempDir()

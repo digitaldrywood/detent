@@ -19,10 +19,6 @@ import (
 )
 
 func TestValidationQueueCancellation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, olderWaiter := range []bool{false, true} {
 		t.Run(fmt.Sprintf("older_waiter=%t", olderWaiter), func(t *testing.T) {
@@ -81,10 +77,6 @@ func TestValidationQueueCancellation(t *testing.T) {
 }
 
 func TestValidationQueueDeadlines(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, stage := range []string{"registration", "validation"} {
 		t.Run(stage, func(t *testing.T) {
@@ -116,10 +108,6 @@ func TestValidationQueueDeadlines(t *testing.T) {
 }
 
 func TestValidationQueueContextEndsAfterPosition(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name    string
@@ -208,10 +196,6 @@ func TestValidationQueueCanceledBeforeAcquisition(t *testing.T) {
 }
 
 func TestValidationWaitDeadlineDoesNotReleaseActiveLock(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "validation.lock")
@@ -231,10 +215,6 @@ func TestValidationWaitDeadlineDoesNotReleaseActiveLock(t *testing.T) {
 }
 
 func TestValidationQueueProcessRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 	for _, mode := range []string{"waiter", "registration", "holder", "crashed holder"} {
 		t.Run(mode, func(t *testing.T) {
@@ -242,7 +222,7 @@ func TestValidationQueueProcessRecovery(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
 			defer cancel()
 			path := filepath.Join(t.TempDir(), "validation.lock")
-			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestValidationQueueProcessHelper$")
+			command := exec.CommandContext(ctx, os.Args[0])
 			command.Env = append(os.Environ(), "DETENT_CHECKLOCK_QUEUE_HELPER="+path, "DETENT_CHECKLOCK_QUEUE_MODE="+mode, "GOCOVERDIR="+t.TempDir())
 			ready := newNotifyingWriter()
 			var stderr bytes.Buffer
@@ -317,45 +297,7 @@ func TestValidationQueueProcessRecovery(t *testing.T) {
 	}
 }
 
-func TestValidationQueueProcessHelper(t *testing.T) {
-	path := os.Getenv("DETENT_CHECKLOCK_QUEUE_HELPER")
-	if path == "" {
-		t.Skip("helper process")
-	}
-	mode := os.Getenv("DETENT_CHECKLOCK_QUEUE_MODE")
-	var lock *instancelock.Lock
-	var err error
-	switch mode {
-	case "waiter":
-		var waiter validationWaiter
-		waiter, err = registerValidationWaiter(t.Context(), path)
-		lock = waiter.lock
-	case "registration":
-		lock, err = instancelock.Acquire(path + ".queue.lock")
-	default:
-		lock, err = instancelock.Acquire(path)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	fmt.Fprintln(os.Stdout, "ready")
-	if _, err := io.ReadFull(os.Stdin, make([]byte, len("exit\n"))); err != nil {
-		t.Fatal(err)
-	}
-	if mode == "holder" {
-		if err := lock.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	os.Exit(0)
-}
-
 func TestValidationQueueDiagnostics(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
 	defer cancel()
@@ -402,10 +344,6 @@ func acquireTestLock(t *testing.T, path string) *instancelock.Lock {
 }
 
 func TestValidationQueueCapacity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("subprocess queue capacity and handoff integration")
-	}
-
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "validation.lock")
 	for i := range validationQueueLimit {
@@ -503,10 +441,6 @@ func TestValidationQueueRejectsInvalidState(t *testing.T) {
 }
 
 func TestValidationQueueHealthyHandoffs(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "validation.lock")
@@ -550,10 +484,6 @@ func TestValidationQueueHealthyHandoffs(t *testing.T) {
 }
 
 func TestValidationQueueWaitBudgets(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name       string
@@ -664,10 +594,6 @@ func TestValidationQueueWaitBudgets(t *testing.T) {
 }
 
 func TestValidationQueueUnheldAdvancement(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "validation.lock")

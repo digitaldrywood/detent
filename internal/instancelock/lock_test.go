@@ -1,20 +1,22 @@
 package instancelock
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestAcquireExcludesAnotherProcessAndReleases(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "detent.db.lock")
@@ -23,14 +25,47 @@ func TestAcquireExcludesAnotherProcessAndReleases(t *testing.T) {
 		t.Fatalf("Acquire() error = %v", err)
 	}
 
-	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestAcquireHelperProcess$")
-	command.Env = append(os.Environ(), "DETENT_INSTANCE_LOCK_HELPER="+path)
-	output, err := command.CombinedOutput()
+	command := exec.CommandContext(t.Context(), os.Args[0])
+	command.Env = append(os.Environ(), "DETENT_INSTANCE_LOCK_HELPER="+path, "GOCOVERDIR="+t.TempDir())
+	input, err := command.StdinPipe()
 	if err != nil {
-		t.Fatalf("helper process error = %v, output = %s", err, output)
+		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(string(output)); !strings.HasPrefix(got, "held\n") {
-		t.Fatalf("helper output = %q, want held marker", got)
+	output, err := command.StdoutPipe()
+	if err != nil {
+		input.Close()
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		input.Close()
+		t.Fatal(err)
+	}
+	finished := false
+	t.Cleanup(func() {
+		input.Close()
+		if !finished {
+			command.Process.Kill()
+			command.Wait()
+		}
+	})
+	marker, err := bufio.NewReader(output).ReadString('\n')
+	if err != nil {
+		waitErr := command.Wait()
+		finished = true
+		t.Fatalf("helper readiness: %v; exit = %v, stderr = %s", err, waitErr, &stderr)
+	}
+	if !strings.HasPrefix(marker, "held\n") {
+		t.Fatalf("helper output = %q, want held marker", marker)
+	}
+	if _, err := io.WriteString(input, "exit\n"); err != nil {
+		t.Fatal(err)
+	}
+	err = command.Wait()
+	finished = true
+	if err != nil {
+		t.Fatalf("helper process error = %v, stderr = %s", err, &stderr)
 	}
 
 	if err := lock.Close(); err != nil {
@@ -46,10 +81,6 @@ func TestAcquireExcludesAnotherProcessAndReleases(t *testing.T) {
 }
 
 func TestAcquireReportsLiveOwner(t *testing.T) {
-	if testing.Short() {
-		t.Skip("filesystem lock and fsync integration")
-	}
-
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "detent.db.lock")
@@ -77,10 +108,6 @@ func TestAcquireReportsLiveOwner(t *testing.T) {
 }
 
 func TestAcquireRecoversStaleOwnerAndClearsOnClose(t *testing.T) {
-	if testing.Short() {
-		t.Skip("filesystem lock and fsync integration")
-	}
-
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "detent.db.lock")
@@ -120,10 +147,6 @@ func TestAcquireRecoversStaleOwnerAndClearsOnClose(t *testing.T) {
 }
 
 func TestAcquireRecoversLegacyPIDOnlyLock(t *testing.T) {
-	if testing.Short() {
-		t.Skip("filesystem lock and fsync integration")
-	}
-
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "detent.db.lock")
@@ -144,33 +167,41 @@ func TestAcquireRecoversLegacyPIDOnlyLock(t *testing.T) {
 	}
 }
 
-func TestAcquireHelperProcess(t *testing.T) {
-	path := os.Getenv("DETENT_INSTANCE_LOCK_HELPER")
-	if path == "" {
-		t.Skip("helper process")
+func TestMain(m *testing.M) {
+	if path := os.Getenv("DETENT_INSTANCE_LOCK_HELPER"); path != "" {
+		if err := acquireHelperProcess(path); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
+	if err := testenv.ClearGitEnvironment(); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
 
+func acquireHelperProcess(path string) error {
 	lock, err := Acquire(path)
 	if errors.Is(err, ErrHeld) {
 		if _, err := os.Stdout.WriteString("held\n"); err != nil {
-			t.Fatalf("WriteString() error = %v", err)
+			return fmt.Errorf("write held marker: %w", err)
 		}
-		return
+		if _, err := io.ReadFull(os.Stdin, make([]byte, len("exit\n"))); err != nil {
+			return fmt.Errorf("wait for exit: %w", err)
+		}
+		return nil
 	}
 	if err != nil {
-		t.Fatalf("Acquire() error = %v", err)
+		return fmt.Errorf("acquire lock: %w", err)
 	}
 	if err := lock.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
+		return fmt.Errorf("close acquired lock: %w", err)
 	}
-	t.Fatal("Acquire() succeeded while parent held lock")
+	return errors.New("Acquire() succeeded while parent held lock")
 }
 
 func TestDashboardAddressMetadata(t *testing.T) {
-	if testing.Short() {
-		t.Skip("filesystem lock and fsync integration")
-	}
-
 	for _, tt := range []struct {
 		address string
 		invalid bool

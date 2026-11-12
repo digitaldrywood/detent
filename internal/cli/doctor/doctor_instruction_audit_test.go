@@ -14,10 +14,6 @@ import (
 )
 
 func TestDoctorTokenAuditWorkflowSourceDrift(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	for _, tt := range []struct {
 		name, ref, branch string
 		modify            bool
@@ -73,10 +69,6 @@ func TestDoctorTokenAuditInstructionBudget(t *testing.T) {
 }
 
 func TestDoctorTokenAuditInstructionFiles(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	for _, tt := range []struct {
 		name              string
 		override, missing bool
@@ -124,10 +116,6 @@ func TestDoctorTokenAuditInstructionFiles(t *testing.T) {
 }
 
 func TestDoctorTokenAuditTransitiveInstructions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
 		t.Run(name, func(t *testing.T) {
 			root, _ := initDoctorWorkflowSourceRepository(t)
@@ -213,10 +201,6 @@ func TestDoctorTokenAuditNonGitInstructions(t *testing.T) {
 }
 
 func TestDoctorTokenAuditExternalWorkflow(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	root, _ := initDoctorWorkflowSourceRepository(t)
 	external, _ := initDoctorWorkflowSourceRepository(t)
 	runDoctorWorkflowSourceGit(t, root, "checkout", "-b", "side")
@@ -241,10 +225,6 @@ func TestDoctorTokenAuditFastGateConflict(t *testing.T) {
 }
 
 func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	for _, tt := range []struct {
 		name, agents string
 		want         Status
@@ -282,10 +262,6 @@ func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
 }
 
 func TestDoctorEffectiveWorkflowDeduplicated(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	for _, tt := range []struct {
 		name               string
 		external, distinct bool

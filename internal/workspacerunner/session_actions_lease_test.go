@@ -109,10 +109,6 @@ func TestSessionWaitsForActionsBeforeReleasingTheWorktree(t *testing.T) {
 }
 
 func TestSessionStopsASetupActionWhenTheLeaseIsLost(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	t.Parallel()
 	root := worktreeWith(t)
 	hub := newScriptedHub(t, creationCheckout(workspacesession.WorktreeFresh))

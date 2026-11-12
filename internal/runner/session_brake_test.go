@@ -15,10 +15,6 @@ import (
 )
 
 func TestRunnerStopsSessionBeyondMaxTurns(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 
 	startedAt := time.Date(2026, 7, 30, 14, 0, 0, 0, time.UTC)
@@ -81,10 +77,6 @@ func TestRunnerStopsSessionBeyondMaxTurns(t *testing.T) {
 }
 
 func TestRunnerNormalizesProviderTurnLimitBreach(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 
 	startedAt := time.Date(2026, 7, 30, 14, 30, 0, 0, time.UTC)

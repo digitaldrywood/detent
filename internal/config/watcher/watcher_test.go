@@ -579,7 +579,7 @@ func TestFileWatcherWatchesSymlinkTargetWrites(t *testing.T) {
 	linkPath := filepath.Join(linkDir, "global.yaml")
 	writeGlobalConfig(t, targetPath, 2)
 	if err := os.Symlink(targetPath, linkPath); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
+		t.Fatalf("symlink unavailable: %v", err)
 	}
 
 	w, err := NewFile(linkPath, func(path string) (globalconfig.Config, error) {
@@ -627,7 +627,7 @@ func TestFileWatcherWatchesSymlinkTargetTouches(t *testing.T) {
 	linkPath := filepath.Join(linkDir, "global.yaml")
 	writeGlobalConfig(t, targetPath, 2)
 	if err := os.Symlink(targetPath, linkPath); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
+		t.Fatalf("symlink unavailable: %v", err)
 	}
 
 	w, err := NewFile(linkPath, func(path string) (globalconfig.Config, error) {
@@ -675,7 +675,7 @@ func TestFileWatcherRefreshesRetargetedSymlinkTarget(t *testing.T) {
 	writeGlobalConfig(t, firstPath, 2)
 	writeGlobalConfig(t, nextPath, 3)
 	if err := os.Symlink(firstPath, linkPath); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
+		t.Fatalf("symlink unavailable: %v", err)
 	}
 
 	w, err := NewFile(linkPath, func(path string) (globalconfig.Config, error) {
@@ -776,7 +776,7 @@ func TestFileWatcherReconcilesMissedEvents(t *testing.T) {
 				linkPath := filepath.Join(linkDir, "global.yaml")
 				writeGlobalConfig(t, targetPath, 2)
 				if err := os.Symlink(targetPath, linkPath); err != nil {
-					t.Skipf("symlink unavailable: %v", err)
+					t.Fatalf("symlink unavailable: %v", err)
 				}
 				return linkPath, []step{{
 					mutate: func(t *testing.T) {

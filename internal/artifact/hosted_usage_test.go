@@ -98,10 +98,6 @@ func TestHostedTrafficAndAdmittedCompletion(t *testing.T) {
 }
 
 func TestHostedRelayQuotaAndRemoteLimits(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name   string

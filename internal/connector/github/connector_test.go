@@ -16,10 +16,6 @@ import (
 )
 
 func TestConnectorUsesDefaultLoggerForClientDiagnostics(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	var logs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
@@ -66,10 +62,6 @@ func TestConnectorUsesDefaultLoggerForClientDiagnostics(t *testing.T) {
 }
 
 func TestConnectorInstanceLoginConcurrentAuthenticateAndRead(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var count atomic.Int64
@@ -118,10 +110,6 @@ func TestConnectorInstanceLoginConcurrentAuthenticateAndRead(t *testing.T) {
 }
 
 func TestConnectorAuthenticateReportsViewerProblems(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {

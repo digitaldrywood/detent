@@ -580,10 +580,6 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 }
 
 func testSharedEntryTwoOrganizationsOneOrigin(t *testing.T, configureStorage func(*Config)) {
-	if testing.Short() {
-		t.Skip("PostgreSQL integration")
-	}
-
 	t.Parallel()
 	f := newEntryFixture(t, configureStorage)
 	alice := newBrowser(t, f.service.Handler())
@@ -715,10 +711,6 @@ func testSharedEntryTwoOrganizationsOneOrigin(t *testing.T, configureStorage fun
 }
 
 func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("PostgreSQL integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name       string
@@ -829,10 +821,6 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 }
 
 func TestSharedEntryBoundaries(t *testing.T) {
-	if testing.Short() {
-		t.Skip("PostgreSQL integration")
-	}
-
 	t.Parallel()
 	f := newEntryFixture(t)
 	f.service.config.Build = buildinfo.Info{Version: "1.2.4", Commit: strings.Repeat("a", 40)}
@@ -975,10 +963,6 @@ func entryTenantTransport(t *testing.T, handler http.Handler) (http.RoundTripper
 }
 
 func TestSharedEntryLoginTransactions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("PostgreSQL integration")
-	}
-
 	t.Parallel()
 	f := newEntryFixture(t)
 	alice := newBrowser(t, f.service.Handler())
@@ -1235,10 +1219,6 @@ func stateOf(t *testing.T, response page) string {
 }
 
 func TestSharedEntryInvitation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("PostgreSQL integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name, message           string
@@ -1478,10 +1458,6 @@ func TestSharedEntrySupportAccess(t *testing.T) {
 }
 
 func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) {
-	if testing.Short() {
-		t.Skip("PostgreSQL integration")
-	}
-
 	t.Parallel()
 	f := newEntryFixture(t, configureStorage)
 	support := newBrowser(t, f.service.Handler())

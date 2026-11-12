@@ -78,10 +78,6 @@ func (a *testAuthorizer) Read(_ context.Context, r ReadAuthorization) error {
 }
 
 func TestHTTPArtifactAccessWithoutRunners(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	t.Parallel()
 	s, _ := testService(t)
 	s.config.AllowedOrigins = []string{"https://hub.example.com"}
@@ -176,10 +172,6 @@ func TestHTTPFailureAndDecodeContracts(t *testing.T) {
 }
 
 func TestHTTPUploadStorageOutage(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	for _, operation := range []string{"append", "finalize"} {
 		t.Run(operation, func(t *testing.T) {
@@ -250,10 +242,6 @@ func remoteHubTransportFailure(err error) string {
 }
 
 func TestRemoteHubAuthorizationFailsClosed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
@@ -332,10 +320,6 @@ func TestRemoteHubAuthorizationFailsClosed(t *testing.T) {
 }
 
 func TestRemoteHubAuthorizationSurvivesServerCleanup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	for _, test := range []struct {
 		name   string
 		shared bool
@@ -468,37 +452,17 @@ func TestConfigAndManifestValidation(t *testing.T) {
 		}
 	}
 	var body []byte
-	if testing.Short() {
-		created := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
-		manifest := Manifest{
-			SchemaVersion: 1,
-			Scope:         Scope{OrganizationID: NewID("org"), ProjectID: NewID("prj"), WorkItemID: NewID("wi"), RunID: NewID("run"), AttemptID: NewID("attempt")},
-			ArtifactID:    NewID("artifact"), ManifestID: NewID("manifest"), Revision: 1,
-			Kind: "log", State: "partial", CreatedAt: created, ExpiresAt: created.Add(time.Hour),
-			RetentionPolicyID: "test", TotalBytes: 3,
-			Objects: []Object{{ID: NewID("object"), MediaType: "text/plain; charset=utf-8", Size: 3, SHA256: Digest([]byte("log"))}},
-		}
-		if err := manifest.Validate(); err != nil {
-			t.Fatal(err)
-		}
-		var err error
-		body, err = json.Marshal(manifest)
-		if err != nil {
-			t.Fatal(err)
-		}
-	} else {
-		s, _ := testService(t)
-		u, err := s.Reserve(t.Context(), testReservation(s))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.Append(t.Context(), u.ArtifactID, testPart(0, "log")); err != nil {
-			t.Fatal(err)
-		}
-		body, _, err = s.Manifest(t.Context(), u.ArtifactID, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
+	s, _ := testService(t)
+	u, err := s.Reserve(t.Context(), testReservation(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(t.Context(), u.ArtifactID, testPart(0, "log")); err != nil {
+		t.Fatal(err)
+	}
+	body, _, err = s.Manifest(t.Context(), u.ArtifactID, 1)
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, test := range []struct {
 		name string

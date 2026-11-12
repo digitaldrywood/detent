@@ -32,10 +32,6 @@ import (
 )
 
 func TestNativeRunnerE2EGateCreatesBranchDiffStatAndPostgresTokens(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()

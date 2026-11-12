@@ -76,7 +76,7 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 	if realPrivdrop {
 		serviceUser, err = user.Lookup("nobody")
 		if err != nil {
-			t.Skip("a separate unprivileged service identity is unavailable")
+			t.Fatalf("unprivileged service fixture identity: %v", err)
 		}
 		serviceGroupID = serviceUser.Gid
 	}

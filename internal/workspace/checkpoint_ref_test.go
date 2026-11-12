@@ -12,9 +12,6 @@ import (
 )
 
 func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	owned := func(ctx context.Context) error { return ctx.Err() }
 	for _, test := range []struct {
@@ -226,9 +223,6 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 }
 
 func TestTerminalCleanupDeletesCheckpointRef(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	remote, source := initBareRemote(t), initSourceRepo(t)
 	runGit(t, source, "remote", "add", "origin", remote)

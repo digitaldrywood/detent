@@ -42,7 +42,7 @@ func TestConfigMigrateCommand(t *testing.T) {
 				}
 				if err := os.Symlink(test.symlinkTarget, path); err != nil {
 					if runtime.GOOS == "windows" {
-						t.Skipf("symlinks unavailable: %v", err)
+						t.Fatalf("symlinks unavailable: %v", err)
 					}
 					t.Fatal(err)
 				}

@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/isolation"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,6 +22,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/isolation"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -374,18 +375,6 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 		}
 	}
 	return scheduler, &clihangNativeClient{NativeClient: workerNative, admin: native, projectPages: projectPages}, connection, workflow, create, revoke
-}
-
-func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process and Hub lifecycle integration")
-	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("Linux and macOS execution fixture")
-	}
-	for _, scenario := range []string{"coexistence", "failures", "authority"} {
-		t.Run(scenario, func(t *testing.T) { testLocalWorkerScenario(t, scenario) })
-	}
 }
 
 func testLocalWorkerScenario(t *testing.T, scenario string) {

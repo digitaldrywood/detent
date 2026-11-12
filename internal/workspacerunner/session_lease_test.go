@@ -212,10 +212,6 @@ func nativeClientFor(t *testing.T, server *httptest.Server) *hubclient.NativeCli
 // loop against a hub that enforces a lease window, for longer than one window,
 // and requires the hub never to have seen it lapse.
 func TestSessionHeartbeatKeepsTheHubLeaseAlive(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	t.Parallel()
 	hub := newLeaseHub(t)
 	worktree := &fixedWorktree{path: worktreeWith(t)}

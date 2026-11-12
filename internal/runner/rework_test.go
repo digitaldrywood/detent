@@ -455,10 +455,6 @@ func TestDirtyCheckpointReworkMakesProgress(t *testing.T) {
 }
 
 func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name                     string

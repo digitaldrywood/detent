@@ -18,33 +18,36 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
+type terminalCloseCase struct {
+	name          string
+	child         bool
+	cancel        bool
+	exit          bool
+	sandbox       bool
+	wantFullGrace bool
+}
+
 func TestTerminalCloseKillsChildrenThatIgnoreTheHangup(t *testing.T) {
 	t.Parallel()
 	requirePTY(t)
-	tests := []struct {
-		name          string
-		child         bool
-		cancel        bool
-		exit          bool
-		sandbox       bool
-		wantFullGrace bool
-	}{
+	tests := []terminalCloseCase{
 		{name: "close with a child ignoring SIGHUP", child: true, wantFullGrace: true},
 		{name: "context cancellation with a child ignoring SIGHUP", child: true, cancel: true, wantFullGrace: true},
 		{name: "close with no children", child: false},
 		{name: "context cancellation with no children", child: false, cancel: true},
 		{name: "shell exit kills a surviving child", child: true, exit: true, wantFullGrace: true},
-		{name: "confined child is killed on close", child: true, sandbox: true, wantFullGrace: true},
 	}
+	testTerminalCloseCases(t, tests)
+}
+
+func testTerminalCloseCases(t *testing.T, tests []terminalCloseCase) {
+	t.Helper()
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			worktree := t.TempDir()
 			service := newTestService(t, worktree)
 			if test.sandbox {
-				if AvailableIsolation() != workspacesession.IsolationSandbox {
-					t.Skip("actual host sandbox enforcement is unavailable")
-				}
 				var err error
 				service, err = New(t.Context(), worktree, "/bin/sh", workspacesession.IsolationSandbox, nil)
 				if err != nil {

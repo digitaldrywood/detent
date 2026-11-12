@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -36,10 +35,6 @@ func captureGitCommand(t *testing.T, dir string, args ...string) string {
 }
 
 func TestCaptureGitChangedFileContext(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name        string
@@ -115,10 +110,6 @@ func TestCaptureGitChangedFileContext(t *testing.T) {
 }
 
 func TestCaptureGitRename(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	dir := t.TempDir()
 	captureGitCommand(t, dir, "init", "-b", "main")
@@ -166,16 +157,13 @@ func TestMediaValidation(t *testing.T) {
 }
 
 func TestCaptureGitLiteralPaths(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
+	testCaptureGitLiteralPaths(t, []string{"a[1].txt"})
+}
 
+func testCaptureGitLiteralPaths(t *testing.T, names []string) {
 	t.Parallel()
-	for _, name := range []string{"a[1].txt", ":(exclude)secret.txt"} {
+	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
-			if runtime.GOOS == "windows" && strings.Contains(name, ":") {
-				t.Skip("Windows filenames cannot contain colons")
-			}
 			dir := t.TempDir()
 			captureGitCommand(t, dir, "init", "-b", "main")
 			captureGitCommand(t, dir, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "base")

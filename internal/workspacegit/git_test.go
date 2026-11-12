@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is not on PATH")
+		t.Fatal("git fixture requires git on PATH")
 	}
 }
 
@@ -113,10 +113,6 @@ var person = workspacegit.Identity{Name: "Ada Lovelace", Email: "ada@example.inv
 var runner = workspacegit.Identity{Name: "Detent runner (host-1)", Email: "runner@detent.invalid"}
 
 func TestOpenRefusesWhatItMustNotWriteTo(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 	repository := newRepository(t)
@@ -155,10 +151,6 @@ func TestOpenRefusesWhatItMustNotWriteTo(t *testing.T) {
 }
 
 func TestStatusReportsTheWorktree(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 
@@ -215,10 +207,6 @@ func TestStatusReportsTheWorktree(t *testing.T) {
 // a tracking ref the counts are unknown, not zero, and Upstream is what says
 // which of the two it is.
 func TestStatusReportsDivergenceOnlyAgainstAnUpstream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 
@@ -274,10 +262,6 @@ func newRepositoryWithOrigin(t *testing.T) (root, origin string) {
 // a path the files channel refuses to show is a path this package refuses to
 // stage, and it says which ones rather than dropping them quietly.
 func TestCommitLeavesDeniedPathsOutOfTheCommit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 	root := newRepository(t)
@@ -317,10 +301,6 @@ func TestCommitLeavesDeniedPathsOutOfTheCommit(t *testing.T) {
 // this service, and a plain commit records the index, so a denied path left in
 // it would reach the commit and from there a remote.
 func TestCommitTakesADeniedPathOutOfTheIndex(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 	root := newRepository(t)
@@ -349,10 +329,6 @@ func TestCommitTakesADeniedPathOutOfTheIndex(t *testing.T) {
 // credit a person's change to the runner account, and recording the person as
 // the committer would claim they ran this machine.
 func TestCommitRecordsThePersonAndTheRunner(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 	root := newRepository(t)
@@ -375,10 +351,6 @@ func TestCommitRecordsThePersonAndTheRunner(t *testing.T) {
 // committed from this surface at all. The name with a space in it is
 // deliberate: it is what -z is for.
 func TestCommitCarriesWhatIsAlreadyInTheIndex(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 
@@ -424,10 +396,6 @@ func TestCommitCarriesWhatIsAlreadyInTheIndex(t *testing.T) {
 }
 
 func TestCommitRefusesWhenThereIsNothingToRecord(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 
@@ -470,10 +438,6 @@ func TestCommitRefusesWhenThereIsNothingToRecord(t *testing.T) {
 }
 
 func TestPushSendsTheBranchToItsRemote(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 	root, origin := newRepositoryWithOrigin(t)
@@ -497,10 +461,6 @@ func TestPushSendsTheBranchToItsRemote(t *testing.T) {
 }
 
 func TestPushRefusesWhatItCannotSend(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 
@@ -543,10 +503,6 @@ func TestPushRefusesWhatItCannotSend(t *testing.T) {
 // the remote, the person is shown git's own words for it, and somebody else's
 // commits are still there afterwards.
 func TestPushNeverOverwritesTheRemote(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	requireGit(t)
 	root, origin := newRepositoryWithOrigin(t)

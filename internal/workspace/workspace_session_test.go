@@ -16,10 +16,6 @@ import (
 // orphan appeared exactly there, because the old preservation rule measured a
 // session worktree against remote refs it could never reach.
 func TestLocalGitWorkspaceSessionLifecycle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -107,10 +103,6 @@ func TestLocalGitWorkspaceSessionLifecycle(t *testing.T) {
 // only reachable through Issue.WorkspaceSession, so an attempt's branch keeps
 // the preservation rule it had.
 func TestLocalGitWorkspaceSessionBranchIsolation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -146,10 +138,6 @@ func TestLocalGitWorkspaceSessionBranchIsolation(t *testing.T) {
 // session exemption must not reach: an attempt worktree whose auto-branch
 // carries commits the remote never saw is still retained.
 func TestLocalGitAttemptBranchStillPreservesUnpushedWork(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -182,10 +170,6 @@ func TestLocalGitAttemptBranchStillPreservesUnpushedWork(t *testing.T) {
 // close it and the residual reconciler is the only thing that can. It used to
 // fail on every pass with "workspace retained for recovery".
 func TestLocalGitReconcileWorkspaceSessionResidual(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -253,10 +237,6 @@ func TestLocalGitReconcileWorkspaceSessionResidual(t *testing.T) {
 // closed without the head_sha it opened on: a commit made on a detached HEAD in
 // the terminal is reachable from no ref, and cleanup must keep it.
 func TestLocalGitSessionWithoutHeadPreservesUnreachableCommits(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -303,10 +283,6 @@ func TestLocalGitSessionWithoutHeadPreservesUnreachableCommits(t *testing.T) {
 // issue whose explicit branch happens to sit under detent/workspace/: it is not
 // a session, so its unpushed commit keeps the worktree and the branch.
 func TestLocalGitExplicitWorkspaceBranchKeepsTheAttemptRule(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -357,10 +333,6 @@ func TestLocalGitExplicitWorkspaceBranchKeepsTheAttemptRule(t *testing.T) {
 // head_sha git cannot compare against: the comparison failing is not evidence
 // that nothing was produced, so the worktree is kept.
 func TestLocalGitSessionHeadComparisonFailsClosed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -412,10 +384,6 @@ func TestLocalGitSessionHeadComparisonFailsClosed(t *testing.T) {
 // cleanup running while a workspace session is still serving its worktree: a
 // clean detached session worktree is otherwise exactly what they remove.
 func TestLocalGitLeavesAHeldSessionAlone(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {

@@ -17,7 +17,7 @@ import (
 func TestTextOnlySymlinkedRuntime(t *testing.T) {
 	binary := os.Getenv("DETENT_TEST_CODEX_BINARY")
 	if binary == "" {
-		t.Skip("set DETENT_TEST_CODEX_BINARY to run the macOS Codex runtime regression")
+		t.Fatal("set DETENT_TEST_CODEX_BINARY to run the macOS Codex runtime regression")
 	}
 	binary, err := filepath.EvalSymlinks(binary)
 	if err != nil {

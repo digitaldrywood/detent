@@ -120,12 +120,14 @@ func TestInitializeOnSharedHost(t *testing.T) {
 	}
 }
 
+type identityFileMutation struct {
+	name   string
+	change func(*testing.T, string)
+}
+
 func TestIdentityFilesRejectUnsafeInput(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name   string
-		change func(*testing.T, string)
-	}{
+	testIdentityFilesRejectUnsafeInput(t, []identityFileMutation{
 		{"malformed JSON", func(t *testing.T, path string) {
 			t.Helper()
 			if err := os.WriteFile(path, []byte("invalid-private-credential"), 0o600); err != nil {
@@ -157,25 +159,12 @@ func TestIdentityFilesRejectUnsafeInput(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"public file", func(t *testing.T, path string) {
-			t.Helper()
-			if runtime.GOOS == "windows" {
-				t.Skip("Unix permissions")
-			}
-			if err := os.Chmod(path, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"public directory", func(t *testing.T, path string) {
-			t.Helper()
-			if runtime.GOOS == "windows" {
-				t.Skip("Unix permissions")
-			}
-			if err := os.Chmod(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	} {
+	})
+}
+
+func testIdentityFilesRejectUnsafeInput(t *testing.T, tests []identityFileMutation) {
+	t.Helper()
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "private", "identity.json")

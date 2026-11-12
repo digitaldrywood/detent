@@ -45,9 +45,6 @@ import (
 )
 
 func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
-	if testing.Short() {
-		t.Skip("headless enrolled runner startup integration")
-	}
 	for _, missingCheckout := range []bool{false, true} {
 		name := "enrolled runner"
 		if missingCheckout {
@@ -164,6 +161,13 @@ func TestMain(m *testing.M) {
 	if gotestreceipt.IsWrapperInvocation(os.Args[0]) {
 		os.Exit(gotestreceipt.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
+	if os.Getenv("DETENT_OFFLINE_UPDATE_PHASE") != "" {
+		if err := offlineUpdateControllerProcess(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "gh" && os.Getenv("DETENT_SSH_TEST_HELPER") != "" {
 		sshGitHubCLIHelper()
 	}
@@ -215,10 +219,6 @@ func TestMain(m *testing.M) {
 }
 
 func TestAwaitStartupServerRequiresExpectedBuild(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	expected := buildinfo.Info{
@@ -1041,10 +1041,6 @@ func TestAwaitBootDashboardURL(t *testing.T) {
 }
 
 func TestAwaitDashboard(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {

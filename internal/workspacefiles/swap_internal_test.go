@@ -62,7 +62,7 @@ func TestOpeningRefusesADirectorySwappedForASymlinkAfterTheCheck(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(".git", filepath.Join(worktree, "sub")); err != nil {
-				t.Skipf("this platform does not support symlinks: %v", err)
+				t.Fatalf("create symlink fixture: %v", err)
 			}
 			err = test.open(service, relative, resolved)
 			if got := ErrorCode(err); got != workspacesession.CodeForbidden {

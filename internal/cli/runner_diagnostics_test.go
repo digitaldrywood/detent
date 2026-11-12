@@ -31,10 +31,6 @@ import (
 )
 
 func TestCollectRunnerLocalChecks(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name                                   string
@@ -220,10 +216,6 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 // Catch a separate startup heartbeat bypassing negotiation or dropping the
 // startup observations before the scheduler's first enrolled heartbeat.
 func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")

@@ -130,10 +130,6 @@ func TestWorkOSVerifyAccessKeySetUnavailable(t *testing.T) {
 }
 
 func TestWorkOSRefreshAccess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	tests := []struct {
 		name         string
 		mode         string

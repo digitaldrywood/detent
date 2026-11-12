@@ -14,10 +14,6 @@ import (
 )
 
 func TestValidationEvents(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name    string
@@ -87,10 +83,6 @@ func TestValidationEventWriteFailure(t *testing.T) {
 }
 
 func TestValidationEventsWaitFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, mode := range []string{"canceled", "deadline", "parent deadline"} {
 		t.Run(mode, func(t *testing.T) {
@@ -143,10 +135,6 @@ type failingEventWriter struct{}
 func (failingEventWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func TestValidationUnchangedQueueHistory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("subprocess queue history and handoff integration")
-	}
-
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()

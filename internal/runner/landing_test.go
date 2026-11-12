@@ -196,10 +196,6 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 }
 
 func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, mode := range []string{"native", "pull-request", "external"} {
@@ -390,10 +386,6 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 }
 
 func TestLandNativeChange(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	head := strings.Repeat("c", 40)
 	merge := strings.Repeat("e", 40)
@@ -600,10 +592,6 @@ func TestLandNativeChange(t *testing.T) {
 }
 
 func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {

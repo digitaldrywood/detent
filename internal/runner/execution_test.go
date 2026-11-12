@@ -1115,10 +1115,6 @@ func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
 }
 
 func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	for _, test := range []struct {
 		name          string
 		startedTurn   bool
@@ -1576,10 +1572,6 @@ func (f nativeExecutionTransport) RoundTrip(req *http.Request) (*http.Response, 
 }
 
 func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	for _, test := range []struct {
 		name        string
 		blocked     bool
@@ -2213,10 +2205,6 @@ func (b *availabilityStoppingBackend) RunTurn(ctx context.Context, _ AgentTurnRe
 }
 
 func TestRunnerAvailabilityInterruptionFinishesAfterCheckpointRef(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
 	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
@@ -2271,10 +2259,6 @@ func TestAvailabilityStopPreservesRetryBudget(t *testing.T) {
 }
 
 func TestAvailabilityStopRetainsUnreapedWorkspace(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
 	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.retained}
 	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }, err: ErrWorkerProcessReap}
@@ -2292,10 +2276,6 @@ func TestAvailabilityStopRetainsUnreapedWorkspace(t *testing.T) {
 }
 
 func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}, publishErr: errors.New("push unavailable")}
 	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
 	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
@@ -2311,10 +2291,6 @@ func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
 }
 
 func TestValidationEvidenceUsesCurrentAttemptDiff(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	directory := t.TempDir()
 	validation := filepath.Join(directory, ".detent", "validation")

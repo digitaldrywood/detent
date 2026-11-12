@@ -27,9 +27,6 @@ import (
 )
 
 func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
-	if testing.Short() {
-		t.Skip("isolated HTTP GitHub App import through the default maintenance interval")
-	}
 	t.Parallel()
 	const repository = "example-org/example-project"
 	const total = 385

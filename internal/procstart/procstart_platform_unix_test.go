@@ -1,17 +1,15 @@
+//go:build darwin || linux
+
 package procstart
 
 import (
 	"os"
 	"os/exec"
-	"runtime"
 	"testing"
 	"time"
 )
 
 func TestMatches(t *testing.T) {
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("process start identity is exact only on darwin and linux")
-	}
 	self, err := Identity(os.Getpid())
 	if err != nil {
 		t.Fatalf("Identity(self) error = %v", err)

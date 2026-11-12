@@ -20,10 +20,6 @@ import (
 )
 
 func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name                string
@@ -535,10 +531,6 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 		}
 		return
 	}
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	for _, test := range []struct {
 		name          string
 		signed        bool

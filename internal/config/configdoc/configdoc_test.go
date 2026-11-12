@@ -126,10 +126,6 @@ func TestHubGitHubDocumentation(t *testing.T) {
 }
 
 func TestConfigDocumentation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("repository configuration generation and type checking")
-	}
-
 	fields, nodes, err := build()
 	if err != nil {
 		t.Fatalf("build() error = %v", err)

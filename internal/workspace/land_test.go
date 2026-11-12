@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -98,10 +97,6 @@ func (f landingFixture) absorb(t *testing.T) {
 }
 
 func TestLocalGitCreateReviewedLanding(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name, change, refusal string
@@ -174,7 +169,6 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			case "missing":
 				options.HeadSHA = strings.Repeat("d", 40)
 			case "path":
-				skipWindows(t)
 				other := initSourceRepo(t)
 				if err := os.MkdirAll(filepath.Join(backend.root, ".detent"), 0o700); err != nil {
 					t.Fatal(err)
@@ -375,10 +369,6 @@ func preserveLandingOwner(t *testing.T, path string) func() {
 }
 
 func TestLocalGitLandChangeMethods(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name        string
@@ -437,9 +427,6 @@ func TestLocalGitLandChangeMethods(t *testing.T) {
 }
 
 func TestLocalGitLandingAlreadyContains(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	for _, native := range []bool{false, true} {
 		for _, test := range []struct {
@@ -610,9 +597,6 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 }
 
 func TestLocalGitLandingCleanup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	for _, outcome := range []string{"landed", "refused", "conflict", "error", "cancelled", "unreported"} {
 		t.Run(outcome, func(t *testing.T) {
@@ -676,66 +660,7 @@ func TestLocalGitLandingCleanup(t *testing.T) {
 	}
 }
 
-func TestLandingRemovalFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-	for _, mode := range []string{"git removal fails", "locked"} {
-		t.Run(mode, func(t *testing.T) {
-			if mode == "git removal fails" && runtime.GOOS == "windows" {
-				t.Skip("git fault injection uses a Unix shell wrapper")
-			}
-			backend := retentionBackend(t)
-			head := strings.TrimSpace(runGit(t, backend.sourceRoot, "rev-parse", "HEAD"))
-			path := filepath.Join(backend.root, ".detent", "landing", head, "DD-LAND")
-			runGit(t, backend.sourceRoot, "worktree", "add", "--detach", path, head)
-			var logs bytes.Buffer
-			backend.logger = slog.New(slog.NewTextHandler(&logs, nil))
-			if mode == "locked" {
-				runGit(t, backend.sourceRoot, "worktree", "lock", path)
-			} else {
-				realGit, err := exec.LookPath("git")
-				if err != nil {
-					t.Fatal(err)
-				}
-				wrapper := t.TempDir()
-				script := "#!/bin/sh\nif [ \"$3\" = worktree ] && [ \"$4\" = remove ]; then exit 23; fi\nexec " + shellQuote(realGit) + " \"$@\"\n"
-				if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
-			}
-			err := backend.removeLandingWorktree(t.Context(), backend.sourceRoot, path)
-			if mode == "locked" {
-				if err == nil {
-					t.Fatal("locked worktree removed")
-				}
-				if _, err := os.Stat(path); err != nil {
-					t.Fatal(err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("landing directory remains: %v", err)
-			}
-			if listed := runGit(t, backend.sourceRoot, "worktree", "list", "--porcelain"); strings.Contains(listed, filepath.ToSlash(path)) {
-				t.Fatalf("landing registration remains:\n%s", listed)
-			}
-			if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "landing worktree not removed by git") {
-				t.Fatalf("removal failure warning missing: %s", &logs)
-			}
-		})
-	}
-}
-
 func TestLocalGitLandChangeRefusals(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		integration     bool
@@ -927,10 +852,6 @@ func TestClassifyLandingPush(t *testing.T) {
 }
 
 func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	f := newLandingFixture(t)
 	sourceBase := f.remoteMain(t)
@@ -967,9 +888,6 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 }
 
 func TestLocalGitNativeLanding(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	for _, test := range []struct {
 		name                    string
@@ -1236,87 +1154,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 	}
 }
 
-func TestLocalGitRebasedNativeLanding(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX lint fixture")
-	}
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, mode := range []string{gate.LandingPerChange, gate.LandingRollingBarrier} {
-		t.Run(mode, func(t *testing.T) {
-			f := newLandingFixture(t)
-			for name, content := range map[string]string{"go.mod": "module native-landing.test\n\ngo 1.26\n", "calc.go": "package calc\nfunc Value() int { return 1 }\n"} {
-				if err := os.WriteFile(filepath.Join(f.info.Path, name), []byte(content), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			runGit(t, f.info.Path, "add", "go.mod", "calc.go")
-			runGit(t, f.info.Path, "commit", "-m", "add calculator")
-			first := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
-			if err := os.WriteFile(filepath.Join(f.info.Path, "calc.go"), []byte("package calc\nfunc Value() int { return 2 }\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(f.info.Path, "calc_test.go"), []byte("package calc\nimport \"testing\"\nfunc TestValue(t *testing.T) { if Value()!=2 { t.Fatal(Value()) } }\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			runGit(t, f.info.Path, "add", "calc.go", "calc_test.go")
-			runGit(t, f.info.Path, "commit", "-m", "change calculator")
-			head := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
-			runGit(t, f.source, "cherry-pick", first)
-			runGit(t, f.source, "push", "origin", "main")
-			lint := t.TempDir()
-			lintLog := filepath.Join(lint, "arguments")
-			if err := os.WriteFile(filepath.Join(lint, "golangci-lint"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > '"+lintLog+"'\n"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv("PATH", lint+string(os.PathListSeparator)+os.Getenv("PATH"))
-			tree := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
-			baseBefore := f.remoteMain(t)
-			options := LandOptions{LandingMode: mode, Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: "rebased", ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}, Repository: RepositoryURL(t.Context(), f.info.Path), SecurityAuditRequired: true}
-			options.SecurityAudit = func(_ context.Context, diff FileDiffs) (*tracker.SecurityAuditReview, error) {
-				if diff.HeadSHA == head || diff.BaseSHA != baseBefore || diff.Truncated {
-					t.Errorf("rebase reused published source identity: %+v", diff)
-				}
-				now := time.Now()
-				return &tracker.SecurityAuditReview{Landing: true, Verdict: "pass", Run: securityaudit.Run{ID: 1, InvocationID: "rebase-audit", ProjectID: "project", Repository: options.Repository, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), ExitStatus: securityaudit.ExitStatusSuccess, OutputDigest: securityaudit.OutputDigest("pass"), OutputBytes: 4, Verdict: "pass", Summary: "No findings", WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now}}, nil
-			}
-			result, err := f.backend.LandChange(t.Context(), f.info, f.issue, options)
-			if err == nil && (result.SecurityAudit == nil || result.SecurityAudit.Run.BaseSHA != result.BaseBefore || result.SecurityAudit.Run.HeadSHA != result.MergeSHA) {
-				t.Fatalf("rebased landing has no exact audit: %+v", result)
-			}
-			if len(result.Pipeline) < 1 {
-				t.Fatalf("missing rebase timing: %+v", result)
-			}
-			found := false
-			for _, timing := range result.Pipeline {
-				if timing.Stage == "rebase" {
-					found = true
-					if timing.StartedAt.IsZero() || timing.FinishedAt.Before(timing.StartedAt) || timing.Outcome != "clean" {
-						t.Fatalf("rebase=%+v", timing)
-					}
-				}
-			}
-			if !found {
-				t.Fatalf("missing rebase=%+v", result.Pipeline)
-			}
-			if err != nil || !result.Rebased || result.Path != "rebase_short_validation" || !reflect.DeepEqual(result.Packages, []string{"."}) || result.Gate.HeadSHA != result.MergeSHA || !strings.Contains(result.Gate.Command, "go test -p ${TEST_PROCS:-4} -short -timeout=60s '.'") || !strings.Contains(result.Gate.Output, "native-landing.test") || f.remoteMain(t) != result.MergeSHA {
-				t.Fatalf("rebase outcome = %#v, %v", result, err)
-			}
-			data, err := os.ReadFile(lintLog)
-			if err != nil || !strings.Contains(string(data), "--new-from-rev="+result.BaseBefore+" --whole-files .") {
-				t.Fatalf("lint scope = %q, %v", data, err)
-			}
-		})
-	}
-}
-
 func TestLandingIncorporationRejectsForgedObjects(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	f := newLandingFixture(t)
 	base := f.remoteMain(t)
@@ -1361,6 +1199,60 @@ func TestLandingIncorporationRejectsForgedObjects(t *testing.T) {
 			}
 			if err := VerifyLandingIncorporation(t.Context(), candidate, pack); (err == nil) != (test == "valid") {
 				t.Fatalf("verification error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLandingRemovalFailure(t *testing.T) {
+	testLandingRemovalFailure(t, []string{"locked"})
+}
+
+func testLandingRemovalFailure(t *testing.T, modes []string) {
+	t.Helper()
+	for _, mode := range modes {
+		t.Run(mode, func(t *testing.T) {
+			backend := retentionBackend(t)
+			head := strings.TrimSpace(runGit(t, backend.sourceRoot, "rev-parse", "HEAD"))
+			path := filepath.Join(backend.root, ".detent", "landing", head, "DD-LAND")
+			runGit(t, backend.sourceRoot, "worktree", "add", "--detach", path, head)
+			var logs bytes.Buffer
+			backend.logger = slog.New(slog.NewTextHandler(&logs, nil))
+			if mode == "locked" {
+				runGit(t, backend.sourceRoot, "worktree", "lock", path)
+			} else {
+				realGit, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wrapper := t.TempDir()
+				script := "#!/bin/sh\nif [ \"$3\" = worktree ] && [ \"$4\" = remove ]; then exit 23; fi\nexec " + shellQuote(realGit) + " \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
+			err := backend.removeLandingWorktree(t.Context(), backend.sourceRoot, path)
+			if mode == "locked" {
+				if err == nil {
+					t.Fatal("locked worktree removed")
+				}
+				if _, err := os.Stat(path); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("landing directory remains: %v", err)
+			}
+			if listed := runGit(t, backend.sourceRoot, "worktree", "list", "--porcelain"); strings.Contains(listed, filepath.ToSlash(path)) {
+				t.Fatalf("landing registration remains:\n%s", listed)
+			}
+			if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "landing worktree not removed by git") {
+				t.Fatalf("removal failure warning missing: %s", &logs)
 			}
 		})
 	}

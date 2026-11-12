@@ -157,7 +157,7 @@ func TestContainmentRefusesEveryEscape(t *testing.T) {
 	t.Parallel()
 	service, worktree, outside := newWorktree(t)
 	if err := os.Symlink(filepath.Join(outside, "passwords.txt"), filepath.Join(worktree, "escape.txt")); err != nil {
-		t.Skipf("this platform does not support symlinks: %v", err)
+		t.Fatalf("create symlink fixture: %v", err)
 	}
 	if err := os.Symlink(outside, filepath.Join(worktree, "escape-dir")); err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestListReportsASymlinkWithoutItsTarget(t *testing.T) {
 	t.Parallel()
 	service, worktree, outside := newWorktree(t)
 	if err := os.Symlink(filepath.Join(outside, "passwords.txt"), filepath.Join(worktree, "escape.txt")); err != nil {
-		t.Skipf("this platform does not support symlinks: %v", err)
+		t.Fatalf("create symlink fixture: %v", err)
 	}
 	listed, err := service.List(t.Context(), workspacesession.FilesRequest{})
 	if err != nil {
@@ -369,13 +369,9 @@ func itoa(value int) string {
 }
 
 func TestListHonoursGitignoreUnlessTheReaderAsksForIt(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is not available; the ignore decoration is git's own answer")
+		t.Fatal("git is required for the ignore decoration fixture")
 	}
 	service, worktree, _ := newWorktree(t)
 	if err := os.WriteFile(filepath.Join(worktree, ".gitignore"), []byte("ignored.log\n"), 0o600); err != nil {
@@ -438,7 +434,7 @@ func TestSymlinkedDirectoriesCannotAliasDeniedPaths(t *testing.T) {
 	}
 	for name, target := range links {
 		if err := os.Symlink(target, filepath.Join(worktree, filepath.FromSlash(name))); err != nil {
-			t.Skipf("this platform does not support symlinks: %v", err)
+			t.Fatalf("create symlink fixture: %v", err)
 		}
 	}
 	tests := []struct {
@@ -476,10 +472,6 @@ func TestSymlinkedDirectoriesCannotAliasDeniedPaths(t *testing.T) {
 }
 
 func TestListPagesALargeDirectoryInOrder(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real process or filesystem integration")
-	}
-
 	t.Parallel()
 	service, worktree, _ := newWorktree(t)
 	crowded := filepath.Join(worktree, "crowded")
@@ -528,13 +520,9 @@ func TestListPagesALargeDirectoryInOrder(t *testing.T) {
 }
 
 func TestStatReportsWhetherGitIgnoresThePath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is not available; the ignore decoration is git's own answer")
+		t.Fatal("git is required for the ignore decoration fixture")
 	}
 	service, worktree, _ := newWorktree(t)
 	for name, content := range map[string]string{".gitignore": "ignored.log\nbuild/\n", "ignored.log": "noise\n", "kept.txt": "kept\n"} {
@@ -568,37 +556,6 @@ func TestStatReportsWhetherGitIgnoresThePath(t *testing.T) {
 			}
 			if result.Ignored != test.want {
 				t.Fatalf("Stat(%q).Ignored = %v, want %v", test.path, result.Ignored, test.want)
-			}
-		})
-	}
-}
-
-func TestNamesWithSurroundingWhitespaceAreServedAsListed(t *testing.T) {
-	t.Parallel()
-	service, worktree, _ := newWorktree(t)
-	tests := []struct {
-		name string
-		file string
-	}{
-		{name: "leading and trailing spaces", file: " report "},
-		{name: "trailing space", file: "notes.md "},
-		{name: "leading tab", file: "\tdata"},
-	}
-	for _, test := range tests {
-		if err := os.WriteFile(filepath.Join(worktree, test.file), []byte(test.file), 0o600); err != nil {
-			t.Skipf("this platform does not allow the name %q: %v", test.file, err)
-		}
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			stat, err := service.Stat(t.Context(), workspacesession.FilesRequest{Path: test.file})
-			if err != nil || stat.Path != test.file {
-				t.Fatalf("Stat(%q) = %+v, %v", test.file, stat, err)
-			}
-			content, err := service.Read(t.Context(), workspacesession.FilesRequest{Path: test.file})
-			if err != nil || content.Data != test.file {
-				t.Fatalf("Read(%q) = %q, %v; want the file's own bytes", test.file, content.Data, err)
 			}
 		})
 	}

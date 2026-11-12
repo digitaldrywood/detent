@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -36,9 +35,6 @@ func retentionFixture(t *testing.T, path string, at time.Time) {
 }
 
 func TestLandingRetention(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
@@ -167,10 +163,6 @@ func TestRetentionHookLogs(t *testing.T) {
 }
 
 func TestRetentionQuarantine(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -199,10 +191,6 @@ func TestRetentionQuarantine(t *testing.T) {
 }
 
 func TestRetentionQuarantineReadOnlyDirectory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -243,10 +231,6 @@ func TestRetentionQuarantineReadOnlyDirectory(t *testing.T) {
 }
 
 func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	backend := retentionBackend(t)
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -267,7 +251,7 @@ func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, filepath.Join(quarantine, "link")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
+		t.Fatalf("create symlink fixture: %v", err)
 	}
 	if _, err := backend.SweepRetention(t.Context(), RetentionRequest{Now: now}); err != nil {
 		t.Fatal(err)
@@ -281,44 +265,7 @@ func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
 	}
 }
 
-func TestRetentionQuarantineUnremovablePath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
-	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod on Windows does not deny directory removal; this fixture requires POSIX permissions")
-	}
-	backend := retentionBackend(t)
-	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-	parent := filepath.Join(backend.root, ".detent/quarantine")
-	quarantine := filepath.Join(parent, "workspace-"+now.Add(-4*24*time.Hour).Format(quarantineTimestampFormat))
-	retentionFixture(t, filepath.Join(quarantine, "file"), now)
-	if err := os.Chmod(parent, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(parent, 0o700); err != nil {
-			t.Error(err)
-		}
-	})
-	for range 2 {
-		totals, err := backend.SweepRetention(t.Context(), RetentionRequest{Now: now})
-		if err == nil || !strings.Contains(err.Error(), filepath.Join(".detent/quarantine", filepath.Base(quarantine))) {
-			t.Fatalf("retention error = %v, want quarantine path", err)
-		}
-		if totals.Quarantine.Count != 0 {
-			t.Fatalf("totals=%+v", totals)
-		}
-	}
-}
-
 func TestRetentionAttempts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -354,9 +301,7 @@ func TestRetentionAttempts(t *testing.T) {
 					if location.shared {
 						group := workerScratchGroupIn(sharedWorkerScratchBase(), backend.root)
 						t.Cleanup(func() { _ = os.RemoveAll(group) })
-						if err := ensurePrivateDirectories(sharedWorkerScratchBase(), filepath.Join(group, "workspace")); errors.Is(err, fs.ErrPermission) {
-							t.Skip("another user owns the shared scratch base")
-						} else if err != nil {
+						if err := ensurePrivateDirectories(sharedWorkerScratchBase(), filepath.Join(group, "workspace")); err != nil {
 							t.Fatal(err)
 						}
 						path = filepath.Join(group, "workspace", "attempt-test")
@@ -398,10 +343,6 @@ func TestRetentionAttempts(t *testing.T) {
 }
 
 func TestRetentionCompletedWorkspace(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -519,10 +460,6 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 }
 
 func TestRetentionOwnership(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, missing := range []bool{false, true} {
 		t.Run(map[bool]string{false: "exists", true: "missing"}[missing], func(t *testing.T) {
@@ -556,10 +493,6 @@ func TestRetentionOwnership(t *testing.T) {
 }
 
 func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, artifact := range []string{".detent/hook-logs", ".detent/quarantine", "workspace/.detent/worker-tmp"} {
 		t.Run(artifact, func(t *testing.T) {
@@ -572,7 +505,7 @@ func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(target, link); err != nil {
-				t.Skipf("symlinks unavailable: %v", err)
+				t.Fatalf("create symlink fixture: %v", err)
 			}
 			_, err := backend.SweepRetention(t.Context(), RetentionRequest{Now: now, ScratchState: func(context.Context, string) (bool, bool, error) { return false, false, nil }})
 			if err == nil {
@@ -586,10 +519,6 @@ func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
 }
 
 func TestRetentionCompletedResidue(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {

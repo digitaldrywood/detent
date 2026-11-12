@@ -41,10 +41,6 @@ import (
 )
 
 func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name, remote, want string
@@ -571,10 +567,6 @@ func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 }
 
 func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build", "prj_ops": "Ops Tools"})
 	root := t.TempDir()
@@ -1049,10 +1041,6 @@ func mustRead(t *testing.T, path string) string {
 }
 
 func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name       string

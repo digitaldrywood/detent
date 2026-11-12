@@ -22,10 +22,6 @@ import (
 const lifecycleWaitTimeout = 10 * time.Second
 
 func TestRunTurnCancellationKillsChildProcessGroup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	for _, startup := range []struct {
@@ -101,10 +97,6 @@ func TestRunTurnCancellationKillsChildProcessGroup(t *testing.T) {
 }
 
 func TestRunTurnDetectsExitedParentWithInheritedStdout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	for _, startup := range []struct {
@@ -201,10 +193,6 @@ func TestRunTurnDetectsExitedParentWithInheritedStdout(t *testing.T) {
 }
 
 func TestClaudeCodeDeadParentHelper(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	if os.Getenv("CLAUDECODE_DEAD_PARENT_HELPER") != "1" {
 		return
 	}
@@ -303,10 +291,6 @@ func waitForProcessExit(t *testing.T, pid int) {
 }
 
 func TestWaitAndCleanupPreservesFailures(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {

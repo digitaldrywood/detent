@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -28,11 +27,16 @@ const (
 	earlySource       = "package gotestreceipt\n\nimport \"os\"\n\nvar earlyMode = os.Getenv(\"GOTESTRECEIPT_EARLY\")\n"
 )
 
-var earlyMode = os.Getenv("GOTESTRECEIPT_EARLY")
+var helperFixture string
 
 func TestMain(m *testing.M) {
 	if IsWrapperInvocation(os.Args[0]) {
 		os.Exit(RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
+	var err error
+	helperFixture, err = filepath.Abs(filepath.Join("testdata", "helper", "fixture_test.go"))
+	if err != nil {
+		panic(err)
 	}
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
@@ -41,69 +45,6 @@ func TestMain(m *testing.M) {
 }
 
 var testDigestKey = []byte(strings.Repeat("k", DigestKeyBytes))
-
-func TestHelperProcess(t *testing.T) {
-	if os.Getenv(helperEnvironment) == "" {
-		t.Skip("helper process only")
-	}
-	fmt.Println(helperRan)
-	if os.Getenv("GOTESTRECEIPT_HELPER_MODE") == "block" {
-		select {}
-	}
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "DETENT_GO_TEST") || strings.Contains(entry, string(testDigestKey)) {
-			t.Fatalf("test binary received receipt session state %s", name)
-		}
-	}
-	path := os.Getenv("GOTESTRECEIPT_HELPER_PATH")
-	switch os.Getenv("GOTESTRECEIPT_HELPER_MODE") {
-	case "exec":
-		output, err := exec.Command("/bin/sh", "script.sh").Output()
-		if err != nil || strings.TrimSpace(string(output)) != "pass" {
-			t.Fatalf("script output %q: %v", output, err)
-		}
-		return
-	case "early":
-		if earlyMode != "" {
-			t.Fatalf("early mode %q", earlyMode)
-		}
-		return
-	case "mtime":
-		info, err := os.Stat(path)
-		if err != nil || info.ModTime().Year() < 2001 {
-			t.Fatalf("stat %s: %v", path, err)
-		}
-		return
-	case "remove":
-		data, err := os.ReadFile(path)
-		if err != nil || string(data) != "pass" {
-			t.Fatalf("input %q: %v", data, err)
-		}
-		if err := os.Remove(path); err != nil {
-			t.Fatal(err)
-		}
-		return
-	case "length":
-		if limit, err := strconv.Atoi(os.Getenv("GOTESTRECEIPT_HELPER_LIMIT")); err != nil || len(path) > limit {
-			t.Fatalf("path %q exceeds the limit: %v", path, err)
-		}
-		return
-	}
-	data, err := os.ReadFile("input.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.Getenv("GOTESTRECEIPT_HELPER_MODE") == "rewrite" {
-		if err := os.WriteFile("input.txt", data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	if strings.TrimSpace(string(data)) != "pass" || os.Getenv("GOTESTRECEIPT_HELPER_MODE") == "fail" {
-		t.Fatalf("input %q", data)
-	}
-}
 
 type memoryStore struct {
 	mu       sync.Mutex
@@ -158,9 +99,6 @@ func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 	helperSource := `package fixture
 import ("testing"; "fmt"; "os"; "strings")
 func TestHelperProcess(t *testing.T) {
-	if os.Getenv("GOTESTRECEIPT_HELPER") == "" {
-		t.Skip("helper process only")
-	}
 	fmt.Println("gotestreceipt helper ran")
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
@@ -820,20 +758,13 @@ func TestGoflags(t *testing.T) {
 
 func stageTestBinary(t *testing.T, buildDir string) string {
 	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(executable)
-	if err != nil {
-		t.Fatal(err)
-	}
 	staged := filepath.Join(buildDir, "b001", "gotestreceipt.test")
 	if err := os.MkdirAll(filepath.Dir(staged), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(staged, data, 0o700); err != nil {
-		t.Fatal(err)
+	command := exec.CommandContext(t.Context(), "go", "test", "-c", "-o", staged, helperFixture)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build helper fixture: %v: %s", err, output)
 	}
 	return staged
 }
@@ -841,10 +772,8 @@ func stageTestBinary(t *testing.T, buildDir string) string {
 func TestRunTestStopsTheBinaryWhenTheExecutionEnds(t *testing.T) {
 	t.Setenv(helperEnvironment, "1")
 	t.Setenv("GOTESTRECEIPT_HELPER_MODE", "block")
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("GOCOVERDIR", t.TempDir())
+	executable := stageTestBinary(t, filepath.Join(t.TempDir(), "go-build1"))
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	var stdout, stderr bytes.Buffer

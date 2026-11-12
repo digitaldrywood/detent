@@ -76,10 +76,6 @@ func TestCodexCredentialPath(t *testing.T) {
 }
 
 func TestBackendCredentialFileWatcherNotifiesOnReplacement(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service, profiling, or filesystem watcher integration")
-	}
-
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -124,10 +120,6 @@ func TestBackendCredentialFileWatcherNotifiesOnReplacement(t *testing.T) {
 }
 
 func TestBackendCredentialFileWatcherRetriesMissingDirectory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service or filesystem watcher integration")
-	}
-
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "missing", "codex", "auth.json")

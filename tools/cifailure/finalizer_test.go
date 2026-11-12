@@ -13,13 +13,9 @@ import (
 )
 
 func TestReleaseFinalizer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq is required for the release shell fixture")
+		t.Fatal("jq is required for the release shell fixture")
 	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

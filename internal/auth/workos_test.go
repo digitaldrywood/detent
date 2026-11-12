@@ -274,10 +274,6 @@ func TestWorkOSOrganizationScopedReauthenticationReusesSession(t *testing.T) {
 }
 
 func TestWorkOSConfiguredIssuer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name    string
@@ -560,10 +556,6 @@ func TestWorkOSCreationRecoversCommittedProviderWrites(t *testing.T) {
 }
 
 func TestWorkOSInvitationAccountLookup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	t.Parallel()
 	f := newWorkOSFixture(t)
 	p := f.provider(t)
@@ -699,10 +691,6 @@ func (t workosFixtureTransport) RoundTrip(request *http.Request) (*http.Response
 }
 
 func TestWorkOSInvalidArgumentsAndRedirects(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	f := newWorkOSFixture(t)
 	p := f.provider(t)

@@ -1899,7 +1899,7 @@ func TestCheckDoctorConfigReloadReportsSymlinkTarget(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	if err := os.Symlink(targetPath, linkPath); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
+		t.Fatalf("symlink unavailable: %v", err)
 	}
 	resolvedTarget, err := filepath.EvalSymlinks(targetPath)
 	if err != nil {
@@ -1920,10 +1920,6 @@ func TestCheckDoctorConfigReloadReportsSymlinkTarget(t *testing.T) {
 }
 
 func TestCheckDoctorConfigReloadReportsGitStatus(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -1966,7 +1962,7 @@ func TestCheckDoctorConfigReloadReportsGitStatus(t *testing.T) {
 				}
 				linkPath := filepath.Join(t.TempDir(), "global.yaml")
 				if err := os.Symlink(targetPath, linkPath); err != nil {
-					t.Skipf("symlink unavailable: %v", err)
+					t.Fatalf("symlink unavailable: %v", err)
 				}
 				return globalconfig.Config{Path: linkPath}, defaultCommandRunner
 			},
@@ -3213,10 +3209,6 @@ func TestCheckDoctorLocalWorkflowOverlay(t *testing.T) {
 }
 
 func TestDefaultGitWorkspaceChecks(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real Git integration")
-	}
-
 	t.Parallel()
 
 	repo := filepath.Join(t.TempDir(), "example project; echo injected")
@@ -3621,10 +3613,6 @@ func TestDoctorCommandProjectFlagScopesJSONReport(t *testing.T) {
 }
 
 func TestDoctorCommandAllowWriteProbesKeepsNativeTrackerReadOnly(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service, profiling, or filesystem watcher integration")
-	}
-
 	t.Parallel()
 
 	workflow := validDoctorWorkflow("/repo")
@@ -3749,10 +3737,6 @@ func TestDoctorChecksSuppressConnectorLogsFromProgress(t *testing.T) {
 }
 
 func TestCheckDoctorProjectSkipsGitHubTrackerReadinessForNative(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service, profiling, or filesystem watcher integration")
-	}
-
 	t.Parallel()
 	workflow := validDoctorWorkflow("/repo")
 	workflow.Deliverable.GitHubPullRequest = true
@@ -4772,10 +4756,6 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 }
 
 func TestCheckDoctorServerPortRejectsHealthProbeEOF(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {

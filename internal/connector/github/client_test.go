@@ -24,10 +24,6 @@ import (
 )
 
 func TestClientGraphQLSendsBearerRequest(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	requests := make(chan map[string]any, 1)
@@ -98,10 +94,6 @@ func TestClientGraphQLSendsBearerRequest(t *testing.T) {
 }
 
 func TestClientGraphQLStopsLookupsAfterRateLimitResponse(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -289,10 +281,6 @@ func TestClientGraphQLPrimaryExhaustionExpires(t *testing.T) {
 }
 
 func TestClientStopsLookupsAfterHeaderlessForbiddenRateLimitResponse(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -349,10 +337,6 @@ func TestClientStopsLookupsAfterHeaderlessForbiddenRateLimitResponse(t *testing.
 }
 
 func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -454,10 +438,6 @@ func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
 }
 
 func TestConnectorRateLimitProbesRequireFreshResponse(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -550,10 +530,6 @@ func TestConnectorRateLimitProbesRequireFreshResponse(t *testing.T) {
 }
 
 func TestClientGraphQLSuccessfulMutationClearsRateLimitResponse(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -599,10 +575,6 @@ func TestClientGraphQLSuccessfulMutationClearsRateLimitResponse(t *testing.T) {
 }
 
 func TestConnectorProbeRESTRateLimitPreservesRetryAfter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -707,10 +679,6 @@ func TestClientTrackerAvailabilityClassification(t *testing.T) {
 }
 
 func TestClientReportsResponseProgress(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -791,10 +759,6 @@ func TestClientReportsResponseProgress(t *testing.T) {
 }
 
 func TestClientGraphQLClassifiesFailures(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -918,10 +882,6 @@ func TestClassifyStatusMapsCommentCapToResourceExhaustion(t *testing.T) {
 }
 
 func TestClientGraphQLRefreshesTokenAfterAuthFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	source := newRefreshingTokenTestSource("stale-token", "fresh-token")
@@ -991,10 +951,6 @@ func TestClientGraphQLRefreshesTokenAfterAuthFailure(t *testing.T) {
 }
 
 func TestClientRESTRefreshesTokenAfterAuthFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	source := newRefreshingTokenTestSource("stale-token", "fresh-token")
@@ -1260,10 +1216,6 @@ func TestClientRESTLogsUnexpectedFailuresByDefault(t *testing.T) {
 }
 
 func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -1357,10 +1309,6 @@ func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
 }
 
 func TestClientRESTDoesNotGloballyBackOffAfterSecondaryFanoutThrottle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -1436,10 +1384,6 @@ func TestClientRESTDoesNotGloballyBackOffAfterSecondaryFanoutThrottle(t *testing
 }
 
 func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -1569,10 +1513,6 @@ func TestNewClientLogsEffectiveRESTFanoutCap(t *testing.T) {
 }
 
 func TestClientRESTFanoutBudgetsIsolateProjectOperations(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -1666,10 +1606,6 @@ func TestSortedRESTEndpointUsagesUsesBudgetTieBreakers(t *testing.T) {
 }
 
 func TestClientRESTCountsRepositoryIssuesAsFanout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -1752,10 +1688,6 @@ func TestRESTFanoutEndpointFamilyIncludesBulkHydrationReads(t *testing.T) {
 }
 
 func TestClientRESTStopsEndpointFamilyFanoutBelowReserve(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	resetAt := time.Now().UTC().Add(time.Hour)
@@ -1822,10 +1754,6 @@ func TestClientRESTStopsEndpointFamilyFanoutBelowReserve(t *testing.T) {
 }
 
 func TestClientRESTAllowsFanoutAfterReserveSnapshotReset(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	resetAt := time.Now().UTC().Add(-time.Minute)
@@ -1877,10 +1805,6 @@ func TestClientRESTAllowsFanoutAfterReserveSnapshotReset(t *testing.T) {
 }
 
 func TestClientRESTAllowsCoreFanoutAfterSearchPoolBelowReserve(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -1972,10 +1896,6 @@ func TestClientFlushRESTRateLimitUsagePrefersCoreBudget(t *testing.T) {
 }
 
 func TestClientFlushRESTRateLimitUsageAttributesEndpointBudgets(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -2084,10 +2004,6 @@ func TestClientRESTCredentialIdentityStaysStableAcrossInstallationTokenRotation(
 }
 
 func TestClientDoesNotWarnOnExpectedSharedRESTBudgetUsage(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -2141,10 +2057,6 @@ func TestClientDoesNotWarnOnExpectedSharedRESTBudgetUsage(t *testing.T) {
 }
 
 func TestClientCoalescesExpectedSharedRESTBudgetDivergence(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	resetAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
@@ -2317,10 +2229,6 @@ func mustAtoi(t *testing.T, value string) int {
 }
 
 func TestClientRESTBackoffAppliesAcrossClientsWithSharedToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	token := StaticTokenSource(t.TempDir())
@@ -2450,10 +2358,6 @@ func TestClientRESTBackoffLifetimeAcrossRecreatedClients(t *testing.T) {
 }
 
 func TestClientReportsStaleAuthWhenRefreshFails(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	source := newRefreshingTokenTestSource("stale-token", "")
@@ -2511,10 +2415,6 @@ func restEndpointUsage(usages []connector.RESTEndpointUsage, family string) conn
 }
 
 func TestClientGraphQLCapturesRateLimitSnapshot(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -2556,10 +2456,6 @@ func TestClientGraphQLCapturesRateLimitSnapshot(t *testing.T) {
 }
 
 func TestClientGraphQLAggregatesRateLimitCostsByQueryType(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	responses := make(chan string, 3)
@@ -2647,10 +2543,6 @@ func TestClientGraphQLAggregatesRateLimitCostsByQueryType(t *testing.T) {
 }
 
 func TestClientGraphQLRecordsRateLimitStatusWithoutSnapshot(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -2690,10 +2582,6 @@ func TestClientGraphQLRecordsRateLimitStatusWithoutSnapshot(t *testing.T) {
 }
 
 func TestClientGraphQLRateLimitFailureDoesNotPublishStaleSnapshot(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -2742,10 +2630,6 @@ func TestClientGraphQLRateLimitFailureDoesNotPublishStaleSnapshot(t *testing.T) 
 }
 
 func TestClientGraphQLInfersMutationCostsFromHeaders(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -2915,10 +2799,6 @@ func TestClientGraphQLCountsStaleHeaderInferredMutation(t *testing.T) {
 }
 
 func TestClientGraphQLCapturesRetryAfterRateLimit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -2955,10 +2835,6 @@ func TestClientGraphQLCapturesRetryAfterRateLimit(t *testing.T) {
 }
 
 func TestClientGraphQLClearsRetryAfterOnHeaderRefresh(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	responses := make(chan func(http.ResponseWriter), 2)
@@ -3036,10 +2912,6 @@ func TestClientGraphQLClearsRetryAfterOnHeaderRefresh(t *testing.T) {
 }
 
 func TestClientGraphQLRejectsInvalidPayloads(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -3470,10 +3342,6 @@ func TestClientRESTResourceReserveAdmissionUsesEndpointFamilyWindow(t *testing.T
 }
 
 func TestConnectorRESTResourceReserveRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	tests := []struct {
 		name      string
@@ -3562,10 +3430,6 @@ func TestClientGraphQLSecondaryRepeatedFailures(t *testing.T) {
 }
 
 func TestClientGraphQLSecondarySharedAcrossProjects(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	for _, sameCredential := range []bool{true, false} {
 		t.Run(strconv.FormatBool(sameCredential), func(t *testing.T) {

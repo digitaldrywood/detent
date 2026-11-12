@@ -498,136 +498,56 @@ func TestPrepareWorkerCodexHomeInstructionCase(t *testing.T) {
 
 func TestEnsureWindowsCodexProfileLink(t *testing.T) {
 	t.Parallel()
-	for _, directory := range []bool{false, true} {
-		t.Run(fmt.Sprintf("directory=%t", directory), func(t *testing.T) {
-			t.Parallel()
-			if directory && runtime.GOOS != "windows" {
-				t.Skip("Windows junction support")
-			}
-			root := t.TempDir()
-			source := filepath.Join(root, "source & profile café")
-			destination := filepath.Join(root, "destination & profile")
-			if directory {
-				if err := os.Mkdir(source, 0o700); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := os.WriteFile(source, []byte("credential fixture"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			for range 2 {
-				if err := ensureWindowsCodexProfileLink(source, destination); err != nil {
-					t.Fatal(err)
-				}
-				original, err := os.Stat(source)
-				if err != nil {
-					t.Fatal(err)
-				}
-				linked, err := os.Stat(destination)
-				if err != nil || !os.SameFile(original, linked) {
-					t.Fatalf("profile does not share source: %v", err)
-				}
-			}
-			if !directory {
-				replacement := filepath.Join(root, "replacement")
-				if err := os.WriteFile(replacement, []byte("refreshed credential"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Remove(source); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Rename(replacement, source); err != nil {
-					t.Fatal(err)
-				}
-				if err := ensureWindowsCodexProfileLink(source, destination); err != nil {
-					t.Fatal(err)
-				}
-				content, err := os.ReadFile(destination)
-				if err != nil || string(content) != "refreshed credential" {
-					t.Fatalf("refreshed profile = %q, %v", content, err)
-				}
-			}
-		})
-	}
+	testEnsureWindowsCodexProfileLink(t, false)
 }
 
-func TestCodexTransportLaunchRequiresPreparedProfile(t *testing.T) {
-	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX fixture command")
-	}
-	for _, tt := range []struct {
-		name    string
-		change  func(t *testing.T, home string, source string)
-		wantErr string
-	}{
-		{name: "newly added user skill is disabled before launch", change: func(t *testing.T, home string, _ string) {
-			writeUserSkillFixture(t, filepath.Join(home, ".agents", "skills", "late"))
-		}},
-		{name: "malformed source config refuses launch", wantErr: "parse Codex config", change: func(t *testing.T, _ string, source string) {
-			if err := os.WriteFile(filepath.Join(source, "config.toml"), []byte("model = [unterminated"), 0o600); err != nil {
+func testEnsureWindowsCodexProfileLink(t *testing.T, directory bool) {
+	t.Helper()
+	t.Run(fmt.Sprintf("directory=%t", directory), func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		source := filepath.Join(root, "source & profile café")
+		destination := filepath.Join(root, "destination & profile")
+		if directory {
+			if err := os.Mkdir(source, 0o700); err != nil {
 				t.Fatal(err)
 			}
-		}},
-		{name: "unreadable new user skill refuses launch", wantErr: "user skill directory", change: func(t *testing.T, home string, _ string) {
-			if os.Geteuid() == 0 {
-				t.Skip("root reads every directory")
-			}
-			locked := filepath.Join(home, ".agents", "skills", "locked")
-			writeUserSkillFixture(t, locked)
-			if err := os.Chmod(locked, 0); err != nil {
+		} else if err := os.WriteFile(source, []byte("credential fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := ensureWindowsCodexProfileLink(source, destination); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
-		}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			home := t.TempDir()
-			source := filepath.Join(home, "codex-source")
-			if err := os.MkdirAll(source, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(source, "config.toml"), []byte("model = \"gpt-5.6-codex\"\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			writeUserSkillFixture(t, filepath.Join(home, ".agents", "skills", "personal"))
-			marker := filepath.Join(t.TempDir(), "launched-config.toml")
-			command := "env CODEX_HOME='" + source + "' sh -c 'cp \"$CODEX_HOME/config.toml\" \"" + marker + "\"; cat >/dev/null'"
-			prepare := func(command string) (codexServiceCommand, error) {
-				return prepareCodexCommandForService(command, runtime.GOOS, "manual", func(string) (string, bool) { return "", false }, func() (string, error) { return home, nil })
-			}
-			factory, _, err := newCodexTransportFactory(command, "sh", prepare)
+			original, err := os.Stat(source)
 			if err != nil {
 				t.Fatal(err)
 			}
-			tt.change(t, home, source)
-			transport, err := factory.NewTransport(t.Context())
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("NewTransport() error = %v, want %q", err, tt.wantErr)
-				}
-				if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
-					t.Fatalf("provider process started after failed preparation: %v", statErr)
-				}
-				return
+			linked, err := os.Stat(destination)
+			if err != nil || !os.SameFile(original, linked) {
+				t.Fatalf("profile does not share source: %v", err)
 			}
-			if err != nil {
+		}
+		if !directory {
+			replacement := filepath.Join(root, "replacement")
+			if err := os.WriteFile(replacement, []byte("refreshed credential"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := transport.Close(t.Context()); err != nil {
+			if err := os.Remove(source); err != nil {
 				t.Fatal(err)
 			}
-			launched, err := os.ReadFile(marker)
-			if err != nil {
+			if err := os.Rename(replacement, source); err != nil {
 				t.Fatal(err)
 			}
-			for _, skill := range []string{"personal", "late"} {
-				if !strings.Contains(string(launched), filepath.Join(home, ".agents", "skills", skill, "SKILL.md")) {
-					t.Errorf("launched config does not disable %s:\n%s", skill, launched)
-				}
+			if err := ensureWindowsCodexProfileLink(source, destination); err != nil {
+				t.Fatal(err)
 			}
-		})
-	}
+			content, err := os.ReadFile(destination)
+			if err != nil || string(content) != "refreshed credential" {
+				t.Fatalf("refreshed profile = %q, %v", content, err)
+			}
+		}
+	})
 }
 
 func TestPrepareWorkerCodexHomeNeverExposesMissingConfig(t *testing.T) {

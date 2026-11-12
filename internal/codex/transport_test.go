@@ -71,9 +71,6 @@ func TestLocalTransportReapedCloseTimeout(t *testing.T) {
 }
 
 func TestModelCatalogCloseTimeoutAfterReaping(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
 	t.Parallel()
 	cleanupFailure := errors.New("output cleanup failed")
 	for _, test := range []struct {
@@ -209,10 +206,6 @@ const (
 )
 
 func TestStartupTimeoutCapturesCleanupEvidence(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 	for _, timeout := range []time.Duration{5 * time.Second, 30 * time.Second} {
 		t.Run(timeout.String(), func(t *testing.T) {
@@ -321,10 +314,6 @@ func (t *controlledStartupTransport) Close(ctx context.Context) error {
 }
 
 func TestLocalTransportRoundTrip(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
@@ -386,10 +375,6 @@ func TestLocalTransportRoundTrip(t *testing.T) {
 }
 
 func TestLocalTransportReceivesOversizedFrame(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
@@ -432,10 +417,6 @@ func TestLocalTransportReceivesOversizedFrame(t *testing.T) {
 }
 
 func TestLocalTransportCloseDrainsAfterReadFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -514,10 +495,6 @@ func TestLocalTransportCloseDrainsAfterReadFailure(t *testing.T) {
 }
 
 func TestLocalTransportReceiveHonorsContext(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
@@ -549,10 +526,6 @@ func TestLocalTransportReceiveHonorsContext(t *testing.T) {
 }
 
 func TestLocalTransportEarlyExitIncludesStatusAndStderr(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
@@ -590,10 +563,6 @@ func TestTailBufferKeepsBoundedSuffix(t *testing.T) {
 }
 
 func TestLocalTransportFactoryAppliesWorkerTempDir(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
@@ -642,10 +611,6 @@ func TestLocalTransportFactoryAppliesWorkerTempDir(t *testing.T) {
 }
 
 func TestLocalTransportFactoryAppliesWorkerWorkspace(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -714,10 +679,6 @@ func TestLocalTransportFactoryAppliesWorkerWorkspace(t *testing.T) {
 }
 
 func TestLocalTransportSendHonorsContextDuringBlockedWrite(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
@@ -758,10 +719,6 @@ func TestLocalTransportSendHonorsContextDuringBlockedWrite(t *testing.T) {
 }
 
 func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
@@ -793,10 +750,6 @@ func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
 }
 
 func TestLocalTransportCloseDrainsAfterSuccessfulTurnBackpressure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
@@ -869,10 +822,6 @@ func TestLocalTransportPublishReceivedStopsDuringBackpressure(t *testing.T) {
 }
 
 func TestLocalTransportCloseUnblocksBlockedWriteAndPublish(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	params, err := json.Marshal(strings.Repeat("x", oversizedJSONRPCPayloadSize))
@@ -1006,10 +955,6 @@ func TestLocalTransportSendWrapsCloseErrorAfterContextCancellation(t *testing.T)
 }
 
 func TestLocalTransportCloseKillsUnresponsiveProcess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
@@ -1034,10 +979,6 @@ func TestLocalTransportCloseKillsUnresponsiveProcess(t *testing.T) {
 }
 
 func TestLocalTransportCloseWrapsKillErrorAfterContextCancellation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	cmd := helperCommand(context.Background(), "exit")

@@ -99,10 +99,6 @@ func TestOIDCProviderAuthorizationAndTokenValidation(t *testing.T) {
 }
 
 func TestOIDCProviderRejectsDiscoveryIssuerMismatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var server *httptest.Server

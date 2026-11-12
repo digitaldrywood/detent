@@ -151,9 +151,6 @@ func testNativeDrainBeforeDispatch(t *testing.T, h *nativeChangeHub, issueID str
 }
 
 func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Merging", "Blocked", "Todo"}},

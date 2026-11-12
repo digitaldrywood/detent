@@ -23,10 +23,6 @@ import (
 )
 
 func TestRunnerRequestsDoNotFollowCredentialRedirects(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	var forwarded atomic.Int64
 	recipient := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded.Add(1); w.WriteHeader(http.StatusOK) }))

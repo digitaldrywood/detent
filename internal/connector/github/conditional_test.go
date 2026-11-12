@@ -14,10 +14,6 @@ import (
 )
 
 func TestClientRESTConditionalRequestUsesCachedResponseBelowReserve(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -88,10 +84,6 @@ func TestClientRESTConditionalRequestUsesCachedResponseBelowReserve(t *testing.T
 }
 
 func TestClientRESTConditionalRequestsReserveConservativeFanoutCost(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -132,10 +124,6 @@ func TestClientRESTConditionalRequestsReserveConservativeFanoutCost(t *testing.T
 }
 
 func TestClientRESTCachedPullRequestFleetFitsDefaultFanoutCap(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -173,10 +161,6 @@ func TestClientRESTCachedPullRequestFleetFitsDefaultFanoutCap(t *testing.T) {
 }
 
 func TestClientRESTConditionalRequestsCanBeDisabled(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -233,10 +217,6 @@ func TestClientRESTConditionalCacheIsBounded(t *testing.T) {
 }
 
 func TestClientRESTConditionalEvictionUsesSuccessfulReads(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name          string

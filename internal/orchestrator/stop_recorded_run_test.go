@@ -13,10 +13,6 @@ import (
 )
 
 func TestStopRecordedRun(t *testing.T) {
-	if testing.Short() {
-		t.Skip("host process inspection integration")
-	}
-
 	t.Parallel()
 	process, err := os.FindProcess(os.Getpid())
 	if err != nil {

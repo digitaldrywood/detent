@@ -91,9 +91,6 @@ func TestSandboxMountContainment(t *testing.T) {
 }
 
 func TestSandboxChildCannotDetach(t *testing.T) {
-	if AvailableIsolation() != workspacesession.IsolationSandbox {
-		t.Skip("actual host enforcement is unavailable; this is not sandbox acceptance evidence")
-	}
 	root := t.TempDir()
 	executable, err := os.Executable()
 	if err != nil {
@@ -123,7 +120,7 @@ func TestSandboxChildCannotDetach(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(terminal.Close)
-	command := shellQuote(helper) + " -test.run='^TestSandboxChildHelper$' -- terminal-sandbox-helper; exit $?\n"
+	command := "GOCOVERDIR=" + shellQuote(root) + " " + shellQuote(helper) + " -test.run='^TestSandboxChildHelper$' -- terminal-sandbox-helper; exit $?\n"
 	if err := terminal.Write([]byte(command)); err != nil {
 		t.Fatal(err)
 	}

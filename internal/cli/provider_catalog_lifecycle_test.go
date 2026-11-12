@@ -27,9 +27,6 @@ import (
 )
 
 func TestRunnerProviderCatalogStartupRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

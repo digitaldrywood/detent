@@ -197,10 +197,6 @@ func TestInstallScriptExistingInstall(t *testing.T) {
 }
 
 func TestInstallScriptDetectsSupportedTargets(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -254,10 +250,6 @@ func TestInstallScriptDetectsSupportedTargets(t *testing.T) {
 }
 
 func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -307,10 +299,6 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 }
 
 func TestInstallScriptAuthenticatesLatestReleaseRequest(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -380,10 +368,6 @@ func TestInstallScriptAuthenticatesLatestReleaseRequest(t *testing.T) {
 }
 
 func TestInstallScriptDoesNotForwardTokenAcrossLatestReleaseRedirect(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -458,10 +442,6 @@ func TestInstallScriptDoesNotForwardTokenAcrossLatestReleaseRedirect(t *testing.
 }
 
 func TestInstallScriptReportsPathGuidanceWhenInstallDirIsMissingFromPath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -497,10 +477,6 @@ func TestInstallScriptReportsPathGuidanceWhenInstallDirIsMissingFromPath(t *test
 }
 
 func TestInstallScriptReportsActiveServiceRestartGuidance(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -550,10 +526,6 @@ func TestInstallScriptReportsActiveServiceRestartGuidance(t *testing.T) {
 }
 
 func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -594,10 +566,6 @@ func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
 }
 
 func TestInstallScriptBuildsPreparedSourceWhenReleaseAssetMissing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -692,10 +660,6 @@ chmod 755 "$5"
 }
 
 func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd() error = %v", err)
@@ -916,10 +880,6 @@ func (t installerDeadlineTest) Deadline() (time.Time, bool) {
 }
 
 func TestInstallCommandDeadlines(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -1018,10 +978,6 @@ func TestInstallCommandDeadlines(t *testing.T) {
 }
 
 func TestRunInstallerCommand(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -1475,11 +1431,11 @@ func assertInstalledVersionMetadata(t *testing.T, binary string, root string, en
 
 	wantVersion, ok := gitOutput(t, root, "describe", "--tags", "--always")
 	if !ok {
-		t.Skip("git metadata unavailable")
+		t.Fatal("git metadata unavailable")
 	}
 	wantCommit, ok := gitOutput(t, root, "rev-parse", "HEAD")
 	if !ok {
-		t.Skip("git metadata unavailable")
+		t.Fatal("git metadata unavailable")
 	}
 
 	stdout, stderr, err := runDetentCommandOutput(t, binary, root, env, "--version")

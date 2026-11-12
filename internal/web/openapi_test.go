@@ -25,10 +25,6 @@ const (
 )
 
 func TestServerOpenAPIEndpoint(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	server := newConfiguredOpenAPITestServer(t, openAPITestConfig())
@@ -60,10 +56,6 @@ func TestServerOpenAPIEndpoint(t *testing.T) {
 }
 
 func TestServerOpenAPIIssueExplanationSchemaVersion(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	server := newConfiguredOpenAPITestServer(t, openAPITestConfig())
@@ -112,10 +104,6 @@ func TestServerOpenAPIIssueExplanationSchemaVersion(t *testing.T) {
 }
 
 func TestServerOpenAPIOmitsRetiredIssueProgressCredit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	server := newConfiguredOpenAPITestServer(t, openAPITestConfig())
@@ -140,10 +128,6 @@ func assertOpenAPISchemaVersion(t *testing.T, values []any) {
 }
 
 func TestServerOpenAPIBypassesPrivateDashboardToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	cfg := openAPITestConfig()

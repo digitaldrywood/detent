@@ -517,10 +517,6 @@ func TestNativeAvailabilityDeadline(t *testing.T) {
 }
 
 func TestNativeAvailabilityDeadlineRefresh(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	for _, change := range []string{"remove", "extend", "add", "shorten", "closed"} {
 		t.Run(change, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

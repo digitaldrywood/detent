@@ -60,10 +60,6 @@ func worktreeDirs(t *testing.T, root string) []string {
 }
 
 func TestGitWorktreePrepareRelease(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -124,10 +120,6 @@ func TestGitWorktreePrepareRelease(t *testing.T) {
 }
 
 func TestGitWorktreeRetainedNeedsTheAttemptsWorktree(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -160,10 +152,6 @@ func TestGitWorktreeRetainedNeedsTheAttemptsWorktree(t *testing.T) {
 }
 
 func TestGitWorktreeFreshSessionsDoNotShareACheckout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 	worktrees, _, _, _ := newGitWorktree(t)
 	checkout := hubclient.WorkspaceCheckout{WorkItemID: "wi_0c1e9fe3", Worktree: workspacesession.WorktreeFresh}
@@ -188,10 +176,6 @@ func TestGitWorktreeFreshSessionsDoNotShareACheckout(t *testing.T) {
 }
 
 func TestGitWorktreeReleaseSkipsWorktreesItDidNotMake(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 	worktrees, backend, _, _ := newGitWorktree(t)
 	info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "dogfood", Identifier: "someone-else"})
@@ -208,10 +192,6 @@ func TestGitWorktreeReleaseSkipsWorktreesItDidNotMake(t *testing.T) {
 }
 
 func TestGitWorktreePrepareRefusesAHeadThatIsNotACommitID(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -294,10 +274,6 @@ func worktreeBranches(t *testing.T, source string) string {
 // ref and on a head_sha, including ones that exist only on the remote, and
 // refuses refs git would misread.
 func TestGitWorktreeFreshSessionChecksOutWhatWasAskedFor(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -371,10 +347,6 @@ func TestGitWorktreeFreshSessionChecksOutWhatWasAskedFor(t *testing.T) {
 // residual sweep, from a backend instance of its own, while a session serves a
 // fresh worktree and again after the session released it.
 func TestGitWorktreeHoldsItsWorktreeAgainstResidualSweeps(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 	worktrees, _, source, root := newGitWorktree(t)
 	sweeper, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})

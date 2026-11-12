@@ -32,10 +32,6 @@ import (
 )
 
 func TestSSHServiceProxyKeepsCentralAuthority(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	central := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RequestURI() != "/workpad?issue=3239" || r.Header.Get("Authorization") != "Bearer project-scoped" {
 			t.Errorf("unexpected service request: %s %v", r.URL, r.Header)
@@ -86,10 +82,6 @@ func TestSSHProbeRequiresProvidedScratch(t *testing.T) {
 }
 
 func TestSSHHelperProcess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	mode := os.Getenv("DETENT_SSH_TEST_HELPER")
 	if mode == "" {
 		return
@@ -245,10 +237,6 @@ func sshTestProvider(ctx context.Context) error {
 }
 
 func TestSSHWorkerLifecycle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	t.Run("reject protocol v2", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
@@ -302,16 +290,6 @@ func TestSSHWorkerLifecycle(t *testing.T) {
 	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
 		t.Run("local ephemeral execution", func(t *testing.T) { testSSHWorkerLifecycle(t, false, true, isolation.NativeTrusted, false, true) })
 	}
-}
-
-func TestSSHLocalTargetIntegration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("local SSH integration requires a daemon")
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("local SSH daemon fixture requires POSIX sshd configuration; TestSSHWorkerLifecycle covers the worker protocol")
-	}
-	testSSHWorkerLifecycle(t, true, true, isolation.NativeTrusted)
 }
 
 func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, producerFailure ...bool) {
@@ -655,7 +633,7 @@ func localSSHFixture(t *testing.T, root, executable string, environment []string
 		if _, err = os.Stat("/usr/sbin/sshd"); err == nil {
 			sshd = "/usr/sbin/sshd"
 		} else {
-			t.Skip("local SSH integration requires sshd")
+			t.Fatal("local SSH integration requires sshd")
 		}
 	}
 	account, err := user.Current()

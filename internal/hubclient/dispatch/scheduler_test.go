@@ -57,10 +57,6 @@ func TestForgottenNativeClaimHeartbeatAvoidsLegacyRegistration(t *testing.T) {
 }
 
 func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	// This is the older supported Hub heartbeat schema: unknown fields are errors.
 	type originalHeartbeat struct {
@@ -696,10 +692,6 @@ func TestIssueFromNativeMapsQueuePriorityAndScopeMetadata(t *testing.T) {
 }
 
 func TestSchedulerHubOutageIsUnavailableBeforeClaim(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	tests := []struct {
 		name    string
 		handler http.Handler

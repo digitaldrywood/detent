@@ -965,10 +965,6 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 }
 
 func TestWaitForDispatchQuiescedHonorsContext(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 
 	issue := testIssue("issue-starting-shutdown", "digitaldrywood/detent#1546", "Todo")

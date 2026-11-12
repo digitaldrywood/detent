@@ -24,10 +24,6 @@ import (
 )
 
 func TestNativeAdmissionBatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable PostgreSQL integration")
-	}
-
 	t.Parallel()
 	database := testsupport.DispatchPostgresDatabase(t)
 	base := hubserver.Config{Clock: time.Now, Conversation: &hubserver.ConversationConfig{Enabled: true}, RunDetails: &archivedRunDetails{}, Content: newHubContentStore()}
@@ -423,10 +419,6 @@ func TestNativeAdmissionBatch(t *testing.T) {
 }
 
 func TestNativeAdmissionCompetingRunners(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable PostgreSQL integration")
-	}
-
 	t.Parallel()
 	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, true)
 	fixtureCapacity(t, h, 6)

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package project
 
 import (
@@ -6,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -15,13 +16,7 @@ import (
 )
 
 func TestRunnerSetupLifecycle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
 
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture installs a POSIX CLI")
-	}
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		if strings.HasPrefix(key, "GIT_") {
@@ -165,9 +160,7 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 }
 
 func TestRunnerSetupWithoutLocalStoreRunsEachPreparation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture uses a POSIX shell")
-	}
+
 	root := t.TempDir()
 	cfg := globalconfig.Project{ID: "example", Workdir: root, Workflow: filepath.Join(root, "WORKFLOW.md")}
 	if err := os.WriteFile(cfg.Workflow, []byte("---\ntracker:\n  kind: hub_native\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"), 0o600); err != nil {

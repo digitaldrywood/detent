@@ -225,10 +225,6 @@ func newProvisioningFixture(t *testing.T, maxTenants int, mutate func(*Allocatio
 
 func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*AllocationConfig), configure func(*provisioningFixture), configureEntry ...func(*Config)) *provisioningFixture {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("PostgreSQL tenant provisioning integration")
-	}
-
 	seed := make([]byte, ed25519.SeedSize)
 	seed[1] = 7
 	root := shortTempDir(t)
@@ -319,10 +315,6 @@ func TestProvisioningSelfServiceJourney(t *testing.T) {
 }
 
 func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Config)) {
-	if testing.Short() {
-		t.Skip("live service integration")
-	}
-
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, nil, configureStorage)
 	member := newBrowser(t, f.service.Handler())
@@ -398,10 +390,6 @@ func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Con
 }
 
 func TestProvisioningCapacityAndRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service integration")
-	}
-
 	t.Parallel()
 	f := newProvisioningFixture(t, 1, func(a *AllocationConfig) { a.RetryLimit = 1 })
 	member := newBrowser(t, f.service.Handler())
@@ -488,10 +476,6 @@ func TestProvisioningTenantStartKeepsSlowChild(t *testing.T) {
 }
 
 func TestProvisioningTenantStartFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name         string
@@ -546,10 +530,6 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 }
 
 func TestTenantStartKeepsSlowReadyTenantSupervised(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name        string
@@ -581,10 +561,6 @@ func TestTenantStartKeepsSlowReadyTenantSupervised(t *testing.T) {
 }
 
 func TestProvisioningFailsWhenTenantExitsEveryStart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service integration")
-	}
-
 	t.Parallel()
 	launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: 2, Logger: slog.New(slog.DiscardHandler), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
 	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 2; a.Launcher = launcher }, func(f *provisioningFixture) {
@@ -639,10 +615,6 @@ func TestProvisioningStatusShowsFailureReason(t *testing.T) {
 }
 
 func TestProvisioningPollsReuseProviderSessionVerification(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name      string
@@ -713,10 +685,6 @@ func TestProvisioningPollsReuseProviderSessionVerification(t *testing.T) {
 }
 
 func TestProvisioningRejectsIneligibleCreators(t *testing.T) {
-	if testing.Short() {
-		t.Skip("PostgreSQL tenant provisioning integration")
-	}
-
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) { a.AllowedDomains = []string{"allowed.test"} })
 	member := newBrowser(t, f.service.Handler())
@@ -736,10 +704,6 @@ func TestProvisioningRejectsIneligibleCreators(t *testing.T) {
 }
 
 func TestProvisioningResumesInterruptedDeletionAndMemoryFloor(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service integration")
-	}
-
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, nil)
 	member := newBrowser(t, f.service.Handler())
@@ -764,10 +728,6 @@ func TestProvisioningResumesInterruptedDeletionAndMemoryFloor(t *testing.T) {
 }
 
 func TestEntryServesClientAndJSON(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service integration")
-	}
-
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) {
 		a.Prices = []hubserver.HostedBillingPrice{{PriceID: "price_starter", Label: "Starter", Plan: hubserver.PlanReference{ID: "starter", Version: 1}}}

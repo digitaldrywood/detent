@@ -26,10 +26,6 @@ func TestShellArgumentProcess(t *testing.T) {
 }
 
 func TestCommandWithArgsExecution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real shell process integration")
-	}
-
 	t.Parallel()
 
 	executable, err := os.Executable()
@@ -63,7 +59,7 @@ func TestCommandWithArgsExecution(t *testing.T) {
 		t.Run(shellName, func(t *testing.T) {
 			t.Parallel()
 			if _, err := exec.LookPath(shellName); err != nil {
-				t.Skipf("shell unavailable: %v", err)
+				t.Fatalf("required shell fixture unavailable: %v", err)
 			}
 			quote := argQuoterForOS(shellName, runtime.GOOS)
 			command := quote(helper) + " " + quote("-test.run=TestShellArgumentProcess") + " -- configured"
@@ -77,9 +73,6 @@ func TestCommandWithArgsExecution(t *testing.T) {
 			for _, tt := range tests {
 				t.Run(tt.name, func(t *testing.T) {
 					t.Parallel()
-					if shellName == "powershell" && (tt.name == "quotes" || tt.name == "paths") {
-						t.Skip("Windows PowerShell uses legacy native argument parsing")
-					}
 					cmd := CommandWithArgs(t.Context(), command, shellName, tt.args)
 					cmd.Env = append(cmd.Environ(), "DETENT_SHELL_ARGUMENT_PROCESS=1", "DETENT_SHELL_VALUE=expanded", "MSYS2_ARG_CONV_EXCL=*", "GOCOVERDIR="+t.TempDir())
 					output, err := cmd.CombinedOutput()

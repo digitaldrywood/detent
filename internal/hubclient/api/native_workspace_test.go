@@ -284,10 +284,6 @@ func TestRelayURLFollowsTheHubsScheme(t *testing.T) {
 }
 
 func TestWorkspaceClaimerAsksOnlyForWorkspaceItems(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	var claims []tracker.NativeClaim
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -351,10 +347,6 @@ func TestWorkspaceClaimerAsksOnlyForWorkspaceItems(t *testing.T) {
 // workspace lease itself when a heartbeat ends the workspace, so the lane has
 // to be able to tell that answer -- agreement -- from a release that failed.
 func TestWorkspaceClaimerNamesAReleaseTheHubAlreadyMade(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	tests := []struct {
 		name   string
@@ -431,10 +423,6 @@ func TestWorkspaceClaimerRefusesAnIncompleteConfiguration(t *testing.T) {
 }
 
 func TestWorkspaceClaimerClaimsOnlyFromAHubThatServesWorkspaces(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	tests := []struct {
 		name         string
@@ -501,10 +489,6 @@ func TestWorkspaceClaimerClaimsOnlyFromAHubThatServesWorkspaces(t *testing.T) {
 }
 
 func TestWorkspaceClaimerRunIdentifier(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	tests := []struct {
 		name    string

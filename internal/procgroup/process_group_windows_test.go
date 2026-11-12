@@ -18,10 +18,6 @@ import (
 )
 
 func TestWindowsInspectAndTerminate(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	for _, normalExit := range []bool{false, true} {
 		name := "terminated"
 		if normalExit {

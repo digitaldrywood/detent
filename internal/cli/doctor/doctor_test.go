@@ -66,7 +66,7 @@ func TestExpandDoctorWorkspacePath(t *testing.T) {
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		t.Skipf("UserHomeDir() error = %v", err)
+		t.Fatalf("UserHomeDir() error = %v", err)
 	}
 
 	got, err := ExpandWorkspacePath("~/repo")

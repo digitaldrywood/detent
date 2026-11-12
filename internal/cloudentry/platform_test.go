@@ -530,10 +530,6 @@ func (f *fanOutTransport) RoundTrip(request *http.Request) (*http.Response, erro
 }
 
 func TestPlatformTenantFanOutIsBounded(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	const tenants = 40
 	for _, test := range []struct {

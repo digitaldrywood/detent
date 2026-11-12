@@ -10,16 +10,12 @@ import (
 )
 
 func TestExecDoesNotWaitOnDescendantsHoldingPipes(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real process or filesystem integration")
-	}
-
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is not on PATH")
+		t.Fatal("git fixture requires git on PATH")
 	}
 	if _, err := os.Stat("/bin/sh"); err != nil {
-		t.Skip("no /bin/sh")
+		t.Fatal("process fixture requires /bin/sh")
 	}
 	tests := []struct {
 		name       string

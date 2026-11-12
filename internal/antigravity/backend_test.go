@@ -24,10 +24,6 @@ import (
 )
 
 func TestRunTurnStream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	for _, test := range []struct {
 		mode      string
 		wantError string

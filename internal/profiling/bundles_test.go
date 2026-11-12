@@ -14,10 +14,6 @@ import (
 )
 
 func TestWriteBundle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service, profiling, or filesystem watcher integration")
-	}
-
 	for _, name := range []string{"complete", "canceled", "cancel during CPU", "CPU busy", "unwritable directory"} {
 		t.Run(name, func(t *testing.T) {
 			config := Default().Capture

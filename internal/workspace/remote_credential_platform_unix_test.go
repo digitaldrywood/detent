@@ -1,3 +1,5 @@
+//go:build !windows
+
 package workspace
 
 import (
@@ -15,10 +17,6 @@ import (
 // credential, or a runner service without a global git credential fails every
 // attempt with ls-remote exit status 128 before the provider starts.
 func TestLocalGitCreateReadsPublishedBranchWithRepositoryCredential(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-	skipWindows(t)
 
 	realGit, err := exec.LookPath("git")
 	if err != nil {

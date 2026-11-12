@@ -252,10 +252,6 @@ func TestDelegateNativeMergeQueueIssuesSerializesOnlyRunningHeads(t *testing.T) 
 }
 
 func TestTickDelegatesNativeMergeQueueTrainWithoutAgentDispatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 
 	now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)

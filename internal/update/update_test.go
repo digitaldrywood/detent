@@ -361,10 +361,6 @@ func TestNewGitHubClientDefaultsTransportBounds(t *testing.T) {
 }
 
 func TestGitHubClientListReleasesUsesBearerToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var gotAuth string
@@ -393,10 +389,6 @@ func TestGitHubClientListReleasesUsesBearerToken(t *testing.T) {
 }
 
 func TestGitHubClientListReleasesRetriesWithoutTokenOnAuthFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	var authHeaders []string
@@ -435,10 +427,6 @@ func TestGitHubClientListReleasesRetriesWithoutTokenOnAuthFailure(t *testing.T) 
 }
 
 func TestGitHubClientDownloadRejectsOversize(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -34,10 +34,6 @@ import (
 )
 
 func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable PostgreSQL integration")
-	}
-
 	t.Parallel()
 	states := hubserver.HostedProjectStates()
 	for i := range states {
@@ -605,10 +601,6 @@ func intakeSnapshot() tracker.GitHubIssueSnapshot {
 }
 
 func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable PostgreSQL integration")
-	}
-
 	t.Parallel()
 	for _, failure := range []struct {
 		name    string
@@ -695,10 +687,6 @@ func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
 }
 
 func TestNativeEditsDuringSourceFetch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable PostgreSQL integration")
-	}
-
 	t.Parallel()
 	h, issue := newPendingLinkedChangeHub(t)
 	started, proceed := make(chan struct{}), make(chan struct{})

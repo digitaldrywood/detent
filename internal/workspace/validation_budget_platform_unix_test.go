@@ -1,9 +1,10 @@
+//go:build !windows
+
 package workspace
 
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -11,9 +12,7 @@ import (
 )
 
 func TestReviewCommandSharesGoBudget(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell subprocess integration")
-	}
+
 	for _, test := range []struct {
 		name, flags, procs, wantFlags, wantProcs string
 		enabled                                  bool

@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -26,10 +25,6 @@ import (
 // missing provider failures, duplicate streamed/final output or usage, and hangs
 // when a peer stops reading or exits without a settled event.
 func TestRunTurnRPC(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	for _, test := range []struct {
 		mode      string
 		wantError string
@@ -57,9 +52,6 @@ func TestRunTurnRPC(t *testing.T) {
 			if test.mode == "symlink_workspace" {
 				link := filepath.Join(t.TempDir(), "workspace")
 				if err := os.Symlink(dir, link); err != nil {
-					if runtime.GOOS == "windows" {
-						t.Skipf("directory symlinks unavailable: %v", err)
-					}
 					t.Fatal(err)
 				}
 				dir = link
@@ -349,29 +341,5 @@ func TestInfrastructureClassification(t *testing.T) {
 		if ok != test.want || details.Kind != test.kind {
 			t.Errorf("classification(%v) = %#v, %v", test.err, details, ok)
 		}
-	}
-}
-
-func TestRealPiSmoke(t *testing.T) {
-	if os.Getenv("DETENT_PI_SMOKE") != "1" {
-		t.Skip("set DETENT_PI_SMOKE=1 with an installed, authenticated Pi CLI")
-	}
-	if _, err := exec.LookPath("pi"); err != nil {
-		t.Skip("Pi CLI is unavailable")
-	}
-	dir := t.TempDir()
-	backend, err := NewAgentBackend(Options{Provider: os.Getenv("DETENT_PI_PROVIDER"), SessionDir: filepath.Join(dir, "sessions"), TurnTimeout: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var output string
-	result, err := backend.RunTurn(t.Context(), runner.AgentTurnRequest{Workspace: dir, TempDir: dir, Model: os.Getenv("DETENT_PI_MODEL"), Prompt: "Reply with exactly PI_SMOKE_OK. Do not use tools.", MaxTurns: 1}, func(u runner.AgentUpdate) error {
-		if u.Type == runner.AgentUpdateMessageDelta {
-			output += u.Delta
-		}
-		return nil
-	})
-	if err != nil || result.SessionID == "" || !strings.Contains(output, "PI_SMOKE_OK") {
-		t.Fatalf("smoke = %#v, %q, %v", result, output, err)
 	}
 }

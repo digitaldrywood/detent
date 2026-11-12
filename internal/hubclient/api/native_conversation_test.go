@@ -57,9 +57,6 @@ type conversationExecutionFixture struct{ client *NativeClient }
 
 func newConversationHub(t *testing.T) (*conversationHub, *conversationExecutionFixture) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("conversation HTTP listener integration")
-	}
 	hub := &conversationHub{t: t, bindStatus: http.StatusOK, controlsWake: make(chan struct{}, 16), hangEvents: make(chan struct{})}
 	server := httptest.NewServer(hub)
 	t.Cleanup(server.Close)
@@ -864,10 +861,6 @@ func TestNativeConversationTracksLastTurnStatus(t *testing.T) {
 // teardown past the deadline the runner gave Close.
 
 func TestNativeConversationCloseHonoursDeadline(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	hub, execution := newConversationHub(t)
 	hub.hangReports = true
 	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
@@ -1072,10 +1065,6 @@ func TestNativeConversationPollStopsOnAuthorizationFailure(t *testing.T) {
 // control its waiter reports unknown is never handed over twice.
 
 func TestNativeConversationTurnEndLeavesNoControlQueued(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	hub, execution := newConversationHub(t)
 	bound, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {

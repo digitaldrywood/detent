@@ -238,10 +238,6 @@ func TestDependencyUnblockScanFairness(t *testing.T) {
 }
 
 func TestDeferredDependencyUnblockPreservesProviderLimits(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name      string

@@ -202,10 +202,6 @@ func TestExecLauncherWaitReadyTracksProcessHealth(t *testing.T) {
 }
 
 func TestExecLauncherStopsSupervisingAfterRestartLimit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
@@ -269,10 +265,6 @@ func waitLauncherFailure(t *testing.T, launcher *ExecLauncher, id string) error 
 }
 
 func TestExecLauncherKeepsRestartingReadyTenants(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
@@ -309,9 +301,6 @@ func TestExecLauncherKeepsRestartingReadyTenants(t *testing.T) {
 }
 
 func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
 	t.Parallel()
 	for _, test := range []struct {
 		name    string

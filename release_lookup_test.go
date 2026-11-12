@@ -13,10 +13,6 @@ import (
 )
 
 func TestResolveReleaseTag(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {

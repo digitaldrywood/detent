@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strconv"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -60,46 +58,72 @@ func TestRunValidatesArguments(t *testing.T) {
 }
 
 func TestRunSerializesConcurrentSubprocesses(t *testing.T) {
-	if testing.Short() {
-		t.Skip("subprocess serialization integration")
-	}
-
 	tempDir := t.TempDir()
 	validationLock := filepath.Join(tempDir, "validation.lock")
 	criticalLock := filepath.Join(tempDir, "critical.lock")
 	tracePath := filepath.Join(tempDir, "trace")
-	releasePath := filepath.Join(tempDir, "release")
 	t.Setenv(validationSubprocessHelper, "1")
 	t.Setenv("DETENT_CHECKLOCK_CRITICAL_LOCK", criticalLock)
 	t.Setenv("DETENT_CHECKLOCK_TRACE", tracePath)
-	t.Setenv("DETENT_CHECKLOCK_RELEASE", releasePath)
-	t.Cleanup(func() {
-		_ = os.WriteFile(releasePath, nil, 0o600)
-	})
 
 	ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
 	defer cancel()
 	args := []string{
 		"-lock", validationLock,
 		"-wait-timeout", validationLockWaitTimeout.String(),
-		"--", os.Args[0], "-test.run=^TestValidationSubprocessHelper$",
+		"--", os.Args[0],
+	}
+	firstReader, firstWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReader, secondWriter, err := os.Pipe()
+	if err != nil {
+		firstReader.Close()
+		firstWriter.Close()
+		t.Fatal(err)
+	}
+	firstReady := newNotifyingWriter()
+	firstDone := make(chan struct{})
+	var firstCode int
+	firstArgs := append(slices.Clone(args), "checklock-coverdir="+t.TempDir())
+	go func() {
+		firstCode = run(ctx, firstArgs, firstReader, firstReady, io.Discard)
+		close(firstDone)
+	}()
+	t.Cleanup(func() {
+		firstWriter.Close()
+		secondWriter.Close()
+		cancel()
+		<-firstDone
+		firstReader.Close()
+		secondReader.Close()
+	})
+	select {
+	case <-firstReady.notified:
+	case <-firstDone:
+		t.Fatalf("first run completed before readiness with code %d", firstCode)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 
-	firstDone := make(chan int, 1)
-	go func() {
-		firstDone <- run(ctx, args, strings.NewReader(""), io.Discard, io.Discard)
-	}()
-	waitForTraceLines(t, ctx, tracePath, 1)
-
 	secondWait := newNotifyingWriter()
-	secondDone := make(chan int, 1)
+	secondDone := make(chan struct{})
+	var secondCode int
+	secondArgs := append(slices.Clone(args), "checklock-coverdir="+t.TempDir())
 	go func() {
-		secondDone <- run(ctx, args, strings.NewReader(""), io.Discard, secondWait)
+		secondCode = run(ctx, secondArgs, secondReader, io.Discard, secondWait)
+		close(secondDone)
 	}()
+	t.Cleanup(func() {
+		secondWriter.Close()
+		cancel()
+		<-secondDone
+	})
 	select {
 	case <-secondWait.notified:
-	case code := <-secondDone:
-		t.Fatalf("second run completed before first released lock with code %d", code)
+	case <-secondDone:
+		t.Fatalf("second run completed before first released lock with code %d", secondCode)
 	case <-ctx.Done():
 		t.Fatalf("wait for second run contention: %v", ctx.Err())
 	}
@@ -107,12 +131,20 @@ func TestRunSerializesConcurrentSubprocesses(t *testing.T) {
 		t.Fatalf("trace lines while first subprocess holds critical section = %d, want 1", got)
 	}
 
-	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
-		t.Fatalf("write release signal: %v", err)
+	for _, writer := range []*os.File{firstWriter, secondWriter} {
+		if _, err := writer.Write([]byte{1}); err != nil {
+			t.Fatalf("write release signal: %v", err)
+		}
 	}
-	for name, done := range map[string]<-chan int{"first": firstDone, "second": secondDone} {
+	for name, done := range map[string]<-chan struct{}{"first": firstDone, "second": secondDone} {
 		select {
-		case code := <-done:
+		case <-done:
+			var code int
+			if name == "second" {
+				code = secondCode
+			} else {
+				code = firstCode
+			}
 			if code != 0 {
 				t.Fatalf("%s run code = %d, want 0", name, code)
 			}
@@ -123,37 +155,6 @@ func TestRunSerializesConcurrentSubprocesses(t *testing.T) {
 	if got := traceLineCount(t, tracePath); got != 2 {
 		t.Fatalf("serialized subprocess trace lines = %d, want 2", got)
 	}
-}
-
-func TestValidationSubprocessHelper(t *testing.T) {
-	if os.Getenv(validationSubprocessHelper) == "" {
-		t.Skip("helper process")
-	}
-
-	lock, err := instancelock.Acquire(os.Getenv("DETENT_CHECKLOCK_CRITICAL_LOCK"))
-	if err != nil {
-		t.Fatalf("acquire critical lock: %v", err)
-	}
-	defer func() {
-		if err := lock.Close(); err != nil {
-			t.Errorf("release critical lock: %v", err)
-		}
-	}()
-
-	trace, err := os.OpenFile(os.Getenv("DETENT_CHECKLOCK_TRACE"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatalf("open trace: %v", err)
-	}
-	if _, err := fmt.Fprintln(trace, os.Getpid()); err != nil {
-		t.Fatalf("write trace: %v", err)
-	}
-	if err := trace.Close(); err != nil {
-		t.Fatalf("close trace: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), validationLockWaitTimeout)
-	defer cancel()
-	waitForPath(t, ctx, os.Getenv("DETENT_CHECKLOCK_RELEASE"))
 }
 
 type notifyingWriter struct {
@@ -174,23 +175,6 @@ func (w *notifyingWriter) Write(data []byte) (int, error) {
 	return w.data.Write(data)
 }
 
-func waitForTraceLines(t *testing.T, ctx context.Context, path string, want int) {
-	t.Helper()
-
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if traceLineCount(t, path) >= want {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait for %d trace lines: %v", want, ctx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
 func traceLineCount(t *testing.T, path string) int {
 	t.Helper()
 
@@ -204,30 +188,7 @@ func traceLineCount(t *testing.T, path string) int {
 	return len(strings.Fields(string(data)))
 }
 
-func waitForPath(t *testing.T, ctx context.Context, path string) {
-	t.Helper()
-
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		} else if !os.IsNotExist(err) {
-			t.Fatalf("stat release signal: %v", err)
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait for release signal: %v", ctx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
 func TestValidationWaiterCannotBeOvertaken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("subprocess queue ordering integration")
-	}
-
 	t.Parallel()
 	for _, arrivals := range []int{1, 8} {
 		t.Run(fmt.Sprintf("%d new arrivals", arrivals), func(t *testing.T) {
@@ -322,10 +283,6 @@ func (w *pausedWriter) release() {
 }
 
 func TestRunCancellationStopsActiveValidation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("subprocess cancellation integration")
-	}
-
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
 	defer cancel()
@@ -344,10 +301,11 @@ func TestRunCancellationStopsActiveValidation(t *testing.T) {
 	commandCtx, stopCommand := context.WithCancel(ctx)
 	defer stopCommand()
 	done := make(chan int, 1)
+	coverageDir := t.TempDir()
 	go func() {
 		done <- run(commandCtx, []string{
-			"-lock", path, "--", os.Args[0], "-test.run=^TestValidationCancellationHelper$",
-			"--", "checklock-cancel-child", criticalPath,
+			"-lock", path, "--", os.Args[0],
+			"--", "checklock-cancel-child", criticalPath, "checklock-coverdir=" + coverageDir,
 		}, reader, ready, &stderr)
 	}()
 	select {
@@ -377,193 +335,7 @@ func TestRunCancellationStopsActiveValidation(t *testing.T) {
 	}
 }
 
-func TestValidationCancellationHelper(t *testing.T) {
-	if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "checklock-cancel-child" {
-		t.Skip("helper process")
-	}
-	acquireTestLock(t, os.Args[len(os.Args)-1])
-	fmt.Fprintln(os.Stdout, "ready")
-	if _, err := io.ReadFull(os.Stdin, make([]byte, 1)); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRunBoundsInheritedOutputDrain(t *testing.T) {
-	if testing.Short() {
-		t.Skip("inherited subprocess pipe timeout integration")
-	}
-
-	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("process group cleanup is Unix-specific")
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
-	defer cancel()
-	path := filepath.Join(t.TempDir(), "validation.lock")
-	criticalPath := filepath.Join(t.TempDir(), "critical.lock")
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	defer writer.Close()
-	var stderr bytes.Buffer
-	code := run(ctx, []string{
-		"-lock", path, "--", "env", "GOCOVERDIR=" + t.TempDir(), os.Args[0], "-test.run=^TestValidationInheritedOutputHelper$",
-		"--", "checklock-inherited-output", criticalPath,
-	}, reader, io.Discard, &stderr)
-	if code != 1 || !strings.Contains(stderr.String(), exec.ErrWaitDelay.Error()) || ctx.Err() != nil {
-		t.Fatalf("inherited output drain = %d, context=%v, stderr=%s", code, ctx.Err(), &stderr)
-	}
-	acquireTestLock(t, path)
-	acquireTestLock(t, criticalPath)
-}
-
-func TestValidationInheritedOutputHelper(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
-	if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "checklock-inherited-output" {
-		t.Skip("helper process")
-	}
-	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestValidationCancellationHelper$", "--", "checklock-cancel-child", os.Args[len(os.Args)-1])
-	coverageDir := filepath.Join(os.Getenv("GOCOVERDIR"), "child")
-	if err := os.Mkdir(coverageDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cmd.Env = append(os.Environ(), "GOCOVERDIR="+coverageDir)
-	cmd.Stdin = os.Stdin
-	cmd.Stderr = os.Stderr
-	output, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.ReadFull(output, make([]byte, len("ready\n"))); err != nil {
-		t.Fatal(err)
-	}
-	if release := os.Getenv("DETENT_CHECKLOCK_PARENT_RELEASE"); release != "" {
-		fmt.Fprintln(os.Stdout, os.Getpid())
-		for {
-			if _, err := os.Stat(release); err == nil {
-				break
-			} else if !errors.Is(err, os.ErrNotExist) {
-				t.Fatal(err)
-			}
-			if err := waitValidationPoll(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	os.Exit(0)
-}
-
-func TestRunWindowsRetainsInheritedOutputOwnership(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows retains inherited output until descendants exit")
-	}
-	for _, cancelParent := range []bool{false, true} {
-		t.Run(fmt.Sprintf("cancel=%t", cancelParent), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
-			defer cancel()
-			commandCtx, stop := context.WithCancel(ctx)
-			defer stop()
-			path := filepath.Join(t.TempDir(), "validation.lock")
-			criticalPath := filepath.Join(t.TempDir(), "critical.lock")
-			release := filepath.Join(t.TempDir(), "release")
-			t.Setenv("GOCOVERDIR", t.TempDir())
-			t.Setenv("DETENT_CHECKLOCK_PARENT_RELEASE", release)
-			reader, writer, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			ready := newNotifyingWriter()
-			var stderr bytes.Buffer
-			done := make(chan struct{})
-			var code int
-			go func() {
-				code = run(commandCtx, []string{"-lock", path, "--", os.Args[0], "-test.run=^TestValidationInheritedOutputHelper$", "--", "checklock-inherited-output", criticalPath}, reader, ready, &stderr)
-				close(done)
-			}()
-			t.Cleanup(func() {
-				writer.Close()
-				stop()
-				select {
-				case <-done:
-				case <-time.After(validationIntegrationTimeout):
-					t.Error("validation did not stop after releasing descendant input")
-				}
-				reader.Close()
-			})
-			select {
-			case <-ready.notified:
-			case <-done:
-				t.Fatalf("parent exited before readiness: %d: %s", code, &stderr)
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			ready.mu.Lock()
-			pid, err := strconv.Atoi(strings.TrimSpace(ready.data.String()))
-			ready.mu.Unlock()
-			if err != nil {
-				t.Fatal(err)
-			}
-			parent, err := os.FindProcess(pid)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer parent.Release()
-			if err := os.WriteFile(release, nil, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := parent.Wait(); err != nil {
-				t.Fatal(err)
-			}
-			if cancelParent {
-				stop()
-			}
-			select {
-			case <-done:
-				t.Fatalf("gate released while descendant retained output: %d: %s", code, &stderr)
-			case <-time.After(10 * time.Second):
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			for _, heldPath := range []string{path, criticalPath} {
-				inspection, err := instancelock.Inspect(heldPath)
-				if err != nil || inspection.Status != instancelock.StatusHeld {
-					t.Fatalf("descendant ownership lost: %+v, %v", inspection, err)
-				}
-			}
-			if _, err := writer.Write([]byte{1}); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case <-done:
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			wantCode := 0
-			if cancelParent {
-				wantCode = 1
-			}
-			if code != wantCode {
-				t.Fatalf("released descendant: code=%d want=%d stderr=%s", code, wantCode, &stderr)
-			}
-			acquireTestLock(t, path)
-			acquireTestLock(t, criticalPath)
-		})
-	}
-}
-
 func TestRunRetainsWaitAcrossHandoffs(t *testing.T) {
-	if testing.Short() {
-		t.Skip("subprocess handoff integration")
-	}
-
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

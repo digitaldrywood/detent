@@ -205,10 +205,6 @@ func TestSyncLatestGlobalConfigReconcilesMissedWatchEvent(t *testing.T) {
 }
 
 func TestGlobalConfigReloaderConvergesWhenFileChangesDuringReconciliation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("disk configuration reconciliation with wall-clock deadlines")
-	}
-
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "global.yaml")
@@ -403,10 +399,6 @@ func TestGlobalConfigReloaderUpdatesRuntimeGitHubToken(t *testing.T) {
 }
 
 func TestStartupManagerConfigMatchesFirstReload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs a fake gh command")
-	}
-
 	tests := []struct {
 		name        string
 		githubToken string

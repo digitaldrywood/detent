@@ -40,10 +40,6 @@ type platformListing struct {
 }
 
 func TestPlatformComplimentaryPlansThroughTenantHub(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network listener integration")
-	}
-
 	for _, test := range []struct {
 		name, feature, plan string
 	}{

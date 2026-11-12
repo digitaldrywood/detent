@@ -93,10 +93,6 @@ func TestSharedBillingJourney(t *testing.T) {
 }
 
 func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
-	if testing.Short() {
-		t.Skip("live service integration")
-	}
-
 	t.Parallel()
 	stripe := &fakeBilling{customers: map[string]string{}}
 	allowances := func(projects int64) map[string]int64 {

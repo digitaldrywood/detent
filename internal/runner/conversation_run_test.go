@@ -777,10 +777,6 @@ func (s *syncBuffer) String() string {
 // that a run continued from a transcript rather than the provider thread. It
 // never carries conversation text.
 func TestBindConversationLogsResumeMode(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name   string

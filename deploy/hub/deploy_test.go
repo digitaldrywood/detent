@@ -27,7 +27,7 @@ func TestPostgresCutoverReceiverInstallsAndInvokesExactPayload(t *testing.T) {
 	if realPrivdrop {
 		identity, err := user.Lookup("nobody")
 		if err != nil {
-			t.Skip("a separate unprivileged service identity is unavailable")
+			t.Fatalf("unprivileged service fixture identity: %v", err)
 		}
 		serviceUser, serviceUID, serviceGID = identity.Username, identity.Uid, identity.Gid
 	} else {

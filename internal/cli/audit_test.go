@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -193,36 +192,6 @@ func TestRunAuditDispositionUsesHubWithoutLocalService(t *testing.T) {
 			}
 		})
 	}
-}
-
-func nonLoopbackListener(t *testing.T) net.Listener {
-	t.Helper()
-
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		t.Fatalf("net.Interfaces() error = %v", err)
-	}
-	for _, networkInterface := range interfaces {
-		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addresses, err := networkInterface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, address := range addresses {
-			ip, _, err := net.ParseCIDR(address.String())
-			if err != nil || ip.IsLoopback() || ip.IsUnspecified() || ip.To4() == nil {
-				continue
-			}
-			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", net.JoinHostPort(ip.String(), "0"))
-			if err == nil {
-				return listener
-			}
-		}
-	}
-	t.Skip("host has no bindable non-loopback IPv4 address")
-	return nil
 }
 
 func TestAuditDispositionRequiresConfirmation(t *testing.T) {

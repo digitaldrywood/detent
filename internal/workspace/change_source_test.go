@@ -61,9 +61,6 @@ func TestCaptureChangeSourceCompressesRevisions(t *testing.T) {
 }
 
 func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	source := initSourceRepo(t)
 	remote := initBareRemote(t)
 	repository := "https://github.com/example/source"

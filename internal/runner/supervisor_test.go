@@ -589,10 +589,6 @@ func TestSupervisorDispatchDeliversCompletionAfterContextCancellation(t *testing
 }
 
 func TestSupervisorDispatchStopsBlockedSendAfterCancellation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 
 	returned := make(chan struct{})

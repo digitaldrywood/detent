@@ -724,10 +724,6 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 }
 
 func TestProjectNativeWorkflowReloadStatus(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service, profiling, or filesystem watcher integration")
-	}
-
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	writeProjectNativeWorkflow(t, workflowPath, int(time.Hour/time.Millisecond), "initial")
