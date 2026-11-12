@@ -135,6 +135,33 @@ func TestRelationshipsAndLabelsAreTenantScopedAndAtomic(t *testing.T) {
 	if err := writeRelationship("org_first", "prj_first", "wi_first_1", "prj_second", "wi_second_2", "related"); err != nil {
 		t.Fatal(err)
 	}
+	for _, test := range []struct {
+		organization   tracker.OrganizationID
+		project        tracker.ProjectID
+		item           tracker.NativeWorkItemID
+		relatedProject tracker.ProjectID
+		related        tracker.NativeWorkItemID
+		kind           string
+		want           bool
+	}{
+		{"org_first", "prj_first", "wi_first_1", "prj_second", "wi_second_1", "dependency", true},
+		{"org_first", "prj_second", "wi_second_1", "prj_first", "wi_first_1", "dependency", false},
+		{"org_second", "prj_first", "wi_first_1", "prj_second", "wi_second_1", "dependency", false},
+		{"org_second", "prj_first", "wi_first_1", "prj_second", "wi_second_1", "related", true},
+		{"org_second", "prj_second", "wi_second_1", "prj_first", "wi_first_1", "related", true},
+		{"org_first", "prj_first", "wi_first_1", "prj_second", "wi_second_1", "related", false},
+		{"org_first", "prj_first", "wi_first_1", "prj_second", "wi_second_2", "related", true},
+	} {
+		if err := repository.ReadTenant(t.Context(), test.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			exists, err := r.RelationshipExists(t.Context(), corestore.Relationship{OrganizationID: test.organization, ProjectID: test.project, WorkItemID: test.item, RelatedProjectID: test.relatedProject, RelatedWorkItemID: test.related, Type: test.kind})
+			if err == nil && exists != test.want {
+				t.Errorf("relationship presence for %s %s %s to %s=%t, want %t", test.organization, test.kind, test.item, test.related, exists, test.want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 		batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader)
 		if !ok {

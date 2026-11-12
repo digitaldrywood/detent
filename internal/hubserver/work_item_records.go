@@ -178,6 +178,7 @@ type workItemRecordPlan struct {
 	relationship            *corestore.Relationship
 	relationshipType        string
 	relationshipOperate     string
+	relationshipPresent     bool
 	issue                   tracker.NativeIssue
 	previousContent         string
 	previousFieldBytes      int64
@@ -308,6 +309,7 @@ func (s *Service) loadWorkItemPlan(ctx context.Context, scope nativeScope, item,
 				RelatedWorkItemID: plan.related.NativeID,
 				Type:              relationshipType,
 			}
+			plan.relationshipPresent, err = r.RelationshipExists(ctx, *plan.relationship)
 		}
 		return err
 	})
@@ -586,6 +588,10 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		}
 		if plan.current.NativeID == plan.related.NativeID && plan.current.ProjectID == plan.related.ProjectID {
 			return plan, nativePublicInvalid("An issue cannot be related to itself")
+		}
+		if plan.relationshipPresent == (request.Operation == "add") {
+			plan.existing = true
+			return plan, nil
 		}
 		if relationshipType == "dependency" {
 			if request.Operation == "add" {
@@ -1282,6 +1288,14 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope nativeSco
 				switch request := input.(type) {
 				case tracker.UpdateComment:
 					current, err := w.Comment(ctx, scope.project, plan.comment.WorkItemID, plan.comment.ID)
+					if err != nil {
+						return err
+					}
+					if current.Revision != int64(request.ExpectedRevision) {
+						return nativeConflict(tracker.Revision(current.Revision))
+					}
+				case tracker.DependencyMutation:
+					current, err := w.WorkItem(ctx, scope.project, plan.issue.WorkItemID)
 					if err != nil {
 						return err
 					}

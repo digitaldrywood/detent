@@ -43,6 +43,33 @@ func relationshipTime(value time.Time) *time.Time {
 	return &value
 }
 
+func (s *session) RelationshipExists(ctx context.Context, relationship corestore.Relationship) (bool, error) {
+	if err := s.checkOrganization(relationship.OrganizationID); err != nil {
+		return false, err
+	}
+	if relationship.Type != "dependency" && relationship.Type != "related" {
+		return false, corestore.ErrInvalidRelationship
+	}
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+SELECT CASE WHEN $6::text='dependency' THEN EXISTS (
+ SELECT 1 FROM issue_dependencies d
+ WHERE d.organization_id=$1 AND d.dependent_project_id=$2 AND d.dependent_issue_id=source.id
+ AND d.blocker_project_id=$4 AND d.blocker_issue_id=target.id
+) ELSE EXISTS (
+ SELECT 1 FROM issue_relationships r
+ WHERE r.organization_id=$1
+ AND r.first_project_id=CASE WHEN source.id<target.id THEN $2::text ELSE $4::text END
+ AND r.first_issue_id=LEAST(source.id,target.id)
+ AND r.second_project_id=CASE WHEN source.id<target.id THEN $4::text ELSE $2::text END
+ AND r.second_issue_id=GREATEST(source.id,target.id)
+) END
+FROM issues source CROSS JOIN issues target
+WHERE source.organization_id=$1 AND source.project_id=$2 AND source.native_id=$3
+AND target.organization_id=$1 AND target.project_id=$4 AND target.native_id=$5`, s.organization, relationship.ProjectID, relationship.WorkItemID, relationship.RelatedProjectID, relationship.RelatedWorkItemID, relationship.Type).Scan(&exists)
+	return exists, mapError(ctx, err)
+}
+
 func (s *session) Relationships(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.RelationshipCursor, limit int) (corestore.RelationshipPage, error) {
 	if err := checkPage(limit); err != nil {
 		return corestore.RelationshipPage{}, err

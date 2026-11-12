@@ -57,6 +57,7 @@ type Reader interface {
 	Comments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Comment, error)
 	WorkItemPage(context.Context, tracker.ProjectID, Cursor, int) (Page[WorkItem], error)
 	CommentPage(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, Cursor, int) (Page[Comment], error)
+	RelationshipExists(context.Context, Relationship) (bool, error)
 	Relationships(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, RelationshipCursor, int) (RelationshipPage, error)
 	ProgressDependencies(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, WorkItemBlockerCursor, int) ([]ProgressDependency, error)
 	WorkItemBlockers(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, WorkItemBlockerCursor, int) ([]WorkItemBlocker, error)
