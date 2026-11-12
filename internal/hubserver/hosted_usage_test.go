@@ -1201,7 +1201,7 @@ func (f usageHostedFixture) seedUsage(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=$3 WHERE organization_id=$1 AND lease_id=$2`, org, leaseID, stamp); err != nil {
 				t.Fatalf("seed usage release: %v", err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'USD',$11)`, org, project, attemptID, stamp.UTC().Truncate(time.Hour), entry.Provider, entry.Model, entry.Input, entry.Cached, entry.Output, cost, stamp); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at,usage_origin,usage_input_total,usage_cached_input_total,usage_output_total,usage_cost_total,usage_sequence)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'USD',$11,'current',$7,$8,$9,$10,1)`, org, project, attemptID, stamp.UTC().Truncate(time.Hour), entry.Provider, entry.Model, entry.Input, entry.Cached, entry.Output, cost, stamp); err != nil {
 				t.Fatalf("seed usage: %v", err)
 			}
 		}
