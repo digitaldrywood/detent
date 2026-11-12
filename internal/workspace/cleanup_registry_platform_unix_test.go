@@ -105,6 +105,13 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			enclosing := initSourceRepo(t)
+			if tt.alias {
+				alias := filepath.Join(t.TempDir(), "alias")
+				if err := os.Symlink(enclosing, alias); err != nil {
+					t.Fatal(err)
+				}
+				enclosing = alias
+			}
 			source := filepath.Join(enclosing, "source")
 			initSourceRepoAt(t, source)
 			publishCleanupSource(t, source)
@@ -133,6 +140,10 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 					old := info.Path
 					info.Key, info.Path, info.Branch = legacy, filepath.Join(root, legacy), autoBranchPrefix+strings.ToLower(legacy)
 					if err := os.Rename(old, info.Path); err != nil {
+						t.Fatal(err)
+					}
+					info.Path, err = filepath.EvalSymlinks(info.Path)
+					if err != nil {
 						t.Fatal(err)
 					}
 					relative := cleanupOwnershipRecordRelativePath(old)
