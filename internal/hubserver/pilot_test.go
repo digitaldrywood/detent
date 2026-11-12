@@ -98,6 +98,7 @@ func pilotHostedRunner(t *testing.T, f *browserHostedFixture, index int) runnera
 	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: fmt.Sprintf("pilot-host-%d", index), DisplayName: fmt.Sprintf("Pilot runner %d", index), Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/runners/"+binding.RunnerID+"/routing", map[string]any{"expected_revision": 1, "display_name": redemption.DisplayName, "tags": []string{"linux", "gpu"}, "state": "active", "capacity_limit": 2, "project_ids": []string{f.project, f.privateProject}}), http.StatusOK)
+	reportRunnerCapacity(t, f.service, base+"/projects/"+f.project, credential, binding.MachineID, redemption.DisplayName, redemption.BackendIsolation, redemption.Capacity)
 	return redemption
 }
 
