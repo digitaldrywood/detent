@@ -579,7 +579,9 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusServiceUnavailable)
 				case action == "revocation" || action == "revoked denied project":
 					requireNativeStatus(t, response, http.StatusUnauthorized)
-				case action == "denied project" || action == "denied runner project":
+				case action == "denied project":
+					requireNativeStatus(t, response, http.StatusNotFound)
+				case action == "denied runner project":
 					requireNativeStatus(t, response, http.StatusForbidden)
 				case action == "credential outage":
 					requireNativeStatus(t, response, http.StatusServiceUnavailable)
