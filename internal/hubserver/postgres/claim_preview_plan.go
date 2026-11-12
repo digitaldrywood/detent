@@ -309,6 +309,8 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 			continue
 		case !record.VersionPresent:
 			row.Err = fmt.Errorf("read work item version: %w", corestore.ErrNotFound)
+		case item.NativeSourceKey != nil && *item.NativeSourceKey != "" && !record.LinkedPresent:
+			row.Err = fmt.Errorf("read linked source: %w", corestore.ErrNotFound)
 		case change.CurrentVersionID != nil && !record.ChangeVersionPresent:
 			row.Err = fmt.Errorf("read change version: %w", corestore.ErrNotFound)
 		case record.ChangeVersionPresent && !record.PolicyPresent:
