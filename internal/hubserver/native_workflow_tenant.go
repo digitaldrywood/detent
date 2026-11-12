@@ -35,7 +35,7 @@ import (
 
 func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
 	result, err := s.transitionNativeIssueTenantWithStop(ctx, scope, item, request, nil)
-	if err == nil {
+	if err == nil && s.wakeSpriteRunnersAfter != nil {
 		s.wakeSpriteRunnersAfter(scope, result)
 	}
 	return result, err
