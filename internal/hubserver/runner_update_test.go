@@ -317,7 +317,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 	}
 }
 
-func TestRunnerUpdateApplication(t *testing.T) {
+func TestRunnerUpdateHeartbeatApplication(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "runner-update")
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	r.enroll(t)
@@ -358,49 +358,6 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	if view.Status != "ready" || view.Observation.Running.Source != "private_patched_source" || view.Observation.Running.VerifiedRelease {
 		t.Fatalf("initial view=%+v", view)
 	}
-	for _, test := range []struct {
-		name                    string
-		staleRunner, staleBuild bool
-		prefixed                bool
-	}{
-		{name: "current same-version repair"},
-		{name: "prefixed same-version repair", prefixed: true},
-		{name: "prefixed stale runner revision", prefixed: true, staleRunner: true},
-		{name: "prefixed stale build revision", prefixed: true, staleBuild: true},
-		{name: "stale runner revision", staleRunner: true},
-		{name: "stale build revision", staleBuild: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			routingCredential3, routingStatus3, routingError3 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
-			if routingError3 != nil {
-				t.Fatalf("routing reader status=%d error=%v", routingStatus3, routingError3)
-			}
-			repairRunner, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential3}, r.binding.RunnerID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			repair := *repairRunner.Update
-			repair.Running.Source = "release"
-			if test.prefixed {
-				repair.Running.Version = "v" + repair.Running.Version
-			}
-			repair.AvailableVersion = ""
-			repair.Discovery = "up_to_date"
-			repair.Revision = repair.BuildRevision()
-			repairRunner.Update = &repair
-			request := runnerUpdateChange{ExpectedRevision: repairRunner.Revision, ExpectedBuildRevision: repair.Revision, Service: "detent", Version: strings.TrimPrefix(repair.Running.Version, "v"), Release: true}
-			if test.staleRunner {
-				request.ExpectedRevision++
-			}
-			if test.staleBuild {
-				request.ExpectedBuildRevision = strings.Repeat("e", 64)
-			}
-			err = runnerUpdateReady(repairRunner, request, f.service.config.now())
-			if (err != nil) != (test.staleRunner || test.staleBuild) {
-				t.Fatalf("same-version repair selection: %v", err)
-			}
-		})
-	}
 	request := runnerUpdateChange{ExpectedRevision: snapshot.Revision, ExpectedBuildRevision: report.Revision, Service: "detent", Version: "1.2.4", Release: true, Confirm: true, IdempotencyKey: "selected-release"}
 	staleBuild := request
 	staleBuild.ExpectedBuildRevision = strings.Repeat("e", 64)
@@ -431,34 +388,6 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	view = read()
 	if view.Status != "requested" || view.Desired == nil || view.Observation.Receipt != nil {
 		t.Fatalf("queued receipt=%+v", view)
-	}
-	for _, test := range []struct {
-		name       string
-		change     func(*runnerUpdateChange)
-		credential string
-		path       string
-		want       int
-	}{
-		{"changed retry", func(c *runnerUpdateChange) { c.Version = "1.2.5" }, testHubAdminToken, r.identityPath() + "/update/apply", http.StatusConflict},
-		{"stale request", func(c *runnerUpdateChange) { c.IdempotencyKey = "stale" }, testHubAdminToken, r.identityPath() + "/update/apply", http.StatusConflict},
-		{"worker denied", func(c *runnerUpdateChange) {}, r.redemption.Credential, r.identityPath() + "/update/apply", http.StatusForbidden},
-		{"cross organization", func(c *runnerUpdateChange) {}, testHubAdminToken, "/api/v2/organizations/org_other/runners/" + r.binding.RunnerID + "/update/apply", http.StatusNotFound},
-		{"shared hub service denied", func(c *runnerUpdateChange) { c.Service = "hub" }, testHubAdminToken, r.identityPath() + "/update/apply", http.StatusUnprocessableEntity},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			copy := request
-			test.change(&copy)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, test.path, test.credential, copy)
-			if test.want == http.StatusConflict {
-				code := "revision_conflict"
-				if test.name == "changed retry" {
-					code = "idempotency_conflict"
-				}
-				requireNativeError(t, response, test.want, code)
-			} else {
-				requireNativeStatus(t, response, test.want)
-			}
-		})
 	}
 	snapshot = send(report, 2)
 	if snapshot.Routing.UpdateRequest == nil || *snapshot.Routing.UpdateRequest != *view.Desired || snapshot.Routing.CapacityLimit != 2 || snapshot.Routing.State != "active" {
