@@ -1481,9 +1481,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 			heartbeat(workspacesession.Capabilities{Files: true, Diff: true, Exec: true}, workspacesession.IsolationContainer)
 			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 			item := f.item(t, session.ID)
-			if slices.Contains(test.requires, workspacesession.CapabilityTerminal) {
-				f.requireTerminal(t, session.ID)
-			}
+			f.setRequires(t, session.ID, test.requires)
 			isolation := test.isolation
 			if isolation == "" {
 				isolation = workspacesession.IsolationContainer
@@ -1769,8 +1767,13 @@ func TestWorkspaceClaimable(t *testing.T) {
 // what is under test is the runner side, not who may ask for one.
 func (f *workspaceRunnerFixture) requireTerminal(t *testing.T, id string) {
 	t.Helper()
+	f.setRequires(t, id, []string{workspacesession.CapabilityFiles, workspacesession.CapabilityDiff, workspacesession.CapabilityTerminal})
+}
+
+func (f *workspaceRunnerFixture) setRequires(t *testing.T, id string, requires []string) {
+	t.Helper()
 	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
-		`UPDATE workspace_sessions SET requires = ARRAY['files','diff','terminal'] WHERE organization_id=$1 AND project_id=$2 AND id = $3`, f.project.OrganizationID, f.project.ID, id); err != nil {
+		`UPDATE workspace_sessions SET requires = $4 WHERE organization_id=$1 AND project_id=$2 AND id = $3`, f.project.OrganizationID, f.project.ID, id, requires); err != nil {
 		t.Fatal(err)
 	}
 }
