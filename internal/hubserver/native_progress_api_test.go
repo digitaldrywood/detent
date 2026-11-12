@@ -276,7 +276,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: f.project.OrganizationID, NativeProjects: map[string]tracker.ProjectID{"local": f.project.ID}, Machine: hubclient.Machine{ID: "conversation-machine", Hostname: "fixture", Capacity: 1, Version: "test"}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second, LeaseHold: func(context.Context) (func(), error) { return func() {}, nil }})
+			scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: f.project.OrganizationID, NativeProjects: map[string]tracker.ProjectID{"local": f.project.ID}, Machine: hubclient.Machine{ID: f.runner.binding.MachineID, Hostname: "fixture", Capacity: 1, Version: "test", BackendIsolation: f.runner.redemption.BackendIsolation}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second, LeaseHold: func(context.Context) (func(), error) { return func() {}, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -300,7 +300,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				sourceStatements = append(sourceStatements, tracedStatement{query, values})
 				sourceMu.Unlock()
 			}}
-			beforeTransition, _, err := f.service.nativeProgressRequest(withRequestTiming(t.Context(), sourceTiming), scope, string(f.issue.WorkItemID), f.policy, "conversation-machine")
+			beforeTransition, _, err := f.service.nativeProgressRequest(withRequestTiming(t.Context(), sourceTiming), scope, string(f.issue.WorkItemID), f.policy, string(f.runner.binding.MachineID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -536,7 +536,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
 			f.release(t)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &f.lease)
 			params := url.Values{"policy": {f.policy}, "instance": {string(f.lease.MachineID)}}

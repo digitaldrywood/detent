@@ -44,6 +44,7 @@ type dispatchGuardFixture struct {
 func newDispatchGuardFixture(t *testing.T) dispatchGuardFixture {
 	t.Helper()
 	f := dispatchGuardFixture{conversationWorkerFixture: newConversationWorkerFixture(t), worktreeState: "clean"}
+	reportRunnerCapacity(t, f.service, f.base, f.worker, f.runner.binding.MachineID, f.runner.redemption.DisplayName, f.runner.redemption.BackendIsolation, f.runner.redemption.Capacity)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 	if err != nil || status != http.StatusOK {
