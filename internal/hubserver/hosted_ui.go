@@ -211,6 +211,9 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	}
 	initialScope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(c.Param("project")), credential: initial}
 	if err := s.requireHostedProject(c.Request().Context(), nil, initialScope, false); err != nil {
+		if isNativeNotFound(err) {
+			return s.nativeAPIError(c, err)
+		}
 		return s.hostedJSONError(c, http.StatusForbidden, "Project access is required for events")
 	}
 	if err := s.requireBoardRecordProject(c.Request().Context(), initialScope); err != nil {

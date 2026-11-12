@@ -995,7 +995,7 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 			}
 		})
 	}
-	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/prj_ungranted/events?board=true&since=0", nil), http.StatusForbidden)
+	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/prj_ungranted/events?board=true&since=0", nil), http.StatusNotFound)
 }
 
 func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {

@@ -168,7 +168,7 @@ func TestHostedEventsWorkspace(t *testing.T) {
 	}{
 		{"invalid workspace", string(f.project), "invalid", http.StatusNotFound},
 		{"missing workspace", string(f.project), workspacesession.NewID(), http.StatusNotFound},
-		{"ungranted project", "prj_ungranted", session.ID, http.StatusForbidden},
+		{"ungranted project", "prj_ungranted", session.ID, http.StatusNotFound},
 		{"workspace from another project", string(other.project), session.ID, http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -396,7 +396,7 @@ func TestHostedEventsIssue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/"+string(f.project)+"/events?work_item="+string(item), nil), http.StatusForbidden)
+	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/"+string(f.project)+"/events?work_item="+string(item), nil), http.StatusNotFound)
 }
 
 type hostedStreamWriter struct {
