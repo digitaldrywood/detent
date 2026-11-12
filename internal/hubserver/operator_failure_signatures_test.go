@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -11,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -210,7 +208,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 			foreign := scope
 			foreign.project = "prj_foreign"
 			hidden, _, _, err := f.service.readNativeFailuresTenant(t.Context(), foreign, "", w)
-			if !errors.Is(err, accessstore.ErrDenied) || len(hidden) != 0 {
+			if !isNativeNotFound(err) || len(hidden) != 0 {
 				t.Fatalf("scope leak: %#v %v", hidden, err)
 			}
 		})
