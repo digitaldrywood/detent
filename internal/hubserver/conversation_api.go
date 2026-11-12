@@ -545,11 +545,49 @@ func (s *Service) listOrganizationConversations(c echo.Context) error {
 // readableConversationProjects returns the projects the actor can read in
 // the organization; every is true when all projects are readable (instance
 // administrators).
-func (s *Service) readableConversationProjects(_ context.Context, scope nativeScope) (projects []tracker.ProjectID, every bool, err error) {
+func (s *Service) readableConversationProjects(ctx context.Context, scope nativeScope) (projects []tracker.ProjectID, every bool, err error) {
 	if scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly {
 		return nil, true, nil
 	}
-	return []tracker.ProjectID{}, false, nil
+	if s.config.TenantRepository == nil {
+		return []tracker.ProjectID{}, false, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	const pageSize = 200
+	projects = []tracker.ProjectID{}
+	after := tracker.ProjectID("")
+	for {
+		var count int
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
+			if !ok {
+				return ErrProjectParticipants
+			}
+			rows, err := pageReader.ProjectAccessPage(ctx, projectAccessFilter(scope.credential, "", after, pageSize))
+			if err != nil {
+				return err
+			}
+			count = min(len(rows), pageSize)
+			if count > 0 {
+				after = rows[count-1].ProjectID
+			}
+			granted, err := s.grantedAccessProjects(ctx, reader, scope.organization, scope.credential, rows[:count])
+			if err != nil {
+				return err
+			}
+			for _, row := range granted {
+				projects = append(projects, row.ProjectID)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, false, fmt.Errorf("list readable conversation projects: %w", err)
+		}
+		if count < pageSize {
+			return projects, false, nil
+		}
+	}
 }
 
 func (s *Service) getWorkItemConversation(c echo.Context) error {
