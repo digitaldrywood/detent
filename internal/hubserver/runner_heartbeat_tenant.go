@@ -343,6 +343,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if dispatchChanged {
 		s.notifications.notify(dispatchNotificationKey(credential.Runner.OrganizationID))
 	}
+	s.startSpriteLifecycle(nativeScope{organization: credential.Runner.OrganizationID, project: projectID}, "")
 	assigned := false
 	cleanupKey := releasedExecutionCursorKey{organization: credential.Runner.OrganizationID, project: projectID, runner: credential.Runner.RunnerID}
 	cleanupAfter, err := s.runnerCleanupCursor(cleanupKey)
