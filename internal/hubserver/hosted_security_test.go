@@ -832,6 +832,9 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.service.maintainBoardRecords(t.Context()); err != nil {
+		t.Fatalf("refresh board projection: %v", err)
+	}
 	response := f.request(t, writer, http.MethodGet, f.base+"/work-items?limit=1", nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var page tracker.Page[tracker.NativeIssue]
