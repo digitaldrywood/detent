@@ -408,7 +408,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 		args   []any
 		status int
 	}{
-		{"missing project grant", "DELETE FROM token_grants WHERE organization_id=$1 AND token_id=$2 AND project_id=$3", []any{organization, tokenID, project}, http.StatusForbidden},
+		{"missing project grant", "DELETE FROM token_grants WHERE organization_id=$1 AND token_id=$2 AND project_id=$3", []any{organization, tokenID, project}, http.StatusNotFound},
 		{"missing claim", "UPDATE runner_identities SET operations=ARRAY['read','events']::text[] WHERE organization_id=$1 AND runner_id=$2", []any{organization, runnerID}, http.StatusForbidden},
 		{"released lease", "UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND lease_id=$3", []any{service.config.now().UTC(), organization, first.lease.LeaseID}, http.StatusConflict},
 		{"expired lease", "UPDATE leases SET acquired_at=$1,renewed_at=$1,expires_at=$2 WHERE organization_id=$3 AND lease_id=$4", []any{service.config.now().UTC().Add(-2 * time.Minute), service.config.now().UTC().Add(-time.Minute), organization, first.lease.LeaseID}, http.StatusConflict},
@@ -429,7 +429,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.name == "missing project grant" {
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, firstPath, workerToken, nil), http.StatusForbidden)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, firstPath, workerToken, nil), http.StatusNotFound)
 			}
 			request := secondGeneration
 			request.Generation.Seq = 3

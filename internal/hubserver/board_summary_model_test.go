@@ -379,7 +379,7 @@ func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			httpRead(http.StatusForbidden)
+			httpRead(http.StatusNotFound)
 		})
 	}
 }
