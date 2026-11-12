@@ -87,7 +87,7 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 		return leasestore.Lease{}, nativeRunEventStorageUnavailable()
 	}
 	now := s.config.now().UTC()
-	if request.WorkItemID == "" && len(request.ProviderCandidates) == 0 {
+	if request.WorkItemID == "" {
 		scan, err := s.readNativeClaimCandidates(ctx, scope, request, now)
 		if err != nil {
 			return leasestore.Lease{}, err
@@ -101,6 +101,7 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 		}
 		position := scan.cursor.Position
 		var descriptor *policy.Descriptor
+		var budgetRefusal error
 		for _, rows := range scan.plans {
 			candidate := rows.candidate
 			plan, err := s.hydrateNativeClaimPlan(ctx, scope, request, now, rows, descriptor)
@@ -128,6 +129,14 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 			candidateRequest.WorkItemID = candidate.WorkItemID
 			scan.cursor.Position = position
 			lease, err := s.claimNativeIssueTenantWithPlan(ctx, scope, candidateRequest, ttl, now, plan, &scan.cursor)
+			var refusal *nativeError
+			if errors.As(err, &refusal) && refusal.Code == "provider_capacity" {
+				if _, ok := refusal.Details["monthly_budget"].(budget.MonthlyDecision); ok {
+					budgetRefusal = err
+					position = claimCandidateCursor(candidate)
+					continue
+				}
+			}
 			if errors.Is(err, ErrNoClaimableWork) || errors.Is(err, tracker.ErrLeaseConflict) {
 				position = claimCandidateCursor(candidate)
 				continue
@@ -140,6 +149,9 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 		scan.cursor.Position = scan.pageNext
 		if err := s.persistNativeClaimCursor(ctx, scope, scan.cursor); err != nil {
 			return leasestore.Lease{}, err
+		}
+		if budgetRefusal != nil {
+			return leasestore.Lease{}, budgetRefusal
 		}
 		return leasestore.Lease{}, ErrNoClaimableWork
 	}
