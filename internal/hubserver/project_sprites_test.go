@@ -188,12 +188,23 @@ func TestSpriteWakeSecret(t *testing.T) {
 func newSpriteWakeFixture(t *testing.T, client *http.Client, storeToken bool, heartbeatAgo time.Duration, names ...string) (nativeFixture, nativeScope, []runnerFixture) {
 	t.Helper()
 	f := newDefaultNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), SpritesHTTPClient: client})
+	startSpriteWakeWorkers(t, f.service)
 	scope := placementFixtureScope(t, f)
 	runners := enrollSpriteWakeRunners(t, f, heartbeatAgo, names...)
 	if storeToken {
 		storeSpriteWakeSecret(t, f, spritesSecretSentinel)
 	}
 	return f, scope, runners
+}
+
+func startSpriteWakeWorkers(t *testing.T, s *Service) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	s.workerCancel = cancel
+	s.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) { s.scheduleSpriteWake(ctx, scope, result) }
+	s.startSpriteLifecycle = func(scope nativeScope, state string) { s.scheduleSpriteLifecycle(ctx, scope, state) }
+	s.startSpritePoolForQueue = func(scope nativeScope) { s.scheduleSpritePoolForQueue(ctx, scope) }
+	t.Cleanup(s.stopSpriteRunners)
 }
 
 func enrollSpriteWakeRunners(t *testing.T, f nativeFixture, heartbeatAgo time.Duration, names ...string) []runnerFixture {
