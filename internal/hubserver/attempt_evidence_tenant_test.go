@@ -256,7 +256,7 @@ func testPostgresAttemptEvidence(t *testing.T, service *Service, admin *sql.DB, 
 	}
 	planRef := billingstore.PlanReference{ID: "example-attachments", Version: 1}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization.ID, PlanReference: planRef, Name: "Example attachments", Features: []string{"collaboration"}, Allowances: map[string]int64{"collaboration_bytes": 1 << 20}}); err != nil {
+		if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization.ID, PlanReference: planRef, Name: "Example attachments", Features: []string{"collaboration"}, Allowances: map[string]int64{"collaboration_bytes": 1 << 20, "ingested_events": 1 << 20}}); err != nil {
 			return err
 		}
 		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: organization.ID, Base: planRef}, 0)
