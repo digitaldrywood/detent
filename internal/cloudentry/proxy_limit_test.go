@@ -236,8 +236,8 @@ func TestSharedEntryChangeSourcePublication(t *testing.T) {
 	require(t, request(t, http.MethodPost, path, malformedFields, key.Token), http.StatusUnprocessableEntity)
 	require(t, request(t, http.MethodPost, path, publication, "invalid-key"), http.StatusUnauthorized)
 	foreign := strings.Replace(path, project, "prj_foreign", 1)
-	require(t, request(t, http.MethodPost, foreign, publication, key.Token), http.StatusForbidden)
-	require(t, request(t, http.MethodGet, strings.Replace(sourceURL, project, "prj_foreign", 1), nil, key.Token), http.StatusForbidden)
+	require(t, request(t, http.MethodPost, foreign, publication, key.Token), http.StatusNotFound)
+	require(t, request(t, http.MethodGet, strings.Replace(sourceURL, project, "prj_foreign", 1), nil, key.Token), http.StatusNotFound)
 	require(t, request(t, http.MethodPost, base+"/work-items", map[string]string{"title": strings.Repeat("x", cloudassert.MaxBodyBytes+1)}, key.Token), http.StatusRequestEntityTooLarge)
 	bounded, err := json.Marshal(publication)
 	if err != nil {
