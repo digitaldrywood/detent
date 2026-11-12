@@ -183,7 +183,7 @@ func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
 			f, _ := newHostedCustomerFixture(t)
 			state := hostedBillingState{Status: test.status}
 			if test.status == "active" {
-				state.Snapshot = activeBillingSnapshot(f.service.config.now())
+				state.Snapshot = activeBillingSnapshot(f.service.config.now().UTC().Truncate(time.Microsecond))
 				state.Snapshot.CancelAtPeriodEnd = test.cancel
 				if test.cancelAt {
 					state.Snapshot.CancelAt = state.Snapshot.PeriodEnd.Add(-time.Minute)
@@ -311,7 +311,7 @@ func TestHostedBillingUsageComplimentaryPlan(t *testing.T) {
 			if err := f.service.database.configureHostedPlans(t.Context(), cfg); err != nil {
 				t.Fatal(err)
 			}
-			now := f.service.config.now()
+			now := f.service.config.now().UTC().Truncate(time.Microsecond)
 			end := now.Add(30 * 24 * time.Hour)
 			grant := HostedGrant{ID: "grant_example", Plan: PlanReference{ID: "team", Version: 2}, Scope: []string{"native_execution"}, StartsAt: now.Add(-time.Hour), ExpiresAt: &end}
 			if test.noEnd {
