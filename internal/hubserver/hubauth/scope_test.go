@@ -17,10 +17,14 @@ type featureScopeReader struct {
 	authority accessstore.Authority
 	now       time.Time
 	err       error
+	calls     int
 }
 
 func (r *featureScopeReader) AuthorizeAccess(_ context.Context, authority accessstore.Authority, now time.Time) (accessstore.Member, error) {
-	r.authority, r.now = authority, now
+	if r.calls == 0 {
+		r.authority, r.now = authority, now
+	}
+	r.calls++
 	return accessstore.Member{}, r.err
 }
 
