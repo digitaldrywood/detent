@@ -2,11 +2,11 @@ package hubserver
 
 import (
 	"context"
-	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerupdate"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -106,99 +106,15 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 	return value, fromFeatureError(err)
 }
 
-func (s *Service) getRunnerUpdate(c echo.Context) error {
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
-	if !ok {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	value, err := s.readRunnerUpdate(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusOK, value)
-}
-
-func (s *Service) applyRunnerUpdate(c echo.Context) error {
-	var request runnerUpdateChange
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
-	if !ok {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	value, err := s.applyRunnerUpdateCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"), request)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusAccepted, value)
-}
-
-func (s *Service) getUrgentRunnerUpdate(c echo.Context) error {
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
-	if !ok {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
-	value, err := s.readUrgentRunnerUpdateCommand(c.Request().Context(), scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusOK, value)
-}
-
-func (s *Service) markUrgentRunnerUpdate(c echo.Context) error {
-	var request urgentRunnerUpdateChange
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
-	if !ok {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
-	value, err := s.markUrgentRunnerUpdateCommand(c.Request().Context(), scope, request)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusAccepted, value)
-}
-
-func (s *Service) runnerReceiptScope(c echo.Context) (nativeScope, error) {
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
-	if !ok || credential.Runner.RunnerID == "" || credential.Runner.RunnerID != c.Param("runner") || string(credential.Runner.OrganizationID) != c.Param("organization") {
-		return nativeScope{}, runnerUnauthorized()
-	}
-	return nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential, managedRunner: c.Param("runner")}, nil
-}
-
-func (s *Service) getRunnerUpdateReceipt(c echo.Context) error {
-	scope, err := s.runnerReceiptScope(c)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	receipt, err := s.runnerUpdateService().Receipt(c.Request().Context(), s.featureScope(scope), scope.managedRunner)
-	if err != nil {
-		return s.nativeAPIError(c, fromFeatureError(err))
-	}
-	return c.JSON(http.StatusOK, receipt)
-}
-
-func (s *Service) putRunnerUpdateReceipt(c echo.Context) error {
-	scope, err := s.runnerReceiptScope(c)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var request runnerReceiptWrite
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	if err := s.runnerUpdateService().PutReceipt(c.Request().Context(), s.featureScope(scope), scope.managedRunner, request); err != nil {
-		return s.nativeAPIError(c, fromFeatureError(err))
-	}
-	return c.NoContent(http.StatusNoContent)
+func (s *Service) registerRunnerUpdateRoutes(e *echo.Echo) {
+	runnerupdate.RegisterRoutes(e.Group(""), runnerupdate.HTTPDeps{
+		Service: s.runnerUpdateService, Auth: s.requestAuth,
+		Credential: func(c echo.Context) (hubauth.Credential, bool) {
+			credential, ok := c.Get("hub_api_credential").(apiCredential)
+			return authCredential(credential), ok
+		},
+		Admin: s.requireInstanceAdmin(), Worker: s.requireAPIScope(apiScopeWorker),
+		Error:   func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		Invalid: s.invalidAPIRequest,
+	})
 }

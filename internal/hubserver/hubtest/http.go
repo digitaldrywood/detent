@@ -31,6 +31,7 @@ type HTTPOptions struct {
 }
 
 type HTTPDeps struct {
+	API      func(...hubauth.TokenScope) echo.MiddlewareFunc
 	Auth     *hubauth.Authenticator
 	Operator echo.MiddlewareFunc
 	Native   func(...hubauth.TokenScope) echo.MiddlewareFunc
@@ -93,6 +94,7 @@ func NewHTTP(t *testing.T, options HTTPOptions, register func(*echo.Group, HTTPD
 		},
 	})
 	h.Deps = HTTPDeps{Auth: a, Error: HTTPError}
+	h.Deps.API = func(roles ...hubauth.TokenScope) echo.MiddlewareFunc { return a.RequireAPI(h.apiOptions(), roles...) }
 	h.Deps.Operator = a.Operator(hubauth.OperatorOptions{
 		Classify: hubauth.Classify, Error: HTTPError, Refuse: httpRefuse,
 		AccountCredential: func(context.Context, string) (hubauth.Credential, error) {

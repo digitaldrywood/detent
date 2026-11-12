@@ -18,14 +18,13 @@ const runnerBase = "/api/v2/organizations/:organization/runners"
 const enrollmentBase = "/api/v2/organizations/:organization/runner-enrollments"
 
 func (s *Service) registerRunnerRoutes(e *echo.Echo) {
+	s.registerRunnerUpdateRoutes(e)
 	admin := s.requireInstanceAdmin()
 	worker := s.requireAPIScope(apiScopeWorker)
 	e.POST(enrollmentBase, s.createRunnerEnrollment, admin)
 	e.DELETE(enrollmentBase+"/:enrollment", s.revokeRunnerEnrollment, admin)
 	e.POST(enrollmentBase+"/redeem", s.redeemRunnerEnrollment)
 	e.GET(runnerBase+"/:runner", s.getRunnerIdentity, worker)
-	e.GET(runnerBase+"/:runner/update/receipt", s.getRunnerUpdateReceipt, worker)
-	e.PUT(runnerBase+"/:runner/update/receipt", s.putRunnerUpdateReceipt, worker)
 	e.POST(runnerBase+"/:runner/renew", s.renewRunnerIdentity, worker)
 	e.POST(runnerBase+"/:runner/rotate", s.rotateRunnerIdentity, worker)
 	e.DELETE(runnerBase+"/:runner", s.revokeRunnerIdentity, admin)
@@ -33,10 +32,6 @@ func (s *Service) registerRunnerRoutes(e *echo.Echo) {
 	e.GET(runnerBase+"/:runner/routing", s.getRunnerRouting, s.requireAPIScope(apiScopeWorker, apiScopeAdmin))
 	e.PUT(runnerBase+"/:runner/routing", s.updateRunnerRouting, admin)
 	e.GET(runnerBase+"/:runner/capacity", s.getRunnerCapacity, admin)
-	e.GET(runnerBase+"/:runner/update", s.getRunnerUpdate, admin)
-	e.POST(runnerBase+"/:runner/update/apply", s.applyRunnerUpdate, admin)
-	e.GET(urgentRunnerUpdatePath, s.getUrgentRunnerUpdate, admin)
-	e.PUT(urgentRunnerUpdatePath, s.markUrgentRunnerUpdate, admin)
 	e.PUT(runnerBase+"/:runner/capacity", s.updateRunnerCapacity, admin)
 	e.PUT("/api/v2/organizations/:organization/machines/:machine/routing", s.updateRunnerHost, admin)
 	e.POST(nativeBase+"/leases/:lease/validate", s.validateRunnerLease, s.requireNativeScope(apiScopeWorker))

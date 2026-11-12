@@ -17,7 +17,7 @@ import (
 )
 
 func TestPostgresRunnerUpdateReceiptMonotonic(t *testing.T) {
-	for _, mode := range []string{"put-put", "heartbeat-heartbeat", "put-heartbeat", "heartbeat-put", "concurrent"} {
+	for _, mode := range []string{"heartbeat-heartbeat", "put-heartbeat", "heartbeat-put", "concurrent"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newRunnerPGFixture(t)
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -213,7 +213,7 @@ func TestPostgresRunnerUpdateReceiptRequestSupersession(t *testing.T) {
 	}
 }
 
-func TestPostgresRunnerUpdateReceiptRequiresCurrentCredential(t *testing.T) {
+func TestPostgresRunnerUpdateHeartbeatRequiresCurrentCredential(t *testing.T) {
 	f := newRunnerPGFixture(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for index := range f.bindings {
@@ -221,20 +221,16 @@ func TestPostgresRunnerUpdateReceiptRequiresCurrentCredential(t *testing.T) {
 		seedMonotonicRequest(t, f, index, request)
 		build := runnerauth.BuildEvidence{Version: "1.0.0", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "linux", Architecture: "amd64", ObservedAt: now}
 		receipt := runnerauth.UpdateReceipt{Request: request, Status: "draining", ObservedAt: now}
-		path := "/api/v2/organizations/org_startup/runners/" + f.bindings[index].RunnerID + "/update/receipt"
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, path, f.tokens[1-index], runnerReceiptWrite{Receipt: receipt, Running: build}), http.StatusUnauthorized)
 		writeMonotonicReceipt(t, f, index, "put", receipt, build)
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			return w.RevokeAccessCredential(t.Context(), fmt.Sprintf("credential_%d", index+1), now)
 		}); err != nil {
 			t.Fatal(err)
 		}
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, path, f.tokens[index], runnerReceiptWrite{Receipt: receipt, Running: build}), http.StatusUnauthorized)
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.tokens[index], nil), http.StatusUnauthorized)
 		observation := runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: build, Receipt: &receipt, ObservedAt: now}
 		observation.Revision = observation.BuildRevision()
 		heartbeat := nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 1, Version: build.Version, OS: build.OS, Architecture: build.Architecture, ProtocolMajor: 2, WorkspaceIsolation: "sandbox", Update: &observation}
-		path = "/api/v2/organizations/org_startup/projects/prj_runner/machines/" + string(f.bindings[index].MachineID) + "/heartbeat"
+		path := "/api/v2/organizations/org_startup/projects/prj_runner/machines/" + string(f.bindings[index].MachineID) + "/heartbeat"
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], heartbeat), http.StatusUnauthorized)
 	}
 }
