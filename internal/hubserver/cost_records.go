@@ -181,6 +181,9 @@ func (s *Service) prepareRunnerCostRecords(ctx context.Context, scope nativeScop
 				return nil, nativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
 			}
 		}
+	}
+	for i := range observations {
+		observation := &observations[i].observation
 		raw, err := json.Marshal(observation)
 		if err != nil {
 			return nil, err

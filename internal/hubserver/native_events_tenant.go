@@ -334,22 +334,24 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				usageFacts = runnerUsageFacts{WorkItemID: string(workItem.NativeID), RunnerID: identity.RunnerID, MachineID: lease.MachineID, Placement: placement, StartedAt: attempt.StartedAt, EndedAt: s.config.now().UTC()}
 				usageFactsFound = true
 			} else if errors.Is(attemptErr, corestore.ErrNotFound) || errors.Is(attemptErr, sql.ErrNoRows) {
-				if batchStartIndex >= 0 {
-					identity, err := r.RunnerForLease(ctx, lease.LeaseID)
-					if err != nil {
-						return err
-					}
-					machine, err := r.Machine(ctx, lease.MachineID)
-					if err != nil {
-						return err
-					}
-					placement := "local"
-					if machine.SpriteName != "" {
-						placement = "sprite"
-					}
-					usageFacts = runnerUsageFacts{WorkItemID: string(workItem.NativeID), RunnerID: identity.RunnerID, MachineID: lease.MachineID, Placement: placement, StartedAt: events[batchStartIndex].OccurredAt}
-					usageFactsFound = true
+				identity, err := r.RunnerForLease(ctx, lease.LeaseID)
+				if err != nil {
+					return err
 				}
+				machine, err := r.Machine(ctx, lease.MachineID)
+				if err != nil {
+					return err
+				}
+				placement := "local"
+				if machine.SpriteName != "" {
+					placement = "sprite"
+				}
+				startedAt := lease.AcquiredAt
+				if batchStartIndex >= 0 {
+					startedAt = events[batchStartIndex].OccurredAt
+				}
+				usageFacts = runnerUsageFacts{WorkItemID: string(workItem.NativeID), RunnerID: identity.RunnerID, MachineID: lease.MachineID, Placement: placement, StartedAt: startedAt, EndedAt: s.config.now().UTC()}
+				usageFactsFound = true
 			} else if !errors.Is(attemptErr, corestore.ErrNotFound) && !errors.Is(attemptErr, sql.ErrNoRows) {
 				return attemptErr
 			}
@@ -458,6 +460,19 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			return nil, leasestore.ErrAttemptConflict
 		}
 		usageCorrection = true
+	}
+	var usageHistorical, usageCosts []billingstore.CostObservation
+	if !termination && len(request.Data.Usage) > 0 && cleanupPredecessor != nil && cleanupPredecessor.attempt.Status != "running" {
+		usageHistorical, err = s.prepareAttemptUsageHistory(ctx, scope, workItem.NativeID, request, cleanupPredecessor.attempt)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if usageFactsFound && !termination {
+		usageCosts, err = s.prepareRunnerCostRecords(ctx, scope, request, usageFacts, s.config.now().UTC(), usageHistorical...)
+		if err != nil {
+			return nil, err
+		}
 	}
 	landingState := ""
 	if cleanupPredecessor != nil {
@@ -670,22 +685,12 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		authority.Landing = landingProof
 		if !termination && len(event.Data.Usage) > 0 {
 			authority.UsageReport = *usageReport
-			if cleanupPredecessor != nil && cleanupPredecessor.attempt.Status != "running" {
-				historical, err := s.prepareAttemptUsageHistory(ctx, scope, workItem.NativeID, event, cleanupPredecessor.attempt)
-				if err != nil {
-					return nil, err
-				}
-				authority.UsageReport.Historical = historical
-			}
+			authority.UsageReport.Historical = usageHistorical
 		}
 		if i == len(events)-1 && usageFactsFound && !termination {
 			facts := usageFacts
 			authority.UsageFacts = &facts
-			costs, err := s.prepareRunnerCostRecords(ctx, scope, event, usageFacts, s.config.now().UTC(), authority.UsageReport.Historical...)
-			if err != nil {
-				return nil, err
-			}
-			authority.UsageCosts = costs
+			authority.UsageCosts = usageCosts
 		}
 		if !termination && tenantRunPRPublication(event.Data) != nil {
 			publication, err := s.prepareTenantPRPublication(ctx, &authority, predecessor)
