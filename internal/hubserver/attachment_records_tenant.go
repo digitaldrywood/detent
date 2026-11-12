@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"reflect"
@@ -585,20 +586,55 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 			return result, nativePublicInvalid("Work item attachment references exceed the write bound")
 		}
 	}
+	readable := map[string]attachment.Metadata{}
+	read := func(id string) (attachment.Metadata, bool, error) {
+		if metadata, ok := readable[id]; ok {
+			return metadata, true, nil
+		}
+		metadata, err := s.readAttachmentRecordTenant(ctx, scope, id)
+		var failure *nativeError
+		if errors.Is(err, corestore.ErrNotFound) || errors.As(err, &failure) && failure.status == http.StatusNotFound {
+			return attachment.Metadata{}, false, nil
+		}
+		if err != nil {
+			return attachment.Metadata{}, false, err
+		}
+		readable[id] = metadata
+		return metadata, true, nil
+	}
+	if plan.project.Settings.RequireVisualAttachments && !scope.importedContent && body != plan.previousContent {
+		fields := []cloudContentField{{"body", plan.comment.Body}}
+		if plan.comment.ID == "" {
+			fields = []cloudContentField{{"title", plan.issue.Title}, {"body", plan.issue.Body}}
+		}
+		resolve := func(id string) (attachment.Metadata, error) {
+			metadata, _, err := read(id)
+			return metadata, err
+		}
+		for _, field := range fields {
+			err := attachment.ValidateVisualReferences(field.value, string(scope.organization), string(scope.project), resolve)
+			var refusal *attachment.VisualReferenceError
+			if errors.As(err, &refusal) {
+				return result, nativePublicInvalid(fmt.Sprintf("%s block %d: %s", field.name, refusal.Block, attachment.VisualReferenceMessage))
+			}
+			if err != nil {
+				return result, err
+			}
+		}
+	}
 	valid := result.current[:0]
 	for _, id := range result.current {
 		if slices.Contains(result.previous, id) {
 			valid = append(valid, id)
 			continue
 		}
-		if _, err := s.readAttachmentRecordTenant(ctx, scope, id); err != nil {
-			var failure *nativeError
-			if errors.Is(err, corestore.ErrNotFound) || errors.As(err, &failure) && failure.status == http.StatusNotFound {
-				continue
-			}
+		_, found, err := read(id)
+		if err != nil {
 			return result, err
 		}
-		valid = append(valid, id)
+		if found {
+			valid = append(valid, id)
+		}
 	}
 	result.current = valid
 	return result, nil
