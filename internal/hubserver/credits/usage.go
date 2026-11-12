@@ -1,4 +1,4 @@
-package hubserver
+package credits
 
 import (
 	"context"
@@ -14,19 +14,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
-func (d *database) recordConversationUsagePostgres(ctx context.Context, usage ConversationUsage) error {
-	prepared, err := d.prepareConversationUsagePostgres(ctx, usage)
+func (s *Service) RecordUsage(ctx context.Context, usage Usage) error {
+	prepared, err := s.PrepareUsage(ctx, usage)
 	if err != nil {
 		return err
 	}
-	return d.billingRepository.WriteTenant(ctx, usage.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return d.writeConversationUsagePostgres(ctx, w, prepared)
+	return s.deps.Repository.WriteTenant(ctx, usage.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return s.WriteUsage(ctx, w, prepared)
 	})
 }
 
-func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenantstore.Writer, prepared preparedConversationUsage) error {
+func (s *Service) WriteUsage(ctx context.Context, w tenantstore.Writer, prepared PreparedUsage) error {
 	usage := prepared.usage
-	record, err := d.conversationUsageRecord(ctx, w, usage)
+	record, err := s.UsageRecord(ctx, w, usage)
 	if err != nil {
 		return err
 	}
@@ -43,10 +43,10 @@ func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenants
 	if !created {
 		return nil
 	}
-	if d.aiCreditMode == "" || usage.Provider != "openai" || record.CostUSD == nil {
+	if s.deps.Mode == "" || usage.Provider != "openai" || record.CostUSD == nil {
 		return nil
 	}
-	amount := math.Ceil(*record.CostUSD * 1e6 * d.aiCreditCostMultiplier)
+	amount := math.Ceil(*record.CostUSD * 1e6 * s.deps.CostMultiplier)
 	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0 || amount >= float64(math.MaxInt64) {
 		return billingstore.ErrInvalidAmount
 	}
@@ -54,7 +54,7 @@ func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenants
 		return nil
 	}
 	at := record.OccurredAt
-	included, err := d.includedAICreditsFromReader(ctx, w, at)
+	included, err := s.IncludedFromReader(ctx, w, at)
 	if err != nil {
 		return err
 	}
@@ -62,13 +62,13 @@ func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenants
 		included.PeriodStart = time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.UTC)
 		included.PeriodEnd = included.PeriodStart.AddDate(0, 1, 0)
 	}
-	period := billingstore.CreditPeriod{OrganizationID: usage.OrganizationID, Mode: d.aiCreditMode, StartsAt: included.PeriodStart, EndsAt: included.PeriodEnd, AllowanceMicros: included.AllowanceMicros, UsedMicros: included.UsedMicros}
-	row := billingstore.CreditTransaction{OrganizationID: usage.OrganizationID, Mode: d.aiCreditMode, Source: "usage:" + usage.TurnID, AmountMicros: -int64(amount), Kind: "usage", RecordedAt: at}
+	period := billingstore.CreditPeriod{OrganizationID: usage.OrganizationID, Mode: s.deps.Mode, StartsAt: included.PeriodStart, EndsAt: included.PeriodEnd, AllowanceMicros: included.AllowanceMicros, UsedMicros: included.UsedMicros}
+	row := billingstore.CreditTransaction{OrganizationID: usage.OrganizationID, Mode: s.deps.Mode, Source: "usage:" + usage.TurnID, AmountMicros: -int64(amount), Kind: "usage", RecordedAt: at}
 	_, err = w.PostBillingUsageCredit(ctx, period, row, int64(amount))
 	return err
 }
 
-func (d *database) conversationUsageRecord(ctx context.Context, r billingstore.Reader, usage ConversationUsage) (billingstore.ConversationUsage, error) {
+func (s *Service) UsageRecord(ctx context.Context, r billingstore.Reader, usage Usage) (billingstore.ConversationUsage, error) {
 	at := usage.OccurredAt
 	previous, err := r.ConversationUsage(ctx, usage.TurnID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -78,7 +78,7 @@ func (d *database) conversationUsageRecord(ctx context.Context, r billingstore.R
 		if err == nil {
 			at = previous.OccurredAt
 		} else {
-			at = d.now()
+			at = s.deps.Now()
 		}
 	}
 	at = time.UnixMicro(at.UnixMicro()).UTC()
@@ -95,8 +95,8 @@ func (d *database) conversationUsageRecord(ctx context.Context, r billingstore.R
 			return billingstore.ConversationUsage{}, err
 		}
 		if err == nil {
-			cost := chatUsageCost(UsagePrice{Input: price.Input, CachedInput: price.CachedInput, Output: price.Output}, usage.Tokens)
-			saving := float64(usage.Tokens.CachedInputTokens) * max(0, price.Input-price.CachedInput) / tokensPerPriceUnit
+			cost := UsageCost(price, usage.Tokens)
+			saving := float64(usage.Tokens.CachedInputTokens) * max(0, price.Input-price.CachedInput) / 1e6
 			record.PriceID, record.CostUSD, record.CacheSavingsUSD = &price.ID, &cost, &saving
 		}
 	}

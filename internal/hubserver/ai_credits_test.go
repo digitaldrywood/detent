@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,10 +21,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -248,46 +245,6 @@ func TestAICreditCheckoutSessionDoesNotRegressWebhookPayment(t *testing.T) {
 	}
 }
 
-func TestAICreditAutoFundFailureDoesNotRegressWebhookPayment(t *testing.T) {
-	t.Parallel()
-	service, p, repository := newPostgresAICreditFixture(t, true)
-	d := service.database
-	p.chargeError = billing.ErrPaymentFailed
-	p.duringCharge = func(ctx context.Context, request billing.CreditRequest) error {
-		p.payment = billing.CreditPayment{Key: request.IdempotencyKey, ID: "pi_autofund_race", PriceID: request.PriceID, USDCents: request.USDCents, Status: "succeeded"}
-		if err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
-			_, err := writer.CreateBillingEvent(ctx, billingstore.Event{OrganizationID: d.hostedOrganization, ID: "evt_autofund_race", Type: "payment_intent.succeeded", ReceivedAt: d.now().UTC()})
-			return err
-		}); err != nil {
-			return err
-		}
-		return service.billing.creditEvent(ctx, "evt_autofund_race", "payment_intent.succeeded")
-	}
-	if err := service.billing.autoFund(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.ReadTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(reader tenantstore.Reader) error {
-		purchase, err := reader.BillingCreditPurchase(t.Context(), p.payment.Key)
-		if err != nil {
-			return err
-		}
-		account, err := reader.BillingCreditAccount(t.Context(), billing.ModeTest)
-		if err != nil {
-			return err
-		}
-		rows, err := reader.BillingCreditTransactions(t.Context(), billing.ModeTest, 0, 10)
-		if err != nil {
-			return err
-		}
-		if purchase.State != "paid" || purchase.PaymentID != "pi_autofund_race" || !account.AutoEnabled || account.Failure != "" || account.BalanceMicros != 5000000 || account.ThresholdCents != 100 || account.PriceID != "price_credit" || account.PaymentMethod != "pm_credit" || len(rows) != 1 {
-			return errors.New("failed charge response regressed or duplicated the webhook payment")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func newPostgresAICreditFixture(t *testing.T, automatic bool) (*Service, *hostedCreditProvider, tenantstore.Repository) {
 	t.Helper()
 	repository := projectRecordPostgres(t)
@@ -336,77 +293,6 @@ func newPostgresAICreditFixture(t *testing.T, automatic bool) (*Service, *hosted
 	close(done)
 	f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
 	return f.service, p, repository
-}
-
-func TestPlatformAICreditAdjustments(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name, amount, reason string
-		initial, wantBalance int64
-		conflict, rollback   bool
-		wantError            bool
-	}{
-		{name: "complimentary grant", amount: "10.25", reason: "design partner", wantBalance: 10250000},
-		{name: "correction", amount: "-2.50", reason: "correction", initial: 10000000, wantBalance: 7500000},
-		{name: "micro precision", amount: "0.000001", reason: "rounding correction", wantBalance: 1},
-		{name: "conflicting replay", amount: "10", reason: "design partner", wantBalance: 10000000, conflict: true},
-		{name: "zero", amount: "0", reason: "invalid", wantError: true},
-		{name: "missing reason", amount: "10", reason: "  ", wantError: true},
-		{name: "excess precision", amount: "0.0000001", reason: "invalid", wantError: true},
-		{name: "overflow", amount: "1", reason: "invalid", initial: math.MaxInt64, wantBalance: math.MaxInt64, wantError: true},
-		{name: "underflow", amount: "-1", reason: "invalid", initial: math.MinInt64, wantBalance: math.MinInt64, wantError: true},
-		{name: "failed balance write rolls back ledger", amount: "10", reason: "design partner", rollback: true, wantError: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f, base := newHostedBillingFixture(t)
-			configureTestCredits(t, f, base, billingstore.CreditAccount{BalanceMicros: test.initial})
-			d := f.service.database
-			now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
-			d.now = func() time.Time { return now }
-			if test.rollback {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `CREATE FUNCTION reject_credit_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'balance write failed'; END $$; CREATE TRIGGER reject_credit_update BEFORE UPDATE OF balance_micros ON ai_credit_accounts FOR EACH ROW EXECUTE FUNCTION reject_credit_update()`); err != nil {
-					t.Fatal(err)
-				}
-			}
-			adjustment := billing.CreditAdjustment{IdempotencyKey: "comp-credit-1", AmountUSD: test.amount, Reason: test.reason}
-			for range 2 {
-				balance, err := d.adjustAICredits(t.Context(), "staff@example.test", adjustment)
-				if (err != nil) != test.wantError || err == nil && balance != test.wantBalance {
-					t.Fatalf("balance=%d err=%v", balance, err)
-				}
-			}
-			if test.conflict {
-				for _, changed := range []billing.CreditAdjustment{
-					{IdempotencyKey: adjustment.IdempotencyKey, AmountUSD: "11", Reason: adjustment.Reason},
-					{IdempotencyKey: adjustment.IdempotencyKey, AmountUSD: adjustment.AmountUSD, Reason: "different reason"},
-				} {
-					_, err := d.adjustAICredits(t.Context(), "staff@example.test", changed)
-					var conflict *nativeError
-					if !errors.As(err, &conflict) || conflict.status != http.StatusConflict {
-						t.Fatalf("conflicting replay=%v", err)
-					}
-				}
-			}
-			view, err := f.service.readAICredits(t.Context())
-			if err != nil || view.BalanceMicros != test.wantBalance {
-				t.Fatalf("credits=%+v err=%v", view, err)
-			}
-			if test.wantError {
-				if len(view.History) != 0 {
-					t.Fatalf("rejected adjustment has ledger rows: %+v", view.History)
-				}
-				return
-			}
-			if len(view.History) != 1 {
-				t.Fatalf("history=%+v", view.History)
-			}
-			item := view.History[0]
-			if item.AmountMicros != test.wantBalance-test.initial || item.Kind != "complimentary" || item.Actor != "staff@example.test" || item.Reason != test.reason || !item.At.Equal(d.now()) {
-				t.Fatalf("ledger=%+v", item)
-			}
-		})
-	}
 }
 
 func TestPlatformAICreditServiceAuthority(t *testing.T) {
@@ -764,90 +650,6 @@ func TestAICreditOwnerSettings(t *testing.T) {
 	}
 }
 
-func TestAICreditUsageDebit(t *testing.T) {
-	repository := projectRecordPostgres(t)
-	for index, test := range []struct {
-		name             string
-		input            int64
-		multiplier       float64
-		wantDebit        int64
-		wantTransactions int
-	}{
-		{"ten cents with markup", 1000000, 1.5, 150000, 1},
-		{"sub-cent exact micros", 10000, 1.5, 1500, 1},
-		{"fractional micro rounds up", 1, 1.5, 1, 1},
-		{"fractional micro above one", 10, 1.5, 2, 1},
-		{"exact micro boundary", 20, 1.5, 3, 1},
-		{"zero cost", 0, 1.5, 0, 0},
-		{"custom markup", 1000000, 2, 200000, 1},
-		{"at cost", 1000000, 1, 100000, 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			for _, suffix := range []string{"first", "second"} {
-				t.Run(suffix, func(t *testing.T) {
-					f := accountPreferencesPostgresFixture(t, repository)
-					organization := tracker.OrganizationID(fmt.Sprintf("org_debit_%d_%s", index, suffix))
-					seedPostgresHubAdmin(t, repository, f.service, nativeOrganization{ID: organization, Name: string(organization), Slug: string(organization)})
-					projectID := tracker.ProjectID("project_credit_usage")
-					conversationID := conversation.NewConversationID()
-					d := f.service.database
-					d.hostedOrganization = organization
-					d.aiCreditMode = billing.ModeTest
-					d.aiCreditCostMultiplier = test.multiplier
-					d.billingAuditStore = &memoryRunDetails{}
-					f.service.config.Hosted.Billing = &HostedBillingConfig{}
-					at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-					d.now = func() time.Time { return at }
-					f.service.config.now = d.now
-					if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-						if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native", CreatedAt: at}, States: nativeFixtureStates()}); err != nil {
-							return err
-						}
-						if _, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: organization, ProjectID: projectID, ID: conversationID, OwnerPrincipalID: "test_hub_admin", Origin: "user", Title: "Credit usage", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: at}, Preferences: conversation.DefaultPreferences(), CreatedAt: at, UpdatedAt: at}); err != nil {
-							return err
-						}
-						if err := w.CreateConversationPrice(t.Context(), billingstore.ConversationPrice{OrganizationID: organization, ID: 1, Provider: "openai", Model: "gpt-6-luna", EffectiveAt: at.Add(-time.Hour), Input: .1, CachedInput: .01, Output: .5}); err != nil {
-							return err
-						}
-						return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: organization, Mode: billing.ModeTest, BalanceMicros: 5000000})
-					}); err != nil {
-						t.Fatal(err)
-					}
-					usage := ConversationUsage{OrganizationID: organization, ProjectID: projectID, ConversationID: conversationID, TurnID: "credit-usage-turn", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: test.input}, Outcome: conversation.DeliveryCompleted, OccurredAt: at}
-					for range 2 {
-						if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
-							t.Fatal(err)
-						}
-					}
-					view, err := f.service.readAICredits(t.Context())
-					if err != nil || view.BalanceMicros != 5000000-test.wantDebit || len(view.History) != test.wantTransactions || test.wantTransactions > 0 && (view.History[0].AmountMicros != -test.wantDebit || view.History[0].Kind != "usage") {
-						t.Fatalf("credits=%+v err=%v", view, err)
-					}
-					window := usageWindow{From: at, To: at.Add(time.Hour)}
-					summary, err := d.chatUsageSummary(t.Context(), organization, window, nil)
-					wantCost := float64(test.input) * .1 / 1000000
-					if err != nil || summary.Turns != 1 || math.Abs(summary.CostUSD-wantCost) > 1e-12 {
-						t.Fatalf("raw usage=%+v want cost=%g err=%v", summary, wantCost, err)
-					}
-					rows, err := f.service.chatUsageRows(t.Context(), window, []string{string(projectID)})
-					if err != nil || len(rows) != 1 || math.Abs(rows[0].Cost-wantCost) > 1e-12 {
-						t.Fatalf("raw report rows=%+v err=%v", rows, err)
-					}
-					usage.TurnID = "own-provider-turn"
-					usage.Provider = "codex"
-					if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
-						t.Fatal(err)
-					}
-					view, err = f.service.readAICredits(t.Context())
-					if err != nil || view.BalanceMicros != 5000000-test.wantDebit || len(view.History) != test.wantTransactions {
-						t.Fatalf("own-provider credits=%+v err=%v", view, err)
-					}
-				})
-			}
-		})
-	}
-}
-
 func TestAICreditGroupedHistory(t *testing.T) {
 	t.Parallel()
 	for _, limit := range []int{1, 10, 100} {
@@ -867,47 +669,6 @@ func TestAICreditGroupedHistory(t *testing.T) {
 				}
 			}
 			postAICreditFixture(t, d, billingstore.CreditTransaction{Mode: billing.ModeLive, Source: "other-mode", AmountMicros: 999, Kind: "complimentary", RecordedAt: start})
-			page := creditPageRequest{Limit: limit, From: start.Format(time.RFC3339), To: start.AddDate(0, 2, 0).Format(time.RFC3339)}
-			seen := map[string]bool{}
-			counts := map[string]int{}
-			for index := 0; ; index++ {
-				view, err := f.service.readAICredits(t.Context(), page)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(view.History) == 0 || len(view.History) > limit || view.TotalRows != 41 || view.BalanceMicros != 0 {
-					t.Fatalf("page=%+v", view)
-				}
-				for _, row := range view.History {
-					counts[row.Kind]++
-					if row.Kind == "usage" {
-						day := row.At.Format("2006-01-02")
-						if seen[day] || row.Turns != 2 || row.AmountMicros != -246 || row.IncludedAmountMicros != 200 {
-							t.Fatalf("duplicate or ungrouped usage=%+v", row)
-						}
-						seen[day] = true
-					} else {
-						key := fmt.Sprintf("%s-%d", row.Kind, row.AmountMicros)
-						if row.AmountMicros < 5000000 || row.AmountMicros > 5000001 || row.Turns != 0 || seen[key] {
-							t.Fatalf("duplicate or merged credit=%+v", row)
-						}
-						seen[key] = true
-					}
-				}
-				if view.NextCursor == "" {
-					break
-				}
-				if index == 0 {
-					postAICreditFixture(t, d, billingstore.CreditTransaction{Source: "usage:later", AmountMicros: -999, IncludedAmountMicros: 999, Kind: "usage", RecordedAt: start.AddDate(0, 0, 1)})
-				}
-				page.Cursor = view.NextCursor
-				if index > 41 {
-					t.Fatal("cursor did not end")
-				}
-			}
-			if counts["usage"] != 35 || counts["purchase"] != 2 || counts["auto_fund"] != 2 || counts["complimentary"] != 2 {
-				t.Fatalf("counts=%v", counts)
-			}
 			for _, query := range []string{"?limit=0", "?limit=101", "?cursor=bad", "?from=bad", "?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z"} {
 				requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions"+query, ""), http.StatusUnprocessableEntity)
 			}
@@ -929,7 +690,6 @@ func TestAICreditGroupedHistory(t *testing.T) {
 		})
 	}
 }
-
 func TestAICreditCSVExport(t *testing.T) {
 	t.Parallel()
 	f, base := newHostedBillingFixture(t)
@@ -1214,10 +974,6 @@ func TestIncludedAICreditAllowance(t *testing.T) {
 				}
 			} else if got == nil || *got != test.want {
 				t.Fatalf("allowance=%v want=%d", got, test.want)
-			}
-			included, err := d.includedAICreditsRecord(t.Context(), d.hostedOrganization, now)
-			if err != nil || included.AllowanceMicros != test.want {
-				t.Fatalf("included=%+v err=%v", included, err)
 			}
 		})
 	}

@@ -1,9 +1,8 @@
-package hubserver
+package credits
 
 import (
 	"context"
 	"errors"
-	"net/http"
 	"testing"
 	"time"
 
@@ -15,44 +14,35 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 )
 
 func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
-	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
+	repository := hubtest.Repository(t)
 	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	for _, name := range []string{"First example", "Second example"} {
-		org, err := service.createNativeOrganizationFor(t.Context(), name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		seedPostgresHubAdmin(t, repository, service, org)
-		response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(org.ID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "create", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
-		requireNativeStatus(t, response, http.StatusCreated)
-		var project tracker.NativeProject
-		decodeHubResponse(t, response, &project)
+		org := hubtest.Organization(t, repository, hubtest.OrganizationOptions{Name: name})
+		project := hubtest.Project(t, repository, org.OrganizationID, hubtest.ProjectOptions{})
+		principal := hubtest.Credential(t, repository, org.OrganizationID, hubtest.CredentialOptions{Projects: []tracker.ProjectID{project.ID}})
 		const conversationID = "conv_0123456789abcdef0123456789abcdef"
-		err = repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: org.ID, ProjectID: project.ID, ID: conversationID, OwnerPrincipalID: "test_hub_admin", Origin: "user", Title: "Example", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, Execution: conversation.Execution{Status: conversation.ExecutionIdle}, Preferences: conversation.DefaultPreferences(), CreatedAt: at, UpdatedAt: at})
+		err := repository.WriteTenant(t.Context(), org.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: org.OrganizationID, ProjectID: project.ID, ID: conversationID, OwnerPrincipalID: principal.ID, Origin: "user", Title: "Example", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, Execution: conversation.Execution{Status: conversation.ExecutionIdle}, Preferences: conversation.DefaultPreferences(), CreatedAt: at, UpdatedAt: at})
 			if err != nil {
 				return err
 			}
-			return w.CreateConversationPrice(t.Context(), billingstore.ConversationPrice{OrganizationID: org.ID, ID: 1, Provider: "openai", Model: "example-model", EffectiveAt: at.Add(-time.Hour), Input: .1, CachedInput: .01, Output: .5})
+			return w.CreateConversationPrice(t.Context(), billingstore.ConversationPrice{OrganizationID: org.OrganizationID, ID: 1, Provider: "openai", Model: "example-model", EffectiveAt: at.Add(-time.Hour), Input: .1, CachedInput: .01, Output: .5})
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		detailStore := &memoryRunDetails{}
-		detailConfig := Config{RunDetails: detailStore}
-		if name == "Second example" {
-			detailConfig = Config{Hosted: &HostedConfig{SharedEntry: &HostedSharedEntry{RunDetails: detailStore}}}
-		}
-		d := &database{billingRepository: repository, billingAuditStore: detailConfig.normalized().RunDetails, aiCreditMode: "test", aiCreditCostMultiplier: 1.5}
-		usage := ConversationUsage{OrganizationID: org.ID, ProjectID: project.ID, ConversationID: conversationID, TurnID: "turn-first", Provider: "openai", Model: "example-model", OccurredAt: at, Tokens: runner.AgentTokenCounts{InputTokens: 1000000}, Outcome: conversation.DeliveryCompleted}
-		if err := d.RecordConversationUsage(t.Context(), usage); err == nil {
+		details := hubtest.NewDetails()
+		d := fixtureService(t, repository, org.OrganizationID, details)
+		usage := Usage{OrganizationID: org.OrganizationID, ProjectID: project.ID, ConversationID: conversationID, TurnID: "turn-first", Provider: "openai", Model: "example-model", OccurredAt: at, Tokens: runner.AgentTokenCounts{InputTokens: 1000000}, Outcome: conversation.DeliveryCompleted}
+		if err := d.RecordUsage(t.Context(), usage); err == nil {
 			t.Fatal("usage accepted without a credit account")
 		}
-		err = repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		err = repository.WriteTenant(t.Context(), org.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.ConversationUsage(t.Context(), usage.TurnID); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("failed debit retained usage: %v", err)
 			}
@@ -65,13 +55,13 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 					t.Fatalf("failed debit retained monthly spend: %+v", spend)
 				}
 			}
-			return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: org.ID, Mode: "test", BalanceMicros: 5000000})
+			return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: org.OrganizationID, Mode: "test", BalanceMicros: 5000000})
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		for range 2 {
-			if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
+			if err := d.RecordUsage(t.Context(), usage); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -85,7 +75,7 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 			{name: "empty", projects: []string{}, turns: 0},
 			{name: "other", projects: []string{"other-project"}, turns: 0},
 		} {
-			summary, err := d.chatUsageSummary(t.Context(), org.ID, usageWindow{From: at, To: at.Add(time.Hour)}, selection.projects)
+			summary, err := d.UsageSummary(t.Context(), org.OrganizationID, Window{From: at, To: at.Add(time.Hour)}, selection.projects)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,7 +83,7 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 				t.Fatalf("%s summary=%+v", selection.name, summary)
 			}
 		}
-		err = repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		err = repository.ReadTenant(t.Context(), org.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			account, err := r.BillingCreditAccount(t.Context(), "test")
 			if err != nil {
 				return err
@@ -137,44 +127,25 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 			next := usage
 			next.TurnID = []string{"turn-second", "turn-third"}[i]
 			next.OccurredAt = at.Add(offset)
-			if err := d.RecordConversationUsage(t.Context(), next); err != nil {
+			if err := d.RecordUsage(t.Context(), next); err != nil {
 				t.Fatal(err)
-			}
-		}
-		reporter := &Service{database: d, config: Config{Hosted: &HostedConfig{OrganizationID: string(org.ID)}}}
-		for _, hourly := range []bool{false, true} {
-			window := usageWindow{From: at, To: at.Add(2 * time.Hour), Hourly: hourly}
-			rows, err := reporter.chatUsageRows(t.Context(), window, []string{string(project.ID)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			expectedBuckets := 1
-			if hourly {
-				expectedBuckets = 2
-			}
-			if len(rows) != expectedBuckets {
-				t.Fatalf("hourly=%v rows=%+v", hourly, rows)
-			}
-			report := buildUsageReport(window, rows, nil, nil, UsageConfig{})
-			if report.Total.Sessions != 3 || report.Total.Tokens != 3000000 || report.Total.Cost != .3 || len(report.Providers) != 1 || report.Providers[0].Sessions != 3 || len(report.Daily) != expectedBuckets {
-				t.Fatalf("hourly=%v report=%+v", hourly, report)
 			}
 		}
 		for _, failure := range []string{"store", "read"} {
-			unavailable := &memoryRunDetails{fail: failure == "store"}
+			unavailable := &failingDetails{Details: hubtest.NewDetails(), fail: failure == "store"}
 			if failure == "read" {
 				unavailable.beforeRead = func(context.Context) error { return errors.New("archive unavailable") }
 			}
 			failed := usage
 			failed.TurnID = "archive-failure-" + failure
-			originalStore := d.billingAuditStore
-			d.billingAuditStore = unavailable
-			err := d.RecordConversationUsage(t.Context(), failed)
-			d.billingAuditStore = originalStore
+			originalStore := d.deps.Details
+			d.deps.Details = unavailable
+			err := d.RecordUsage(t.Context(), failed)
+			d.deps.Details = originalStore
 			if err == nil {
 				t.Fatalf("%s archive failure accepted", failure)
 			}
-			if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := repository.ReadTenant(t.Context(), org.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 				if _, err := r.ConversationUsage(t.Context(), failed.TurnID); !errors.Is(err, corestore.ErrNotFound) {
 					t.Fatalf("archive failure retained usage: %v", err)
 				}
@@ -190,19 +161,19 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 		next := usage
 		next.TurnID = "turn-repriced"
 		next.OccurredAt = at.Add(2 * time.Hour)
-		prepared, err := d.prepareConversationUsagePostgres(t.Context(), next)
+		prepared, err := d.PrepareUsage(t.Context(), next)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateConversationPrice(t.Context(), billingstore.ConversationPrice{OrganizationID: org.ID, ID: 2, Provider: "openai", Model: "example-model", EffectiveAt: at.Add(90 * time.Minute), Input: .2, CachedInput: .02, Output: 1})
+		if err := repository.WriteTenant(t.Context(), org.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateConversationPrice(t.Context(), billingstore.ConversationPrice{OrganizationID: org.OrganizationID, ID: 2, Provider: "openai", Model: "example-model", EffectiveAt: at.Add(90 * time.Minute), Input: .2, CachedInput: .02, Output: 1})
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error { return d.writeConversationUsagePostgres(t.Context(), w, prepared) }); !errors.Is(err, mutation.ErrConflict) {
+		if err := repository.WriteTenant(t.Context(), org.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { return d.WriteUsage(t.Context(), w, prepared) }); !errors.Is(err, mutation.ErrConflict) {
 			t.Fatalf("price changed after preparation: %v", err)
 		}
-		if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(t.Context(), org.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			if _, err := r.ConversationUsage(t.Context(), next.TurnID); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("stale preparation retained usage: %v", err)
 			}
@@ -210,10 +181,10 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := d.RecordConversationUsage(t.Context(), next); err != nil {
+		if err := d.RecordUsage(t.Context(), next); err != nil {
 			t.Fatal(err)
 		}
-		if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(t.Context(), org.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			spend, err := r.BillingMonthlySpend(t.Context(), project.ID, at)
 			if err == nil && spend.LunaMicros != 500000 {
 				t.Fatalf("reprepared price spend: %+v", spend)
@@ -225,7 +196,7 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 
 		historical := usage
 		historical.TurnID = "historical-no-cost"
-		if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := repository.WriteTenant(t.Context(), org.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 			row, err := w.ConversationUsage(t.Context(), usage.TurnID)
 			if err != nil {
 				return err
@@ -237,7 +208,7 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 		var balanceBefore int64
-		if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(t.Context(), org.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			if _, err := r.BillingCostRevision(t.Context(), billingstore.CostSource{Provider: "openai", ProviderAccount: "luna", SourceID: "luna:" + historical.TurnID, From: at, To: at.Add(time.Microsecond)}); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("historical fixture already has cost: %v", err)
 			}
@@ -248,11 +219,11 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 		for range 2 {
-			if err := d.RecordConversationUsage(t.Context(), historical); err != nil {
+			if err := d.RecordUsage(t.Context(), historical); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(t.Context(), org.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			account, err := r.BillingCreditAccount(t.Context(), "test")
 			if err != nil {
 				return err
