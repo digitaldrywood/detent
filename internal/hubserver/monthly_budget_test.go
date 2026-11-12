@@ -975,6 +975,7 @@ func TestMonthlyBudgetLunaQueueAndHardStop(t *testing.T) {
 func TestMonthlyBudgetStopsSpriteLifecycleByScope(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
+	f.service.registerCostUsageRoutes(f.service.echo)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
