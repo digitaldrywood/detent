@@ -1333,7 +1333,7 @@ func TestProjectSpriteBudgetSelection(t *testing.T) {
 			if err != nil || oldest.AllocatedCount != 0 || oldest.Shortfall != 2 {
 				t.Fatalf("budget-blocked allocation=%+v err=%v", oldest, err)
 			}
-			view, err := f.service.readSpritePool(t.Context(), scope)
+			view, err := f.service.readSpritePoolController(t.Context(), scope)
 			if err != nil {
 				t.Fatal(err)
 			}
