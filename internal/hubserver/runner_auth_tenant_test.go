@@ -297,7 +297,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization.ID, ID: "hub_" + strings.Repeat("a", 32), CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
 			return err
 		}
-		if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization.ID, PlanReference: usagePlan, Name: "Runner protocol", Features: []string{"collaboration"}, Allowances: map[string]int64{"api_mutations": 100}}); err != nil {
+		if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization.ID, PlanReference: usagePlan, Name: "Runner protocol", Features: []string{"collaboration"}, Allowances: map[string]int64{"api_mutations": 100, "ingested_events": 100}}); err != nil {
 			return err
 		}
 		if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: organization.ID, Base: usagePlan}, 0); err != nil {
@@ -1175,8 +1175,8 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if mutations != 25 || heartbeats != 13 {
-		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=25/13", mutations, heartbeats)
+	if mutations != 27 || heartbeats != 13 {
+		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=27/13", mutations, heartbeats)
 	}
 }
 
