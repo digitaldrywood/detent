@@ -214,7 +214,7 @@
       ]
     },
     "native-command": {
-      "boundary": "internal/hubserver/native_api.go#Service.commitNativeMutation",
+      "boundary": "internal/hubserver/postgres/repository.go#Repository.transaction",
       "contract": "A native command rechecks current authority and revision, executes its callback, appends immutable history and stores its idempotent result in one transaction. A failed callback writes neither result nor partial state. Object preparation/hydration stays outside the writer; replay returns the prior receipt without another mutation.",
       "families": [
         "core",
@@ -390,7 +390,7 @@
         "internal/hubserver/postgres/project_access.go#session.lockHostedOrganization"
       ],
       "parity_tests": [
-        "internal/hubserver/project_records_test.go#TestProjectRecordBackendParity",
+        "internal/hubserver/project_records_test.go#TestPostgresProjectRecords",
         "internal/hubserver/postgres/project_records_test.go#TestProjectRecordsKeepTenantRevisionsAndClaims",
         "internal/hubserver/postgres/project_records_test.go#TestProjectRecordMutationRollsBackRelationships"
       ],
@@ -524,9 +524,9 @@
         "lease"
       ],
       "members": [
-        "internal/hubserver/native_work_commands.go#Service.createNativeIssueCommand",
-        "internal/hubserver/native_work_commands.go#Service.createNativeCommentCommand",
-        "internal/hubserver/native_work_commands.go#Service.updateNativeCommentCommand",
+        "internal/hubserver/postgres/issues.go#session.CreateWorkItem",
+        "internal/hubserver/postgres/native_comments.go#session.CreateComment",
+        "internal/hubserver/postgres/native_comments.go#session.UpdateComment",
         "internal/hubserver/postgres/work_item_serving.go#session.LockWorkItemProject",
         "internal/hubserver/postgres/work_item_serving.go#session.LockWorkItem",
         "internal/hubserver/postgres/event_records.go#session.AppendEvent",
@@ -634,82 +634,6 @@
         "tables": []
       }
     },
-    "internal/cli/dashboard_client.go": {
-      "disposition": "non-storage",
-      "families": [
-        "non-storage"
-      ],
-      "inventory": {
-        "operations": {
-          "DashboardReadClient.State:Query": 1,
-          "DashboardReadClient.issueExplanation:Query": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/cli/doctor_admission.go": {
-      "disposition": "local-only",
-      "families": [
-        "local-runtime"
-      ],
-      "inventory": {
-        "operations": {
-          "readDoctorAdmissionDiagnostic:QueryContext": 1,
-          "readDoctorAdmissionDiagnostic:SQL": 1,
-          "readDoctorAdmissionEvidence:QueryContext": 2,
-          "readDoctorAdmissionEvidence:QueryRowContext": 1,
-          "readDoctorAdmissionEvidence:SQL": 3,
-          "readDoctorAdmissionSessionCost:QueryRowContext": 1,
-          "readDoctorAdmissionSessionCost:SQL": 1,
-          "readDoctorBlockedAdmissionMalformed:QueryContext": 1,
-          "readDoctorBlockedAdmissionMalformed:SQL": 1,
-          "readDoctorOpenAdmissionProposals:QueryContext": 1,
-          "readDoctorOpenAdmissionProposals:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/cli/doctor_backend_capacity.go": {
-      "disposition": "local-only",
-      "families": [
-        "local-runtime"
-      ],
-      "inventory": {
-        "operations": {
-          "doctorBackendCapacityDiagnostics:QueryContext": 1,
-          "doctorBackendCapacityDiagnostics:SQL": 1,
-          "doctorOverloadRetryCount:QueryRowContext": 1,
-          "doctorOverloadRetryCount:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/cli/doctor_dependency.go": {
-      "disposition": "local-only",
-      "families": [
-        "local-runtime"
-      ],
-      "inventory": {
-        "operations": {
-          "doctorBlockedRecoveryTimelinePredicate:QueryRowContext": 1,
-          "doctorBlockedRecoveryTimelinePredicate:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/cli/doctor_environment.go": {
-      "disposition": "local-only",
-      "families": [
-        "local-runtime"
-      ],
-      "inventory": {
-        "operations": {
-          "inspectDoctorDailyBudgetAccuracy:QueryRowContext": 2,
-          "inspectDoctorDailyBudgetAccuracy:SQL": 2
-        },
-        "tables": []
-      }
-    },
     "internal/cli/doctor_project.go": {
       "disposition": "non-storage",
       "families": [
@@ -724,75 +648,6 @@
         "tables": []
       }
     },
-    "internal/cli/doctor_self_improvement.go": {
-      "disposition": "local-only",
-      "families": [
-        "local-runtime"
-      ],
-      "inventory": {
-        "operations": {
-          "doctorWorkflowValidatorFindingPatterns:QueryContext": 1,
-          "doctorWorkflowValidatorFindingPatterns:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/cli/doctor_workflow_lint.go": {
-      "disposition": "local-only",
-      "families": [
-        "local-runtime"
-      ],
-      "inventory": {
-        "operations": {
-          "doctorCeilingAttemptHistory:QueryContext": 1,
-          "doctorCeilingAttemptHistory:SQL": 1,
-          "doctorWaitStatusIncidents:QueryContext": 1,
-          "doctorWaitStatusIncidentsQuery:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/cli/doctor_workflow_optimization.go": {
-      "disposition": "local-only",
-      "families": [
-        "local-runtime"
-      ],
-      "inventory": {
-        "operations": {
-          "doctorOrphanRecoveryTelemetry:QueryContext": 1,
-          "doctorOrphanRecoveryTelemetry:SQL": 1,
-          "doctorWorkflowCompletedSessionTelemetry:QueryContext": 1,
-          "doctorWorkflowCompletedSessionTelemetry:SQL": 1,
-          "doctorWorkflowInvalidWorkpadStatusTelemetry:QueryContext": 1,
-          "doctorWorkflowInvalidWorkpadStatusTelemetry:SQL": 1,
-          "doctorWorkflowLaneTelemetry:QueryContext": 1,
-          "doctorWorkflowLaneTelemetry:SQL": 1,
-          "doctorWorkflowReviewEntryTelemetry:QueryContext": 1,
-          "doctorWorkflowReviewEntryTelemetry:SQL": 1,
-          "doctorWorkflowSchedulerTelemetry:QueryContext": 1,
-          "doctorWorkflowSchedulerTelemetry:SQL": 1,
-          "doctorWorkflowSessionGuardTelemetry:QueryContext": 1,
-          "doctorWorkflowSessionGuardTelemetry:SQL": 1,
-          "doctorWorkflowSessionTelemetry:QueryContext": 1,
-          "doctorWorkflowSessionTelemetry:SQL": 1,
-          "doctorWorkflowUsageTelemetry:QueryContext": 1,
-          "doctorWorkflowUsageTelemetry:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/cli/hub_secrets.go": {
-      "disposition": "non-storage",
-      "families": [
-        "non-storage"
-      ],
-      "inventory": {
-        "operations": {
-          "newHubSecretsStatusCommand:SQL": 1
-        },
-        "tables": []
-      }
-    },
     "internal/cli/local_worker.go": {
       "disposition": "non-storage",
       "families": [
@@ -801,18 +656,6 @@
       "inventory": {
         "operations": {
           "sshRunner.runLocalWorkerLaunch:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/cli/report.go": {
-      "disposition": "non-storage",
-      "families": [
-        "non-storage"
-      ],
-      "inventory": {
-        "operations": {
-          "absolutizeReportLink:Query": 1
         },
         "tables": []
       }
@@ -2634,6 +2477,18 @@
         ]
       }
     },
+    "internal/hubserver/conversation_issue_archive.go": {
+      "disposition": "non-storage",
+      "families": [
+        "non-storage"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.archiveCoordinatorWorkItems:Prepare": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/conversation_issue_split.go": {
       "disposition": "serving",
       "families": [
@@ -2645,6 +2500,18 @@
         "operations": {
           "Service.executeCoordinatorIssueSplit:SQL": 1,
           "Service.prepareCoordinatorSplitRecord:Prepare": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/conversation_preferences.go": {
+      "disposition": "non-storage",
+      "families": [
+        "non-storage"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.prepareConversationPreferenceIssue:Prepare": 1
         },
         "tables": []
       }
@@ -2909,7 +2776,8 @@
       "inventory": {
         "operations": {
           "Service.commandGitHubBatchRecord:SQL": 1,
-          "configureBatchRecordDestination:SQL": 2
+          "Service.requireGitHubBatchRunner:SQL": 3,
+          "configureBatchRecordDestination:SQL": 4
         },
         "tables": [
           "hub/issues"
@@ -2926,38 +2794,10 @@
       ],
       "inventory": {
         "operations": {
-          "Service.cutoverProjectOperation:ExecContext": 1,
-          "Service.cutoverProjectOperation:SQL": 1,
-          "Service.projectNativeSummaryOperation:QueryRowContext": 1,
-          "Service.projectNativeSummaryOperation:SQL": 1,
-          "applyCutover:ExecContext": 6,
-          "applyCutover:QueryContext": 1,
-          "applyCutover:SQL": 7,
-          "enqueueNativeSourceSummary:ExecContext": 2,
-          "enqueueNativeSourceSummary:QueryRowContext": 2,
-          "enqueueNativeSourceSummary:SQL": 4,
-          "inspectCutover:QueryContext": 1,
-          "inspectCutover:QueryRowContext": 4,
-          "inspectCutover:SQL": 5,
-          "preserveCutoverPolicy:ExecContext": 2,
-          "preserveCutoverPolicy:QueryRowContext": 1,
-          "preserveCutoverPolicy:SQL": 3
+          "Service.prepareCutoverItems:Prepare": 1,
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
         },
-        "tables": [
-          "hub/github_cutovers",
-          "hub/github_import_records",
-          "hub/github_imports",
-          "hub/github_outbox",
-          "hub/issue_dependencies",
-          "hub/issues",
-          "hub/linked_issue_sources",
-          "hub/policy_revisions",
-          "hub/project_policies",
-          "hub/projects",
-          "hub/queue_entries",
-          "hub/repositories",
-          "hub/workflow_states"
-        ]
+        "tables": []
       }
     },
     "internal/hubserver/github_import.go": {
@@ -2968,18 +2808,25 @@
       ],
       "inventory": {
         "operations": {
-          "importGitHubComment:ExecContext": 1,
-          "importGitHubComment:QueryRowContext": 2,
-          "importGitHubComment:SQL": 3,
           "readGitHubImport:QueryRowContext": 1,
           "readGitHubImport:SQL": 1
         },
         "tables": [
           "hub/github_imports",
-          "hub/issues",
-          "hub/native_comments",
           "hub/projects"
         ]
+      }
+    },
+    "internal/hubserver/github_import_advance_records.go": {
+      "disposition": "non-storage",
+      "families": [
+        "non-storage"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.prepareHistoricalGitHubImport:Prepare": 1
+        },
+        "tables": []
       }
     },
     "internal/hubserver/github_import_fields.go": {
@@ -3103,37 +2950,6 @@
         },
         "tables": [
           "hub/collaboration_events"
-        ]
-      }
-    },
-    "internal/hubserver/health_rate_snapshot.go": {
-      "disposition": "serving",
-      "families": [
-        "analytics",
-        "core",
-        "event",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "readHealthItemCosts:QueryContext": 1,
-          "readHealthItemCosts:SQL": 1,
-          "readHealthLandings:QueryContext": 1,
-          "readHealthLandings:QueryRowContext": 1,
-          "readHealthLandings:SQL": 2,
-          "readHealthRateAttempts:QueryContext": 1,
-          "readHealthRateAttempts:QueryRowContext": 1,
-          "readHealthRateAttempts:SQL": 2,
-          "readLegacyHealthRateAttempts:QueryContext": 1,
-          "readLegacyHealthRateAttempts:SQL": 1
-        },
-        "tables": [
-          "hub/attempt_usage",
-          "hub/change_requests",
-          "hub/change_versions",
-          "hub/lease_runners",
-          "hub/native_attempts",
-          "hub/projects"
         ]
       }
     },
@@ -3400,6 +3216,26 @@
         ]
       }
     },
+    "internal/hubserver/hubtest/database.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "ConnectionLimit:QueryRowContext": 1,
+          "ConnectionLimit:SQL": 1,
+          "RepositoryOn:ExecContext": 4,
+          "RepositoryOn:SQL": 2,
+          "migrate:ExecContext": 2,
+          "migrate:SQL": 1,
+          "reserveConnections:ExecContext": 1,
+          "reserveConnections:QueryRowContext": 1,
+          "reserveConnections:SQL": 2
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/integration.go": {
       "disposition": "serving",
       "families": [
@@ -3409,8 +3245,6 @@
       ],
       "inventory": {
         "operations": {
-          "Service.updateProjectIntegrationOperation:ExecContext": 3,
-          "Service.updateProjectIntegrationOperation:SQL": 3,
           "readProjectIntegration:QueryRowContext": 1,
           "readProjectIntegration:SQL": 1,
           "repositoryOwnership:QueryRowContext": 1,
@@ -3427,38 +3261,6 @@
           "hub/leases",
           "hub/projects",
           "hub/repositories"
-        ]
-      }
-    },
-    "internal/hubserver/issue_archive_views.go": {
-      "disposition": "serving",
-      "families": [
-        "collaboration",
-        "conversion"
-      ],
-      "inventory": {
-        "operations": {
-          "readIssueArchiveSection:QueryRowContext": 1,
-          "readIssueArchiveSection:SQL": 1
-        },
-        "tables": [
-          "hub/attachments",
-          "hub/issue_archive_sections"
-        ]
-      }
-    },
-    "internal/hubserver/issue_contract.go": {
-      "disposition": "serving",
-      "families": [
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "readNativeIssueContractEvaluation:QueryRowContext": 1,
-          "readNativeIssueContractEvaluation:SQL": 1
-        },
-        "tables": [
-          "hub/issues"
         ]
       }
     },
@@ -3553,18 +3355,10 @@
       ],
       "inventory": {
         "operations": {
-          "createLinkedIssueInStateTx:ExecContext": 2,
-          "createLinkedIssueInStateTx:QueryRowContext": 1,
-          "createLinkedIssueInStateTx:SQL": 3,
-          "intakeLinkedIssueTx:ExecContext": 2,
-          "intakeLinkedIssueTx:SQL": 2,
           "readLinkedIssueSourceProjection:QueryRowContext": 1,
           "readLinkedIssueSourceProjection:SQL": 1
         },
-        "tables": [
-          "hub/issues",
-          "hub/linked_issue_sources"
-        ]
+        "tables": []
       }
     },
     "internal/hubserver/local_board_import_records.go": {
@@ -3651,7 +3445,6 @@
       ],
       "inventory": {
         "operations": {
-          "Service.commitNativeMutation:BeginTx": 1,
           "authorizeNativeProject:QueryRowContext": 1,
           "authorizeNativeProject:SQL": 1,
           "nativeCommandReceiptReference:QueryRowContext": 1,
@@ -3707,9 +3500,6 @@
       ],
       "inventory": {
         "operations": {
-          "cancelNativeLeaseAttempt:ExecContext": 3,
-          "cancelNativeLeaseAttempt:QueryRowContext": 1,
-          "cancelNativeLeaseAttempt:SQL": 4,
           "leaseReleaseFailure:QueryRowContext": 1,
           "leaseReleaseFailure:SQL": 1,
           "nativeIssueRowID:QueryRowContext": 1,
@@ -3720,10 +3510,8 @@
           "requireNativeMutationLease:SQL": 1
         },
         "tables": [
-          "hub/activity_attempt_durations",
           "hub/issues",
           "hub/leases",
-          "hub/native_attempt_events",
           "hub/native_attempts",
           "hub/projects",
           "hub/work_events"
@@ -3900,28 +3688,6 @@
         ]
       }
     },
-    "internal/hubserver/native_github_intake.go": {
-      "disposition": "serving",
-      "families": [
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "applyNativeIssueWebhook:QueryContext": 1,
-          "applyNativeIssueWebhook:QueryRowContext": 1,
-          "applyNativeIssueWebhook:SQL": 2,
-          "ensureNativeTriage:ExecContext": 1,
-          "ensureNativeTriage:SQL": 1,
-          "ensureWebhookSourceRepository:ExecContext": 1,
-          "ensureWebhookSourceRepository:SQL": 1
-        },
-        "tables": [
-          "hub/issues",
-          "hub/projects",
-          "hub/repositories"
-        ]
-      }
-    },
     "internal/hubserver/native_issue_pages.go": {
       "disposition": "serving",
       "families": [
@@ -3966,6 +3732,18 @@
         ]
       }
     },
+    "internal/hubserver/native_issue_retention.go": {
+      "disposition": "non-storage",
+      "families": [
+        "non-storage"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.retainClosedWorkItem:Prepare": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/native_issues.go": {
       "atomic_groups": [
         "native-command"
@@ -3980,43 +3758,8 @@
       ],
       "inventory": {
         "operations": {
-          "appendNativeHistory:ExecContext": 1,
-          "appendNativeHistory:QueryRowContext": 1,
-          "appendNativeHistory:SQL": 2,
-          "createNativeIssueDraft:ExecContext": 2,
-          "createNativeIssueDraft:QueryRowContext": 3,
-          "createNativeIssueDraft:SQL": 5,
-          "nativeWorkspaceItem:QueryRowContext": 1,
-          "nativeWorkspaceItem:SQL": 1,
-          "persistNativeIssue:ExecContext": 3,
-          "persistNativeIssue:QueryRowContext": 2,
-          "persistNativeIssue:SQL": 5,
           "readNativeIssueProjection:QueryRowContext": 2,
-          "readNativeIssueProjection:SQL": 2,
-          "recordNativeChange:ExecContext": 1,
-          "recordNativeChange:QueryRowContext": 1,
-          "recordNativeChange:SQL": 2
-        },
-        "tables": [
-          "hub/collaboration_events",
-          "hub/collaboration_versions",
-          "hub/issues",
-          "hub/queue_entries",
-          "hub/workflow_states",
-          "hub/workspace_items"
-        ]
-      }
-    },
-    "internal/hubserver/native_landing_capacity.go": {
-      "disposition": "serving",
-      "families": [
-        "core",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "machineClaimUsage:QueryContext": 1,
-          "machineClaimUsage:SQL": 1
+          "readNativeIssueProjection:SQL": 2
         },
         "tables": []
       }
@@ -4054,30 +3797,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/native_progress.go": {
-      "disposition": "serving",
-      "families": [
-        "claim",
-        "collaboration",
-        "core",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "expireNativeProgressDependencies:ExecContext": 3,
-          "expireNativeProgressDependencies:SQL": 3,
-          "readNativeProgress:QueryContext": 1,
-          "readNativeProgress:QueryRowContext": 1,
-          "readNativeProgress:SQL": 2
-        },
-        "tables": [
-          "hub/issue_dependencies",
-          "hub/issues",
-          "hub/native_progress_decisions",
-          "hub/native_progress_evidence"
-        ]
-      }
-    },
     "internal/hubserver/native_progress_api.go": {
       "disposition": "serving",
       "families": [
@@ -4088,17 +3807,10 @@
       ],
       "inventory": {
         "operations": {
-          "nativeProgressAttemptsSQL:SQL": 1,
-          "progressRevision:QueryRowContext": 1,
-          "progressRevision:SQL": 1,
-          "readNativeProgressDefect:QueryRowContext": 1,
-          "readNativeProgressDefect:SQL": 1
+          "nativeProgressAttemptsSQL:SQL": 1
         },
         "tables": [
-          "hub/issues",
-          "hub/native_attempts",
-          "hub/native_progress_decisions",
-          "hub/workflow_states"
+          "hub/native_attempts"
         ]
       }
     },
@@ -4112,9 +3824,6 @@
       ],
       "inventory": {
         "operations": {
-          "Service.createNativeProjectOperation:ExecContext": 3,
-          "Service.createNativeProjectOperation:QueryRowContext": 2,
-          "Service.createNativeProjectOperation:SQL": 5,
           "applyNativeProjectStates:ExecContext": 3,
           "applyNativeProjectStates:SQL": 3,
           "nativeWorkflowRemovals:QueryContext": 1,
@@ -4126,7 +3835,6 @@
         },
         "tables": [
           "hub/issues",
-          "hub/organizations",
           "hub/projects",
           "hub/workflow_states"
         ]
@@ -4267,86 +3975,6 @@
         ]
       }
     },
-    "internal/hubserver/native_storage_archive.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "collaboration",
-        "conversation",
-        "conversion",
-        "core",
-        "event",
-        "lease",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.archiveClosedNativeIssues:ExecContext": 2,
-          "Service.archiveClosedNativeIssues:QueryContext": 1,
-          "Service.archiveClosedNativeIssues:SQL": 4,
-          "Service.publishStorageArchive:BeginTx": 2,
-          "Service.publishStorageArchive:ExecContext": 3,
-          "Service.publishStorageArchive:QueryContext": 1,
-          "Service.publishStorageArchive:QueryRowContext": 2,
-          "Service.publishStorageArchive:SQL": 10,
-          "Service.retireStorageArchiveSections:BeginTx": 1,
-          "Service.retireStorageArchiveSections:ExecContext": 3,
-          "Service.retireStorageArchiveSections:QueryContext": 1,
-          "Service.retireStorageArchiveSections:SQL": 5,
-          "archiveTable:QueryContext": 1,
-          "archiveTable:SQL": 1,
-          "recordStorageArchiveObject:ExecContext": 2,
-          "recordStorageArchiveObject:SQL": 2,
-          "storageArchiveCurrent:QueryRowContext": 1,
-          "storageArchiveCurrent:SQL": 1
-        },
-        "tables": [
-          "hub/attachment_archive_references",
-          "hub/attachments",
-          "hub/change_issue_links",
-          "hub/change_requests",
-          "hub/collaboration_versions",
-          "hub/conversation_attachments",
-          "hub/conversation_messages",
-          "hub/conversations",
-          "hub/issue_storage_archives",
-          "hub/issues",
-          "hub/message_references",
-          "hub/native_archive_sections",
-          "hub/native_attempts",
-          "hub/projects",
-          "hub/storage_conversion_progress",
-          "hub/token_grants",
-          "hub/workflow_states"
-        ]
-      }
-    },
-    "internal/hubserver/native_usage.go": {
-      "disposition": "serving",
-      "families": [
-        "analytics",
-        "billing",
-        "claim",
-        "core",
-        "event",
-        "fleet",
-        "lease",
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "recordAttemptUsage:ExecContext": 1,
-          "recordAttemptUsage:QueryRowContext": 1,
-          "recordAttemptUsage:SQL": 2,
-          "updateAttemptUsageSummary:ExecContext": 1,
-          "updateAttemptUsageSummary:SQL": 1
-        },
-        "tables": [
-          "hub/attempt_usage",
-          "hub/native_attempts"
-        ]
-      }
-    },
     "internal/hubserver/native_version_encoding.go": {
       "disposition": "serving",
       "families": [
@@ -4360,26 +3988,6 @@
         },
         "tables": [
           "hub/collaboration_versions"
-        ]
-      }
-    },
-    "internal/hubserver/native_work_commands.go": {
-      "atomic_groups": [
-        "work-item-command"
-      ],
-      "disposition": "serving",
-      "families": [
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "changeNativeDependencyTx:ExecContext": 2,
-          "changeNativeDependencyTx:QueryRowContext": 2,
-          "changeNativeDependencyTx:SQL": 4
-        },
-        "tables": [
-          "hub/issue_dependencies",
-          "hub/issues"
         ]
       }
     },
@@ -4447,29 +4055,9 @@
       ],
       "inventory": {
         "operations": {
-          "Service.applyGitHubBatchResult:ExecContext": 3,
-          "Service.commandGitHubBatchOperation:SQL": 1,
-          "batchIssueDestination:SQL": 1,
-          "completeGitHubBatchItems:QueryRowContext": 1,
-          "completeGitHubBatchItems:SQL": 1,
-          "configureBatchDestination:SQL": 4,
-          "readGitHubBatch:QueryRowContext": 1,
-          "readGitHubBatch:SQL": 1,
-          "requireBatchRunner:QueryRowContext": 1,
-          "requireBatchRunner:SQL": 3,
-          "saveGitHubBatch:ExecContext": 1,
-          "saveGitHubBatch:SQL": 1
+          "batchIssueDestination:SQL": 1
         },
-        "tables": [
-          "hub/api_tokens",
-          "hub/issues",
-          "hub/linked_issue_sources",
-          "hub/onboarding_issue_intake",
-          "hub/runner_checkout_repositories",
-          "hub/runner_identities",
-          "hub/runner_operations",
-          "hub/token_grants"
-        ]
+        "tables": []
       }
     },
     "internal/hubserver/operator_activity_issues.go": {
@@ -4507,38 +4095,6 @@
         ]
       }
     },
-    "internal/hubserver/operator_analytics.go": {
-      "disposition": "serving",
-      "families": [
-        "analytics",
-        "event"
-      ],
-      "inventory": {
-        "operations": {
-          "nativeAnalyticsLandings:SQL": 1,
-          "projectNativeAnalyticsSkips:SQL": 2
-        },
-        "tables": [
-          "hub/analytics_hourly_rollups",
-          "hub/change_requests",
-          "hub/change_versions"
-        ]
-      }
-    },
-    "internal/hubserver/operator_analytics_attempts.go": {
-      "disposition": "serving",
-      "families": [
-        "analytics"
-      ],
-      "inventory": {
-        "operations": {
-          "loadNativeAnalyticsAttempts:SQL": 1
-        },
-        "tables": [
-          "hub/attempt_usage"
-        ]
-      }
-    },
     "internal/hubserver/operator_analytics_paging.go": {
       "disposition": "serving",
       "families": [
@@ -4551,58 +4107,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/operator_analytics_quality.go": {
-      "disposition": "serving",
-      "families": [
-        "event",
-        "policy",
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "loadAnalyticsQualityInputs:QueryRowContext": 1,
-          "loadAnalyticsQualityInputs:SQL": 5,
-          "readQualityLandings:SQL": 1
-        },
-        "tables": [
-          "hub/change_evidence",
-          "hub/change_requests",
-          "hub/change_versions",
-          "hub/collaboration_events",
-          "hub/quality_landings",
-          "hub/workflow_states"
-        ]
-      }
-    },
-    "internal/hubserver/operator_analytics_queue.go": {
-      "disposition": "serving",
-      "families": [
-        "analytics"
-      ],
-      "inventory": {
-        "operations": {
-          "projectNativeAnalyticsCapacityWait:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/operator_analytics_residence.go": {
-      "disposition": "serving",
-      "families": [
-        "core",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "readAnalyticsResidenceHistory:SQL": 3
-        },
-        "tables": [
-          "hub/issues",
-          "hub/projects",
-          "hub/workflow_states"
-        ]
-      }
-    },
     "internal/hubserver/operator_changes.go": {
       "disposition": "non-storage",
       "families": [
@@ -4613,22 +4117,6 @@
           "hubSafeChangeError:SQL": 2
         },
         "tables": []
-      }
-    },
-    "internal/hubserver/operator_failure_signatures.go": {
-      "disposition": "serving",
-      "families": [
-        "analytics"
-      ],
-      "inventory": {
-        "operations": {
-          "analyticsRollupFailures:SQL": 1,
-          "readNativeFailures:SQL": 1
-        },
-        "tables": [
-          "hub/analytics_hourly_rollups",
-          "hub/attempt_usage"
-        ]
       }
     },
     "internal/hubserver/operator_work_reads.go": {
@@ -4669,28 +4157,6 @@
         "operations": {
           "readPayloadReference:QueryRowContext": 1,
           "readPayloadReference:SQL": 1
-        },
-        "tables": [
-          "hub/attachments",
-          "hub/change_content_objects"
-        ]
-      }
-    },
-    "internal/hubserver/pending_content.go": {
-      "disposition": "serving",
-      "families": [
-        "collaboration",
-        "conversion",
-        "event"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.publishPendingContent:ExecContext": 2,
-          "Service.publishPendingContent:QueryRowContext": 1,
-          "Service.publishPendingContent:SQL": 2,
-          "pendingContentMutation.stage:ExecContext": 1,
-          "pendingContentMutation.stage:SQL": 1,
-          "pendingContentSelection:SQL": 1
         },
         "tables": [
           "hub/attachments",
@@ -4912,7 +4378,8 @@
       "disposition": "target-adapter",
       "families": [
         "access",
-        "billing"
+        "billing",
+        "platform"
       ],
       "inventory": {
         "operations": {
@@ -4946,10 +4413,14 @@
           "session.AccessPublicNames:SQL": 1,
           "session.AccessSession:QueryRow": 1,
           "session.AccessSession:SQL": 1,
+          "session.AccessSessionMemberRevoked:QueryRow": 1,
+          "session.AccessSessionMemberRevoked:SQL": 1,
           "session.AccessTenant:QueryRow": 1,
           "session.AccessTenant:SQL": 1,
           "session.AccessTokenGrant:QueryRow": 1,
           "session.AccessTokenGrant:SQL": 1,
+          "session.AuthorizeAccess:QueryRow": 1,
+          "session.AuthorizeAccess:SQL": 1,
           "session.ClearAccessMemberGrants:Exec": 2,
           "session.ClearAccessMemberGrants:SQL": 2,
           "session.ConsumeAccessTransaction:Exec": 1,
@@ -5055,10 +4526,12 @@
       ],
       "disposition": "target-adapter",
       "families": [
-        "access"
+        "access",
+        "core"
       ],
       "inventory": {
         "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.AccessSecret:QueryRow": 1,
           "session.AccessSecret:SQL": 2,
           "session.AccessSecrets:Query": 1,
@@ -5074,7 +4547,9 @@
           "session.RewrapAccessSecret:Exec": 1,
           "session.RewrapAccessSecret:SQL": 2,
           "session.StoreAccessSecret:Exec": 2,
-          "session.StoreAccessSecret:SQL": 2
+          "session.StoreAccessSecret:SQL": 2,
+          "session.StoreAccessSecret:generated:ShareActiveProject": 1,
+          "session.StoreAccessSecret:query-receiver": 1
         },
         "tables": [
           "hub/organization_secret_audit",
@@ -5559,6 +5034,7 @@
     "internal/hubserver/postgres/attachment_archives.go": {
       "disposition": "target-adapter",
       "families": [
+        "access",
         "collaboration"
       ],
       "inventory": {
@@ -5570,11 +5046,14 @@
           "session.PrepareAttachmentArchive:SQL": 2,
           "session.PublishAttachmentArchive:Exec": 1,
           "session.PublishAttachmentArchive:QueryRow": 1,
-          "session.PublishAttachmentArchive:SQL": 2
+          "session.PublishAttachmentArchive:SQL": 2,
+          "session.StorageArchiveUploader:QueryRow": 1,
+          "session.StorageArchiveUploader:SQL": 1
         },
         "tables": [
           "hub/attachment_archive_references",
-          "hub/attachments"
+          "hub/attachments",
+          "hub/token_grants"
         ]
       }
     },
@@ -5643,9 +5122,9 @@
           "session.AttachmentEvidence:SQL": 1,
           "session.AttachmentReferences:Query": 1,
           "session.AttachmentReferences:SQL": 1,
-          "session.BindAttachment:Exec": 2,
+          "session.BindAttachment:Exec": 1,
           "session.BindAttachment:QueryRow": 1,
-          "session.BindAttachment:SQL": 3,
+          "session.BindAttachment:SQL": 2,
           "session.CreateAttachment:Exec": 1,
           "session.CreateAttachment:SQL": 1,
           "session.DeleteAttachment:Exec": 1,
@@ -5657,7 +5136,12 @@
           "session.FinishAttachmentDeletion:QueryRow": 2,
           "session.FinishAttachmentDeletion:SQL": 2,
           "session.LockAttachment:QueryRow": 1,
-          "session.LockAttachment:SQL": 1
+          "session.LockAttachment:SQL": 1,
+          "session.ReplaceAttachmentReferences:Exec": 1,
+          "session.ReplaceAttachmentReferences:QueryRow": 1,
+          "session.ReplaceAttachmentReferences:SQL": 2,
+          "session.refreshAttachmentReferenceHeader:Exec": 1,
+          "session.refreshAttachmentReferenceHeader:SQL": 1
         },
         "tables": [
           "hub/attachments",
@@ -6016,8 +5500,6 @@
           "session.BillingEvents:SQL": 1,
           "session.BillingPlanAudit:QueryRow": 1,
           "session.BillingPlanAudit:SQL": 1,
-          "session.BillingPlanAudits:Query": 1,
-          "session.BillingPlanAudits:SQL": 1,
           "session.BillingPrice:QueryRow": 1,
           "session.BillingPrice:SQL": 1,
           "session.CreateBillingAudit:Exec": 1,
@@ -6048,7 +5530,9 @@
           "session.SetBillingEventProcessed:QueryRow": 1,
           "session.SetBillingEventProcessed:SQL": 2,
           "session.UnprocessedBillingEvents:SQL": 1,
-          "session.billingEvents:Query": 1
+          "session.billingEvents:Query": 1,
+          "session.billingPlanAudits:Query": 1,
+          "session.billingPlanAudits:SQL": 1
         },
         "tables": [
           "hub/ai_credit_packs",
@@ -6321,6 +5805,8 @@
           "session.PutWorkItemFacts:SQL": 1,
           "session.QueueEntry:QueryRow": 1,
           "session.QueueEntry:SQL": 1,
+          "session.QueueListPage:Query": 1,
+          "session.QueueListPage:SQL": 3,
           "session.SelectionCursor:QueryRow": 1,
           "session.SelectionCursor:SQL": 1,
           "session.WorkItemFacts:QueryRow": 1,
@@ -6432,6 +5918,7 @@
         "access",
         "core",
         "fleet",
+        "lease",
         "policy"
       ],
       "inventory": {
@@ -6462,7 +5949,8 @@
           "session.SetConfigurationCommand:Exec": 1,
           "session.SetConfigurationCommand:SQL": 1,
           "session.StoreConfigurationObservationPayload:Exec": 1,
-          "session.StoreConfigurationObservationPayload:SQL": 1,
+          "session.StoreConfigurationObservationPayload:QueryRow": 1,
+          "session.StoreConfigurationObservationPayload:SQL": 2,
           "session.lockConfigurationAuthority:generated:LockConfigurationRunner": 1,
           "session.lockConfigurationAuthority:query-receiver": 1
         },
@@ -6489,9 +5977,8 @@
           "session.ConversationAttachmentByRef:SQL": 1,
           "session.CreateConversationAttachment:Exec": 2,
           "session.CreateConversationAttachment:SQL": 2,
-          "session.DeleteConversationAttachment:Exec": 1,
           "session.DeleteConversationAttachment:QueryRow": 1,
-          "session.DeleteConversationAttachment:SQL": 2,
+          "session.DeleteConversationAttachment:SQL": 1,
           "session.ExpiredConversationAttachments:Query": 1,
           "session.ExpiredConversationAttachments:SQL": 1,
           "session.MessageAttachments:Query": 1,
@@ -6499,9 +5986,7 @@
           "session.MessageSequences:Query": 1,
           "session.MessageSequences:SQL": 1,
           "session.attachmentConversation:QueryRow": 1,
-          "session.attachmentConversation:SQL": 1,
-          "session.reclaimSharedConversationAttachment:QueryRow": 1,
-          "session.reclaimSharedConversationAttachment:SQL": 1
+          "session.attachmentConversation:SQL": 1
         },
         "tables": [
           "hub/conversation_attachments",
@@ -6976,10 +6461,13 @@
           "Repository.ImportCoreDependency:generated:GetDependency": 2,
           "Repository.ImportCoreDependency:generated:ImportDependency": 1,
           "Repository.ImportCoreDependency:query-receiver": 3,
+          "Repository.ImportCoreWorkItem:Exec": 2,
+          "Repository.ImportCoreWorkItem:SQL": 2,
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
         },
         "tables": [
-          "hub/issue_dependencies"
+          "hub/issue_dependencies",
+          "hub/issues"
         ]
       }
     },
@@ -7003,16 +6491,23 @@
     "internal/hubserver/postgres/cost_import_step.go": {
       "disposition": "target-adapter",
       "families": [
-        "billing"
+        "billing",
+        "core",
+        "lease"
       ],
       "inventory": {
         "operations": {
           "costImporter.prepareRetainedPage:Query": 1,
           "costImporter.prepareRetainedPage:SQL": 2,
           "costImporter.retainRow:Exec": 2,
-          "costImporter.retainRow:SQL": 2
+          "costImporter.retainRow:SQL": 2,
+          "costImporter.step:Query": 1,
+          "costImporter.step:SQL": 1
         },
-        "tables": []
+        "tables": [
+          "hub/issues",
+          "hub/native_attempts"
+        ]
       }
     },
     "internal/hubserver/postgres/credit_history_import.go": {
@@ -7066,6 +6561,7 @@
     "internal/hubserver/postgres/cutover_contract.go": {
       "disposition": "target-adapter",
       "families": [
+        "claim",
         "core",
         "policy"
       ],
@@ -7096,9 +6592,13 @@
           "session.PutLocalImportMapping:query-receiver": 2,
           "session.PutNeutralImportRecord:generated:NeutralImportRecord": 1,
           "session.PutNeutralImportRecord:generated:PutNeutralImportRecord": 1,
-          "session.PutNeutralImportRecord:query-receiver": 2
+          "session.PutNeutralImportRecord:query-receiver": 2,
+          "session.cutoverQueue:Query": 1,
+          "session.cutoverQueue:SQL": 1
         },
-        "tables": []
+        "tables": [
+          "hub/queue_entries"
+        ]
       }
     },
     "internal/hubserver/postgres/dependency_reasons.go": {
@@ -7140,6 +6640,8 @@
           "session.DiagnosticsSnapshot:SQL": 2,
           "session.DiagnosticsSnapshot:generated:RecordListEventBefore": 1,
           "session.DiagnosticsSnapshot:query-receiver": 1,
+          "session.ReadAnalyticsFailurePage:Query": 1,
+          "session.ReadAnalyticsFailurePage:SQL": 1,
           "session.diagnosticAttempts:Query": 1,
           "session.diagnosticAttempts:generated:RecordLatestRunEventsByAttempts": 1,
           "session.diagnosticAttempts:query-receiver": 1,
@@ -7244,21 +6746,25 @@
         "core",
         "event",
         "lease",
-        "lifecycle"
+        "lifecycle",
+        "source"
       ],
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.AppendEvent:QueryRow": 1,
+          "session.AppendEvent:SQL": 1,
           "session.AppendEvent:generated:RecordAdvanceIssue": 1,
           "session.AppendEvent:generated:RecordAdvanceProjectEventSequence": 1,
           "session.AppendEvent:generated:RecordGetEvent": 1,
-          "session.AppendEvent:generated:RecordLockIssue": 1,
-          "session.AppendEvent:query-receiver": 4,
+          "session.AppendEvent:query-receiver": 3,
           "session.AppendEvidence:generated:RecordAdvanceEvidence": 1,
           "session.AppendEvidence:generated:RecordGetEvidence": 1,
           "session.AppendEvidence:generated:RecordGetEvidenceSequence": 1,
           "session.AppendEvidence:generated:RecordLockChange": 1,
           "session.AppendEvidence:query-receiver": 4,
+          "session.AttemptEvents:generated:RecordAttemptEvents": 1,
+          "session.AttemptEvents:query-receiver": 1,
           "session.Change:generated:RecordGetChange": 1,
           "session.Change:query-receiver": 1,
           "session.ChangePublicationCheckpoints:generated:RecordChangePublicationCheckpoints": 1,
@@ -7271,6 +6777,11 @@
           "session.CollaborationVersion:query-receiver": 1,
           "session.CollaborationVersions:generated:RecordGetCollaborationVersions": 1,
           "session.CollaborationVersions:query-receiver": 1,
+          "session.ConfirmVersionUnlanded:Exec": 1,
+          "session.ConfirmVersionUnlanded:QueryRow": 1,
+          "session.ConfirmVersionUnlanded:SQL": 2,
+          "session.ConfirmVersionUnlanded:generated:RecordLockChange": 1,
+          "session.ConfirmVersionUnlanded:query-receiver": 1,
           "session.CreateChange:generated:RecordGetChange": 1,
           "session.CreateChange:generated:RecordLockIssue": 1,
           "session.CreateChange:query-receiver": 2,
@@ -7333,24 +6844,44 @@
           "session.ProjectChanges:query-receiver": 1,
           "session.ProjectEventSequence:generated:RecordProjectEventSequence": 1,
           "session.ProjectEventSequence:query-receiver": 1,
+          "session.ProjectEvents:generated:RecordProjectEvents": 1,
+          "session.ProjectEvents:query-receiver": 1,
           "session.ProjectPolicyLanding:generated:RecordProjectPolicyLanding": 1,
-          "session.ProjectPolicyLanding:query-receiver": 1,
+          "session.ProjectPolicyLanding:generated:RecordProjectPolicyLandingHistory": 1,
+          "session.ProjectPolicyLanding:query-receiver": 2,
           "session.PutPRPublication:generated:RecordPutPRPublication": 1,
           "session.PutPRPublication:query-receiver": 1,
           "session.ReadAnalyticsSchedulerPage:Query": 2,
           "session.ReadAnalyticsSchedulerPage:SQL": 2,
+          "session.RecordVersionLanding:generated:RecordLockChange": 1,
+          "session.RecordVersionLanding:query-receiver": 1,
           "session.RecoveryChangeEvidence:generated:RecordRecoveryChangeEvidence": 1,
           "session.RecoveryChangeEvidence:query-receiver": 1,
           "session.RunEvent:generated:RecordGetEvent": 1,
           "session.RunEvent:query-receiver": 1,
+          "session.ScheduledSources:generated:RecordPendingProjectScheduledSources": 1,
+          "session.ScheduledSources:generated:RecordPendingWorkItemScheduledSources": 1,
+          "session.ScheduledSources:generated:RecordProjectScheduledSources": 1,
+          "session.ScheduledSources:generated:RecordWorkItemScheduledSources": 1,
+          "session.ScheduledSources:query-receiver": 4,
           "session.SetViewedFile:generated:RecordSetViewedFile": 1,
           "session.SetViewedFile:query-receiver": 1,
           "session.UpdateChange:generated:RecordUpdateChange": 1,
           "session.UpdateChange:query-receiver": 1,
+          "session.ValidationCandidates:Query": 5,
+          "session.ValidationCandidates:QueryRow": 1,
+          "session.ValidationCandidates:SQL": 6,
+          "session.ValidationCandidates:generated:RecordGetVersionWorkItemID": 1,
+          "session.ValidationCandidates:generated:RecordValidationCandidates": 1,
+          "session.ValidationCandidates:generated:RecordValidationChangeCandidates": 1,
+          "session.ValidationCandidates:generated:RecordValidationProjectCandidates": 1,
+          "session.ValidationCandidates:query-receiver": 4,
           "session.ValidatorReviewEvidence:generated:RecordValidatorReviewEvidence": 1,
           "session.ValidatorReviewEvidence:query-receiver": 1,
           "session.Version:generated:RecordGetVersionByID": 1,
           "session.Version:query-receiver": 1,
+          "session.VersionLanding:QueryRow": 1,
+          "session.VersionLanding:SQL": 1,
           "session.Versions:generated:RecordListVersion": 1,
           "session.Versions:query-receiver": 1,
           "session.ViewedFiles:generated:RecordListViewedFiles": 1,
@@ -7369,11 +6900,20 @@
           "session.insertRecordEvidence:generated:RecordInsertEvidence": 1,
           "session.insertRecordEvidence:query-receiver": 1,
           "session.insertRecordVersion:generated:RecordInsertVersion": 1,
-          "session.insertRecordVersion:query-receiver": 1
+          "session.insertRecordVersion:query-receiver": 1,
+          "session.pullRequestPolicyLanding:QueryRow": 1,
+          "session.pullRequestPolicyLanding:SQL": 1,
+          "session.recordVersionLandingRows:Exec": 1,
+          "session.recordVersionLandingRows:SQL": 2
         },
         "tables": [
           "hub/change_evidence",
-          "hub/collaboration_events"
+          "hub/change_landing_receipts",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/collaboration_events",
+          "hub/issues",
+          "hub/native_attempts"
         ]
       }
     },
@@ -7391,6 +6931,8 @@
           "session.GitHubImport:query-receiver": 1,
           "session.GitHubImportForIssue:generated:ReadGitHubImportForIssue": 1,
           "session.GitHubImportForIssue:query-receiver": 1,
+          "session.GitHubImportForWorkItem:generated:ReadGitHubImportForWorkItem": 1,
+          "session.GitHubImportForWorkItem:query-receiver": 1,
           "session.UpdateGitHubImport:generated:UpdateGitHubImport": 1,
           "session.UpdateGitHubImport:query-receiver": 1
         },
@@ -7410,7 +6952,9 @@
           "session.GitHubImportEditSource:generated:ReadGitHubImportEditSource": 1,
           "session.GitHubImportEditSource:query-receiver": 1,
           "session.GitHubImportRecords:generated:ListGitHubImportRecords": 1,
-          "session.GitHubImportRecords:query-receiver": 1
+          "session.GitHubImportRecords:query-receiver": 1,
+          "session.ResetCurrentGitHubImportDependencies:generated:ResetCurrentGitHubImportDependencies": 1,
+          "session.ResetCurrentGitHubImportDependencies:query-receiver": 1
         },
         "tables": []
       }
@@ -7455,6 +6999,11 @@
       ],
       "inventory": {
         "operations": {
+          "Repository.ImportCoreGitHubOutbound:Exec": 1,
+          "Repository.ImportCoreGitHubOutbound:SQL": 1,
+          "Repository.ImportCoreGitHubOutbound:generated:LockActiveProject": 1,
+          "Repository.ImportCoreGitHubOutbound:query-receiver": 1,
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.ClaimGitHubOutbound:QueryRow": 1,
           "session.ClaimGitHubOutbound:SQL": 1,
           "session.EnqueueGitHubOutbound:Exec": 1,
@@ -7463,8 +7012,14 @@
           "session.FinishGitHubOutbound:SQL": 2,
           "session.GitHubOutbound:QueryRow": 1,
           "session.GitHubOutbound:SQL": 1,
+          "session.LatestGitHubWorkpad:QueryRow": 1,
+          "session.LatestGitHubWorkpad:SQL": 1,
           "session.RenewGitHubOutbound:Exec": 1,
-          "session.RenewGitHubOutbound:SQL": 1
+          "session.RenewGitHubOutbound:SQL": 1,
+          "session.SupersedeGitHubCompatibilityWrites:Exec": 1,
+          "session.SupersedeGitHubCompatibilityWrites:SQL": 1,
+          "session.SupersedeGitHubSummaries:Exec": 1,
+          "session.SupersedeGitHubSummaries:SQL": 1
         },
         "tables": []
       }
@@ -7473,6 +7028,7 @@
       "disposition": "target-adapter",
       "families": [
         "core",
+        "event",
         "policy"
       ],
       "inventory": {
@@ -7482,6 +7038,8 @@
           "session.CancelGitHubPullRequestRefresh:SQL": 1,
           "session.CompleteGitHubPullRequestRefresh:Exec": 1,
           "session.CompleteGitHubPullRequestRefresh:SQL": 1,
+          "session.RecordGitHubPullRequestSource:Exec": 1,
+          "session.RecordGitHubPullRequestSource:SQL": 1,
           "session.RequestGitHubPullRequests:Exec": 1,
           "session.RequestGitHubPullRequests:SQL": 1,
           "session.RetryGitHubPullRequestRefresh:Exec": 1,
@@ -7577,11 +7135,20 @@
       "disposition": "target-adapter",
       "families": [
         "activity",
+        "board",
         "core"
       ],
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.HealthSourceBaselines:generated:HealthBaselines": 1,
+          "session.HealthSourceBaselines:query-receiver": 1,
+          "session.HealthSourceConversationQuestions:generated:HealthSourceConversationQuestions": 1,
+          "session.HealthSourceConversationQuestions:query-receiver": 1,
+          "session.HealthSourceItems:generated:HealthSourceItems": 1,
+          "session.HealthSourceItems:query-receiver": 1,
+          "session.HealthSourceQuestions:generated:HealthSourceQuestions": 1,
+          "session.HealthSourceQuestions:query-receiver": 1,
           "session.HealthSummaryFindings:generated:HealthSummaryFindings": 1,
           "session.HealthSummaryFindings:query-receiver": 1,
           "session.healthFindings:Query": 2,
@@ -7593,6 +7160,7 @@
           "hub/health_detector_ticks",
           "hub/health_finding_projects",
           "hub/health_findings",
+          "hub/native_board_sequences",
           "hub/projects"
         ]
       }
@@ -7802,6 +7370,9 @@
       }
     },
     "internal/hubserver/postgres/issues.go": {
+      "atomic_groups": [
+        "work-item-command"
+      ],
       "disposition": "target-adapter",
       "families": [
         "core",
@@ -7816,8 +7387,6 @@
           "session.CreateWorkItem:query-receiver": 1,
           "session.DeleteWorkItem:generated:DeleteWorkItem": 1,
           "session.DeleteWorkItem:query-receiver": 1,
-          "session.UpdateWorkItem:generated:UpdateWorkItem": 1,
-          "session.UpdateWorkItem:query-receiver": 1,
           "session.WorkItem:generated:GetWorkItem": 1,
           "session.WorkItem:query-receiver": 1,
           "session.WorkItemByID:generated:GetWorkItemByID": 1,
@@ -7831,7 +7400,9 @@
           "session.WorkItemsByNativeIDs:generated:GetNativeWorkItemsByIDs": 1,
           "session.WorkItemsByNativeIDs:query-receiver": 1,
           "session.createWorkItem:generated:CreateWorkItem": 1,
-          "session.createWorkItem:query-receiver": 1
+          "session.createWorkItem:query-receiver": 1,
+          "session.updateWorkItem:generated:UpdateWorkItem": 1,
+          "session.updateWorkItem:query-receiver": 1
         },
         "tables": []
       }
@@ -7879,6 +7450,7 @@
         "billing",
         "core",
         "event",
+        "fleet",
         "lease",
         "lifecycle"
       ],
@@ -7939,6 +7511,8 @@
           "session.RegisterOwnedMachine:query-receiver": 1,
           "session.SourceCheckpointAttempt:Query": 1,
           "session.SourceCheckpointAttempt:SQL": 1,
+          "session.UpdateMachineSpriteWake:Exec": 1,
+          "session.UpdateMachineSpriteWake:SQL": 1,
           "session.UpdateRunnerHost:generated:LockRunnerHostRevision": 1,
           "session.UpdateRunnerHost:generated:UpdateRunnerHostRouting": 1,
           "session.UpdateRunnerHost:query-receiver": 2,
@@ -7957,7 +7531,8 @@
           "hub/leases",
           "hub/machines",
           "hub/monthly_budget_policies",
-          "hub/native_attempts"
+          "hub/native_attempts",
+          "hub/runner_identities"
         ]
       }
     },
@@ -12804,6 +12379,862 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261111210238_configuration_command_validate.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "fleet"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111211428_version_landing_identity.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_evidence",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/collaboration_events"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111211430_version_landing_initialize.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_requests",
+          "hub/change_versions"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111211431_version_landing_validate.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_versions"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111213835_analytics_residence_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111215906_work_item_provenance_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111221622_issue_terminal_clock.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111221627_issue_archive_metadata.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "collaboration",
+        "conversation",
+        "conversion"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/attachment_archive_references",
+          "hub/conversations",
+          "hub/issue_archive_sections",
+          "hub/issue_storage_archives"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111221632_issue_archive_candidate_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111222854_issue_archive_section_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "conversion"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issue_archive_sections"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111225811_issue_archive_scan_cursors.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "conversion"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/storage_conversion_cursors"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111230546_github_intake_worker_ready_index.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/onboarding_issue_intake"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111231501_github_outbound_supersession.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111232904_board_reference_indexes_nonnull.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "board"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_board_deltas"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111232911_github_outbound_supersession_indexes.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/github_imports"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111234250_evidence_project_identity.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_evidence",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/collaboration_events"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111234251_evidence_project_initialize.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_evidence",
+          "hub/change_requests"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111234252_evidence_project_validate.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_evidence"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111234253_analytics_quality_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_evidence",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/collaboration_events"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111234254_analytics_failure_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111235348_archive_restore_clock.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111235349_archive_restore_provenance.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111235350_issue_retention_cursor.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "conversion"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/storage_conversion_cursors"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261111235351_issue_retention_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112001212_evidence_quality_time.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_evidence",
+          "hub/change_versions",
+          "hub/collaboration_events"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112001213_evidence_quality_initialize.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_evidence"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112001214_evidence_quality_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_evidence"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112001215_health_questions_unresolved_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "conversation"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/conversation_questions"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112004725_progress_dependency_owner_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issue_dependencies"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112013604_machine_sprite_wake_facts.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/machines"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112013627_normalized_claim_label_lookup.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112031630_attempt_usage_cumulative_totals.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "analytics",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/attempt_usage",
+          "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112032820_usage_cumulative_indexes.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "analytics",
+        "billing",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/attempt_usage",
+          "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112032821_usage_cumulative_primary_key.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "analytics"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/attempt_usage"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112032822_usage_cumulative_validate.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "analytics",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/attempt_usage",
+          "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112033754_runner_problem_cached_capabilities.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "fleet"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112035939_native_policy_landing_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_versions"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112042052_github_pr_source_key.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112042057_github_pr_source_shape.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112042102_github_pr_policy_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112042107_github_pr_source_validate.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112043935_github_pr_policy_authority.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112043936_github_pr_policy_authority_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112043937_landing_receipt_identity.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event",
+        "lease",
+        "source"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_landing_receipts",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112043938_landing_receipt_initialize.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event",
+        "lease",
+        "source"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_landing_receipts",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112043939_landing_receipt_validate.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event",
+        "source"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_landing_receipts",
+          "hub/change_requests"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112043940_landing_receipt_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "source"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_landing_receipts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112043941_collaboration_source_identity.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_versions",
+          "hub/issues",
+          "hub/native_comments"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112043943_collaboration_source_initialize.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_versions",
+          "hub/issues",
+          "hub/native_comments"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112043944_collaboration_source_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues",
+          "hub/native_comments"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112082128_hosted_member_session_cutoff.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "access"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/hosted_members"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112092845_conversation_typed_record_fields.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "conversation"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/conversation_commands",
+          "hub/conversations"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112101746_work_item_queue_workpad_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "claim",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/queue_entries"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112105114_queue_list_sort_keys.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "claim"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/queue_entries"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112112201_attempt_cleanup_summary.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112124958_historical_plan_storage_floors.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "billing"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/hosted_plans"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112130601_retired_project_enrollment_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "fleet"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/runner_enrollment_projects"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112135609_access_import_work_view_stage.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "access"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261112155646_attempt_pending_cleanup_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_attempts"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -12821,7 +13252,27 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/native_archive_import.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "conversion"
+      ],
+      "inventory": {
+        "operations": {
+          "Repository.publishImportedNativeArchiveSection:Exec": 3,
+          "Repository.publishImportedNativeArchiveSection:QueryRow": 1,
+          "Repository.publishImportedNativeArchiveSection:SQL": 4
+        },
+        "tables": [
+          "hub/issue_archive_sections",
+          "hub/issue_storage_archives"
+        ]
+      }
+    },
     "internal/hubserver/postgres/native_comments.go": {
+      "atomic_groups": [
+        "work-item-command"
+      ],
       "disposition": "target-adapter",
       "families": [
         "core",
@@ -12842,6 +13293,85 @@
           "session.UpdateComment:query-receiver": 1
         },
         "tables": []
+      }
+    },
+    "internal/hubserver/postgres/native_retention.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "conversion",
+        "core",
+        "event",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "session.AdvanceWorkItemRetention:Exec": 2,
+          "session.AdvanceWorkItemRetention:SQL": 2,
+          "session.WorkItemRetentionCandidates:Query": 1,
+          "session.WorkItemRetentionCandidates:SQL": 1,
+          "session.WorkItemRetentionCursor:QueryRow": 1,
+          "session.WorkItemRetentionCursor:SQL": 1,
+          "session.WorkItemRetentionPolicy:QueryRow": 1,
+          "session.WorkItemRetentionPolicy:SQL": 1
+        },
+        "tables": [
+          "hub/change_issue_links",
+          "hub/change_requests",
+          "hub/issues",
+          "hub/leases",
+          "hub/native_attempts",
+          "hub/projects",
+          "hub/storage_conversion_cursors"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/native_storage_archives.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "conversation",
+        "conversion",
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "session.AdvanceStorageArchiveRetirement:Exec": 2,
+          "session.AdvanceStorageArchiveRetirement:SQL": 2,
+          "session.AdvanceStorageArchiveScan:Exec": 2,
+          "session.AdvanceStorageArchiveScan:SQL": 2,
+          "session.PublishStorageArchive:Exec": 4,
+          "session.PublishStorageArchive:QueryRow": 4,
+          "session.PublishStorageArchive:SQL": 8,
+          "session.RetireStorageArchiveSection:Exec": 1,
+          "session.RetireStorageArchiveSection:QueryRow": 2,
+          "session.RetireStorageArchiveSection:SQL": 3,
+          "session.StorageArchiveCandidates:Query": 1,
+          "session.StorageArchiveCandidates:SQL": 1,
+          "session.StorageArchivePointer:QueryRow": 1,
+          "session.StorageArchivePointer:SQL": 1,
+          "session.StorageArchiveRetirementCursor:QueryRow": 1,
+          "session.StorageArchiveRetirementCursor:SQL": 1,
+          "session.StorageArchiveRetirements:Query": 1,
+          "session.StorageArchiveRetirements:SQL": 1,
+          "session.StorageArchiveScanCursor:QueryRow": 1,
+          "session.StorageArchiveScanCursor:SQL": 1,
+          "session.StorageArchiveSection:QueryRow": 1,
+          "session.StorageArchiveSection:SQL": 1,
+          "session.StorageArchiveSnapshot:Query": 2,
+          "session.StorageArchiveSnapshot:QueryRow": 1,
+          "session.StorageArchiveSnapshot:SQL": 3,
+          "session.storageArchiveCurrentSource:QueryRow": 1,
+          "session.storageArchiveCurrentSource:SQL": 1,
+          "session.storageArchiveRecord:QueryRow": 1,
+          "session.storageArchiveRecord:SQL": 1
+        },
+        "tables": [
+          "hub/conversation_messages",
+          "hub/conversations",
+          "hub/issue_archive_sections",
+          "hub/issue_storage_archives",
+          "hub/issues",
+          "hub/storage_conversion_cursors"
+        ]
       }
     },
     "internal/hubserver/postgres/onboarding_batch.go": {
@@ -12918,14 +13448,14 @@
       ],
       "inventory": {
         "operations": {
-          "Repository.ImportOnboardingProgress:Exec": 1,
-          "Repository.ImportOnboardingProgress:SQL": 1,
           "session.ProjectLatestAttemptStatus:QueryRow": 1,
           "session.ProjectLatestAttemptStatus:SQL": 1,
           "session.ProjectOnboardingProgress:QueryRow": 1,
           "session.ProjectOnboardingProgress:SQL": 1,
           "session.SaveProjectOnboardingProgress:Exec": 2,
-          "session.SaveProjectOnboardingProgress:SQL": 2
+          "session.SaveProjectOnboardingProgress:SQL": 2,
+          "session.importOnboardingProgress:Exec": 1,
+          "session.importOnboardingProgress:SQL": 1
         },
         "tables": [
           "hub/issues",
@@ -13985,10 +14515,13 @@
           "Queries.RecordAdvanceEvidence:QueryRow": 1,
           "Queries.RecordAdvanceIssue:QueryRow": 1,
           "Queries.RecordAdvanceProjectEventSequence:QueryRow": 1,
+          "Queries.RecordAttemptEvents:Query": 1,
           "Queries.RecordChangePriorApproval:QueryRow": 1,
           "Queries.RecordChangePublicationCheckpoints:Query": 1,
           "Queries.RecordChangePublicationProvenance:QueryRow": 1,
           "Queries.RecordChangeSummaryEvidence:Query": 1,
+          "Queries.RecordClassifyScheduledComment:Exec": 1,
+          "Queries.RecordClassifyScheduledIssue:Exec": 1,
           "Queries.RecordGetChange:QueryRow": 1,
           "Queries.RecordGetCollaborationVersion:QueryRow": 1,
           "Queries.RecordGetCollaborationVersions:Query": 1,
@@ -14037,28 +14570,41 @@
           "Queries.RecordListViewedFiles:Query": 1,
           "Queries.RecordLockChange:QueryRow": 1,
           "Queries.RecordLockIssue:QueryRow": 1,
+          "Queries.RecordPendingProjectScheduledSources:QueryRow": 1,
+          "Queries.RecordPendingWorkItemScheduledSources:QueryRow": 1,
           "Queries.RecordProjectChanges:Query": 1,
           "Queries.RecordProjectEventSequence:QueryRow": 1,
+          "Queries.RecordProjectEvents:Query": 1,
           "Queries.RecordProjectPolicyLanding:QueryRow": 1,
+          "Queries.RecordProjectPolicyLandingHistory:QueryRow": 1,
+          "Queries.RecordProjectScheduledSources:Query": 1,
           "Queries.RecordPutPRPublication:Exec": 1,
           "Queries.RecordRecoveryChangeEvidence:Query": 1,
           "Queries.RecordReplayOperation:QueryRow": 1,
           "Queries.RecordRetainPullRequestVersion:Exec": 1,
           "Queries.RecordSetViewedFile:QueryRow": 1,
+          "Queries.RecordUnclassifiedScheduledSources:Query": 1,
           "Queries.RecordUnprojectedChangePushes:Query": 1,
           "Queries.RecordUnprojectedChangeReviews:Query": 1,
           "Queries.RecordUpdateChange:QueryRow": 1,
           "Queries.RecordUpdateLinkedIssueSource:QueryRow": 1,
+          "Queries.RecordValidationCandidates:Query": 1,
+          "Queries.RecordValidationChangeCandidates:Query": 1,
+          "Queries.RecordValidationProjectCandidates:Query": 1,
           "Queries.RecordValidatorReviewEvidence:Query": 1,
           "Queries.RecordWorkItemPullRequestVersion:QueryRow": 1,
+          "Queries.RecordWorkItemScheduledSources:Query": 1,
           "commandAppendRunEvent:SQL": 1,
           "recordAdvanceEvidence:SQL": 1,
           "recordAdvanceIssue:SQL": 1,
           "recordAdvanceProjectEventSequence:SQL": 1,
+          "recordAttemptEvents:SQL": 1,
           "recordChangePriorApproval:SQL": 1,
           "recordChangePublicationCheckpoints:SQL": 1,
           "recordChangePublicationProvenance:SQL": 1,
           "recordChangeSummaryEvidence:SQL": 1,
+          "recordClassifyScheduledComment:SQL": 1,
+          "recordClassifyScheduledIssue:SQL": 1,
           "recordGetChange:SQL": 1,
           "recordGetCollaborationVersion:SQL": 1,
           "recordGetCollaborationVersions:SQL": 1,
@@ -14107,20 +14653,30 @@
           "recordListViewedFiles:SQL": 1,
           "recordLockChange:SQL": 1,
           "recordLockIssue:SQL": 1,
+          "recordPendingProjectScheduledSources:SQL": 1,
+          "recordPendingWorkItemScheduledSources:SQL": 1,
           "recordProjectChanges:SQL": 1,
           "recordProjectEventSequence:SQL": 1,
+          "recordProjectEvents:SQL": 1,
           "recordProjectPolicyLanding:SQL": 1,
+          "recordProjectPolicyLandingHistory:SQL": 1,
+          "recordProjectScheduledSources:SQL": 1,
           "recordPutPRPublication:SQL": 1,
           "recordRecoveryChangeEvidence:SQL": 1,
           "recordReplayOperation:SQL": 1,
           "recordRetainPullRequestVersion:SQL": 1,
           "recordSetViewedFile:SQL": 1,
+          "recordUnclassifiedScheduledSources:SQL": 1,
           "recordUnprojectedChangePushes:SQL": 1,
           "recordUnprojectedChangeReviews:SQL": 1,
           "recordUpdateChange:SQL": 1,
           "recordUpdateLinkedIssueSource:SQL": 1,
+          "recordValidationCandidates:SQL": 1,
+          "recordValidationChangeCandidates:SQL": 1,
+          "recordValidationProjectCandidates:SQL": 1,
           "recordValidatorReviewEvidence:SQL": 1,
-          "recordWorkItemPullRequestVersion:SQL": 1
+          "recordWorkItemPullRequestVersion:SQL": 1,
+          "recordWorkItemScheduledSources:SQL": 1
         },
         "tables": [
           "hub/change_evidence",
@@ -14137,6 +14693,7 @@
           "hub/native_attempt_events",
           "hub/native_attempts",
           "hub/native_commands",
+          "hub/native_comments",
           "hub/native_pr_publications"
         ]
       }
@@ -14151,9 +14708,11 @@
           "Queries.CreateGitHubImportRecord:Exec": 1,
           "Queries.ListGitHubImportRecords:Query": 1,
           "Queries.ReadGitHubImportEditSource:QueryRow": 1,
+          "Queries.ResetCurrentGitHubImportDependencies:Exec": 1,
           "createGitHubImportRecord:SQL": 1,
           "listGitHubImportRecords:SQL": 1,
-          "readGitHubImportEditSource:SQL": 1
+          "readGitHubImportEditSource:SQL": 1,
+          "resetCurrentGitHubImportDependencies:SQL": 1
         },
         "tables": [
           "hub/github_import_records"
@@ -14170,10 +14729,12 @@
           "Queries.CreateGitHubImport:QueryRow": 1,
           "Queries.ReadGitHubImport:QueryRow": 1,
           "Queries.ReadGitHubImportForIssue:QueryRow": 1,
+          "Queries.ReadGitHubImportForWorkItem:Query": 1,
           "Queries.UpdateGitHubImport:QueryRow": 1,
           "createGitHubImport:SQL": 1,
           "readGitHubImport:SQL": 1,
           "readGitHubImportForIssue:SQL": 1,
+          "readGitHubImportForWorkItem:SQL": 1,
           "updateGitHubImport:SQL": 1
         },
         "tables": [
@@ -14239,6 +14800,7 @@
       "disposition": "target-adapter",
       "families": [
         "activity",
+        "conversation",
         "core"
       ],
       "inventory": {
@@ -14248,15 +14810,23 @@
           "Queries.HealthFindingProjects:Query": 1,
           "Queries.HealthFindings:Query": 1,
           "Queries.HealthLastTick:QueryRow": 1,
+          "Queries.HealthSourceConversationQuestions:Query": 1,
+          "Queries.HealthSourceItems:Query": 1,
+          "Queries.HealthSourceQuestions:Query": 1,
           "Queries.HealthSummaryFindings:Query": 1,
           "healthBaselines:SQL": 1,
           "healthFindingIssues:SQL": 1,
           "healthFindingProjects:SQL": 1,
           "healthFindings:SQL": 1,
           "healthLastTick:SQL": 1,
+          "healthSourceConversationQuestions:SQL": 1,
+          "healthSourceItems:SQL": 1,
+          "healthSourceQuestions:SQL": 1,
           "healthSummaryFindings:SQL": 1
         },
         "tables": [
+          "hub/conversation_questions",
+          "hub/conversations",
           "hub/health_detector_ticks",
           "hub/health_finding_issues",
           "hub/health_finding_projects",
@@ -14406,6 +14976,7 @@
       "families": [
         "billing",
         "core",
+        "event",
         "lifecycle"
       ],
       "inventory": {
@@ -14442,6 +15013,7 @@
           "workItemScanThrough:SQL": 1
         },
         "tables": [
+          "hub/collaboration_versions",
           "hub/issues",
           "hub/monthly_budget_admissions"
         ]
@@ -14598,6 +15170,7 @@
       "disposition": "target-adapter",
       "families": [
         "core",
+        "event",
         "lifecycle"
       ],
       "inventory": {
@@ -14622,6 +15195,7 @@
           "updateComment:SQL": 1
         },
         "tables": [
+          "hub/collaboration_versions",
           "hub/native_comments"
         ]
       }
@@ -15387,7 +15961,12 @@
     "internal/hubserver/postgres/pgquery/sprite_contract.sql.go": {
       "disposition": "target-adapter",
       "families": [
-        "fleet"
+        "access",
+        "core",
+        "event",
+        "fleet",
+        "lease",
+        "policy"
       ],
       "inventory": {
         "operations": {
@@ -15397,7 +15976,13 @@
           "Queries.PutSpritePool:QueryRow": 1,
           "Queries.RecordSpriteProvisionFailure:Exec": 1,
           "Queries.SpriteAllocation:QueryRow": 1,
+          "Queries.SpriteAllocationAuthority:QueryRow": 1,
+          "Queries.SpriteAllocationSize:QueryRow": 1,
           "Queries.SpriteAllocations:Query": 1,
+          "Queries.SpriteLeaseUsage:QueryRow": 1,
+          "Queries.SpriteMember:QueryRow": 1,
+          "Queries.SpriteMemberHoldsWork:QueryRow": 1,
+          "Queries.SpriteMemberPlacementCounts:QueryRow": 1,
           "Queries.SpriteMembers:Query": 1,
           "Queries.SpriteOperation:QueryRow": 1,
           "Queries.SpritePool:QueryRow": 1,
@@ -15410,7 +15995,13 @@
           "putSpritePool:SQL": 1,
           "recordSpriteProvisionFailure:SQL": 1,
           "spriteAllocation:SQL": 1,
+          "spriteAllocationAuthority:SQL": 1,
+          "spriteAllocationSize:SQL": 1,
           "spriteAllocations:SQL": 1,
+          "spriteLeaseUsage:SQL": 1,
+          "spriteMember:SQL": 1,
+          "spriteMemberHoldsWork:SQL": 1,
+          "spriteMemberPlacementCounts:SQL": 1,
           "spriteMembers:SQL": 1,
           "spriteOperation:SQL": 1,
           "spritePool:SQL": 1,
@@ -15419,8 +16010,22 @@
           "updateSpritePool:SQL": 1
         },
         "tables": [
+          "hub/api_tokens",
+          "hub/change_issue_links",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/hosted_members",
+          "hub/hosted_project_grants",
+          "hub/issues",
+          "hub/leases",
+          "hub/machines",
+          "hub/native_attempts",
           "hub/organization_sprite_pools",
-          "hub/project_sprite_allocations"
+          "hub/policy_revisions",
+          "hub/project_sprite_allocations",
+          "hub/projects",
+          "hub/runner_identities",
+          "hub/token_grants"
         ]
       }
     },
@@ -15595,6 +16200,7 @@
           "Queries.NextWorkItemNumber:QueryRow": 1,
           "Queries.SelectCommentsNewest:Query": 1,
           "Queries.SelectCommentsOldest:Query": 1,
+          "Queries.WorkItemByProvenance:QueryRow": 1,
           "Queries.WorkItemBySource:QueryRow": 1,
           "Queries.WorkItemHasActiveLease:QueryRow": 1,
           "commentBySource:SQL": 1,
@@ -15603,6 +16209,7 @@
           "nextWorkItemNumber:SQL": 1,
           "selectCommentsNewest:SQL": 1,
           "selectCommentsOldest:SQL": 1,
+          "workItemByProvenance:SQL": 1,
           "workItemBySource:SQL": 1,
           "workItemHasActiveLease:SQL": 1
         },
@@ -15896,6 +16503,7 @@
       ],
       "disposition": "target-adapter",
       "families": [
+        "access",
         "activity",
         "collaboration",
         "conversation",
@@ -15925,6 +16533,8 @@
           "session.RequireProjectIdle:generated:LockActiveProject": 1,
           "session.RequireProjectIdle:generated:ProjectHasActiveWork": 1,
           "session.RequireProjectIdle:query-receiver": 3,
+          "session.RetireProject:Exec": 2,
+          "session.RetireProject:SQL": 2,
           "session.RetireProject:generated:LeaseTime": 1,
           "session.RetireProject:generated:LockActiveProject": 1,
           "session.RetireProject:generated:ProjectHasActiveWork": 1,
@@ -15956,7 +16566,9 @@
           "session.reserveProjectSlug:query-receiver": 1
         },
         "tables": [
-          "hub/projects"
+          "hub/project_secrets",
+          "hub/projects",
+          "hub/runner_enrollment_projects"
         ]
       }
     },
@@ -16681,10 +17293,13 @@
           "query:RecordAdvanceEvidence:one": 1,
           "query:RecordAdvanceIssue:one": 1,
           "query:RecordAdvanceProjectEventSequence:one": 1,
+          "query:RecordAttemptEvents:many": 1,
           "query:RecordChangePriorApproval:one": 1,
           "query:RecordChangePublicationCheckpoints:many": 1,
           "query:RecordChangePublicationProvenance:one": 1,
           "query:RecordChangeSummaryEvidence:many": 1,
+          "query:RecordClassifyScheduledComment:execrows": 1,
+          "query:RecordClassifyScheduledIssue:execrows": 1,
           "query:RecordGetChange:one": 1,
           "query:RecordGetCollaborationVersion:one": 1,
           "query:RecordGetCollaborationVersions:many": 1,
@@ -16733,20 +17348,30 @@
           "query:RecordListViewedFiles:many": 1,
           "query:RecordLockChange:one": 1,
           "query:RecordLockIssue:one": 1,
+          "query:RecordPendingProjectScheduledSources:one": 1,
+          "query:RecordPendingWorkItemScheduledSources:one": 1,
           "query:RecordProjectChanges:many": 1,
           "query:RecordProjectEventSequence:one": 1,
+          "query:RecordProjectEvents:many": 1,
           "query:RecordProjectPolicyLanding:one": 1,
+          "query:RecordProjectPolicyLandingHistory:one": 1,
+          "query:RecordProjectScheduledSources:many": 1,
           "query:RecordPutPRPublication:exec": 1,
           "query:RecordRecoveryChangeEvidence:many": 1,
           "query:RecordReplayOperation:one": 1,
           "query:RecordRetainPullRequestVersion:execrows": 1,
           "query:RecordSetViewedFile:one": 1,
+          "query:RecordUnclassifiedScheduledSources:many": 1,
           "query:RecordUnprojectedChangePushes:many": 1,
           "query:RecordUnprojectedChangeReviews:many": 1,
           "query:RecordUpdateChange:one": 1,
           "query:RecordUpdateLinkedIssueSource:one": 1,
+          "query:RecordValidationCandidates:many": 1,
+          "query:RecordValidationChangeCandidates:many": 1,
+          "query:RecordValidationProjectCandidates:many": 1,
           "query:RecordValidatorReviewEvidence:many": 1,
-          "query:RecordWorkItemPullRequestVersion:one": 1
+          "query:RecordWorkItemPullRequestVersion:one": 1,
+          "query:RecordWorkItemScheduledSources:many": 1
         },
         "tables": [
           "hub/change_evidence",
@@ -16763,7 +17388,9 @@
           "hub/native_attempt_events",
           "hub/native_attempts",
           "hub/native_commands",
-          "hub/native_pr_publications"
+          "hub/native_comments",
+          "hub/native_pr_publications",
+          "hub/repositories"
         ]
       }
     },
@@ -16777,7 +17404,8 @@
           "SQL": 1,
           "query:CreateGitHubImportRecord:exec": 1,
           "query:ListGitHubImportRecords:many": 1,
-          "query:ReadGitHubImportEditSource:one": 1
+          "query:ReadGitHubImportEditSource:one": 1,
+          "query:ResetCurrentGitHubImportDependencies:exec": 1
         },
         "tables": [
           "hub/github_import_records"
@@ -16795,6 +17423,7 @@
           "query:CreateGitHubImport:one": 1,
           "query:ReadGitHubImport:one": 1,
           "query:ReadGitHubImportForIssue:one": 1,
+          "query:ReadGitHubImportForWorkItem:many": 1,
           "query:UpdateGitHubImport:one": 1
         },
         "tables": [
@@ -16849,6 +17478,7 @@
       "disposition": "target-schema",
       "families": [
         "activity",
+        "conversation",
         "core"
       ],
       "inventory": {
@@ -16859,9 +17489,14 @@
           "query:HealthFindingProjects:many": 1,
           "query:HealthFindings:many": 1,
           "query:HealthLastTick:one": 1,
+          "query:HealthSourceConversationQuestions:many": 1,
+          "query:HealthSourceItems:many": 1,
+          "query:HealthSourceQuestions:many": 1,
           "query:HealthSummaryFindings:many": 1
         },
         "tables": [
+          "hub/conversation_questions",
+          "hub/conversations",
           "hub/health_detector_ticks",
           "hub/health_finding_issues",
           "hub/health_finding_projects",
@@ -16977,6 +17612,7 @@
       "families": [
         "billing",
         "core",
+        "event",
         "lifecycle"
       ],
       "inventory": {
@@ -16999,6 +17635,7 @@
           "query:WorkItemScanThrough:one": 1
         },
         "tables": [
+          "hub/collaboration_versions",
           "hub/issues",
           "hub/monthly_budget_admissions"
         ]
@@ -17117,6 +17754,7 @@
       "disposition": "target-schema",
       "families": [
         "core",
+        "event",
         "lifecycle"
       ],
       "inventory": {
@@ -17133,6 +17771,7 @@
           "query:UpdateComment:one": 1
         },
         "tables": [
+          "hub/collaboration_versions",
           "hub/native_comments"
         ]
       }
@@ -17734,7 +18373,12 @@
     "internal/hubserver/postgres/queries/sprite_contract.sql": {
       "disposition": "target-schema",
       "families": [
-        "fleet"
+        "access",
+        "core",
+        "event",
+        "fleet",
+        "lease",
+        "policy"
       ],
       "inventory": {
         "operations": {
@@ -17745,7 +18389,13 @@
           "query:PutSpritePool:one": 1,
           "query:RecordSpriteProvisionFailure:execrows": 1,
           "query:SpriteAllocation:one": 1,
+          "query:SpriteAllocationAuthority:one": 1,
+          "query:SpriteAllocationSize:one": 1,
           "query:SpriteAllocations:many": 1,
+          "query:SpriteLeaseUsage:one": 1,
+          "query:SpriteMember:one": 1,
+          "query:SpriteMemberHoldsWork:one": 1,
+          "query:SpriteMemberPlacementCounts:one": 1,
           "query:SpriteMembers:many": 1,
           "query:SpriteOperation:one": 1,
           "query:SpritePool:one": 1,
@@ -17754,8 +18404,22 @@
           "query:UpdateSpritePool:one": 1
         },
         "tables": [
+          "hub/api_tokens",
+          "hub/change_issue_links",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/hosted_members",
+          "hub/hosted_project_grants",
+          "hub/issues",
+          "hub/leases",
+          "hub/machines",
+          "hub/native_attempts",
           "hub/organization_sprite_pools",
-          "hub/project_sprite_allocations"
+          "hub/policy_revisions",
+          "hub/project_sprite_allocations",
+          "hub/projects",
+          "hub/runner_identities",
+          "hub/token_grants"
         ]
       }
     },
@@ -17911,6 +18575,7 @@
           "query:NextWorkItemNumber:one": 1,
           "query:SelectCommentsNewest:many": 1,
           "query:SelectCommentsOldest:many": 1,
+          "query:WorkItemByProvenance:one": 1,
           "query:WorkItemBySource:one": 1,
           "query:WorkItemHasActiveLease:one": 1
         },
@@ -18188,6 +18853,8 @@
           "session.LockRelationshipGraph:query-receiver": 1,
           "session.LockWorkItems:generated:LockWorkItemBatch": 1,
           "session.LockWorkItems:query-receiver": 1,
+          "session.ProgressDependencies:Query": 1,
+          "session.ProgressDependencies:SQL": 1,
           "session.Relationships:generated:RelationshipPage": 1,
           "session.Relationships:query-receiver": 1,
           "session.RemoveOwnedDependencies:Exec": 1,
@@ -18205,7 +18872,10 @@
           "session.WorkItemLabels:generated:WorkItemLabelPage": 1,
           "session.WorkItemLabels:query-receiver": 1,
           "session.checkDependencyCycle:QueryRow": 1,
-          "session.checkDependencyCycle:SQL": 1
+          "session.checkDependencyCycle:SQL": 1,
+          "session.expireProgressDependencies:Exec": 1,
+          "session.expireProgressDependencies:Query": 1,
+          "session.expireProgressDependencies:SQL": 2
         },
         "tables": [
           "hub/issue_dependencies",
@@ -18245,6 +18915,8 @@
           "session.CreateRelayTicket:query-receiver": 1,
           "session.CreateReportedActionRun:generated:CreateReportedActionRun": 1,
           "session.CreateReportedActionRun:query-receiver": 1,
+          "session.DeleteActionRun:QueryRow": 1,
+          "session.DeleteActionRun:SQL": 1,
           "session.DeleteExpiredRelayTicket:generated:DeleteExpiredRelayTicket": 1,
           "session.DeleteExpiredRelayTicket:query-receiver": 1,
           "session.DispatchableActionRunPage:generated:DispatchableActionRuns": 1,
@@ -18277,7 +18949,10 @@
           "session.WorkspaceRelayOwner:generated:WorkspaceRelayOwner": 1,
           "session.WorkspaceRelayOwner:query-receiver": 1
         },
-        "tables": []
+        "tables": [
+          "hub/project_action_runs",
+          "hub/workspace_sessions"
+        ]
       }
     },
     "internal/hubserver/postgres/release_audit_records.go": {
@@ -18356,6 +19031,9 @@
       ],
       "inventory": {
         "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.ReadAnalyticsResidencePage:Query": 3,
+          "session.ReadAnalyticsResidencePage:SQL": 3,
           "session.ReadHistory:Query": 3,
           "session.ReadHistory:SQL": 3,
           "session.ReadHistoryIssueEvents:Query": 1,
@@ -18386,6 +19064,7 @@
           "session.importReportLandings:Exec": 1,
           "session.importReportLandings:Query": 1,
           "session.importReportLandings:SQL": 3,
+          "session.importReportUsage:QueryRow": 1,
           "session.importReportUsage:SQL": 1,
           "session.mergeReportFacts:Exec": 1,
           "session.mergeReportFacts:SQL": 2,
@@ -18398,9 +19077,7 @@
           "hub/change_landing_receipts",
           "hub/change_requests",
           "hub/change_versions",
-          "hub/collaboration_events",
-          "hub/issues",
-          "hub/native_attempts"
+          "hub/collaboration_events"
         ]
       }
     },
@@ -18433,14 +19110,15 @@
       ],
       "inventory": {
         "operations": {
-          "session.putReportEscapeProjection:Exec": 1,
-          "session.putReportEscapeProjection:QueryRow": 1,
-          "session.putReportEscapeProjection:SQL": 2,
+          "session.putReportEscapeProjection:Exec": 2,
+          "session.putReportEscapeProjection:QueryRow": 2,
+          "session.putReportEscapeProjection:SQL": 4,
           "session.putReportEventProjection:Exec": 2,
           "session.putReportEventProjection:QueryRow": 1,
           "session.putReportEventProjection:SQL": 3
         },
         "tables": [
+          "hub/change_evidence",
           "hub/collaboration_events",
           "hub/native_attempts"
         ]
@@ -18454,12 +19132,27 @@
       ],
       "inventory": {
         "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.QualityEscapeOccurrence:Query": 1,
+          "session.QualityEscapeOccurrence:SQL": 1,
+          "session.ReadAnalyticsEvidencePage:Query": 1,
+          "session.ReadAnalyticsEvidencePage:QueryRow": 1,
+          "session.ReadAnalyticsEvidencePage:SQL": 3,
+          "session.ReadAnalyticsEvidencePage:generated:RecordListVersion": 1,
+          "session.ReadAnalyticsEvidencePage:query-receiver": 1,
+          "session.ReadAnalyticsLandingPage:Query": 2,
+          "session.ReadAnalyticsLandingPage:QueryRow": 1,
+          "session.ReadAnalyticsLandingPage:SQL": 3,
+          "session.ReadAnalyticsWorkflowPage:Query": 1,
+          "session.ReadAnalyticsWorkflowPage:SQL": 1,
           "session.ReadEscapeFacts:Query": 1,
           "session.ReadEscapeFacts:SQL": 1
         },
         "tables": [
           "hub/change_evidence",
           "hub/change_requests",
+          "hub/change_versions",
+          "hub/collaboration_events",
           "hub/issues"
         ]
       }
@@ -18489,25 +19182,41 @@
       "families": [
         "analytics",
         "core",
+        "event",
         "fleet",
         "lease"
       ],
       "inventory": {
         "operations": {
+          "Repository.RefreshAttemptReportUsage:QueryRow": 1,
+          "Repository.RefreshAttemptReportUsage:SQL": 1,
           "Repository.RefreshReportUsagePage:Query": 1,
           "Repository.RefreshReportUsagePage:SQL": 1,
+          "Repository.refreshHistoricalReportUsage:Query": 1,
+          "Repository.refreshHistoricalReportUsage:QueryRow": 1,
+          "Repository.refreshHistoricalReportUsage:SQL": 1,
+          "session.NextPendingUsageAttempt:QueryRow": 1,
+          "session.NextPendingUsageAttempt:SQL": 1,
           "session.ReadAnalyticsUsagePage:Query": 1,
-          "session.ReadAnalyticsUsagePage:SQL": 1,
+          "session.ReadAnalyticsUsagePage:QueryRow": 1,
+          "session.ReadAnalyticsUsagePage:SQL": 2,
           "session.ReadReportUsage:Query": 1,
           "session.ReadReportUsage:SQL": 1,
           "session.ReadReportUsageCoverage:Query": 2,
           "session.ReadReportUsageCoverage:SQL": 2,
+          "session.RecordAttemptUsage:QueryRow": 4,
+          "session.RecordAttemptUsage:SQL": 2,
           "session.RefreshReportUsage:Exec": 1,
-          "session.RefreshReportUsage:SQL": 3
+          "session.RefreshReportUsage:SQL": 3,
+          "session.ReplayAttemptUsage:Exec": 3,
+          "session.ReplayAttemptUsage:QueryRow": 3,
+          "session.ReplayAttemptUsage:SQL": 6
         },
         "tables": [
           "hub/attempt_usage",
+          "hub/collaboration_events",
           "hub/issues",
+          "hub/leases",
           "hub/native_attempts",
           "hub/runner_identities"
         ]
@@ -18525,12 +19234,14 @@
       ],
       "inventory": {
         "operations": {
-          "session.HasPriorData:QueryRow": 1,
-          "session.HasPriorData:SQL": 1,
+          "session.HasPriorData:QueryRow": 2,
+          "session.HasPriorData:SQL": 2,
           "session.ReadAnalyticsAttemptPage:Query": 1,
           "session.ReadAnalyticsAttemptPage:SQL": 1,
           "session.ReadAttemptFacts:Query": 1,
           "session.ReadAttemptFacts:SQL": 1,
+          "session.ReadCohortWorkItems:Query": 1,
+          "session.ReadCohortWorkItems:SQL": 1,
           "session.ReadFacets:Query": 2,
           "session.ReadFacets:SQL": 2,
           "session.ReadOpenFacts:Query": 1,
@@ -18545,7 +19256,9 @@
           "hub/change_versions",
           "hub/collaboration_events",
           "hub/issues",
+          "hub/leases",
           "hub/native_attempts",
+          "hub/projects",
           "hub/runner_identities"
         ]
       }
@@ -18555,6 +19268,7 @@
         "change-publication",
         "completion",
         "conversation-command",
+        "native-command",
         "postgres-callback",
         "work-item-command"
       ],
@@ -18735,6 +19449,8 @@
           "session.ReplaceRunnerCheckoutReport:SQL": 2,
           "session.ReplaceRunnerProjectSkills:Exec": 1,
           "session.ReplaceRunnerProjectSkills:SQL": 1,
+          "session.RunnerCheckoutReport:QueryRow": 1,
+          "session.RunnerCheckoutReport:SQL": 1,
           "session.RunnerCheckoutVerified:QueryRow": 1,
           "session.RunnerCheckoutVerified:SQL": 1,
           "session.RunnerProjectSkills:Query": 1,
@@ -18844,11 +19560,14 @@
       ],
       "disposition": "target-adapter",
       "families": [
+        "billing",
         "lease"
       ],
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "runnerEventSession.ChargeRunEventArchives:QueryRow": 1,
+          "runnerEventSession.ChargeRunEventArchives:SQL": 1,
           "runnerEventSession.LockArchiveAccounting:QueryRow": 2,
           "runnerEventSession.LockArchiveAccounting:SQL": 3,
           "runnerEventSession.RecordAttemptEvent:SQL": 1,
@@ -19075,11 +19794,15 @@
       ],
       "inventory": {
         "operations": {
+          "Repository.ReadRunnerHeartbeatSnapshot:QueryRow": 1,
+          "Repository.ReadRunnerHeartbeatSnapshot:SQL": 2,
           "Repository.writeRunnerCommand:QueryRow": 1,
           "Repository.writeRunnerCommand:SQL": 1,
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "runnerHeartbeatSession.UpdateRunnerRouting:QueryRow": 1,
-          "runnerHeartbeatSession.readHeartbeatRows:Query": 1
+          "runnerHeartbeatSession.readHeartbeatRows:Query": 1,
+          "runnerHeartbeatSnapshot.readSnapshotRows:Query": 1,
+          "runnerHeartbeatSnapshot.readSnapshotRows:SQL": 1
         },
         "tables": [
           "hub/runner_repository_lists"
@@ -19159,6 +19882,8 @@
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "runnerIdentitySelect:SQL": 1,
+          "runnerProjectAuthoritySourceSQL:SQL": 1,
+          "runnerRoutingProjectsSQL:SQL": 1,
           "session.AssignRunnerLease:Exec": 2,
           "session.AssignRunnerLease:QueryRow": 2,
           "session.AssignRunnerLease:SQL": 4,
@@ -19250,7 +19975,6 @@
           "session.runnerEnrollment:SQL": 2,
           "session.runnerIdentityRow:QueryRow": 1,
           "session.runnerRoutingProjects:Query": 1,
-          "session.runnerRoutingProjects:SQL": 1,
           "session.runnerUnreleasedMembership:QueryRow": 3,
           "session.runnerUnreleasedMembership:SQL": 3,
           "session.writeRunnerProjectDiagnosticDetails:Exec": 1,
@@ -19540,6 +20264,24 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/scheduled_sources.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "core",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "Repository.BackfillScheduledSourcesAfter:generated:RecordUnclassifiedScheduledSources": 1,
+          "Repository.BackfillScheduledSourcesAfter:query-receiver": 1,
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.classifyScheduledSource:generated:RecordClassifyScheduledComment": 1,
+          "session.classifyScheduledSource:generated:RecordClassifyScheduledIssue": 1,
+          "session.classifyScheduledSource:query-receiver": 2
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/scheduler_event_heads.go": {
       "disposition": "target-adapter",
       "families": [
@@ -19646,6 +20388,7 @@
     "internal/hubserver/postgres/sprite_contract.go": {
       "disposition": "target-adapter",
       "families": [
+        "access",
         "fleet"
       ],
       "inventory": {
@@ -19665,8 +20408,20 @@
           "session.RecordSpriteProvisionFailure:query-receiver": 1,
           "session.SpriteAllocation:generated:SpriteAllocation": 1,
           "session.SpriteAllocation:query-receiver": 1,
+          "session.SpriteAllocationAuthority:generated:SpriteAllocationAuthority": 1,
+          "session.SpriteAllocationAuthority:query-receiver": 1,
+          "session.SpriteAllocationSize:generated:SpriteAllocationSize": 1,
+          "session.SpriteAllocationSize:query-receiver": 1,
           "session.SpriteAllocations:generated:SpriteAllocations": 1,
           "session.SpriteAllocations:query-receiver": 1,
+          "session.SpriteLeaseUsage:generated:SpriteLeaseUsage": 1,
+          "session.SpriteLeaseUsage:query-receiver": 1,
+          "session.SpriteMember:generated:SpriteMember": 1,
+          "session.SpriteMember:query-receiver": 1,
+          "session.SpriteMemberHoldsWork:generated:SpriteMemberHoldsWork": 1,
+          "session.SpriteMemberHoldsWork:query-receiver": 1,
+          "session.SpriteMemberPlacementCounts:generated:SpriteMemberPlacementCounts": 1,
+          "session.SpriteMemberPlacementCounts:query-receiver": 1,
           "session.SpriteMembers:generated:SpriteMembers": 1,
           "session.SpriteMembers:query-receiver": 1,
           "session.SpriteOperation:generated:SpriteOperation": 1,
@@ -19957,19 +20712,28 @@
       ],
       "inventory": {
         "operations": {
+          "appendBoardDeltaSQL:SQL": 1,
+          "boardSequenceHeadSQL:SQL": 1,
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.ReplaceBoardItem:Exec": 4,
           "session.ReplaceBoardItem:QueryRow": 2,
           "session.ReplaceBoardItem:SQL": 6,
           "session.ReplaceBoardItem:generated:LockWorkItem": 1,
           "session.ReplaceBoardItem:query-receiver": 1,
+          "session.TrimBoardDeltas:QueryRow": 2,
+          "session.TrimBoardDeltas:SQL": 1,
           "session.adjustBoardWorkspaceCount:Exec": 1,
           "session.adjustBoardWorkspaceCount:SQL": 1,
-          "session.flushBoardDeltas:Exec": 2,
-          "session.flushBoardDeltas:QueryRow": 1,
-          "session.flushBoardDeltas:SQL": 3,
+          "session.flushBoardDeltas:Exec": 1,
+          "session.flushBoardDeltas:QueryRow": 2,
+          "session.flushBoardDeltas:SQL": 2,
           "session.putBoardItem:Exec": 4,
-          "session.putBoardItem:SQL": 4
+          "session.putBoardItem:SQL": 4,
+          "session.queueBoardDeltas:QueryRow": 1,
+          "session.trimBoardDeltas:Exec": 1,
+          "session.trimBoardDeltas:Query": 1,
+          "session.trimBoardDeltas:QueryRow": 1,
+          "session.trimBoardDeltas:SQL": 3
         },
         "tables": [
           "hub/native_board_counts",
@@ -20103,6 +20867,8 @@
           "session.SelectComments:generated:SelectCommentsNewest": 1,
           "session.SelectComments:generated:SelectCommentsOldest": 1,
           "session.SelectComments:query-receiver": 2,
+          "session.WorkItemByProvenance:generated:WorkItemByProvenance": 1,
+          "session.WorkItemByProvenance:query-receiver": 1,
           "session.WorkItemBySource:generated:WorkItemBySource": 1,
           "session.WorkItemBySource:query-receiver": 1,
           "session.WorkItemHasActiveLease:generated:WorkItemHasActiveLease": 1,
@@ -20244,25 +21010,7 @@
           "insertProjectAction:ExecContext": 1,
           "insertProjectAction:SQL": 1,
           "insertProjectActionRun:ExecContext": 1,
-          "insertProjectActionRun:SQL": 1,
-          "readDispatchableActionRuns:QueryContext": 1,
-          "readDispatchableActionRuns:SQL": 1,
-          "readOrphanedActionRuns:QueryContext": 1,
-          "readOrphanedActionRuns:SQL": 1,
-          "readProjectAction:QueryRowContext": 1,
-          "readProjectAction:SQL": 1,
-          "readProjectActionRun:QueryRowContext": 1,
-          "readProjectActionRun:SQL": 1,
-          "readProjectActionRunByID:QueryRowContext": 1,
-          "readProjectActionRunByID:SQL": 1,
-          "readProjectActionRuns:QueryContext": 1,
-          "readProjectActionRuns:SQL": 1,
-          "readRunOnCreationActions:QueryContext": 1,
-          "readRunOnCreationActions:SQL": 1,
-          "readWorkspaceActionRun:QueryRowContext": 1,
-          "readWorkspaceActionRun:SQL": 1,
-          "updateProjectActionRunRow:ExecContext": 1,
-          "updateProjectActionRunRow:SQL": 1
+          "insertProjectActionRun:SQL": 1
         },
         "tables": [
           "hub/project_action_runs",
@@ -20308,48 +21056,6 @@
         ]
       }
     },
-    "internal/hubserver/project_deletion.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "collaboration",
-        "conversation",
-        "core",
-        "fleet",
-        "lease",
-        "policy",
-        "source",
-        "workspace"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.deleteCloudProject:ExecContext": 4,
-          "Service.deleteCloudProject:SQL": 8,
-          "requireProjectDeletionIdle:QueryRowContext": 1,
-          "requireProjectDeletionIdle:SQL": 9
-        },
-        "tables": [
-          "hub/artifact_grants",
-          "hub/conversation_messages",
-          "hub/conversations",
-          "hub/github_imports",
-          "hub/github_outbox",
-          "hub/hosted_project_grants",
-          "hub/issues",
-          "hub/leases",
-          "hub/native_attempts",
-          "hub/organization_sprite_members",
-          "hub/project_action_runs",
-          "hub/project_secret_audit",
-          "hub/project_secrets",
-          "hub/projects",
-          "hub/runner_checkout_repositories",
-          "hub/runner_enrollment_projects",
-          "hub/token_grants",
-          "hub/workspace_sessions"
-        ]
-      }
-    },
     "internal/hubserver/project_icon.go": {
       "disposition": "serving",
       "families": [
@@ -20363,41 +21069,6 @@
         },
         "tables": [
           "hub/projects"
-        ]
-      }
-    },
-    "internal/hubserver/project_placement.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "core",
-        "fleet",
-        "lease",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "readOrganizationPlacementSnapshot:QueryContext": 1,
-          "readOrganizationPlacementSnapshot:SQL": 1,
-          "readPlacementPolicy:QueryRowContext": 1,
-          "readPlacementPolicy:SQL": 1,
-          "readPlacementRunners:QueryContext": 1,
-          "readPlacementRunners:SQL": 1,
-          "readPlacementSnapshotWithCapacity:QueryContext": 1,
-          "readPlacementSnapshotWithCapacity:QueryRowContext": 1,
-          "readPlacementSnapshotWithCapacity:SQL": 2,
-          "readPlacementSpriteUsage:QueryContext": 1,
-          "readPlacementSpriteUsage:SQL": 1
-        },
-        "tables": [
-          "hub/issues",
-          "hub/machines",
-          "hub/organization_sprite_members",
-          "hub/organization_sprite_pools",
-          "hub/project_sprite_allocations",
-          "hub/projects",
-          "hub/runner_identities",
-          "hub/token_grants"
         ]
       }
     },
@@ -20441,21 +21112,6 @@
         ]
       }
     },
-    "internal/hubserver/project_rename.go": {
-      "disposition": "serving",
-      "families": [
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.renameProjectOperation:ExecContext": 1,
-          "Service.renameProjectOperation:SQL": 1
-        },
-        "tables": [
-          "hub/projects"
-        ]
-      }
-    },
     "internal/hubserver/project_secrets.go": {
       "atomic_groups": [
         "secret-update"
@@ -20495,33 +21151,19 @@
       ],
       "inventory": {
         "operations": {
-          "Service.projectSpriteAllocationAuthority:QueryRowContext": 1,
-          "Service.projectSpriteAllocationAuthority:SQL": 1,
           "readProjectSpriteAllocation:QueryRowContext": 1,
           "readProjectSpriteAllocation:SQL": 1,
-          "readSpriteAllocationProjects:QueryContext": 1,
-          "readSpriteAllocationProjects:SQL": 1,
-          "spriteAllocationRunnerAllowed:QueryRowContext": 3,
-          "spriteAllocationRunnerAllowed:SQL": 3,
           "spriteMemberWanted:QueryRowContext": 2,
           "spriteMemberWanted:SQL": 2,
-          "spritePoolProviderFree:QueryRowContext": 1,
-          "spritePoolProviderFree:SQL": 1,
           "updateProjectSpriteAllocation:ExecContext": 1,
           "updateProjectSpriteAllocation:QueryRowContext": 1,
           "updateProjectSpriteAllocation:SQL": 2
         },
         "tables": [
-          "hub/api_tokens",
-          "hub/hosted_members",
-          "hub/hosted_project_grants",
-          "hub/machines",
           "hub/organization_sprite_members",
           "hub/organization_sprite_pools",
           "hub/project_sprite_allocations",
-          "hub/projects",
-          "hub/runner_identities",
-          "hub/token_grants"
+          "hub/projects"
         ]
       }
     },
@@ -20533,107 +21175,13 @@
       ],
       "inventory": {
         "operations": {
-          "Service.maintainSpritePools:QueryContext": 1,
-          "Service.maintainSpritePools:SQL": 1,
-          "Service.spriteEnrollmentExpiry:QueryRowContext": 1,
-          "Service.spriteEnrollmentExpiry:SQL": 1,
           "Service.spritePoolAuthority:QueryRowContext": 1,
-          "Service.spritePoolAuthority:SQL": 1,
-          "Service.spritePoolSnapshot:ExecContext": 1,
-          "Service.spritePoolSnapshot:SQL": 1
+          "Service.spritePoolAuthority:SQL": 1
         },
         "tables": [
           "hub/api_tokens",
           "hub/hosted_members",
-          "hub/organization_sprite_members",
-          "hub/organization_sprite_pools",
-          "hub/project_sprite_allocations",
-          "hub/runner_enrollments"
-        ]
-      }
-    },
-    "internal/hubserver/project_sprite_provision.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "fleet",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.bootstrapPoolSprite:BeginTx": 1,
-          "Service.bootstrapPoolSprite:ExecContext": 2,
-          "Service.bootstrapPoolSprite:QueryRowContext": 1,
-          "Service.bootstrapPoolSprite:SQL": 3,
-          "Service.cancelPoolSpriteReservation:BeginTx": 1,
-          "Service.cancelPoolSpriteReservation:ExecContext": 2,
-          "Service.cancelPoolSpriteReservation:SQL": 2,
-          "Service.createPoolSpriteNamed:BeginTx": 1,
-          "Service.createPoolSpriteNamed:ExecContext": 1,
-          "Service.createPoolSpriteNamed:QueryRowContext": 2,
-          "Service.createPoolSpriteNamed:SQL": 3,
-          "Service.createPoolSpriteWithNames:QueryRowContext": 1,
-          "Service.createPoolSpriteWithNames:SQL": 1,
-          "Service.deletePoolSprite:BeginTx": 2,
-          "Service.deletePoolSprite:ExecContext": 4,
-          "Service.deletePoolSprite:QueryRowContext": 3,
-          "Service.deletePoolSprite:SQL": 7,
-          "Service.poolSpriteToken:QueryRowContext": 1,
-          "Service.poolSpriteToken:SQL": 1,
-          "Service.poolSpriteTokenAvailable:QueryRowContext": 1,
-          "Service.poolSpriteTokenAvailable:SQL": 1,
-          "Service.retirePoolSpriteReservation:BeginTx": 1,
-          "Service.retirePoolSpriteReservation:ExecContext": 2,
-          "Service.retirePoolSpriteReservation:SQL": 2,
-          "spriteMemberHoldsWork:QueryRowContext": 1,
-          "spriteMemberHoldsWork:SQL": 1
-        },
-        "tables": [
-          "hub/api_tokens",
-          "hub/leases",
-          "hub/machines",
-          "hub/native_attempts",
-          "hub/organization_secrets",
-          "hub/organization_sprite_members",
-          "hub/organization_sprite_pools",
-          "hub/project_sprite_allocations",
-          "hub/runner_enrollments",
-          "hub/runner_identities"
-        ]
-      }
-    },
-    "internal/hubserver/project_sprites.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "core",
-        "fleet",
-        "lease",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.nextSpriteWakeCandidate:QueryRowContext": 3,
-          "Service.nextSpriteWakeCandidate:SQL": 3,
-          "Service.recordSpriteWakeFacts:BeginTx": 1,
-          "Service.recordSpriteWakeFacts:QueryRowContext": 1,
-          "Service.recordSpriteWakeFacts:SQL": 1,
-          "Service.spriteWakeSecret:QueryRowContext": 1,
-          "Service.spriteWakeSecret:SQL": 1,
-          "Service.wakeOrganizationSpriteRunners:QueryContext": 1,
-          "Service.wakeOrganizationSpriteRunners:SQL": 1
-        },
-        "tables": [
-          "hub/api_tokens",
-          "hub/issues",
-          "hub/leases",
-          "hub/machines",
-          "hub/organization_sprite_members",
-          "hub/organization_sprite_pools",
-          "hub/projects",
-          "hub/runner_identities",
-          "hub/token_grants",
-          "hub/workflow_states"
+          "hub/organization_sprite_pools"
         ]
       }
     },
@@ -20651,36 +21199,6 @@
         },
         "tables": [
           "hub/runner_provider_billing"
-        ]
-      }
-    },
-    "internal/hubserver/provider_capacity.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "core",
-        "fleet",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "readProviderCapacitySnapshot:QueryContext": 2,
-          "readProviderCapacitySnapshot:SQL": 3,
-          "readProviderReports:QueryRowContext": 1,
-          "readProviderReports:SQL": 1,
-          "readProviderReservation:QueryRowContext": 1,
-          "readProviderReservation:SQL": 1,
-          "updateProviderReports:ExecContext": 1,
-          "updateProviderReports:SQL": 1,
-          "writeProviderReservation:ExecContext": 1,
-          "writeProviderReservation:SQL": 1
-        },
-        "tables": [
-          "hub/api_tokens",
-          "hub/lease_runners",
-          "hub/leases",
-          "hub/provider_reservations",
-          "hub/runner_identities"
         ]
       }
     },
@@ -20771,24 +21289,6 @@
         },
         "tables": [
           "hub/release_deliveries"
-        ]
-      }
-    },
-    "internal/hubserver/report_productivity.go": {
-      "disposition": "serving",
-      "families": [
-        "analytics",
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.readOrganizationProductivity:SQL": 2,
-          "Service.readOrganizationProductivity:queryRowSQL": 1,
-          "Service.readOrganizationProductivity:querySQL": 1
-        },
-        "tables": [
-          "hub/projects",
-          "hub/report_issue_summaries"
         ]
       }
     },
@@ -20965,15 +21465,9 @@
           "readRunnerProjects:QueryContext": 1,
           "readRunnerProjects:SQL": 1,
           "recordRunnerEvent:ExecContext": 1,
-          "recordRunnerEvent:SQL": 1,
-          "revokeRunnerIdentityInTx:ExecContext": 1,
-          "revokeRunnerIdentityInTx:QueryContext": 1,
-          "revokeRunnerIdentityInTx:SQL": 2
+          "recordRunnerEvent:SQL": 1
         },
         "tables": [
-          "hub/api_tokens",
-          "hub/lease_runners",
-          "hub/leases",
           "hub/projects",
           "hub/runner_identities",
           "hub/runner_identity_events",
@@ -20996,23 +21490,6 @@
           "hub/runner_identities",
           "hub/runner_project_capacity_limits",
           "hub/token_grants"
-        ]
-      }
-    },
-    "internal/hubserver/runner_isolation.go": {
-      "disposition": "serving",
-      "families": [
-        "fleet"
-      ],
-      "inventory": {
-        "operations": {
-          "storeEncodedRunnerIsolationReport:ExecContext": 1,
-          "storeEncodedRunnerIsolationReport:SQL": 1,
-          "validateReadRunnerIsolation:QueryRowContext": 1,
-          "validateReadRunnerIsolation:SQL": 1
-        },
-        "tables": [
-          "hub/runner_identities"
         ]
       }
     },
@@ -21064,26 +21541,6 @@
         ]
       }
     },
-    "internal/hubserver/runner_problems.go": {
-      "disposition": "serving",
-      "families": [
-        "fleet",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "refreshRunnerProblems:ExecContext": 1,
-          "refreshRunnerProblems:QueryRowContext": 1,
-          "refreshRunnerProblems:SQL": 2,
-          "updateRunnerProblems:ExecContext": 1,
-          "updateRunnerProblems:QueryRowContext": 1,
-          "updateRunnerProblems:SQL": 2
-        },
-        "tables": [
-          "hub/runner_identities"
-        ]
-      }
-    },
     "internal/hubserver/runner_reported_dependencies.go": {
       "atomic_groups": [
         "completion",
@@ -21104,22 +21561,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/runner_repositories.go": {
-      "disposition": "serving",
-      "families": [
-        "fleet"
-      ],
-      "inventory": {
-        "operations": {
-          "readRunnerRepositories:QueryContext": 1,
-          "readRunnerRepositories:SQL": 1
-        },
-        "tables": [
-          "hub/runner_repositories",
-          "hub/runner_repository_lists"
-        ]
-      }
-    },
     "internal/hubserver/runner_routing.go": {
       "disposition": "serving",
       "families": [
@@ -21131,24 +21572,10 @@
       ],
       "inventory": {
         "operations": {
-          "Service.readRunnerClaimState:QueryContext": 2,
-          "Service.readRunnerClaimState:QueryRowContext": 2,
-          "Service.readRunnerClaimState:SQL": 4,
-          "readRunnerAuthority:QueryRowContext": 1,
-          "readRunnerFactsWithClock:QueryContext": 1,
-          "readRunnerFactsWithClock:QueryRowContext": 1,
-          "readRunnerFactsWithClock:SQL": 2,
-          "readRunnerProjectRanks:QueryContext": 1,
-          "readRunnerProjectRanks:QueryRowContext": 1,
-          "readRunnerProjectRanks:SQL": 2,
-          "readRunnerRoutingSnapshot:QueryRowContext": 2,
-          "readRunnerRoutingSnapshot:SQL": 1,
           "requireCredentialAuthority:QueryRowContext": 1,
           "requireCredentialAuthority:SQL": 1,
           "requireLeaseRunner:QueryRowContext": 1,
-          "requireLeaseRunner:SQL": 2,
-          "runnerAuthoritySelect:SQL": 1,
-          "runnerIdentitySelect:SQL": 1
+          "requireLeaseRunner:SQL": 2
         },
         "tables": [
           "hub/api_tokens",
@@ -21156,30 +21583,7 @@
           "hub/lease_runners",
           "hub/leases",
           "hub/machines",
-          "hub/native_attempts",
-          "hub/organizations",
-          "hub/project_policies",
-          "hub/projects",
-          "hub/runner_identities",
-          "hub/runner_project_ranks",
-          "hub/runner_repository_lists",
-          "hub/token_grants"
-        ]
-      }
-    },
-    "internal/hubserver/runner_selection.go": {
-      "disposition": "serving",
-      "families": [
-        "core",
-        "fleet"
-      ],
-      "inventory": {
-        "operations": {
-          "readRunnerSelectionProgress:QueryRowContext": 1,
-          "readRunnerSelectionProgress:SQL": 1
-        },
-        "tables": [
-          "hub/runner_selection_cursors"
+          "hub/runner_identities"
         ]
       }
     },
@@ -21193,43 +21597,6 @@
           "Service.getRunnerSpend:SQL": 1
         },
         "tables": []
-      }
-    },
-    "internal/hubserver/runner_urgent_update.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "core",
-        "fleet"
-      ],
-      "inventory": {
-        "operations": {
-          "readUrgentRunnerUpdate:QueryRowContext": 1,
-          "readUrgentRunnerUpdate:SQL": 1
-        },
-        "tables": [
-          "hub/organizations"
-        ]
-      }
-    },
-    "internal/hubserver/runner_usage_costs.go": {
-      "disposition": "serving",
-      "families": [
-        "analytics",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "recordRunnerUsageCosts:QueryRowContext": 1,
-          "recordRunnerUsageCosts:SQL": 1,
-          "runnerUsageObservations:QueryRowContext": 1,
-          "runnerUsageObservations:SQL": 1
-        },
-        "tables": [
-          "hub/lease_runners",
-          "hub/native_attempts",
-          "hub/usage_cost_observations"
-        ]
       }
     },
     "internal/hubserver/scheduled_attribution_prepare.go": {
@@ -21308,9 +21675,7 @@
           "readLeaseByID:QueryRowContext": 1,
           "readLeaseByID:SQL": 1,
           "readUnreleasedLease:QueryRowContext": 1,
-          "readUnreleasedLease:SQL": 1,
-          "releaseLeaseRow:ExecContext": 1,
-          "releaseLeaseRow:SQL": 1
+          "readUnreleasedLease:SQL": 1
         },
         "tables": [
           "hub/leases",
@@ -21413,7 +21778,7 @@
       ],
       "inventory": {
         "operations": {
-          "Service.executeWorkItemRecordMutationWithConversationLink:Prepare": 1
+          "Service.runWorkItemRecordMutation:Prepare": 1
         },
         "tables": []
       }
@@ -21517,15 +21882,9 @@
       ],
       "inventory": {
         "operations": {
-          "Service.prepareWorkspaceIssueClose:Prepare": 1,
-          "runnerWorkspaceCapabilities:QueryRowContext": 1,
-          "runnerWorkspaceCapabilities:SQL": 1,
-          "storeEncodedRunnerWorkspaceReport:ExecContext": 1,
-          "storeEncodedRunnerWorkspaceReport:SQL": 1
+          "Service.prepareWorkspaceIssueClose:Prepare": 1
         },
-        "tables": [
-          "hub/runner_identities"
-        ]
+        "tables": []
       }
     },
     "internal/hubserver/workspace_operator.go": {
@@ -21567,46 +21926,10 @@
       ],
       "inventory": {
         "operations": {
-          "closeWorkspaceItem:ExecContext": 1,
-          "closeWorkspaceItem:SQL": 1,
-          "closeWorkspaceOccupancy:ExecContext": 1,
-          "closeWorkspaceOccupancy:SQL": 1,
-          "countOpenWorkspaces:QueryRowContext": 1,
-          "countOpenWorkspaces:SQL": 1,
-          "hostedRunnerGrants:QueryRowContext": 2,
-          "hostedRunnerGrants:SQL": 1,
           "insertWorkspace:ExecContext": 1,
-          "insertWorkspace:SQL": 1,
-          "insertWorkspaceItem:ExecContext": 1,
-          "insertWorkspaceItem:SQL": 1,
-          "listWorkspaceRows:QueryContext": 1,
-          "listWorkspaceRows:SQL": 1,
-          "openWorkspaceOccupancy:ExecContext": 1,
-          "openWorkspaceOccupancy:SQL": 1,
-          "readOpenWorkspaceForAttempt:QueryRowContext": 1,
-          "readOpenWorkspaceForAttempt:SQL": 1,
-          "readWorkspaceByID:QueryRowContext": 1,
-          "readWorkspaceByID:SQL": 1,
-          "readWorkspaceByItem:QueryRowContext": 1,
-          "readWorkspaceByItem:SQL": 1,
-          "readWorkspaceItem:QueryRowContext": 1,
-          "readWorkspaceItemByWorkspace:QueryRowContext": 1,
-          "readWorkspaceRelaySessions:QueryContext": 1,
-          "readWorkspaceRelaySessions:SQL": 1,
-          "readWorkspaceRow:QueryRowContext": 1,
-          "readWorkspaceRow:SQL": 1,
-          "updateWorkspace:ExecContext": 1,
-          "updateWorkspace:SQL": 1,
-          "workspaceIssues:QueryContext": 1,
-          "workspaceIssues:SQL": 1,
-          "workspaceItemQuery:SQL": 1
+          "insertWorkspace:SQL": 1
         },
         "tables": [
-          "hub/hosted_project_grants",
-          "hub/projects",
-          "hub/workspace_items",
-          "hub/workspace_occupancy",
-          "hub/workspace_relay_sessions",
           "hub/workspace_sessions"
         ]
       }

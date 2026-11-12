@@ -1,5 +1,9 @@
 {
   "tables": {
+    "github_pull_request_refresh": {"class": "hot_state", "retention": "RequestGitHubPullRequests, CompleteGitHubPullRequestRefresh and RecordGitHubPullRequestSource own current refresh requests and observations; organization deletion cascades"},
+    "health_scheduled_reports": {"class": "immutable_payload", "retention": "RecordHealthScheduledReport retains immutable per-project repository run and attempt receipts; conflicting replay is rejected and project identity is retained"},
+    "issue_storage_archives": {"class": "hot_state", "retention": "PublishStorageArchive owns the current work item archive pointer and scan progress; archive reference deletion cascades"},
+    "issue_archive_message_payloads": {"class": "index", "retention": "PublishStorageArchive binds archive sections to immutable conversation content; section or conversation deletion cascades"},
     "doctor_proposal_identities": {"class": "index", "retention": "BindDoctorProposalIdentities replaces current full-body identity membership and known-empty header for one immutable issue head; source changes invalidate coverage and issue deletion cascades"},
     "local_board_populations": {"class": "index", "retention": "Source issue and workflow lifecycle triggers retain current nonarchived project/state populations only; zero buckets are deleted and project deletion cascades"},
     "organization_sprite_pools": {"class": "hot_state", "retention": "PutSpritePool owns current organization pool configuration"},

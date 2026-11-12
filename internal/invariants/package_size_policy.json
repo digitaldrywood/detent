@@ -1,10 +1,10 @@
 {
   "packages": {
     "internal/cli": {
-      "source_files": 140,
-      "source_lines": 39556,
-      "test_files": 151,
-      "test_lines": 47713
+      "source_files": 122,
+      "source_lines": 32989,
+      "test_files": 137,
+      "test_lines": 42567
     },
     "internal/cloudentry": {
       "source_files": 64,
@@ -43,8 +43,8 @@
       "test_lines": 72
     },
     "internal/hubserver": {
-      "source_files": 584,
-      "source_lines": 152209,
+      "source_files": 572,
+      "source_lines": 149787,
       "test_files": 552,
       "test_lines": 239114
     },
@@ -56,15 +56,15 @@
     },
     "internal/orchestrator": {
       "source_files": 112,
-      "source_lines": 48543,
+      "source_lines": 48377,
       "test_files": 166,
       "test_lines": 81214
     },
     "internal/runner": {
-      "source_files": 66,
-      "source_lines": 23619,
-      "test_files": 80,
-      "test_lines": 35131
+      "source_files": 65,
+      "source_lines": 22136,
+      "test_files": 78,
+      "test_lines": 33443
     },
     "internal/workspace": {
       "source_files": 47,
