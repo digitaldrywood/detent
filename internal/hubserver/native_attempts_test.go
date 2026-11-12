@@ -833,6 +833,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			issue := f.create(t, "work")
 			owner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 			owner.enroll(t)
+			owner.reportCapacity(t)
 			worker, firstMachine := owner.redemption.Credential, string(owner.binding.MachineID)
 			claim := func(token, machine, session string) tracker.NativeLease {
 				t.Helper()
@@ -994,6 +995,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			if test.retained {
 				successor := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 				successor.enroll(t)
+				successor.reportCapacity(t)
 				other, successorMachine = successor.redemption.Credential, string(successor.binding.MachineID)
 				if successorMachine == firstMachine || successor.binding.RunnerID == owner.binding.RunnerID {
 					t.Fatal("recovery reused the original runner")
