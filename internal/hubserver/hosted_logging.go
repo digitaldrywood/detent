@@ -48,12 +48,25 @@ func (h hostedLogHandler) Handle(ctx context.Context, record slog.Record) error 
 }
 
 func hostedContentKey(key string) bool {
-	key = strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(key))
+	key = hostedNormalizedKey(key)
+	return hostedContentName(key) || strings.Contains(key, "secret") || strings.Contains(key, "token") || strings.Contains(key, "password") || strings.Contains(key, "apikey") || key == "authorization" || key == "cookie" || key == "code" || key == "verifier"
+}
+
+func hostedNormalizedKey(key string) string {
+	return strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(key))
+}
+
+func hostedContentName(key string) bool {
 	switch key {
 	case "title", "issuetitle", "body", "issuebody", "description", "comment", "comments", "commentbody", "commenttext", "prompt", "prompts", "systemprompt", "userprompt", "conversation", "conversationtext", "message", "messages", "text", "content", "input", "output", "arguments", "requestbody", "responsebody", "email", "supportreason":
 		return true
 	}
-	return strings.Contains(key, "secret") || strings.Contains(key, "token") || strings.Contains(key, "password") || strings.Contains(key, "apikey") || key == "authorization" || key == "cookie" || key == "code" || key == "verifier"
+	return false
+}
+
+func hostedContentCount(attr slog.Attr) bool {
+	kind := attr.Value.Resolve().Kind()
+	return hostedContentName(hostedNormalizedKey(attr.Key)) && (kind == slog.KindInt64 || kind == slog.KindUint64)
 }
 
 func hostedTimingAttr(attr slog.Attr) bool {
@@ -79,7 +92,7 @@ func hostedLogText(value string) string {
 }
 
 func hostedLogAttr(attr slog.Attr) (slog.Attr, bool) {
-	if hostedContentKey(attr.Key) {
+	if hostedContentKey(attr.Key) && !hostedContentCount(attr) {
 		return slog.Attr{}, false
 	}
 	attr.Value = attr.Value.Resolve()
