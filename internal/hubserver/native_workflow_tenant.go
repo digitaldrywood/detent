@@ -759,7 +759,7 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 	if err != nil {
 		return revision, found, err
 	}
-	if evaluation := contract.Evaluate(nativeContractIssue(*issue)); !evaluation.Satisfied() {
+	if evaluation := contract.Evaluate(nativeContractIssue(*issue)); len(evaluation.Missing) > 0 {
 		return revision, found, nativeWorkflowInvalid(strings.Join(evaluation.Missing, ", ") + ". File into Backlog/Triage to draft it first.")
 	}
 	return revision, found, nil
