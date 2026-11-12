@@ -378,9 +378,32 @@ func (p *writeLoadRowProbe) snapshot() (int64, error) {
 
 type writeLoadTrace struct{}
 
+func (trace writeLoadTrace) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	if len(data.Batch.QueuedQueries) == 0 {
+		return ctx
+	}
+	return trace.TraceQueryStart(ctx, conn, pgx.TraceQueryStartData{SQL: data.Batch.QueuedQueries[0].SQL})
+}
+
+func (writeLoadTrace) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (writeLoadTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
 func (writeLoadTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	p, ok := ctx.Value(writeLoadProbeKey{}).(*writeLoadRowProbe)
-	if !ok || ctx.Value(writeLoadProbeReadingKey{}) == true || !strings.EqualFold(strings.TrimSpace(data.SQL), "COMMIT") || conn.PgConn().TxStatus() != 'T' {
+	if !ok || ctx.Value(writeLoadProbeReadingKey{}) == true {
+		return ctx
+	}
+	statement := strings.ToUpper(strings.TrimSpace(data.SQL))
+	if (statement == "BEGIN" || strings.HasPrefix(statement, "BEGIN ") || strings.HasPrefix(statement, "BEGIN;")) && conn.PgConn().TxStatus() == 'I' {
+		if _, err := conn.Exec(context.WithValue(ctx, writeLoadProbeReadingKey{}, true), "SELECT pg_stat_force_next_flush()"); err != nil {
+			p.mu.Lock()
+			p.err = errors.Join(p.err, err)
+			p.mu.Unlock()
+		}
+		return ctx
+	}
+	if !strings.EqualFold(strings.TrimSpace(data.SQL), "COMMIT") || conn.PgConn().TxStatus() != 'T' {
 		return ctx
 	}
 	var rows int64
