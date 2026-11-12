@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -87,6 +88,16 @@ func TestReadableIssueRoutesAndSlugEdits(t *testing.T) {
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	content := searchstore.NewContent(f.service.runDetailStore())
+	for {
+		more, err := content.RefreshOne(t.Context(), f.service.config.TenantRepository.(searchstore.Repository), "org_security")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			break
+		}
 	}
 	response = f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "readable-duplicate"}, Title: "Readable", State: "Todo"})
 	requireNativeStatus(t, response, http.StatusConflict)
