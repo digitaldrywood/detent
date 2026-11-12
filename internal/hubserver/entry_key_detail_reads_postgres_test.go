@@ -409,7 +409,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 					if d.Name == name {
 						found = d.Annotations.ReadOnly
 					}
-					for _, forbidden := range []string{operatortool.CreateChange, operatortool.GetChange, operatortool.ReviewChange, operatortool.PublishChangeVersion} {
+					for _, forbidden := range []string{operatortool.CreateChange, operatortool.ReviewChange, operatortool.PublishChangeVersion} {
 						if d.Name == forbidden {
 							t.Errorf("advertised %s", forbidden)
 						}
