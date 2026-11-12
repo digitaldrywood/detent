@@ -195,7 +195,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 		return result, err
 	}
 	if currentPolicy.PolicyID != request.PolicyID {
-		return result, policyMismatch("Claim configuration changed; load the current project policy before claiming")
+		return result, claimPolicyRefusal(ctx, r, scope.project, request.PolicyID)
 	}
 	result.item, err = r.WorkItem(ctx, scope.project, request.WorkItemID)
 	if err != nil {
@@ -347,7 +347,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope nativeSco
 			return err
 		}
 		if policy.PolicyID != request.PolicyID {
-			return policyMismatch("Claim configuration changed; load the current project policy before claiming")
+			return claimPolicyRefusal(ctx, r, scope.project, request.PolicyID)
 		}
 		shared := nativeClaimPlan{project: project, policy: policy}
 		if request.SessionID != "" {
@@ -1076,7 +1076,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 				return err
 			}
 			if plan.policy.PolicyID != request.PolicyID {
-				return policyMismatch("Claim configuration changed; load the current project policy before claiming")
+				return claimPolicyRefusal(ctx, r, scope.project, request.PolicyID)
 			}
 		}
 		if request.SessionID != "" && plan.replay == nil {
@@ -1519,4 +1519,17 @@ func nativeCompatibleClaimSource(project projectstore.Record, issue tracker.Nati
 		_, repository, number, err = tracker.ParseGitHubIssueURL(issue.LinkedSource.URL)
 	}
 	return err == nil && number > 0 && strings.EqualFold(repository, strings.TrimSpace(project.Settings.Repository)) && strings.EqualFold(repository, candidate.Repository)
+}
+
+func claimPolicyRefusal(ctx context.Context, r policystore.Reader, project tracker.ProjectID, policyID string) error {
+	if policyID != "" {
+		_, err := r.ProjectPolicyRevision(ctx, project, policyID)
+		if err == nil {
+			return policyMismatch("Claim configuration changed; load the current project policy before claiming")
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+	}
+	return nativePublicInvalid("Claim configuration has not been reported for this project")
 }
