@@ -133,6 +133,7 @@ func openLocalPostgresHubTestService(t *testing.T, repository *postgres.Reposito
 	service.echo.POST("/api/v1/webhooks/github", service.githubWebhook)
 	service.registerNativeRoutes(service.echo)
 	service.registerRunnerRoutes(service.echo)
+	service.registerCostUsageRoutes(service.echo)
 	service.registerOperatorTools(service.echo)
 	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
 	return service

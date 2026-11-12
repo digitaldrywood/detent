@@ -252,6 +252,7 @@ func newClockedPostgresNativeService(t *testing.T, cfg Config) *Service {
 	service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.registerNativeRoutes(service.echo)
 	service.registerRunnerRoutes(service.echo)
+	service.registerCostUsageRoutes(service.echo)
 	service.registerOperatorTools(service.echo)
 	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
 	primary := tracker.OrganizationID("org_first")
