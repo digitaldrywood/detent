@@ -1,6 +1,8 @@
 package hookproc
 
 import (
+	"errors"
+	"io/fs"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -38,11 +40,28 @@ func workerScratchPathMatches(root string, path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
+	path = filepath.Clean(path)
 	if workpath.PathWithin(root, path) {
 		return true
 	}
-	canonical, err := filepath.EvalSymlinks(path)
-	return err == nil && workpath.PathWithin(root, canonical)
+	canonical, ok := canonicalNearestExistingPath(path)
+	return ok && workpath.PathWithin(root, canonical)
+}
+
+func canonicalNearestExistingPath(path string) (string, bool) {
+	remainder := ""
+	for {
+		canonical, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			return filepath.Join(canonical, remainder), true
+		}
+		parent := filepath.Dir(path)
+		if !errors.Is(err, fs.ErrNotExist) || parent == path {
+			return "", false
+		}
+		remainder = filepath.Join(filepath.Base(path), remainder)
+		path = parent
+	}
 }
 
 func workerScratchPathMatchesAny(roots []string, path string) bool {

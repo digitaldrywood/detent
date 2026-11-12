@@ -58,12 +58,20 @@ func TestWorkerScratchEnvironmentMatchesPathAlias(t *testing.T) {
 	if err := os.Symlink(root, alias); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"TMPDIR", "DETENT_WORKER_SCRATCH"} {
-		t.Run(key, func(t *testing.T) {
-			if !workerScratchEnvironmentMatches(workerScratchOwnerRoots(root), []string{key + "=" + alias}) {
-				t.Fatal("scratch ownership was lost through a parent directory alias")
-			}
-		})
+	for _, tt := range []struct {
+		name string
+		path string
+	}{
+		{name: "existing", path: alias},
+		{name: "removed", path: filepath.Join(alias, ".detent", "tmp", "removed-temp")},
+	} {
+		for _, key := range []string{"TMPDIR", "DETENT_WORKER_SCRATCH"} {
+			t.Run(tt.name+"/"+key, func(t *testing.T) {
+				if !workerScratchEnvironmentMatches(workerScratchOwnerRoots(root), []string{key + "=" + tt.path}) {
+					t.Fatal("scratch ownership was lost through a parent directory alias")
+				}
+			})
+		}
 	}
 }
 
