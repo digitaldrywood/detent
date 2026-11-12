@@ -100,6 +100,9 @@ func TestWorkItemChangeSurfaceReportsAConnectorWithNoPullRequest(t *testing.T) {
 		if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
 			return err
 		}
+		if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: other.WorkItemID, ChangeID: changeRequest.ID, CreatedAt: now}); err != nil {
+			return err
+		}
 		_, err := w.CreateVersion(t.Context(), versionRow)
 		return err
 	}); err != nil {
