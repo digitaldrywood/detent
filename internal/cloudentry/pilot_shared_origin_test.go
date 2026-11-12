@@ -136,10 +136,30 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 	}
 	l.services[spec.Organization.ID] = service
 	if l.useUnix {
-		listener, err := net.Listen("unix", spec.Socket)
+		var listener *net.UnixListener
+		err := pilotSocketPath(spec.Socket, func(path string) error {
+			var err error
+			listener, err = net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+			return err
+		})
 		if err != nil {
 			return errors.Join(err, service.Close())
 		}
+		listener.SetUnlinkOnClose(false)
+		transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			if err := verifyPrivateSocket(spec.Socket); err != nil {
+				return nil, err
+			}
+			var connection net.Conn
+			err := pilotSocketPath(spec.Socket, func(path string) error {
+				var dialer net.Dialer
+				var err error
+				connection, err = dialer.DialContext(ctx, "unix", path)
+				return err
+			})
+			return connection, err
+		}}
+		l.transports[spec.Organization.ID] = transport
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -148,9 +168,11 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 		l.starts++
 		l.specs[spec.Organization.ID] = spec
 		l.running[spec.Organization.ID] = func() {
+			transport.CloseIdleConnections()
 			_ = service.Close()
 			_ = listener.Close()
 			<-done
+			_ = os.Remove(spec.Socket)
 		}
 		return nil
 	}
@@ -471,9 +493,6 @@ func pilotSocketRoot(t *testing.T, root string) string {
 		})
 		path = fmt.Sprintf("/proc/self/fd/%d/s", directory.Fd())
 	}
-	if len(filepath.Join(path, "org_"+strings.Repeat("f", 20)+".sock")) >= len(syscall.RawSockaddrUnix{}.Path) {
-		t.Fatal("fixture socket root exceeds the platform Unix socket limit")
-	}
 	return path
 }
 
@@ -500,7 +519,7 @@ func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 	allocation := &AllocationConfig{TenantRoot: p.roots[0], SocketRoot: p.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, RetryLimit: retryLimit, Launcher: p.launcher, EntitlementAdminToken: []byte(pilotOperatorToken)}
 	config := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: p.base, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: p.key, Provider: p.provider,
 		StaffEmails: []string{"staff@example.test", "ops@example.test"}, EntitlementAdministrators: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), clientFS: p.client, Allocation: allocation}
-	if !p.launcher.useUnix {
+	if !p.launcher.useUnix || len(filepath.Join(p.roots[1], "org_"+strings.Repeat("f", 20)+".sock")) >= len(syscall.RawSockaddrUnix{}.Path) {
 		config.transport = p.launcher.transport
 	}
 	for _, configure := range p.configure {
