@@ -43,11 +43,7 @@ func TestReapScratchProcessesOutsideWorkspace(t *testing.T) {
 			if reaped == 0 {
 				t.Fatal("escaped descendant was not reaped")
 			}
-			select {
-			case <-exited:
-			case <-time.After(30 * time.Second):
-				t.Fatal("reaping returned before descendant closed its pipe")
-			}
+			<-exited
 			if alive, err := procgroup.Alive(neighbor); err != nil || !alive {
 				t.Fatalf("unrelated descendant alive = %t, error = %v", alive, err)
 			}
@@ -80,6 +76,7 @@ func startScratchEnvironmentDescendant(t *testing.T, scratch string, legacy bool
 	parent := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestScratchEnvironmentProcess$")
 	parent.Dir = scratch
 	parent.Stdin, parent.Stdout = input, writer
+	parent.Stderr = os.Stderr
 	parent.Env = append(os.Environ(), "DETENT_SCRATCH_ENV_HELPER=parent", "DETENT_SCRATCH_OUTSIDE="+t.TempDir(), "DETENT_SCRATCH_CHILD_COVER="+t.TempDir(), "GOCOVERDIR="+t.TempDir())
 	procgroup.SetTempDir(parent, scratch)
 	if legacy {
@@ -91,49 +88,59 @@ func startScratchEnvironmentDescendant(t *testing.T, scratch string, legacy bool
 		}
 		parent.Env = environment
 	}
-	if err := parent.Run(); err != nil {
+	if err := parent.Start(); err != nil {
 		t.Fatal(err)
 	}
-	_ = writer.Close()
-	_ = input.Close()
-	buffered := bufio.NewReader(reader)
-	ready := make(chan int, 1)
+	parentDone := make(chan struct{})
+	var parentErr error
 	go func() {
-		for {
-			line, err := buffered.ReadString('\n')
-			if err != nil {
-				ready <- 0
-				return
-			}
-			if value, ok := strings.CutPrefix(strings.TrimSpace(line), "ready:"); ok {
-				pid, _ := strconv.Atoi(value)
-				ready <- pid
-				return
-			}
-		}
+		parentErr = parent.Wait()
+		_ = writer.Close()
+		_ = input.Close()
+		close(parentDone)
 	}()
-	var pid int
-	select {
-	case pid = <-ready:
-	case <-time.After(30 * time.Second):
-		t.Fatal("escaped descendant did not become ready")
+	t.Cleanup(func() {
+		_ = control.Close()
+		_ = parent.Process.Kill()
+		<-parentDone
+	})
+	buffered := bufio.NewReader(reader)
+	line, err := buffered.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read descendant identity: %v", err)
 	}
-	if pid <= 0 {
-		t.Fatal("escaped descendant closed its pipe before readiness")
+	value, ok := strings.CutPrefix(strings.TrimSpace(line), "started:")
+	pid, err := strconv.Atoi(value)
+	if !ok || err != nil || pid <= 0 {
+		t.Fatalf("invalid descendant identity: %q", line)
 	}
 	child, err := os.FindProcess(pid)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var drained <-chan struct{}
 	t.Cleanup(func() {
 		_ = child.Kill()
 		_ = child.Release()
+		_ = reader.Close()
+		if drained != nil {
+			<-drained
+		}
 	})
+	line, err = buffered.ReadString('\n')
+	if err != nil || strings.TrimSpace(line) != fmt.Sprintf("ready:%d", pid) {
+		t.Fatalf("descendant readiness = %q, error = %v", line, err)
+	}
+	<-parentDone
+	if parentErr != nil {
+		t.Fatalf("descendant parent: %v", parentErr)
+	}
 	identity, err := procgroup.Inspect(&exec.Cmd{Process: child})
 	if err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan struct{})
+	drained = exited
 	go func() {
 		_, _ = io.Copy(io.Discard, buffered)
 		close(exited)
@@ -150,8 +157,23 @@ func TestScratchEnvironmentProcess(t *testing.T) {
 		child := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestScratchEnvironmentProcess$")
 		child.Env = append(os.Environ(), "DETENT_SCRATCH_ENV_HELPER=child", "GOCOVERDIR="+os.Getenv("DETENT_SCRATCH_CHILD_COVER"))
 		child.Stdin, child.Stdout = os.Stdin, os.Stdout
+		ready, err := child.StderrPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ready.Close()
 		procgroup.Configure(context.Background(), child)
 		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fmt.Fprintf(os.Stdout, "started:%d\n", child.Process.Pid); err != nil {
+			t.Fatal(err)
+		}
+		line, err := bufio.NewReader(ready).ReadString('\n')
+		if err != nil {
+			t.Fatalf("read child readiness: %v", err)
+		}
+		if _, err := io.WriteString(os.Stdout, line); err != nil {
 			t.Fatal(err)
 		}
 		return
@@ -159,7 +181,7 @@ func TestScratchEnvironmentProcess(t *testing.T) {
 	if err := os.Chdir(os.Getenv("DETENT_SCRATCH_OUTSIDE")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fmt.Fprintf(os.Stdout, "ready:%d\n", os.Getpid()); err != nil {
+	if _, err := fmt.Fprintf(os.Stderr, "ready:%d\n", os.Getpid()); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = io.Copy(io.Discard, os.Stdin)
