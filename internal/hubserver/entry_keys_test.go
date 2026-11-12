@@ -99,7 +99,7 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 						if kind == "personal" && member {
 							f.exec(t, "DELETE FROM hosted_project_grants WHERE organization_id='org_security' AND user_id=$1", user.identity.Subject)
 							denied := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, target: f.base + "/work-items", mutate: mutate})
-							if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), "access_denied") {
+							if denied.Code != http.StatusNotFound || !strings.Contains(denied.Body.String(), "not_found") {
 								t.Fatalf("removed grant=%d %s", denied.Code, denied.Body.String())
 							}
 						}
@@ -107,7 +107,7 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 							key.Projects = []string{"prj_other"}
 							denied := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, target: f.base + "/work-items", mutate: mutate})
 							if kind == "service" || member {
-								if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), "access_denied") {
+								if denied.Code != http.StatusNotFound || !strings.Contains(denied.Body.String(), "not_found") {
 									t.Fatalf("scope refusal=%d %s", denied.Code, denied.Body.String())
 								}
 							}

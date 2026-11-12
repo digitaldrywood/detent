@@ -28,8 +28,8 @@ func TestHostedChangeReviewRequiresAdminAndWriteGrant(t *testing.T) {
 		{"owner", "owner", "write", http.StatusUnprocessableEntity},
 		{"admin", "admin", "write", http.StatusUnprocessableEntity},
 		{"member with write grant", "member", "write", http.StatusNotFound},
-		{"viewer with write grant", "viewer", "write", http.StatusNotFound},
-		{"owner with read grant", "owner", "read", http.StatusNotFound},
+		{"viewer with write grant", "viewer", "write", http.StatusForbidden},
+		{"owner with read grant", "owner", "read", http.StatusForbidden},
 		{"admin without grant", "admin", "", http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -59,8 +59,8 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 		{"admin without runner grants", "admin", "write", "admin@example.test", false, http.StatusOK},
 		{"owner without runner grants", "owner", "write", "owner@example.test", false, http.StatusOK},
 		{"member", "member", "write", "member@example.test", true, http.StatusNotFound},
-		{"viewer", "viewer", "write", "viewer@example.test", true, http.StatusNotFound},
-		{"read only owner", "owner", "read", "owner@example.test", true, http.StatusNotFound},
+		{"viewer", "viewer", "write", "viewer@example.test", true, http.StatusForbidden},
+		{"read only owner", "owner", "read", "owner@example.test", true, http.StatusForbidden},
 		{"ungranted owner", "owner", "", "owner@example.test", false, http.StatusNotFound},
 		{"staff owner", "owner", "write", "staff@example.test", true, http.StatusForbidden},
 	} {

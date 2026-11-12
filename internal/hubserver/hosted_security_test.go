@@ -484,12 +484,18 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				}
 				requireNativeStatus(t, f.request(t, user, http.MethodGet, f.base, nil), readStatus)
 				writeStatus := http.StatusNotFound
+				if grant != "" {
+					writeStatus = http.StatusForbidden
+				}
 				if grant == "write" && role != "viewer" {
 					writeStatus = http.StatusOK
 				}
 				command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "new issue", Body: "private-body-sentinel" + issueContractTestSections, State: "Todo"}
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items", command), writeStatus)
 				policyStatus, revokeStatus := http.StatusNotFound, http.StatusNotFound
+				if grant == "read" || grant == "write" && role == "viewer" {
+					policyStatus, revokeStatus = http.StatusForbidden, http.StatusForbidden
+				}
 				if grant == "write" && (role == "owner" || role == "admin") {
 					policyStatus, revokeStatus = http.StatusOK, http.StatusGone
 				}
@@ -740,7 +746,7 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 			requireNativeStatus(t, f.request(t, user, http.MethodGet, path, nil), test.want)
 			if test.want == http.StatusOK {
 				command := tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "support-write"}, Title: "private-body-sentinel", State: "Todo"}
-				wantWrite := http.StatusNotFound
+				wantWrite := http.StatusForbidden
 				if test.role != "viewer" && test.grant == "write" {
 					wantWrite = http.StatusOK
 				}
@@ -1199,7 +1205,7 @@ func TestHostedSecurityRoleRevocationAppliesImmediately(t *testing.T) {
 	}
 	requireNativeStatus(t, f.request(t, user, http.MethodGet, f.base, nil), http.StatusOK)
 	response = f.request(t, user, http.MethodPost, f.base+"/work-items", command)
-	requireNativeStatus(t, response, http.StatusNotFound)
+	requireNativeStatus(t, response, http.StatusForbidden)
 	if strings.Contains(response.Body.String(), "private-mutation-sentinel") {
 		t.Fatal("role downgrade exposed cached mutation")
 	}
