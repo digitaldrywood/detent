@@ -296,6 +296,40 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		if reference.SourceSHA != "" && reference.SourceReceipt == nil {
 			return progresscheck.Record{}, nativeInvalid("Retrieved source receipt is unavailable")
 		}
+		if reference.SourceSHA == "" && reference.AttemptID == "" {
+			err := o.service.config.TenantRepository.ReadTenant(ctx, o.scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				comment, err := reader.Comment(ctx, o.scope.project, tracker.NativeWorkItemID(record.IssueID), reference.ID)
+				if err == nil && !comment.Deleted {
+					return nil
+				}
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				attempt, err := reader.Attempt(ctx, reference.ID)
+				if err == nil {
+					item, err := reader.WorkItem(ctx, o.scope.project, tracker.NativeWorkItemID(record.IssueID))
+					if err != nil {
+						return err
+					}
+					if attempt.IssueID == item.ID {
+						return nil
+					}
+				} else if !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				attachment, err := reader.Attachment(ctx, o.scope.project, reference.ID)
+				if err == nil && attachment.Metadata.DeletedAt == nil && attachment.Metadata.WorkItemID == record.IssueID {
+					return nil
+				}
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				return nativeInvalid("Retrieved progress evidence is unavailable for this work item")
+			})
+			if err != nil {
+				return progresscheck.Record{}, fmt.Errorf("read retrieved progress evidence: %w", err)
+			}
+		}
 		if reference.AttemptID != "" {
 			var found bool
 			recovery, err := o.service.readNativeRecoveryTenant(ctx, o.scope, record.IssueID)

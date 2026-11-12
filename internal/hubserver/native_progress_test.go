@@ -461,10 +461,30 @@ func TestNativeProgressRetrievedEvidenceIsScoped(t *testing.T) {
 			if test.source == "missing" {
 				citation = "comment-missing"
 			}
-			request := progresscheck.Request{ProjectID: string(f.project.ID), IssueID: string(issue.WorkItemID), PolicyID: "policy", EvidenceRevision: "revision", Attempts: []progresscheck.Attempt{{ID: "failed-attempt", Outcome: "failed"}}, AvailableSteps: []string{"implement"}}
+			if test.source == "same" {
+				for index := range progresscheck.MaxComments {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("recent-comment-%d", index)}, Body: "Newer context"})
+					requireNativeStatus(t, response, http.StatusOK)
+				}
+			}
+			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Events)
+			runner.enroll(t)
+			lease := nativeAttemptFixtureLease(t, runner, issue, "retrieved-evidence")
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+			event := nativeStartedEvent(lease)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, event), http.StatusOK)
+			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "retrieved-checkpoint", 2
+			event.Data.Handoff = nativeTestCheckpoint()
+			event.Data.Handoff.HeadSHA = strings.Repeat("a", 40)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, event), http.StatusOK)
+			event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome, event.Data.Handoff = "run.finished", "retrieved-finish", 3, "failed", nil
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, event), http.StatusOK)
+			request, _, err := f.service.nativeProgressRequestTenant(t.Context(), analyticsTestScope(t, f), string(issue.WorkItemID), hubTestPolicy().ID, string(runner.binding.MachineID))
+			if err != nil {
+				t.Fatal(err)
+			}
 			var sourceReference progresscheck.EvidenceReference
 			if strings.HasPrefix(test.source, "source") {
-				request.SourceSHA = strings.Repeat("a", 40)
 				started := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
 				timing := gate.PipelineTiming{Command: "git show HEAD:example.go", HeadSHA: request.SourceSHA, TreeSHA: strings.Repeat("b", 40), StartedAt: started, FinishedAt: started.Add(time.Second), ExitCode: new(0), Execution: "executed"}
 				timing.ReceiptID = timing.ID()
@@ -491,7 +511,7 @@ func TestNativeProgressRetrievedEvidenceIsScoped(t *testing.T) {
 			if strings.HasPrefix(test.source, "source") {
 				decision.RetrievedEvidence = []progresscheck.EvidenceReference{sourceReference}
 			}
-			owner := nativeProgressOwner{service: f.service, scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, request: request}
+			owner := nativeProgressOwner{service: f.service, scope: analyticsTestScope(t, f), request: request}
 			record, err := owner.Publish(t.Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: decision})
 			if (err == nil) != test.valid {
 				t.Fatalf("publication error=%v valid=%v", err, test.valid)
