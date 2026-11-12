@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -1032,8 +1033,15 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 		if scope.project == "" && scope.credential.Hosted == nil && scope.credential.EntryKey == nil {
 			grantCredential = scope.credential.ID
 		}
+		audience, err := conversationReadAudienceRecord(ctx, reader, scope.organization, scope.credential)
+		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, operatortool.ErrAccessDenied) {
+			audience, err = "", nil
+		}
+		if err != nil {
+			return err
+		}
 		page, err = reader.Conversations(ctx, conversationstore.ConversationQuery{
-			ProjectID: filter.Project, ProjectIDs: filter.Projects, PrincipalID: filter.Principal, GrantCredentialID: grantCredential,
+			ProjectID: filter.Project, ProjectIDs: filter.Projects, PrincipalID: filter.Principal, GrantCredentialID: grantCredential, ReadAudience: audience,
 			Cursor: filter.Cursor, Limit: limit, Settled: filter.Settled, Title: filter.Title,
 			SubjectWorkItemID: filter.SubjectWorkItemID,
 		})
@@ -1046,8 +1054,8 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 		projectCache := map[tracker.ProjectID]corestore.Project{}
 		for _, stored := range page.Items {
 			record := conversationRecordFromStore(stored)
-			if record.ReadAudience != "" {
-				return nativeNotFound()
+			if record.ReadAudience != "" && record.ReadAudience != audience {
+				continue
 			}
 			if err := authorizeConversationLinkedItemPG(ctx, reader, scope, record); err != nil {
 				var denied *nativeError
