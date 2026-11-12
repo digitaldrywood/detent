@@ -724,7 +724,7 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nati
 				return err
 			}
 
-			if target == workspacesession.StateStarting {
+			if target == workspacesession.StateStarting && current.State != workspacesession.StateStarting {
 				if err := owner.CreateWorkspaceOccupancy(ctx, postgres.WorkspaceOccupancyStart{OrganizationID: scope.organization, ProjectID: scope.project, WorkspaceID: id, RunnerID: row.RunnerID, StartedAt: now}); err != nil {
 					return err
 				}
