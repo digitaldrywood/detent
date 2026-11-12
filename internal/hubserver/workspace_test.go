@@ -1156,7 +1156,7 @@ func TestWorkspaceLifecycleUsesConfiguredTenant(t *testing.T) {
 	t.Parallel()
 	base := newDefaultNativeFixture(t, Config{})
 	clock := &leaseTestClock{value: base.service.config.now().UTC().Truncate(time.Microsecond)}
-	fixtures := []nativeFixture{base, newNativeFixture(t, base.service, "org_second", "Second project")}
+	fixtures := []nativeFixture{base, newNativeFixture(t, base.service, base.project.OrganizationID+"_second", "Second project")}
 	services := make([]*workspaceService, 0, 2)
 	for _, fixture := range fixtures {
 		subject := fixture.create(t, "lifecycle-subject")
