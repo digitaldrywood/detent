@@ -3,79 +3,36 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/operatorchat"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type operatorChatIdentity struct {
-	operatortool.Identity
-	Origin string `json:"origin,omitempty"`
-}
+type operatorChatIdentity = operatorchat.Identity
 
-type operatorChatOrganizationKey struct{}
+type operatorChatOrganizationKey = operatorchat.OrganizationKey
 
 type operatorChatStore struct{ database *database }
 
-func (store operatorChatStore) Load(ctx context.Context, id string, now time.Time, ttl time.Duration) (chat.SessionState, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	organization := tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID)
-	if organization == "" {
-		if scoped, ok := ctx.Value(operatorChatOrganizationKey{}).(tracker.OrganizationID); ok {
-			organization = scoped
-		}
+func (store operatorChatStore) feature() operatorchat.Store {
+	if store.database.postgres == nil {
+		return operatorchat.Store{}
 	}
-	if organization == "" || store.database.postgres == nil {
-		return chat.SessionState{}, false, operatortool.ErrAccessDenied
-	}
-	var row accessstore.OperatorSession
-	err := store.database.postgres.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		row, err = r.OperatorSession(ctx, id, now.Add(-ttl))
-		return err
-	})
-	if errors.Is(err, corestore.ErrNotFound) {
-		return chat.SessionState{}, false, nil
-	}
-	if err != nil {
-		return chat.SessionState{}, false, err
-	}
-	state := chat.SessionState{ID: id, Identity: operatortool.Identity{OrganizationID: string(organization), PrincipalID: row.PrincipalID, CredentialID: row.CredentialID, SessionID: row.SessionID}, Client: row.Client, LastUsedAt: row.LastUsedAt}
-	if row.Origin.KeyID != "" {
-		raw, err := json.Marshal(row.Origin)
-		if err != nil {
-			return state, false, err
-		}
-		state.Origin = string(raw)
-	}
-	return state, true, nil
+	return operatorchat.Store{Repository: store.database.postgres}
 }
 
-func (store operatorChatStore) Save(ctx context.Context, state chat.SessionState, _ time.Time, _ time.Duration, limit int) error {
-	if !state.Identity.Valid() || store.database.postgres == nil {
-		return operatortool.ErrAccessDenied
-	}
-	row := accessstore.OperatorSession{OrganizationID: tracker.OrganizationID(state.Identity.OrganizationID), ID: state.ID, PrincipalID: state.Identity.PrincipalID, CredentialID: state.Identity.CredentialID, SessionID: state.Identity.SessionID, Client: state.Client, LastUsedAt: state.LastUsedAt}
-	if state.Origin != "" {
-		if err := json.Unmarshal([]byte(state.Origin), &row.Origin); err != nil || row.Origin.KeyID == "" {
-			return operatortool.ErrAccessDenied
-		}
-	}
-	err := store.database.postgres.WriteTenant(ctx, row.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { return w.SaveOperatorSession(ctx, row, limit) })
-	if errors.Is(err, accessstore.ErrDenied) {
-		return operatortool.ErrAccessDenied
-	}
-	return err
+func (store operatorChatStore) Load(ctx context.Context, id string, now time.Time, ttl time.Duration) (chat.SessionState, bool, error) {
+	return store.feature().Load(ctx, id, now, ttl)
+}
+
+func (store operatorChatStore) Save(ctx context.Context, state chat.SessionState, now time.Time, ttl time.Duration, limit int) error {
+	return store.feature().Save(ctx, state, now, ttl, limit)
 }
 
 func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity operatortool.Identity, origin string) (operatortool.Authority, error) {

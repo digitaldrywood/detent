@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -173,5 +174,38 @@ func TestRepositoriesShareTheConnectionBudget(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("concurrent pools: %v", err)
+	}
+}
+
+func TestPostgresConfigConnectsToTheSameDatabase(t *testing.T) {
+	t.Parallel()
+	admin := hubtest.Database(t)
+	seeder := hubtest.RepositoryOn(t, admin)
+	config := hubtest.PostgresConfig(t, admin, hubtest.WithMaxConnections(4))
+	if limit, want := hubtest.ConnectionLimit(t, admin), 2+hubtest.DefaultMaxConnections+4; limit != want {
+		t.Fatalf("connection limit = %d, want %d", limit, want)
+	}
+	migrations, err := postgres.MigrationFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := postgres.Open(t.Context(), config, migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := opened.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	for range 2 {
+		organization := hubtest.Organization(t, seeder, hubtest.OrganizationOptions{}).OrganizationID
+		project := hubtest.Project(t, seeder, organization, hubtest.ProjectOptions{}).ID
+		if err := opened.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.ProjectRecord(t.Context(), project)
+			return err
+		}); err != nil {
+			t.Fatalf("read %s through the configured pool: %v", organization, err)
+		}
 	}
 }

@@ -119,28 +119,7 @@ func RepositoryOn(t *testing.T, admin *sql.DB, options ...Option) *postgres.Repo
 		t.Fatalf("PostgreSQL repository pool needs at least %d connections", DefaultMaxConnections)
 	}
 	reserveConnections(t, admin, selected.maxConnections)
-	name, password := hubapi.NewID("example"), hubapi.NewID("password")
-	quoted := pgx.Identifier{name}.Sanitize()
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx := context.WithoutCancel(t.Context())
-		if deadline, ok := t.Deadline(); ok {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithDeadline(ctx, deadline)
-			defer cancel()
-		}
-		if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+quoted); err != nil {
-			t.Error(err)
-		}
-		if _, err := admin.ExecContext(ctx, "DROP ROLE "+quoted); err != nil {
-			t.Error(err)
-		}
-	})
-	if _, err := admin.ExecContext(t.Context(), "GRANT "+postgres.RuntimeRoleName+" TO "+quoted); err != nil {
-		t.Fatal(err)
-	}
+	name, password := loginRole(t, admin)
 	native := template.NativeConfig(t, admin, name, password)
 	native.MaxConns = int32(selected.maxConnections)
 	for _, configure := range selected.configure {
@@ -167,6 +146,47 @@ func RepositoryOn(t *testing.T, admin *sql.DB, options ...Option) *postgres.Repo
 		}
 	})
 	return repository
+}
+
+func PostgresConfig(t *testing.T, admin *sql.DB, options ...Option) postgres.Config {
+	t.Helper()
+	selected := settings{maxConnections: DefaultMaxConnections}
+	for _, option := range options {
+		option(&selected)
+	}
+	if selected.maxConnections < DefaultMaxConnections {
+		t.Fatalf("PostgreSQL repository pool needs at least %d connections", DefaultMaxConnections)
+	}
+	reserveConnections(t, admin, selected.maxConnections)
+	name, password := loginRole(t, admin)
+	return postgres.Config{Connection: template.Connection(t, admin, name, password), Pool: postgres.PoolConfig{MaxConnections: selected.maxConnections, ServingConnections: selected.maxConnections - 1, BackgroundConnections: 1}, LeaseClock: selected.clock}
+}
+
+func loginRole(t *testing.T, admin *sql.DB) (string, string) {
+	t.Helper()
+	name, password := hubapi.NewID("example"), hubapi.NewID("password")
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx := context.WithoutCancel(t.Context())
+		if deadline, ok := t.Deadline(); ok {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, deadline)
+			defer cancel()
+		}
+		if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+quoted); err != nil {
+			t.Error(err)
+		}
+		if _, err := admin.ExecContext(ctx, "DROP ROLE "+quoted); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := admin.ExecContext(t.Context(), "GRANT "+postgres.RuntimeRoleName+" TO "+quoted); err != nil {
+		t.Fatal(err)
+	}
+	return name, password
 }
 
 var connectionBudgets sync.Mutex
