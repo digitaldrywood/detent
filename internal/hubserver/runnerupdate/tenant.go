@@ -34,7 +34,7 @@ func (s *Service) StoreObservation(ctx context.Context, writer tenantstore.Write
 		return err
 	}
 	if report == nil {
-		return nil
+		return writer.ReplaceRunnerUpdateObservation(ctx, identity.RunnerID, nil)
 	}
 	report.ReceivedAt = now
 	if report.Receipt == nil && state.Observation != nil && state.Observation.Receipt != nil {
@@ -52,7 +52,12 @@ func (s *Service) StoreObservation(ctx context.Context, writer tenantstore.Write
 		if err != nil {
 			return err
 		}
-		if !known || !accepted {
+		if !known {
+			report.Receipt = nil
+			if state.Observation != nil {
+				report.Receipt = state.Observation.Receipt
+			}
+		} else if !accepted {
 			return nil
 		}
 	}

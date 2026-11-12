@@ -239,7 +239,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 				return err
 			}
 		}
-		if request.Update != nil {
+		if request.Update != nil || request.ProtocolMajor < 2 {
 			if err := s.storeRunnerUpdateObservationTenant(ctx, w, identity, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, receivedAt, updateReleasePublished); err != nil {
 				return err
 			}

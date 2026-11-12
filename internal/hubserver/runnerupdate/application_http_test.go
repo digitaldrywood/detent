@@ -65,6 +65,56 @@ func (f updateHTTPFixture) observe(t *testing.T, report *runnerauth.UpdateObserv
 	}
 }
 
+func TestRunnerUpdateObservationOwner(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		old     bool
+		foreign bool
+	}{
+		{"old protocol removes update owner", true, false},
+		{"foreign receipt preserves build observation", false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			f := newUpdateHTTPFixture(t, hubtest.NewClock(now))
+			build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+			report := &runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: build, ObservedAt: now}
+			report.Revision = report.BuildRevision()
+			if test.old {
+				f.observe(t, report)
+			}
+			if test.foreign {
+				request := runnerauth.UpdateRequest{ID: "update_unknown", RequestedAt: now, Service: "detent", Version: "1.2.4", Release: true, Urgent: true}
+				report.Receipt = &runnerauth.UpdateReceipt{Request: request, Status: "refused", FailureReason: "Update was not applied", ObservedAt: now}
+			} else {
+				report = nil
+			}
+			if err := f.h.Repository.WriteTenant(t.Context(), f.h.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				identity, err := w.RunnerIdentity(t.Context(), f.runner.Identity.RunnerID)
+				if err != nil {
+					return err
+				}
+				protocol := 2
+				if test.old {
+					protocol = 1
+				}
+				return f.service.StoreObservation(t.Context(), w, identity, report, protocol, build.Version, build.OS, build.Architecture, now, false)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			response := performHubAPIRequest(t, f.h, http.MethodGet, f.path, f.admin.Token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var view runnerauth.UpdateView
+			decodeHubResponse(t, response, &view)
+			if test.old && (view.Status != "unavailable" || view.Observation != nil) {
+				t.Fatalf("older runner owner=%+v", view)
+			}
+			if test.foreign && (view.Observation == nil || view.Observation.Receipt != nil || view.Observation.Running != build) {
+				t.Fatalf("foreign receipt replaced build observation: %+v", view)
+			}
+		})
+	}
+}
 
 func decodeHubResponse(t *testing.T, response *httptest.ResponseRecorder, target any) {
 	t.Helper()
