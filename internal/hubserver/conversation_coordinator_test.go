@@ -2409,7 +2409,6 @@ func reopenCoordinatorService(t *testing.T, original *Service, configure ...func
 	unhosted := cfg.Hosted == nil
 	if unhosted {
 		cfg.Hosted = startupConfig(connection).Hosted
-		cfg.Hosted.OrganizationID = string(organization)
 	}
 	for _, apply := range configure {
 		apply(&cfg)

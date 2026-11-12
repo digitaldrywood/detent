@@ -503,11 +503,9 @@ func conversationRank1() *int {
 // project's Backlog lane when it has one, however that lane is cased.
 func TestConversationHandoffLaterUsesBacklog(t *testing.T) {
 	t.Parallel()
-	service := openTestService(t, Config{Conversation: &ConversationConfig{Enabled: true}})
-	organization, err := service.database.postgres.DesignatedLocalOrganization(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
+	service := newPostgresNativeService(t, Config{Conversation: &ConversationConfig{Enabled: true}})
+	service.registerConversationRoutes(service.echo)
+	organization := service.accessOrganization()
 	states := []tracker.NativeState{
 		{Name: "backlog", Transitions: []string{"Todo"}},
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"backlog", "Done"}},
@@ -518,12 +516,7 @@ func TestConversationHandoffLaterUsesBacklog(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var project tracker.NativeProject
 	decodeHubResponse(t, response, &project)
-	response = performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "operator-backlog", "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var token tokenResponse
-	decodeHubResponse(t, response, &token)
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken,
-		map[string]any{"organization_id": organization, "project_id": project.ID}), http.StatusNoContent)
+	token := conversationFixturePrincipal(t, nativeFixture{service: service, project: project}, "operator-backlog")
 	base := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID)
 	descriptor := hubTestPolicy()
 	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: states}
