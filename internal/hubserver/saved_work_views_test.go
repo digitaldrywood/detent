@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -99,18 +98,12 @@ func TestSavedWorkViews(t *testing.T) {
 	requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, savedWorkView{ProjectIDs: []string{project}, Name: "Denied", Scope: "personal", ProjectID: &project, State: state}), http.StatusNotFound)
 	otherRepository, _ := hubPostgresRepository(t, 3)
 	provider := newHostedSecurityProvider()
+	binding := &HostedConfig{OrganizationID: "org_other", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider}
+	seedStartupOrganization(t, otherRepository, "org_other", binding)
 	second := hostedSecurityFixture{provider: provider, service: openTestService(t, Config{
 		TenantRepository: otherRepository, AccessRepository: otherRepository,
-		Hosted: &HostedConfig{OrganizationID: "org_other", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider},
+		Hosted: binding,
 	})}
-	if err := otherRepository.WriteTenant(t.Context(), "org_other", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_other", Name: "Other organization", CreatedAt: time.Now()}); err != nil {
-			return err
-		}
-		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_other", ProviderID: "org_provider"})
-	}); err != nil {
-		t.Fatal(err)
-	}
 	charlie := second.user(t, "charlie", "member", "charlie@example.test", "", "")
 	secondBase := "/api/v2/organizations/org_other/work-views"
 	response = second.request(t, charlie, http.MethodPost, secondBase, savedWorkView{ProjectIDs: []string{}, Name: "Other organization", Scope: "organization", State: state})
