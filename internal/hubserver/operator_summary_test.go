@@ -197,8 +197,8 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 }
 
 func TestOperatorWorkListSummary(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
 	now := time.Date(2026, time.October, 20, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	short := tracker.ProjectID("p")
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
