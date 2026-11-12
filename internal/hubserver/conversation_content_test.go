@@ -108,13 +108,14 @@ func TestConversationPayloadBytesStayBounded(t *testing.T) {
 			if _, err := f.appendEvent(t, t.Context(), record.ID, conversation.EventHeartbeat, body, now); err != nil {
 				t.Fatal(err)
 			}
-			var messageBytes, eventBytes int
-			if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT octet_length(text)+octet_length(data_json)+octet_length(actor_json) FROM conversation_messages WHERE organization_id=$1 AND id=$2`, f.organization, message.ID).Scan(&messageBytes); err != nil {
+			var messageText, messageData, messageActor, eventBody []byte
+			if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT text, data_json, actor_json FROM conversation_messages WHERE organization_id=$1 AND id=$2`, f.organization, message.ID).Scan(&messageText, &messageData, &messageActor); err != nil {
 				t.Fatal(err)
 			}
-			if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT octet_length(body_json) FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2`, f.organization, record.ID).Scan(&eventBytes); err != nil {
+			if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT body_json FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2`, f.organization, record.ID).Scan(&eventBody); err != nil {
 				t.Fatal(err)
 			}
+			messageBytes, eventBytes := len(messageText)+len(messageData)+len(messageActor), len(eventBody)
 			if messageBytes != 4 || eventBytes != 2 {
 				t.Fatalf("inline payload bytes: message=%d event=%d; want 4 and 2", messageBytes, eventBytes)
 			}
