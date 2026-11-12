@@ -78,6 +78,13 @@ func TestReportsFilterDimensions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		var filing eventstore.Event
+		if !existing {
+			filing, err = content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "issue.created", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: created, Data: tracker.CollaborationData{Revision: 1}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if existing {
 				current.Title, current.IssueType, current.Priority = title, kind, priority
@@ -100,6 +107,11 @@ func TestReportsFilterDimensions(t *testing.T) {
 			}
 			if err := w.BindDoctorProposalIdentities(t.Context(), corestore.DoctorProposalIdentityBinding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, Revision: int64(issue.Revision), VersionSHA256: version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(issue.Body)}); err != nil {
 				return err
+			}
+			if !existing {
+				if _, err := w.AppendEvent(t.Context(), filing); err != nil {
+					return err
+				}
 			}
 			_, err := w.AppendEvent(t.Context(), event)
 			return err
