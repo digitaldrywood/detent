@@ -80,8 +80,8 @@ func scanDesignatedLocalOrganization(ctx context.Context, row pgx.Row) (tracker.
 	return tracker.OrganizationID(*organization), nil
 }
 
-func (r *Repository) BootstrapLocalOrganization(ctx context.Context, organization accessstore.Organization, credential accessstore.Credential, identity accessstore.HubIdentity) (tracker.OrganizationID, error) {
-	if !organization.Local || credential.OrganizationID != organization.OrganizationID || identity.OrganizationID != organization.OrganizationID {
+func (r *Repository) BootstrapLocalOrganization(ctx context.Context, organization accessstore.Organization, credential accessstore.Credential, identity accessstore.HubIdentity, secret accessstore.Secret, audit accessstore.SecretAudit) (tracker.OrganizationID, error) {
+	if !organization.Local || credential.OrganizationID != organization.OrganizationID || identity.OrganizationID != organization.OrganizationID || secret.OrganizationID != organization.OrganizationID || secret.Kind != accessstore.NativeCursorKeyKind {
 		return "", corestore.ErrTenantMismatch
 	}
 	var selected tracker.OrganizationID
@@ -104,6 +104,9 @@ func (r *Repository) BootstrapLocalOrganization(ctx context.Context, organizatio
 			return err
 		}
 		if err := s.CreateHubIdentity(ctx, identity); err != nil {
+			return err
+		}
+		if err := s.EnsureOrganizationSecret(ctx, secret, audit); err != nil {
 			return err
 		}
 		selected = organization.OrganizationID

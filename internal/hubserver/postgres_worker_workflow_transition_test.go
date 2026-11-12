@@ -33,16 +33,6 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 		t.Fatal(err)
 	}
 	seedPostgresHubAdmin(t, repository, service, organization)
-	cursorKey := bytes.Repeat([]byte{0x31}, 32)
-	cursorEnvelope, err := service.config.SecretKeys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: clock.Now()}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: clock.Now()})
-	}); err != nil {
-		t.Fatal(err)
-	}
 	service.localOrganization = string(organization.ID)
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
 	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "workflow-project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})

@@ -1744,14 +1744,7 @@ func verifyWorkItemMaximumCommentPage(t *testing.T, service *Service, repository
 func seedWorkItemRecordOrganization(t *testing.T, repository tenantstore.Repository, service *Service, organization nativeOrganization) {
 	t.Helper()
 	seedPostgresHubAdmin(t, repository, service, organization)
-	envelope, err := service.config.SecretKeys.Seal(bytes.Repeat([]byte{0x35}, 32), accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := service.config.now()
-	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
-	}); err != nil {
+	if _, err := service.readNativeCursorKey(t.Context(), organization.ID); err != nil {
 		t.Fatal(err)
 	}
 }

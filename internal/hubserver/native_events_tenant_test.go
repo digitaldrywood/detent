@@ -97,20 +97,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		t.Fatal(err)
 	}
 	now := service.config.now().UTC()
-	cursorKey := bytes.Repeat([]byte{1}, 32)
-	cursorEnvelope, err := keys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
-	if err != nil {
-		t.Fatal(err)
-	}
 	seedPostgresHubAdmin(t, repository, service, organization)
-	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now}); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
 	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{
 		"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates(), "grant_access": true,

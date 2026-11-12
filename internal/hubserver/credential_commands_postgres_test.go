@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,7 +19,8 @@ import (
 
 func TestPostgresOrganizationCreationWithoutLegacyDatabase(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, now: time.Now}}
+	service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, SecretKeys: secretTestKeys(t, "1", "1"), now: time.Now}}
+	var previous []byte
 	for _, name := range []string{"First example", "Second example"} {
 		organization, err := service.createNativeOrganizationFor(t.Context(), name)
 		if err != nil {
@@ -32,11 +34,48 @@ func TestPostgresOrganizationCreationWithoutLegacyDatabase(t *testing.T) {
 			if err == nil && (stored.Name != name || stored.Slug != organization.Slug) {
 				t.Fatalf("organization=%+v", stored)
 			}
-			return err
+			if err != nil {
+				return err
+			}
+			secret, err := r.AccessSecret(t.Context(), "", accessstore.NativeCursorKeyKind)
+			if err != nil {
+				return err
+			}
+			key, err := accessstore.OpenSecret(service.config.SecretKeys, secret)
+			if err != nil {
+				return err
+			}
+			if len(key) != 32 || bytes.Equal(previous, key) {
+				t.Fatal("organization cursor key is invalid or reused")
+			}
+			previous = key
+			return nil
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestPostgresLocalOrganizationCursorKey(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	cfg := Config{SecretKeys: secretTestKeys(t, "1", "1"), now: time.Now}
+	org, err := bootstrapLocalOrganization(t.Context(), repository, cfg, "example-bootstrap-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+		secret, err := r.AccessSecret(t.Context(), "", accessstore.NativeCursorKeyKind)
+		if err != nil {
+			return err
+		}
+		key, err := accessstore.OpenSecret(cfg.SecretKeys, secret)
+		if err == nil && len(key) != 32 {
+			t.Fatalf("bootstrap cursor key length=%d", len(key))
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

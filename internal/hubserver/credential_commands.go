@@ -47,8 +47,15 @@ func (s *Service) createNativeOrganizationFor(ctx context.Context, name string) 
 	}
 	organization := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: name}
 	organization.Slug = strings.ReplaceAll(string(organization.ID), "_", "-")
-	err := s.accessWrite(ctx, organization.ID, func(w tenantstore.Writer) error {
-		return w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, CreatedAt: s.config.now()})
+	secret, audit, err := newNativeCursorSecret(s.config, organization.ID)
+	if err != nil {
+		return nativeOrganization{}, err
+	}
+	err = s.accessWrite(ctx, organization.ID, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, CreatedAt: s.config.now()}); err != nil {
+			return err
+		}
+		return w.EnsureOrganizationSecret(ctx, secret, audit)
 	})
 	return organization, err
 }

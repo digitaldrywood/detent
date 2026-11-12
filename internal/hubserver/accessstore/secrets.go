@@ -10,6 +10,10 @@ import (
 
 const NativeCursorKeyKind = "native-cursor-key"
 
+type OrganizationSecretRepository interface {
+	EnsureOrganizationSecret(context.Context, Secret, SecretAudit) (Secret, error)
+}
+
 func VerifySecret(keys *hubsecrets.Keyring, secret Secret) error {
 	return keys.Check(secret.Envelope, SecretAAD(secret.OrganizationID, secret.ProjectID, secret.Kind))
 }

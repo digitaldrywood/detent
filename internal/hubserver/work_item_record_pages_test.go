@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -105,16 +104,6 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			t.Fatal(err)
 		}
 		seedPostgresHubAdmin(t, repository, service, org)
-		service.config.SecretKeys = secretTestKeys(t, "1", "1")
-		envelope, err := service.config.SecretKeys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(org.ID, "", accessstore.NativeCursorKeyKind))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: service.config.now()}, accessstore.SecretAudit{OrganizationID: org.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: service.config.now()})
-		}); err != nil {
-			t.Fatal(err)
-		}
 		projectPath := "/api/v2/organizations/" + string(org.ID) + "/projects"
 		response := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example", "states": nativeFixtureStates()})
 		requireNativeStatus(t, response, http.StatusOK)

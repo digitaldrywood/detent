@@ -170,6 +170,10 @@ func bootstrapLocalOrganization(ctx context.Context, repository *postgres.Reposi
 	if _, err := rand.Read(cursorKey); err != nil {
 		return "", fmt.Errorf("generate Hub identity: %w", err)
 	}
+	secret, audit, err := newNativeCursorSecret(cfg, organization)
+	if err != nil {
+		return "", err
+	}
 	return repository.BootstrapLocalOrganization(ctx,
 		accessstore.Organization{OrganizationID: organization, Name: "Local organization", Slug: "local-organization", Local: true, CreatedAt: now},
 		accessstore.Credential{
@@ -178,6 +182,7 @@ func bootstrapLocalOrganization(ctx context.Context, repository *postgres.Reposi
 			KeyScope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: now, UpdatedAt: now,
 		},
 		accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: cursorKey},
+		secret, audit,
 	)
 }
 

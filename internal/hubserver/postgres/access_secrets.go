@@ -95,6 +95,48 @@ func (s *session) PromoteAccessSecret(ctx context.Context, prior, row accessstor
 	return s.RecordAccessSecretAudit(ctx, audit)
 }
 
+func (s *session) EnsureOrganizationSecret(ctx context.Context, row accessstore.Secret, audit accessstore.SecretAudit) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	if row.ProjectID != "" || audit.OrganizationID != row.OrganizationID || audit.ProjectID != "" || audit.Kind != row.Kind || audit.KeyVersion != row.Envelope.Version {
+		return accessstore.ErrDenied
+	}
+	result, err := s.db.Exec(ctx, `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+ ON CONFLICT(organization_id,kind) DO NOTHING`, row.OrganizationID, row.Kind, row.OrganizationSlug, row.Envelope.Ciphertext, row.Envelope.Nonce, row.Envelope.WrappedKey, row.Envelope.Version, row.UpdatedAt)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if result.RowsAffected() == 0 {
+		return nil
+	}
+	return s.RecordAccessSecretAudit(ctx, audit)
+}
+
+func (r *Repository) EnsureOrganizationSecret(ctx context.Context, row accessstore.Secret, audit accessstore.SecretAudit) (accessstore.Secret, error) {
+	workload := corestore.Serving
+	if request, ok := ctx.Value(readRequestKey{}).(*readRequest); ok {
+		if request.repository != r || request.session.organization != row.OrganizationID {
+			return accessstore.Secret{}, corestore.ErrTenantMismatch
+		}
+		ctx = context.WithValue(ctx, readRequestKey{}, struct{}{})
+		workload = corestore.Background
+	}
+	var stored accessstore.Secret
+	err := r.transaction(ctx, row.OrganizationID, workload, false, func(s *session) error {
+		if _, err := s.AccessOrganization(ctx); err != nil {
+			return err
+		}
+		if err := s.EnsureOrganizationSecret(ctx, row, audit); err != nil {
+			return err
+		}
+		var err error
+		stored, err = s.AccessSecret(ctx, "", row.Kind)
+		return err
+	})
+	return stored, err
+}
+
 func (s *session) StoreAccessSecret(ctx context.Context, row accessstore.Secret, audit accessstore.SecretAudit) error {
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err

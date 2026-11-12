@@ -339,6 +339,7 @@ type Writer interface {
 	DeleteAccessInvitation(context.Context, string) (string, error)
 	DeleteAccessProjectGrant(context.Context, string, tracker.ProjectID) error
 	StoreAccessSecret(context.Context, Secret, SecretAudit) error
+	EnsureOrganizationSecret(context.Context, Secret, SecretAudit) error
 	PromoteAccessSecret(context.Context, Secret, Secret, SecretAudit) error
 	DeleteAccessSecret(context.Context, tracker.ProjectID, string, SecretAudit) error
 	RecordAccessSecretAudit(context.Context, SecretAudit) error

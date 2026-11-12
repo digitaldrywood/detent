@@ -258,15 +258,6 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	itemsPath := projectPath + "/" + string(project.ID) + "/work-items"
 	now := service.config.now().UTC()
 	service.localOrganization = string(organization.ID)
-	envelope, err := service.config.SecretKeys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
-	}); err != nil {
-		t.Fatal(err)
-	}
 	items := make([]tracker.NativeIssue, 0, 2)
 	for _, idempotencyKey := range []string{"issue-first", "issue-second"} {
 		response := performHubAPIRequest(t, service, http.MethodPost, itemsPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: idempotencyKey}, Title: "Example issue", Body: workItemRecordBody, State: "Todo"})

@@ -125,18 +125,12 @@ func newPostgresNativeService(t *testing.T, cfg Config) *Service {
 	}
 	for _, organization := range []tracker.OrganizationID{primary + "_second", primary} {
 		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
-		key := bytes.Repeat([]byte{0x5a}, 32)
-		envelope, err := service.config.SecretKeys.Seal(key, accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
-		if err != nil {
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: bytes.Repeat([]byte{0x5a}, 32)})
+		}); err != nil {
 			t.Fatal(err)
 		}
-		now := service.config.now().UTC().Truncate(time.Microsecond)
-		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: key}); err != nil {
-				return err
-			}
-			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
-		}); err != nil {
+		if _, err := service.readNativeCursorKey(t.Context(), organization); err != nil {
 			t.Fatal(err)
 		}
 

@@ -104,6 +104,9 @@ func projectRecordPostgresWithClock(t *testing.T, maxConnections int, clock func
 
 func openPostgresHubTestService(t *testing.T, repository *postgres.Repository, config Config) *Service {
 	t.Helper()
+	if config.SecretKeys == nil {
+		config.SecretKeys = secretTestKeys(t, "1", "1")
+	}
 	config.TenantRepository = repository
 	service := openTestService(t, config)
 	service.workerCancel()

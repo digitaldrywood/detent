@@ -3,10 +3,12 @@ package hubserver
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -17,6 +19,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -119,11 +122,23 @@ func (s *Service) readNativeCursorKey(ctx context.Context, organization tracker.
 		return nil, nativeRunEventStorageUnavailable()
 	}
 	var secret accessstore.Secret
-	if err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
 		var err error
 		secret, err = r.AccessSecret(ctx, "", accessstore.NativeCursorKeyKind)
 		return err
-	}); err != nil {
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		repository, ok := s.config.AccessRepository.(accessstore.OrganizationSecretRepository)
+		if !ok {
+			return nil, nativeRunEventStorageUnavailable()
+		}
+		candidate, audit, createErr := newNativeCursorSecret(s.config, organization)
+		if createErr != nil {
+			return nil, createErr
+		}
+		secret, err = repository.EnsureOrganizationSecret(ctx, candidate, audit)
+	}
+	if err != nil {
 		return nil, err
 	}
 	key, err := accessstore.OpenSecret(s.config.SecretKeys, secret)
@@ -134,6 +149,21 @@ func (s *Service) readNativeCursorKey(ctx context.Context, organization tracker.
 		return nil, errors.New("native cursor key has invalid length")
 	}
 	return key, nil
+}
+
+func newNativeCursorSecret(cfg Config, organization tracker.OrganizationID) (accessstore.Secret, accessstore.SecretAudit, error) {
+	key := make([]byte, sha256.Size)
+	defer clear(key)
+	if _, err := rand.Read(key); err != nil {
+		return accessstore.Secret{}, accessstore.SecretAudit{}, fmt.Errorf("generate native cursor key: %w", err)
+	}
+	envelope, err := cfg.SecretKeys.Seal(key, accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		return accessstore.Secret{}, accessstore.SecretAudit{}, fmt.Errorf("seal native cursor key: %w", err)
+	}
+	now := cfg.now().UTC()
+	return accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now},
+		accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "system:native-cursor-key", Event: "create", KeyVersion: envelope.Version, RecordedAt: now}, nil
 }
 
 func encodeNativeCursor(cursor nativeCursor, key []byte) (string, error) {
