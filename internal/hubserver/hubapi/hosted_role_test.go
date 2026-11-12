@@ -1,11 +1,12 @@
 package hubapi_test
 
 import (
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
-func TestLesserHostedRole(t *testing.T) {
+func TestLesserHostedRoleFromEntryAssertion(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		asserted, local, want string
