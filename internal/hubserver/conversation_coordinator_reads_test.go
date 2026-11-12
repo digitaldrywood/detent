@@ -104,6 +104,9 @@ func TestCoordinatorScreenReads(t *testing.T) {
 			issueID := f.seedIssue(t, 1)
 			tools, ctx := coordinatorViewerTools(t, f, record, user)
 			catalog := tools.tools()
+			if slices.ContainsFunc(catalog, func(tool runner.AgentTool) bool { return tool.Name == "repository_freshness" }) {
+				t.Fatal("retired repository_freshness read is offered in the coordinator catalog")
+			}
 			cases := []struct {
 				name, args string
 				allowed    bool
@@ -124,7 +127,7 @@ func TestCoordinatorScreenReads(t *testing.T) {
 				{operatortool.MembershipList, `{}`, role.role == "owner" || role.role == "admin", "member management"},
 				{"get_native_project", `{}`, true, ""}, {"get_onboarding", `{}`, true, ""}, {"project_setup", `{}`, true, ""},
 				{"get_project_policy", `{}`, true, ""}, {operatortool.GetProjectModelSelection, `{}`, true, ""},
-				{"project_secret_metadata", `{}`, true, ""}, {"repository_freshness", `{}`, true, ""}, {"monthly_usage_costs", `{}`, true, ""},
+				{"project_secret_metadata", `{}`, true, ""}, {"monthly_usage_costs", `{}`, true, ""},
 				{operatortool.WorkList, `{}`, true, ""}, {operatortool.HealthFindings, `{}`, true, ""}, {operatortool.BoardState, `{}`, true, ""},
 				{operatortool.TimeSeries, `{"window":"1h","bucket":"5m"}`, true, ""},
 				{operatortool.TimeSeries, fmt.Sprintf(`{"from":%q,"to":%q,"bucket":"5m"}`, f.service.config.now().Add(-49*time.Hour).Format(time.RFC3339Nano), f.service.config.now().Add(-48*time.Hour).Format(time.RFC3339Nano)), true, ""},
