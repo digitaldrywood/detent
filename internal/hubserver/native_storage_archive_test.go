@@ -809,6 +809,7 @@ func TestNativeStorageArchiveRangesAndLateMessages(t *testing.T) {
 			t.Fatal("archived message idempotency identity was lost")
 		}
 		message.Text = "late edit"
+		message.TextBytes, message.StoredTextBytes = int64(len(message.Text)), int64(len(message.Text))
 		message.Data = json.RawMessage(`{"opaque":{"edited":true}}`)
 		message.ContentReference = ""
 		message, err = w.UpdateMessage(t.Context(), message, message.Revision)
