@@ -256,7 +256,19 @@ func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
 	scope := <-contexts
 	scope.organization, scope.project = "org_security", v.project
 	drainTestNativeBoard(t, v.service)
-	subscription := &dashboardSubscription{initial: true, params: url.Values{}, frames: make(chan dashboardFrame, 1), done: make(chan struct{})}
+	var sequence int64
+	if err := v.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.BoardSequence(t.Context(), scope.project)
+		sequence = current.Sequence
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for user, item := range map[string]tracker.NativeIssue{"reporter": own, "tester": other} {
+		requireNativeStatus(t, v.request(t, v.users[user], http.MethodPost, v.base+"/work-items/"+string(item.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "stream-" + user}, Body: "Updated report context"}), http.StatusOK)
+	}
+	drainTestNativeBoard(t, v.service)
+	subscription := &dashboardSubscription{initial: true, sequence: sequence, params: url.Values{}, frames: make(chan dashboardFrame, 1), done: make(chan struct{})}
 	delivery := &dashboardDelivery{config: dashboardDeliveryConfig{pageSize: 100}}
 	if _, err := v.service.dashboardBoardRecordPage(t.Context(), delivery, subscription, scope); err != nil {
 		t.Fatal(err)
@@ -374,6 +386,7 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 			requireNativeStatus(t, r, http.StatusOK)
 			var other tracker.NativeIssue
 			decodeHubResponse(t, r, &other)
+			drainTestNativeBoard(t, f.service)
 			for _, transport := range []string{"web-session", "REST-key"} {
 				r := reporterEntryRequest(t, f, deployment, key.Token, transport, http.MethodGet, f.base+"/work-items", nil, nil)
 				requireNativeStatus(t, r, http.StatusOK)
@@ -396,7 +409,18 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 			}
 			if deployment == "dedicated" {
 				drainTestNativeBoard(t, f.service)
-				scanner := openHostedTestStream(t, f.hostedSecurityFixture, f.user, "?board=true")
+				response := f.request(t, f.user, http.MethodGet, f.base+"/work-items?include=board", nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page tracker.NativeIssuePage
+				decodeHubResponse(t, response, &page)
+				for _, entry := range []struct {
+					user hostedSecurityUser
+					item tracker.NativeIssue
+				}{{f.user, own}, {otherFixture.user, other}} {
+					requireNativeStatus(t, f.request(t, entry.user, http.MethodPost, f.base+"/work-items/"+string(entry.item.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "stream-" + string(entry.item.WorkItemID)}, Body: "Updated report context"}), http.StatusOK)
+				}
+				drainTestNativeBoard(t, f.service)
+				scanner := openHostedTestStream(t, f.hostedSecurityFixture, f.user, "?board=true&since="+strconv.FormatInt(page.Sequence, 10))
 				kind, data := readHostedEvent(t, scanner)
 				if kind != "activity" || strings.Contains(data, string(other.WorkItemID)) || !strings.Contains(data, string(own.WorkItemID)) {
 					t.Fatalf("SSE=%s %s", kind, data)
