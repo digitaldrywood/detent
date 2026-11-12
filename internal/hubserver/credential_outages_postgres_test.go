@@ -55,7 +55,7 @@ func TestPostgresPersonalCredentialOutages(t *testing.T) {
 					}, map[string]string{"Authorization": "Bearer " + token})
 					want := test.want
 					if test.name == "valid identity" && path != "/organizations/"+org+"/health" {
-						want = http.StatusForbidden
+						want = http.StatusNotFound
 					}
 					requireEntryAuthResponse(t, response.Code, response.Body.String(), want)
 				})

@@ -25,11 +25,11 @@ func TestHostedArtifactReadPermissions(t *testing.T) {
 		{name: "viewer", role: "viewer", projectGrant: "read", want: http.StatusOK},
 		{name: "member read", role: "member", projectGrant: "read", want: http.StatusOK},
 		{name: "member write", role: "member", projectGrant: "write", want: http.StatusOK},
-		{name: "owner without project", role: "owner", want: http.StatusForbidden},
-		{name: "admin without project", role: "admin", want: http.StatusForbidden},
+		{name: "owner without project", role: "owner", want: http.StatusNotFound},
+		{name: "admin without project", role: "admin", want: http.StatusNotFound},
 		{name: "staff", role: "member", projectGrant: "write", email: "staff@example.test", want: http.StatusForbidden},
 		{name: "support viewer", role: "viewer", projectGrant: "read", support: "support@example.test", want: http.StatusOK},
-		{name: "support without project", role: "member", support: "support@example.test", want: http.StatusForbidden},
+		{name: "support without project", role: "member", support: "support@example.test", want: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 
@@ -187,7 +187,7 @@ func TestHostedArtifactGrantRevocation(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, servicePath+"/authorize", publisher, request), want)
 			if test.rejectGrant {
-				requireNativeStatus(t, f.request(t, user, http.MethodPost, path, map[string]int64{"revision": 1}), http.StatusForbidden)
+				requireNativeStatus(t, f.request(t, user, http.MethodPost, path, map[string]int64{"revision": 1}), http.StatusNotFound)
 			}
 		})
 	}

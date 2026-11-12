@@ -204,7 +204,7 @@ func runScheduledValidationRecordCases(t *testing.T) {
 				t.Fatal(err)
 			}
 			request.IdempotencyKey = "scheduled-" + run
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request), http.StatusForbidden)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request), http.StatusNotFound)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential.ID, ProjectID: f.project.ID})
 			}); err != nil {

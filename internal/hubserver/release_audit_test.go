@@ -132,7 +132,7 @@ func TestReleaseAuditProjectRecords(t *testing.T) {
 		}
 	}
 	response := perform(http.MethodGet, second.base+"/release-audits", first.token, nil)
-	requireNativeStatus(t, response, http.StatusForbidden)
+	requireNativeStatus(t, response, http.StatusNotFound)
 	uploader := string(first.project.ID)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, first.base+"/attachments") {

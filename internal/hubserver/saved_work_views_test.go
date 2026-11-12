@@ -96,7 +96,7 @@ func TestSavedWorkViews(t *testing.T) {
 	if got := list(bob); len(got) != 2 {
 		t.Fatalf("grantless shared list = %+v", got)
 	}
-	requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, savedWorkView{ProjectIDs: []string{project}, Name: "Denied", Scope: "personal", ProjectID: &project, State: state}), http.StatusForbidden)
+	requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, savedWorkView{ProjectIDs: []string{project}, Name: "Denied", Scope: "personal", ProjectID: &project, State: state}), http.StatusNotFound)
 	otherRepository, _ := hubPostgresRepository(t, 3)
 	provider := newHostedSecurityProvider()
 	second := hostedSecurityFixture{provider: provider, service: openTestService(t, Config{
@@ -387,7 +387,7 @@ func TestSavedWorkViewWorkingSets(t *testing.T) {
 			}
 			if len(test.ids) > 1 {
 				requireNativeStatus(t, f.request(t, bob, http.MethodGet, base+"/"+created.ID, nil), http.StatusNotFound)
-				requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, input), http.StatusForbidden)
+				requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, input), http.StatusNotFound)
 				response = f.request(t, bob, http.MethodGet, base, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				var page savedWorkViewsPage

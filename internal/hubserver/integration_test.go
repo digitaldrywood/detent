@@ -623,7 +623,7 @@ func TestCutoverRefusesChangedAuthoritySourcesAndRollsBack(t *testing.T) {
 			switch name {
 			case "foreign project":
 				other := newNativeFixture(t, f.service, f.project.OrganizationID, "Other project")
-				target, status = other.base+"/integration/cutover", http.StatusForbidden
+				target, status = other.base+"/integration/cutover", http.StatusNotFound
 			case "foreign organization":
 				other := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "Other organization")
 				target, status = other.base+"/integration/cutover", http.StatusUnauthorized

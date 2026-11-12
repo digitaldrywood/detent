@@ -427,7 +427,7 @@ func TestLocalBoardImportRefusals(t *testing.T) {
 		status      int
 	}{
 		{"worker", localBoardWorker(t, f), records[0], http.StatusForbidden},
-		{"missing grant", newNativeFixture(t, f.service, "", "no-grant").token, records[0], http.StatusForbidden},
+		{"missing grant", newNativeFixture(t, f.service, "", "no-grant").token, records[0], http.StatusNotFound},
 		{"missing prerequisite", f.token, records[1], http.StatusUnprocessableEntity},
 		{"invalid timestamp", f.token, func() localboard.Record {
 			r := records[0]
