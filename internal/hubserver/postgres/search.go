@@ -93,7 +93,10 @@ func (s *session) PutSearch(ctx context.Context, d searchstore.Document, expecte
 	}
 	if expected > 0 {
 		count, err := s.queries.SearchUpdate(ctx, pgquery.SearchUpdateParams{OrganizationID: s.organization, ID: d.ID, ProjectID: project, WorkItemID: item, Kind: d.Kind, SourceID: d.SourceID, Revision: d.Revision, ExpectedRevision: expected, Title: d.Title, Scope: d.Scope, Status: d.Status, UpdatedAt: d.UpdatedAt.Truncate(time.Microsecond), UpdatedAtSubmicrosecond: int64(d.UpdatedAt.Nanosecond() % 1000), PayloadObjectKey: d.Payload.Key, PayloadSHA256: d.Payload.SHA256, PayloadBytes: d.Payload.CompressedSize, PayloadContentBytes: d.Payload.UncompressedSize, SourceVector: source.Vector, TokenCount: source.Statistics.Tokens, Terms: source.Statistics.Terms, TermFrequencies: source.Statistics.Frequencies})
-		return affected(ctx, count, err)
+		if err != nil || count > 0 {
+			return affected(ctx, count, err)
+		}
+		expected = 0
 	}
 	if d.Kind == "issue" {
 		if err := s.queries.SearchRemovePlaceholder(ctx, pgquery.SearchRemovePlaceholderParams{OrganizationID: s.organization, ProjectID: project, SourceID: d.SourceID, ID: d.ID}); err != nil {

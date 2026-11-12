@@ -601,3 +601,57 @@ func TestSearchCoverageSurvivesCandidateLimit(t *testing.T) {
 		t.Fatalf("top result=%+v", page)
 	}
 }
+
+func TestSearchPutRepairsMissingDocumentsWithoutOverwritingConflicts(t *testing.T) {
+	f := newSearchFixture(t)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, scenario := range []string{"missing", "matching revision", "stale revision", "different identity"} {
+			t.Run(string(org)+"/"+scenario, func(t *testing.T) {
+				d := searchIssue(org, "wi_first_1")
+				d.ID = "repair:example"
+				t.Cleanup(func() {
+					if _, err := f.admin.ExecContext(context.Background(), `DELETE FROM search_documents WHERE organization_id=$1 AND id=$2`, org, d.ID); err != nil {
+						t.Error(err)
+					}
+				})
+				d.Revision = 3
+				d.UpdatedAt = historyAt()
+				if scenario != "missing" {
+					f.put(t, d, searchstore.Text{Title: "Original title"}, 0)
+				}
+				d.Revision = 4
+				expected := int64(3)
+				if scenario == "stale revision" {
+					expected = 2
+				}
+				if scenario == "different identity" {
+					d.SourceID, d.WorkItemID = "wi_first_2", "wi_first_2"
+				}
+				prepared, err := f.content.Prepare(t.Context(), d, searchstore.Text{Title: "Repaired title"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = f.repository.WriteSearch(t.Context(), org, corestore.Serving, func(w searchstore.Writer) error {
+					return w.PutSearch(t.Context(), prepared, expected)
+				})
+				wantRevision, wantTitle := int64(4), "Repaired title"
+				if scenario == "stale revision" || scenario == "different identity" {
+					if !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("conflicting update error=%v", err)
+					}
+					wantRevision, wantTitle = 3, "Original title"
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				var revision int64
+				var title string
+				if err := f.admin.QueryRowContext(t.Context(), `SELECT revision,title FROM search_documents WHERE organization_id=$1 AND id=$2`, org, d.ID).Scan(&revision, &title); err != nil {
+					t.Fatal(err)
+				}
+				if revision != wantRevision || title != wantTitle {
+					t.Fatalf("stored revision=%d title=%q, want revision=%d title=%q", revision, title, wantRevision, wantTitle)
+				}
+			})
+		}
+	}
+}
