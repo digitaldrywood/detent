@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
@@ -350,9 +351,13 @@ func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 			}
 			reads := 0
 			f.bodies.onIO = func() error { reads++; return nil }
-			denied := f.scope
-			denied.credential.ID = "different-owner"
-			_, err := read(denied)
+			other := conversationFixturePrincipal(t, f.nativeFixture, "different-owner")
+			otherCredential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(other.Token), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("authenticate different owner: status=%d error=%v", status, err)
+			}
+			denied := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: otherCredential}
+			_, err = read(denied)
 			var deniedError *nativeError
 			if !errors.As(err, &deniedError) || deniedError.Code != "not_found" {
 				t.Fatalf("unauthorized read result=%v", err)
