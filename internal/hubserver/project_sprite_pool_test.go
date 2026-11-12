@@ -1075,6 +1075,7 @@ func readSpriteRunnerIdentityFixture(t *testing.T, f nativeFixture, id string) (
 
 func setSpriteRunnerChecksFixture(t *testing.T, f nativeFixture, runner string, project tracker.ProjectID, checks runnerauth.LocalChecks) {
 	t.Helper()
+	checks.ObservedAt = f.service.config.now()
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 		return w.ReplaceRunnerLocalChecks(t.Context(), runner, project, checks)
 	})
@@ -1082,6 +1083,7 @@ func setSpriteRunnerChecksFixture(t *testing.T, f nativeFixture, runner string, 
 
 func setSpriteMemberChecks(t *testing.T, f nativeFixture, checks runnerauth.LocalChecks) {
 	t.Helper()
+	checks.ObservedAt = f.service.config.now()
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 		members, err := w.(postgres.SpriteReader).SpritePoolMembers(t.Context())
 		if err != nil {
