@@ -563,7 +563,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 						if budget != backgroundStorageBudget {
 							wrongBudget.Store(true)
 						}
-						if stages.Add(1) == 1 {
+						if stages.Add(1) == 7 {
 							return context.WithDeadline(ctx, time.Now().Add(-time.Second))
 						}
 						return context.WithTimeout(ctx, budget)
@@ -598,7 +598,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 					if err != nil {
 						return err
 					}
-					if state != wantAfterFailure || stages.Load() != 2 {
+					if state != wantAfterFailure || stages.Load() != 10 {
 						return fmt.Errorf("receipt expiry did not survive the failed native-prune stage: state=%v stages=%d", state, stages.Load())
 					}
 					return nil
@@ -614,7 +614,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 					if err != nil {
 						return err
 					}
-					if state != [10]int{0, 1, 0, 1, 0, 1, 0, 1, 1, 1} || stages.Load() != 4 {
+					if state != [10]int{0, 1, 0, 1, 0, 1, 0, 1, 1, 1} || stages.Load() != 20 {
 						return fmt.Errorf("live native expiry did not finish: state=%v stages=%d", state, stages.Load())
 					}
 					return nil
