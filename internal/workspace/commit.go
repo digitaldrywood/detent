@@ -36,7 +36,6 @@ type commitPolicy struct {
 	format      string
 	environment []string
 	unavailable *atomic.Bool
-	runCommand  func(context.Context, *exec.Cmd) error
 }
 
 func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdentity) (_ commitPolicy, err error) {
@@ -197,10 +196,6 @@ func signerUnavailable(err error) bool {
 	return false
 }
 
-func runWorkspaceCommand(_ context.Context, cmd *exec.Cmd) error {
-	return cmd.Run()
-}
-
 func (p commitPolicy) run(ctx context.Context, path string, env []string, args ...string) (_ string, err error) {
 	identity := p.report.Identity
 	env = append(env, p.environment...)
@@ -300,11 +295,7 @@ func (p commitPolicy) run(ctx context.Context, path string, env []string, args .
 		}
 	}()
 	cmd.Stdout, cmd.Stderr = file, file
-	run := p.runCommand
-	if run == nil {
-		run = runWorkspaceCommand
-	}
-	err = run(ctx, cmd)
+	err = cmd.Run()
 	if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
 		return "", errors.Join(err, fmt.Errorf("rewind commit output file: %w", seekErr))
 	}

@@ -2577,10 +2577,6 @@ func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileO
 }
 
 func runGitAtWithInput(ctx context.Context, dir string, env []string, fileOutput bool, input string, args ...string) (string, error) {
-	return runGitAtWithInputCommand(ctx, dir, env, fileOutput, input, runWorkspaceCommand, args...)
-}
-
-func runGitAtWithInputCommand(ctx context.Context, dir string, env []string, fileOutput bool, input string, run func(context.Context, *exec.Cmd) error, args ...string) (string, error) {
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
@@ -2600,7 +2596,7 @@ func runGitAtWithInputCommand(ctx context.Context, dir string, env []string, fil
 		}
 		cmd.Stdout = file
 		cmd.Stderr = file
-		err = run(ctx, cmd)
+		err = cmd.Run()
 		_, seekErr := file.Seek(0, io.SeekStart)
 		var readErr error
 		if seekErr == nil {
