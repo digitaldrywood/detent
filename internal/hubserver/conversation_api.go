@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
@@ -747,7 +748,7 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 		return nil, err
 	}
 
-	now := s.config.now()
+	now := s.config.now().UTC().Truncate(time.Microsecond)
 
 	if err := s.requireConversationFeaturePG(ctx, scope.organization, "collaboration", now); err != nil {
 		return nil, err

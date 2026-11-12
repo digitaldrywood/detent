@@ -364,7 +364,7 @@ func (s *Service) commandLinkConversationPG(ctx context.Context, scope nativeSco
 	if preview.SubjectWorkItemID != "" {
 		return nil, nativePublicInvalid("Issue questions cannot be linked or shared")
 	}
-	now := s.config.now()
+	now := s.config.now().UTC().Truncate(time.Microsecond)
 	link := &conversationLinkMutation{service: s, scope: scope, original: preview, request: request, now: now}
 	issueRequest := conversationLinkedIssueRequest(preview, request, next)
 	hash, err := nativeCommandHash(issueRequest)
@@ -855,7 +855,7 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 	if err := s.requireConversationFeaturePG(ctx, scope.organization, "collaboration", s.config.now()); err != nil {
 		return nil, err
 	}
-	plan := &conversationPublicationPlan{service: service, record: current, original: current, now: s.config.now()}
+	plan := &conversationPublicationPlan{service: service, record: current, original: current, now: s.config.now().UTC().Truncate(time.Microsecond)}
 	ctx = plan.context(ctx)
 	dispatchFence := leasestore.Fence{LeaseID: current.Execution.Owner.LeaseID, FencingToken: current.Execution.Owner.FencingToken}
 	var question conversationstore.Question
