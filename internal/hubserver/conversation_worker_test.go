@@ -191,9 +191,7 @@ func (f *conversationWorkerFixture) controls(t *testing.T, after int64, wait int
 func (f *conversationWorkerFixture) awaitControlSubscribers(t *testing.T, want int) {
 	t.Helper()
 	testenv.WaitUntil(t, t.Context(), func() error {
-		f.chat.broker.mu.Lock()
-		got := len(f.chat.broker.subscribers[f.record.ID])
-		f.chat.broker.mu.Unlock()
+		got := f.chat.broker.Subscribers(f.record.ID)
 		if got >= want {
 			return nil
 		}
@@ -937,9 +935,7 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 		ticker := time.NewTicker(time.Millisecond)
 		defer ticker.Stop()
 		for {
-			f.chat.broker.mu.Lock()
-			waiting := len(f.chat.broker.subscribers[f.record.ID]) > 0
-			f.chat.broker.mu.Unlock()
+			waiting := f.chat.broker.Subscribers(f.record.ID) > 0
 			if waiting {
 				break
 			}

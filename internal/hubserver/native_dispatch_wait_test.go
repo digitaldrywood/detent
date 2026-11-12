@@ -71,9 +71,7 @@ func dispatchWaitCursor(t *testing.T, response *httptest.ResponseRecorder) strin
 func awaitDispatchSubscribers(t *testing.T, s *Service, organization tracker.OrganizationID, count int, probe *dispatchWaitPostgresTrace) {
 	t.Helper()
 	testenv.WaitUntil(t, t.Context(), func() error {
-		s.notifications.mu.Lock()
-		got := len(s.notifications.subscribers[dispatchNotificationKey(organization)])
-		s.notifications.mu.Unlock()
+		got := s.notifications.Subscribers(dispatchNotificationKey(organization))
 		s.tokenUseWork.Wait()
 		pool := probe.pool.Load()
 		if got == count && pool != nil && pool.Stat().AcquiredConns() == 0 {
@@ -260,9 +258,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 			f := newNativeFixture(t, service, organization.ID, "wait")
 			await := func(count int) {
 				testenv.WaitUntil(t, t.Context(), func() error {
-					service.notifications.mu.Lock()
-					got := len(service.notifications.subscribers[dispatchNotificationKey(organization.ID)])
-					service.notifications.mu.Unlock()
+					got := service.notifications.Subscribers(dispatchNotificationKey(organization.ID))
 					pool := probe.pool.Load()
 					if pool != nil && got == count && pool.Stat().AcquiredConns() == 0 {
 						return nil

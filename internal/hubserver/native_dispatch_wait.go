@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -23,11 +22,7 @@ func dispatchNotificationKey(organization tracker.OrganizationID) string {
 }
 
 func (b *notificationBroker) dispatchCursor(key string) string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	revision := b.revisions[key]
-	b.revisions[key] = revision
-	return fmt.Sprintf("%s:%d", b.epoch, revision)
+	return b.Cursor(key)
 }
 
 func (s *Service) notifyNativeDispatch(ctx context.Context, scope nativeScope, input any) {
