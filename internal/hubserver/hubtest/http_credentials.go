@@ -59,6 +59,7 @@ func (h *HTTPHarness) StaffSession(t *testing.T, options MemberOptions, actor, r
 	}
 	member := Member(t, h.Repository, h.Organization, options)
 	h.hosted.StaffEmails = append(h.hosted.StaffEmails, member.Member.Email)
+	h.hosted.SupportActors = append(h.hosted.SupportActors, actor)
 	return h.SessionFor(t, member, actor, reason)
 }
 func (h *HTTPHarness) SessionFor(t *testing.T, member SeededMember, supportActor, reason string) HTTPActor {

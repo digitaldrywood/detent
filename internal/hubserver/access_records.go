@@ -47,7 +47,7 @@ func (s *Service) hiddenAccessDenial(ctx context.Context, r accessstore.Reader, 
 }
 
 func (s *Service) accessWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
-	return s.requestAuth().WebSession(ctx, hash, now)
+	return s.requestAuth().StoredSession(ctx, hash, now)
 }
 
 func (s *Service) createAccessWebSession(ctx context.Context, record auth.SessionRecord) error {

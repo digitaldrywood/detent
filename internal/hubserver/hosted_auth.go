@@ -49,56 +49,15 @@ func (s *Service) storedWebSession(ctx context.Context, hash string, now time.Ti
 }
 
 func (s *Service) WebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
-	session, err := s.storedWebSession(ctx, hash, now)
-	if err != nil {
-		return auth.Session{}, err
-	}
-	current, err := s.config.Hosted.Provider.CurrentSession(ctx, *session.Identity)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return auth.Session{}, errors.Join(tenantauth.ErrUnavailable, err)
-	}
-	if err != nil || !current.ExpiresAt.After(now) || current.Subject != session.Identity.Subject || current.SessionID != session.Identity.SessionID || current.OrganizationID != session.Identity.OrganizationID || current.SupportActor != session.Identity.SupportActor || current.SupportReason != session.Identity.SupportReason {
-		return auth.Session{}, auth.ErrInvalidSession
-	}
-	if current.ExpiresAt.Before(session.ExpiresAt) {
-		session.ExpiresAt = current.ExpiresAt
-	}
-	session.Identity.ExpiresAt = session.ExpiresAt
-	if current.SupportActor != "" && (!hostedEmailListed(s.config.Hosted.SupportActors, current.SupportActor) || !auth.ValidSupportReason(current.SupportReason)) {
-		return auth.Session{}, auth.ErrInvalidSession
-	}
-	return session, nil
+	return s.requestAuth().WebSession(ctx, hash, now)
 }
 
 func (s *Service) hostedSession(ctx context.Context, c echo.Context) (auth.Session, string, error) {
-	if s.hostedShared() {
-		return s.sharedHostedSession(ctx, c)
-	}
-	cookie, err := c.Cookie(hostedCookie)
-	if err != nil || s.hostedSessions == nil {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	session, err := s.hostedSessions.Authenticate(ctx, cookie.Value)
-	if err == nil {
-		c.Set("hosted_session", session)
-	}
-	return session, apikey.HashToken(cookie.Value), err
+	return s.requestAuth().HostedSession(ctx, c)
 }
 
 func (s *Service) hostedMembership(ctx context.Context, identity *auth.HostedIdentity) (auth.Membership, error) {
-	if identity == nil || identity.OrganizationID == "" {
-		return auth.Membership{}, auth.ErrHostedIdentity
-	}
-	memberships, err := s.config.Hosted.Provider.Memberships(ctx, identity.Subject, identity.OrganizationID)
-	if err != nil {
-		return auth.Membership{}, errors.Join(tenantauth.ErrUnavailable, err)
-	}
-	for _, membership := range memberships {
-		if membership.UserID == identity.Subject && membership.OrganizationID == identity.OrganizationID && membership.Status == "active" && auth.ValidOrganizationRole(membership.Role.Slug) {
-			return membership, nil
-		}
-	}
-	return auth.Membership{}, auth.ErrHostedIdentity
+	return s.requestAuth().Membership(ctx, identity)
 }
 
 func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCredential, int, error) {

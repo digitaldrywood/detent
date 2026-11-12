@@ -59,16 +59,20 @@ type Hosted struct {
 	OrganizationID string
 	Shared         bool
 	StaffEmails    []string
+	SupportActors  []string
 }
 
 type Deps struct {
+	Classify           func(error) error
+	Memberships        func(context.Context, string, string) ([]auth.Membership, error)
+	CurrentSession     func(context.Context, auth.HostedIdentity) (auth.HostedIdentity, error)
+	SessionLookup      func(context.Context, string) (auth.Session, error)
+	SharedSession      func(context.Context, echo.Context) (auth.Session, string, error)
 	Repository         tenantstore.Repository
 	AccessRepository   tenantstore.Repository
 	Organization       tracker.OrganizationID
 	Now                func() time.Time
 	Hosted             *Hosted
-	Membership         func(context.Context, *auth.HostedIdentity) (auth.Membership, error)
-	Session            func(context.Context, echo.Context) (auth.Session, string, error)
 	CompleteInvitation func(context.Context, auth.Session) (bool, error)
 	LocalCredential    func(context.Context, echo.Context) (Credential, int, error)
 	BoardCredential    func(context.Context) (Credential, bool)
@@ -100,15 +104,10 @@ func New(deps Deps) *Authenticator {
 	if deps.LocalCredential == nil {
 		deps.LocalCredential = unauthorizedLocal
 	}
+	if deps.Classify == nil {
+		deps.Classify = Classify
+	}
 	s := &Authenticator{deps: deps}
-	if s.deps.Session == nil {
-		s.deps.Session = s.CookieSession
-	}
-	if s.deps.Membership == nil {
-		s.deps.Membership = func(context.Context, *auth.HostedIdentity) (auth.Membership, error) {
-			return auth.Membership{}, auth.ErrHostedIdentity
-		}
-	}
 	return s
 }
 
@@ -174,26 +173,6 @@ func Actor(credential Credential, organization tracker.OrganizationID) tracker.A
 func RequestCredential(c echo.Context) (Credential, bool) {
 	credential, ok := c.Get("hub_auth_credential").(Credential)
 	return credential, ok
-}
-
-func (s *Authenticator) CookieSession(ctx context.Context, c echo.Context) (auth.Session, string, error) {
-	cookie, err := c.Cookie(Cookie)
-	if err != nil {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	hash := apikey.HashToken(cookie.Value)
-	session, err := s.WebSession(ctx, hash, s.deps.Now())
-	if err == nil {
-		c.Set("hosted_session", session)
-	}
-	return session, hash, err
-}
-
-func (s *Authenticator) Membership(ctx context.Context, identity *auth.HostedIdentity) (auth.Membership, error) {
-	if s.deps.Membership == nil {
-		return auth.Membership{}, auth.ErrHostedIdentity
-	}
-	return s.deps.Membership(ctx, identity)
 }
 
 func unauthorizedLocal(context.Context, echo.Context) (Credential, int, error) {

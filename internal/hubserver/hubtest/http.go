@@ -67,7 +67,30 @@ func NewHTTP(t *testing.T, options HTTPOptions, register func(*echo.Group, HTTPD
 		}
 		h.hosted = &hosted
 	}
-	a := hubauth.New(hubauth.Deps{Repository: h.Repository, AccessRepository: h.Repository, Organization: h.Organization, Now: h.Now, Hosted: h.hosted, Membership: h.membership})
+	var a *hubauth.Authenticator
+	sessionStore := httpSessionStore{read: func(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
+		return a.WebSession(ctx, hash, now)
+	}}
+	sessions, err := auth.NewSessionService(auth.SessionConfig{SessionTTL: time.Hour, PublicURL: "https://example.test"}, sessionStore, auth.WithClock(h.Now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a = hubauth.New(hubauth.Deps{Repository: h.Repository, AccessRepository: h.Repository, Organization: h.Organization, Now: h.Now, Hosted: h.hosted,
+		SessionLookup: sessions.Authenticate,
+		CurrentSession: func(_ context.Context, identity auth.HostedIdentity) (auth.HostedIdentity, error) {
+			return identity, nil
+		},
+		Memberships: func(ctx context.Context, subject, organization string) ([]auth.Membership, error) {
+			membership, err := h.membership(ctx, &auth.HostedIdentity{Subject: subject, OrganizationID: organization})
+			if errors.Is(err, auth.ErrHostedIdentity) {
+				return nil, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			return []auth.Membership{membership}, nil
+		},
+	})
 	h.Deps = HTTPDeps{Auth: a, Error: HTTPError}
 	h.Deps.Operator = a.Operator(hubauth.OperatorOptions{
 		Classify: hubauth.Classify, Error: HTTPError, Refuse: httpRefuse,
@@ -217,4 +240,15 @@ func (r HTTPResult) Decode(t *testing.T, target any) {
 	if err := json.Unmarshal(r.Body, target); err != nil {
 		t.Fatalf("decode HTTP status %d: %v: %s", r.Status, err, r.Body)
 	}
+}
+
+type httpSessionStore struct {
+	read func(context.Context, string, time.Time) (auth.Session, error)
+}
+
+func (s httpSessionStore) WebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
+	return s.read(ctx, hash, now)
+}
+func (s httpSessionStore) CreateWebSession(context.Context, auth.SessionRecord) error {
+	return auth.ErrInvalidSession
 }

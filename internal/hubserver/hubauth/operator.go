@@ -22,7 +22,7 @@ func (s *Authenticator) Operator(options OperatorOptions) echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			credential, status, err := s.AuthenticateRequest(c.Request().Context(), c)
 			if err != nil && errors.Is(options.Classify(err), operatortool.ErrAccessDenied) && s.deps.Hosted != nil && !s.shared() && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
-				if _, hash, sessionErr := s.deps.Session(c.Request().Context(), c); sessionErr == nil {
+				if _, hash, sessionErr := s.HostedSession(c.Request().Context(), c); sessionErr == nil {
 					credential, err = options.AccountCredential(c.Request().Context(), hash)
 				} else {
 					err = sessionErr
@@ -84,7 +84,7 @@ func (s *Authenticator) Operator(options OperatorOptions) echo.MiddlewareFunc {
 						return Credential{}, options.Classify(err)
 					}
 				} else {
-					session, err := s.WebSession(ctx, credential.SessionHash, s.deps.Now())
+					session, err := s.StoredSession(ctx, credential.SessionHash, s.deps.Now())
 					if err != nil {
 						return Credential{}, options.Classify(err)
 					}

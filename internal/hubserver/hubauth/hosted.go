@@ -18,7 +18,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-func (s *Authenticator) WebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
+func (s *Authenticator) StoredSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
 	var row accessstore.Session
 	revokedMember := false
 	err := s.read(ctx, s.deps.Organization, func(r tenantstore.Reader) error {
@@ -104,7 +104,7 @@ func (s *Authenticator) MemberCredential(ctx context.Context, session auth.Sessi
 }
 
 func (s *Authenticator) HostedCredential(ctx context.Context, c echo.Context) (Credential, int, error) {
-	session, hash, err := s.deps.Session(ctx, c)
+	session, hash, err := s.HostedSession(ctx, c)
 	if err != nil {
 		if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
 			return Credential{}, http.StatusServiceUnavailable, err
@@ -172,7 +172,7 @@ func (s *Authenticator) SharedCredential(ctx context.Context, session auth.Sessi
 }
 
 func (s *Authenticator) SessionCredential(ctx context.Context, session auth.Session, hash string) (Credential, int, error) {
-	membership, err := s.deps.Membership(ctx, session.Identity)
+	membership, err := s.Membership(ctx, session.Identity)
 	if err != nil {
 		if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
 			return Credential{}, http.StatusServiceUnavailable, err

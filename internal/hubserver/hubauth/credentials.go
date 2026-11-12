@@ -83,7 +83,7 @@ func (s *Authenticator) AuthenticateAccessHash(ctx context.Context, hash, renewa
 	credential := Credential{ID: token.ID, Name: token.Name, Scope: TokenScope(token.Scope), Hash: hash, NativeOnly: token.NativeOnly, HostedMembership: token.MembershipID, HostedPrincipal: member.PrincipalID, HostedRole: member.Role, HostedKeyKind: token.Kind, HostedProjectAccess: string(token.ProjectAccess), Runner: runner, RunnerRenewal: RunnerRenewal}
 	if token.UserID != "" {
 		credential.Hosted = &auth.HostedIdentity{Subject: token.UserID, OrganizationID: provider}
-		current, err := s.deps.Membership(ctx, credential.Hosted)
+		current, err := s.Membership(ctx, credential.Hosted)
 		if err != nil && errors.Is(err, tenantauth.ErrUnavailable) {
 			return Credential{}, http.StatusServiceUnavailable, err
 		}
@@ -179,7 +179,7 @@ func (s *Authenticator) AuthenticateRepositoryAPIHash(ctx context.Context, repos
 			return Credential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 		}
 		credential.Hosted = &auth.HostedIdentity{Subject: token.UserID, OrganizationID: provider}
-		current, err := s.deps.Membership(ctx, credential.Hosted)
+		current, err := s.Membership(ctx, credential.Hosted)
 		if errors.Is(err, tenantauth.ErrUnavailable) {
 			return Credential{}, http.StatusServiceUnavailable, err
 		}

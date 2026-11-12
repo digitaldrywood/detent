@@ -29,7 +29,7 @@ func nativeCredentialResult(c hubauth.Credential, status int, err error) (apiCre
 func (s *Service) requestAuth() *hubauth.Authenticator {
 	deps := hubauth.Deps{
 		Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.now,
-		Membership: s.hostedMembership, Session: s.hostedSession, CompleteInvitation: s.completePendingHostedInvitation,
+		Classify: operatorAuthorizationError, SharedSession: s.sharedHostedSession, CompleteInvitation: s.completePendingHostedInvitation,
 		LocalCredential: func(ctx context.Context, c echo.Context) (hubauth.Credential, int, error) {
 			credential, status, err := s.localAppCredentialContext(ctx, c)
 			return authCredential(credential), status, err
@@ -53,7 +53,14 @@ func (s *Service) requestAuth() *hubauth.Authenticator {
 		},
 	}
 	if s.config.Hosted != nil {
-		deps.Hosted = &hubauth.Hosted{OrganizationID: s.config.Hosted.OrganizationID, Shared: s.config.Hosted.SharedEntry != nil, StaffEmails: s.config.Hosted.StaffEmails}
+		deps.Hosted = &hubauth.Hosted{OrganizationID: s.config.Hosted.OrganizationID, Shared: s.config.Hosted.SharedEntry != nil, StaffEmails: s.config.Hosted.StaffEmails, SupportActors: s.config.Hosted.SupportActors}
+	}
+	if s.config.Hosted != nil && s.config.Hosted.Provider != nil {
+		deps.Memberships = s.config.Hosted.Provider.Memberships
+		deps.CurrentSession = s.config.Hosted.Provider.CurrentSession
+	}
+	if s.hostedSessions != nil {
+		deps.SessionLookup = s.hostedSessions.Authenticate
 	}
 	return hubauth.New(deps)
 }

@@ -46,7 +46,7 @@ func TestHTTPCredentialsAndDenials(t *testing.T) {
 				case "member":
 					actor = h.MemberSession(t, options)
 				case "staff":
-					actor = h.StaffSession(t, options, "support@example.test", "Investigate reported access")
+					actor = h.StaffSession(t, options, "support@example.test", "troubleshooting")
 				}
 				result := h.Request(t, actor, http.MethodGet, path(h.Organization, first.ID), nil)
 				if result.Status != http.StatusOK {
