@@ -314,13 +314,36 @@ func (f *conversationWorkerFixture) receipt(t *testing.T, key string) conversati
 func (f *conversationWorkerFixture) questions(t *testing.T) []conversationQuestionRecord {
 	t.Helper()
 	records := []conversationQuestionRecord{}
+	objects := map[string]attachment.ArchiveReference{}
 	f.readTenant(t, func(r tenantstore.Reader) error {
 		questions, err := r.Questions(t.Context(), f.record.ID, "", 200)
 		for _, question := range questions {
+			if question.ContentReference != "" {
+				object, err := r.ConversationContent(t.Context(), question.ContentReference)
+				if err != nil {
+					return err
+				}
+				objects[question.ContentReference] = object.Reference
+			}
 			records = append(records, conversationQuestionRecord{Question: question.Question, RequestID: question.RequestID, ContentID: question.ContentReference})
 		}
 		return err
 	})
+	for index := range records {
+		record := &records[index]
+		if record.ContentID == "" {
+			continue
+		}
+		var payload conversationContent
+		if err := f.service.readConversationObject(t.Context(), string(f.project.OrganizationID), objects[record.ContentID], &payload); err != nil {
+			t.Fatal(err)
+		}
+		var content conversationQuestionContent
+		if err := json.Unmarshal(payload.Data, &content); err != nil {
+			t.Fatal(err)
+		}
+		record.Prompts, record.Answers = content.Prompts, content.Answers
+	}
 	return records
 }
 
