@@ -49,23 +49,6 @@ func (s *Service) accessWebSession(ctx context.Context, hash string, now time.Ti
 	return s.requestAuth().StoredSession(ctx, hash, now)
 }
 
-func (s *Service) createAccessWebSession(ctx context.Context, record auth.SessionRecord) error {
-	if s.config.Hosted == nil || record.Identity == nil {
-		return auth.ErrInvalidSession
-	}
-	identity := record.Identity
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-		tenant, err := w.AccessTenant(ctx)
-		if err != nil {
-			return err
-		}
-		if identity.OrganizationID != tenant.ProviderID {
-			return auth.ErrInvalidSession
-		}
-		return w.CreateAccessSession(ctx, accessstore.Session{OrganizationID: s.accessOrganization(), Hash: record.TokenHash, Email: record.Email, Subject: identity.Subject, ProviderOrganizationID: identity.OrganizationID, SessionID: identity.SessionID, IdentityCreatedAt: identity.CreatedAt, IdentityExpiresAt: identity.ExpiresAt, SupportActor: identity.SupportActor, SupportReason: identity.SupportReason, CreatedAt: record.CreatedAt, ExpiresAt: record.ExpiresAt})
-	})
-}
-
 func (s *Service) accessMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
 	return nativeCredentialResult(s.requestAuth().MemberCredential(ctx, session, hash, membership))
 }
