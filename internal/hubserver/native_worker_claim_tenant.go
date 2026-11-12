@@ -210,7 +210,14 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 		if err != nil {
 			return result, err
 		}
-		if report.SupportsOn(identity.IsolationTier, identity.OS) {
+		claimable := report.SupportsOn(identity.IsolationTier, identity.OS)
+		if claimable && slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) {
+			claimable, err = s.nativeWorkspaceClaimAllowed(ctx, r, scope, request.WorkItemID, now)
+			if err != nil {
+				return result, err
+			}
+		}
+		if claimable {
 			return result, corestore.ErrRevisionConflict
 		}
 	}
