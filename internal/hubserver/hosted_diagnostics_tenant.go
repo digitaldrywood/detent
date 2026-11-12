@@ -166,27 +166,42 @@ func (s *Service) readDiagnosticsTenant(ctx context.Context, credential apiCrede
 			decisions = append(decisions, event)
 		}
 	}
-	decisionObjects := slices.Clone(decisions)
-	for _, event := range decisions {
-		if prior, ok := snapshot.PriorDecisions[event.ID]; ok {
-			decisionObjects = append(decisionObjects, prior)
-		}
-	}
-	decisionValues, decisionErrors := readDiagnosticObjects(decisionObjects, func(event eventstore.Event) (tracker.CollaborationEvent, error) { return content.Event(ctx, event) })
+	readDecision := func(event eventstore.Event) (tracker.CollaborationEvent, error) { return content.Event(ctx, event) }
+	decisionValues, decisionErrors := readDiagnosticObjects(decisions, readDecision)
 	decisionPayloads := make(map[string]tracker.CollaborationEvent, len(decisionValues))
 	for index, value := range decisionValues {
 		if decisionErrors[index] == nil {
-			decisionPayloads[decisionObjects[index].ID] = value
+			decisionPayloads[decisions[index].ID] = value
 		}
 	}
-	for _, err := range decisionErrors {
+	priorObjects := []eventstore.Event{}
+	queuedPriors := map[string]bool{}
+	for _, event := range decisions {
+		value, ok := decisionPayloads[event.ID]
+		if !ok || value.Data.Decision == nil || value.Data.Decision.Source != "native_claim" || value.Data.Decision.Outcome != "claimed" {
+			continue
+		}
+		prior, found := snapshot.PriorDecisions[event.ID]
+		if _, read := decisionPayloads[prior.ID]; !found || read || queuedPriors[prior.ID] {
+			continue
+		}
+		queuedPriors[prior.ID] = true
+		priorObjects = append(priorObjects, prior)
+	}
+	priorValues, priorErrors := readDiagnosticObjects(priorObjects, readDecision)
+	for index, value := range priorValues {
+		if priorErrors[index] == nil {
+			decisionPayloads[priorObjects[index].ID] = value
+		}
+	}
+	for _, err := range append(slices.Clone(decisionErrors), priorErrors...) {
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, artifact.ErrMissing) {
 			report.Partial = true
 		} else if err != nil {
 			return diagnosticsReport{}, fmt.Errorf("read diagnostic scheduler event: %w", err)
 		}
 	}
-	for index, value := range decisionValues[:len(decisions)] {
+	for index, value := range decisionValues {
 		err := decisionErrors[index]
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, artifact.ErrMissing) {
 			report.Partial = true
