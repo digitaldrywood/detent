@@ -165,6 +165,9 @@ func (s *Service) readableLegacyRecordPath(ctx context.Context, credential apiCr
 		if len(parts) > start {
 			path += "/" + strings.Join(parts[start:], "/")
 		}
+		if s.config.Hosted != nil {
+			path = strings.TrimRight(s.config.Hosted.PublicURL, "/") + path
+		}
 	}
 	return path, nil
 }
