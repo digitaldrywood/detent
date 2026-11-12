@@ -245,6 +245,7 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 	if count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || count != 2 {
 		t.Fatalf("historical issue import count=%d error=%v", count, err)
 	}
+	drainTestNativeBoard(t, f.service)
 	for _, test := range cases {
 		var stored corestore.WorkItem
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {

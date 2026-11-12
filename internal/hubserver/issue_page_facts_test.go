@@ -40,6 +40,7 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
 		drainTestNativeBoard(t, fixture.service)
+		refreshNativeDuplicateSearchFixture(t, fixture.service, fixture.project.OrganizationID)
 		if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			stored, err := r.WorkItem(t.Context(), fixture.project.ID, issue.WorkItemID)
 			if err != nil {
@@ -262,31 +263,36 @@ func TestBlockerHistoryUsesTypedPostgresFacts(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	for index := range 2 {
 		issue := f.create(t, fmt.Sprintf("Blocker history %d", index))
-		value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "Persisted reason", Run: &tracker.NativeRunData{AttemptID: "persisted-attempt", FencingToken: 3}}}
-		raw, err := json.Marshal(value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		record, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-			var err error
-			record, err = w.AppendEvent(t.Context(), record)
-			return err
-		}); err != nil {
-			t.Fatal(err)
+		appendTransition := func(t *testing.T, typed func(*eventstore.Event)) eventstore.Event {
+			t.Helper()
+			value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "Persisted reason", Run: &tracker.NativeRunData{AttemptID: "persisted-attempt", FencingToken: 3}}}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			typed(&record)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				var err error
+				record, err = w.AppendEvent(t.Context(), record)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return record
 		}
 		for _, stage := range []string{"persisted", "typed facts differ"} {
 			t.Run(fmt.Sprintf("item-%d/%s", index, stage), func(t *testing.T) {
 				revision, from, to := tracker.Revision(2), "Todo", "Done"
 				if stage == "typed facts differ" {
 					revision, from, to = 7, "Backlog", "Cancelled"
-					if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE collaboration_events SET event_revision=$1,from_state=$2,to_state=$3 WHERE organization_id=$4 AND project_id=$5 AND work_item_id=$6 AND id=$7", revision, from, to, f.project.OrganizationID, f.project.ID, issue.WorkItemID, record.ID); err != nil {
-						t.Fatal(err)
-					}
 				}
+				record := appendTransition(t, func(record *eventstore.Event) {
+					record.EventRevision, record.FromState, record.ToState = int64(revision), from, to
+				})
 				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/history?view=blockers", f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				var page tracker.Page[tracker.CollaborationEvent]
@@ -301,9 +307,7 @@ func TestBlockerHistoryUsesTypedPostgresFacts(t *testing.T) {
 				}
 			})
 		}
-		if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE collaboration_events SET attempt_id=$1 WHERE organization_id=$2 AND project_id=$3 AND work_item_id=$4 AND id=$5", "corrupt-attempt", f.project.OrganizationID, f.project.ID, issue.WorkItemID, record.ID); err != nil {
-			t.Fatal(err)
-		}
+		record := appendTransition(t, func(record *eventstore.Event) { record.AttemptID = "corrupt-attempt" })
 		var corrupted eventstore.Event
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			rows, err := r.Events(t.Context(), f.project.ID, issue.WorkItemID, record.Sequence-1, 1)
@@ -326,12 +330,13 @@ func TestBlockerHistoryUsesTypedPostgresFacts(t *testing.T) {
 
 func TestIssuePageHistoryReadsPastStorageConversionBudget(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
+	addedStates := 50 - len(f.project.States)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.ProjectRecord(t.Context(), f.project.ID)
 		if err != nil {
 			return err
 		}
-		for index := range storageConversionRows + 3 {
+		for index := range addedStates {
 			record.States = append(record.States, tracker.NativeState{Name: fmt.Sprintf("example-state-%d", index), Dispatchable: true, Transitions: []string{"Todo"}})
 		}
 		_, err = w.UpdateProjectRecord(t.Context(), record)
@@ -344,7 +349,7 @@ func TestIssuePageHistoryReadsPastStorageConversionBudget(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for index := range storageConversionRows + 3 {
+		for index := range addedStates {
 			name := fmt.Sprintf("example-state-%d", index)
 			if !slices.ContainsFunc(record.States, func(state tracker.NativeState) bool { return state.Name == name }) {
 				t.Fatalf("workflow rank population truncated before %s: states=%d", name, len(record.States))
@@ -357,7 +362,7 @@ func TestIssuePageHistoryReadsPastStorageConversionBudget(t *testing.T) {
 	actor := tracker.Actor{Kind: "human", PrincipalID: strings.Repeat("example-", 1500)}
 	for itemIndex := range 2 {
 		name := fmt.Sprintf("Large event history %d", itemIndex)
-		state := fmt.Sprintf("example-state-%d", storageConversionRows+2)
+		state := fmt.Sprintf("example-state-%d", addedStates-1)
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + name}, Title: name, Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: state})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
@@ -368,7 +373,7 @@ func TestIssuePageHistoryReadsPastStorageConversionBudget(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if len(rows) != 1 || rows[0].WorkItemID != issue.WorkItemID || rows[0].Position.State != state || rows[0].Position.Lane != len(f.project.States)+storageConversionRows+2 || rows[0].Position.Lane == 2147483647 {
+			if len(rows) != 1 || rows[0].WorkItemID != issue.WorkItemID || rows[0].Position.State != state || rows[0].Position.Lane != len(f.project.States)+addedStates-1 || rows[0].Position.Lane == 2147483647 {
 				t.Fatalf("last workflow state has no usable board rank: %+v", rows)
 			}
 			return nil
@@ -588,10 +593,16 @@ func assertIssuePageNotificationParticipants(t *testing.T, f nativeFixture, issu
 			cursor = page.Next
 			continue
 		}
-		if page.Candidate.ProjectID != f.project.ID || page.Candidate.WorkItemID != issue.WorkItemID {
+		if page.Candidate.ProjectID != "" && page.Candidate.ProjectID != f.project.ID || page.Candidate.WorkItemID != issue.WorkItemID {
 			t.Fatalf("participant notification crossed project or item: %+v", page.Candidate)
 		}
-		notice, _, claimed, err := owner.ClaimNotification(t.Context(), f.project.OrganizationID, event.RecordedAt.Add(time.Hour), page.Candidate, true)
+		notice, unresolved, claimed, err := owner.ClaimNotification(t.Context(), f.project.OrganizationID, event.RecordedAt.Add(time.Hour), page.Candidate, true)
+		if err == nil && !claimed && unresolved.Verify {
+			if unresolved.ProjectID != f.project.ID || unresolved.WorkItemID != issue.WorkItemID {
+				t.Fatalf("participant verification crossed project or item: %+v", unresolved)
+			}
+			notice, _, claimed, err = owner.ClaimNotification(t.Context(), f.project.OrganizationID, event.RecordedAt.Add(time.Hour), unresolved, true)
+		}
 		if err != nil || !claimed {
 			t.Fatalf("claim participant notice claimed=%t error=%v", claimed, err)
 		}

@@ -291,7 +291,7 @@ func (s *Service) maintainGitHubPullRequestRefresh(ctx context.Context) error {
 		return s.finishGitHubPullRequestFailure(ctx, organization, row, errors.New("pull request refresh source is incomplete"))
 	}
 	source, details := snapshot.PullRequests[0], snapshot.PullRequestDetails[0]
-	if source.Number > 0 && source.Number != row.Number || details.Number > 0 && details.Number != row.Number || source.HeadSHA != "" && details.HeadSHA != "" && source.HeadSHA != details.HeadSHA {
+	if source.Number > 0 && source.Number != row.Number || details.Number > 0 && details.Number != row.Number || source.HeadSHA != "" && details.HeadSHA != "" && source.HeadSHA != details.HeadSHA || source.HeadSHA != "" && source.HeadSHA != row.RequestedHeadSHA {
 		return s.finishGitHubPullRequestFailure(ctx, organization, row, Permanent(errors.New("pull request refresh identity or head changed")))
 	}
 	if source.Number != row.Number || details.Number != row.Number || source.HeadSHA == "" || details.HeadSHA == "" || source.UpdatedAt.IsZero() || details.Checks == nil || details.Reviews == nil {

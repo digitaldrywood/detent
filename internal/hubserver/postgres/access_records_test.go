@@ -730,13 +730,33 @@ func TestAccessSessionTombstoneAndTransactionReplay(t *testing.T) {
 				}
 			}
 		}
-		for index, state := range []string{"wrong", "state", "state"} {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessLoginTransaction(t.Context(), accessstore.LoginTransaction{OrganizationID: org, Hash: "support", State: "support-state", SupportActor: "support@example.com", SupportSession: "session_support", ExpiresAt: now.Add(time.Hour)})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for index, consume := range []struct {
+			hash, state string
+			want        bool
+		}{
+			{"login", "wrong", false},
+			{"login", "", false},
+			{"login", "state", true},
+			{"login", "state", false},
+			{"support", "", true},
+			{"support", "", false},
+		} {
+			var consumed accessstore.LoginTransaction
 			err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				_, err := w.ConsumeAccessTransaction(t.Context(), "login", state, now)
+				var err error
+				consumed, err = w.ConsumeAccessTransaction(t.Context(), consume.hash, consume.state, now)
 				return err
 			})
-			if (err == nil) != (index == 1) {
+			if (err == nil) != consume.want {
 				t.Fatalf("consume index=%d error=%v", index, err)
+			}
+			if consume.want && consume.hash == "support" && (consumed.SupportActor != "support@example.com" || consumed.SupportSession != "session_support") {
+				t.Fatalf("support transaction = %+v", consumed)
 			}
 		}
 	}

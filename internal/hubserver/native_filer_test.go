@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -37,6 +39,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 			return err
 		}
 		project.States = states
+		project.Settings.Repository, project.Settings.CheckoutRepository, project.Settings.RepositoryEnabled = "example-org/example-project", "example-org/example-project", true
 		_, err = w.UpdateProjectRecord(t.Context(), project)
 		return err
 	}); err != nil {
@@ -46,26 +49,36 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	sourceCreated := f.service.config.now().Add(-time.Hour)
+	f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
+		if request.Stage != "issue" {
+			return GitHubImportPage{}, nil
+		}
+		return GitHubImportPage{Issue: &IssueSource{NodeID: fmt.Sprintf("I_filer_%d", request.IssueNumber), Number: request.IssueNumber, URL: fmt.Sprintf("https://github.com/%s/issues/%d", request.Repository, request.IssueNumber), Title: "Linked source", Body: "Linked source body" + issueContractTestSections, AuthorID: "author", CreatedAt: sourceCreated, UpdatedAt: sourceCreated}}, nil
+	})
 	ids := map[string]tracker.NativeWorkItemID{}
 	for _, test := range []struct {
-		name, state     string
-		archived, other bool
+		name, state, source string
+		archived, other     bool
 	}{
-		{name: "triaged", state: "Triage"},
+		{name: "triaged", source: "https://github.com/example-org/example-project/issues/1"},
 		{name: "active", state: "Todo"},
 		{name: "done", state: "Done"},
 		{name: "cancelled", state: "Cancelled"},
 		{name: "archived", state: "Done", archived: true},
-		{name: "other", state: "Triage", other: true},
+		{name: "other", source: "https://github.com/example-org/example-project/issues/2", other: true},
 	} {
 		creator := f
 		if test.other {
 			creator.token = testHubAdminToken
 		}
-		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", creator.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + test.name}, Title: test.name, Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: test.state, Labels: []string{"filed"}})
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", creator.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + test.name}, Title: test.name, Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: test.state, Labels: []string{"filed"}, GitHubIssueURL: test.source})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
+		if test.source != "" && issue.State != "Triage" {
+			t.Fatalf("linked intake state=%s, want Triage", issue.State)
+		}
 		if test.archived {
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/archive", creator.token, archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive-" + test.name}, ExpectedRevision: issue.Revision})
 			requireNativeStatus(t, response, http.StatusOK)

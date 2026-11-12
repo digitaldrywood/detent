@@ -177,7 +177,7 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 			}
 			parity(t, view)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				attempt, err := w.Attempt(t.Context(), "attempt")
+				attempt, err := w.Attempt(t.Context(), sourceTransferAttemptID)
 				if err != nil {
 					return err
 				}
@@ -215,7 +215,7 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 				var events []eventstore.Event
 				for sequence, kind := range []string{"run.started", "run.checkpointed", "run.finished"} {
 					status := "running"
-					run := tracker.NativeRunData{AttemptID: id, RunID: "run_" + id, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", PolicyID: hubTestPolicy().ID, Sequence: int64(sequence + 1), Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example", Model: "example"}}
+					run := tracker.NativeRunData{AttemptID: id, RunID: "run_" + strings.TrimPrefix(id, "attempt_"), LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", PolicyID: hubTestPolicy().ID, Sequence: int64(sequence + 1), Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example", Model: "example"}}
 					if sequence == 1 {
 						run.Handoff = &checkpoint
 					}
@@ -265,13 +265,13 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 				return saved, checkpointRef
 			}
 			preserving := tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "unpushed", HeadSHA: view.HeadSHA, Availability: "available", Storage: "local_only", ExternalEffect: "none", EffectState: "none"}
-			source, sourceRef := seed("attempt_preserving", preserving)
+			source, sourceRef := seed("attempt_"+strings.Repeat("f", 32), preserving)
 			clean := preserving
 			clean.WorktreeState = "clean"
 			var latest leasestore.Attempt
 			var latestRef attachment.ArchiveReference
 			for i := range 101 {
-				latest, latestRef = seed(fmt.Sprintf("attempt_clean_%03d", i), clean)
+				latest, latestRef = seed(fmt.Sprintf("attempt_%032x", i), clean)
 			}
 			current := read(t)
 			if current.AttemptID != source.ID || current.VersionID != "version" || !current.Available || !current.Quiesced || current.HeadSHA != view.HeadSHA {
@@ -438,6 +438,11 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 	}
 }
 
+const (
+	sourceTransferAttemptID = "attempt_0123456789abcdef0123456789abcdef"
+	sourceTransferRunID     = "run_0123456789abcdef0123456789abcdef"
+)
+
 func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.OrganizationID) leasestore.Lease {
 	t.Helper()
 	now := s.config.now()
@@ -457,7 +462,7 @@ func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.Organizatio
 	}
 	approval.ProjectID, approval.ApprovedAt, approval.ApprovedBy = "project", now, "owner"
 	input := changeTestInput()
-	input.PolicyID, input.AttemptID = policy.ID, "attempt"
+	input.PolicyID, input.AttemptID = policy.ID, sourceTransferAttemptID
 	bundle := changeTestSource(t, &input)
 	version, err := content.PrepareVersion(t.Context(), org, marshal(tracker.ChangeVersion{ID: "version", ChangeID: "change", Number: 1, ChangeVersionInput: input, Policy: policy, CreatedAt: now}))
 	if err != nil {
@@ -491,7 +496,7 @@ func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.Organizatio
 		if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: org, ProjectID: "project", LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: policy.ID, BoundAt: lease.AcquiredAt}); err != nil {
 			return err
 		}
-		run := tracker.NativeRunData{PolicyID: policy.ID, AttemptID: "attempt", RunID: "run", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", Sequence: 1}
+		run := tracker.NativeRunData{PolicyID: policy.ID, AttemptID: sourceTransferAttemptID, RunID: sourceTransferRunID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", Sequence: 1}
 		event, err := content.PrepareEvent(t.Context(), org, marshal(tracker.CollaborationEvent{ID: "event", OrganizationID: org, ProjectID: "project", AggregateID: "item", Type: "run.observed", Actor: tracker.Actor{Kind: "machine", PrincipalID: "machine"}, SchemaVersion: 1, RecordedAt: now, Data: tracker.CollaborationData{Run: &run}}))
 		if err != nil {
 			return err
@@ -500,7 +505,7 @@ func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.Organizatio
 		if err != nil {
 			return err
 		}
-		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run", Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: canonical.Key}); err != nil {
+		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: sourceTransferAttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: sourceTransferRunID, Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: canonical.Key}); err != nil {
 			return err
 		}
 		run.Sequence, run.Outcome = 2, "succeeded"
@@ -511,7 +516,7 @@ func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.Organizatio
 		if err != nil {
 			return err
 		}
-		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run", Sequence: 2, Status: run.Outcome, PayloadObjectKey: canonical.Key}); err != nil {
+		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: sourceTransferAttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: sourceTransferRunID, Sequence: 2, Status: run.Outcome, PayloadObjectKey: canonical.Key}); err != nil {
 			return err
 		}
 		if _, err := w.AppendEvent(t.Context(), event); err != nil {
@@ -570,7 +575,7 @@ func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
 			request := sourceTransferRequest{Mutation: tracker.Mutation{IdempotencyKey: "transfer"}, ExpectedRevision: 1, VersionID: "version", DestinationRunnerID: "destination"}
 			var canonicalKey string
 			if err := s.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-				attempt, err := r.Attempt(t.Context(), "attempt")
+				attempt, err := r.Attempt(t.Context(), sourceTransferAttemptID)
 				if err != nil {
 					return err
 				}
@@ -597,7 +602,15 @@ func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
 					}
 					refused := request
 					refused.IdempotencyKey = scenario
-					requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPost, path, string(org)+"_token", refused), http.StatusInternalServerError)
+					response := performHubAPIRequest(t, s, http.MethodPost, path, string(org)+"_token", refused)
+					if scenario == "corrupt" {
+						requireNativeStatus(t, response, http.StatusServiceUnavailable)
+						if !strings.Contains(response.Body.String(), "archive_invalid") {
+							t.Fatalf("corrupt canonical attempt must be refused as an invalid archive: %s", response.Body)
+						}
+					} else {
+						requireNativeStatus(t, response, http.StatusInternalServerError)
+					}
 					if err := s.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 						row, err := r.WorkItem(t.Context(), "project", "item")
 						if err == nil && (row.Revision != 1 || row.DispatchGeneration != 0 || row.RecoveryRunnerID != "" || row.RecoveryVersionID != "") {

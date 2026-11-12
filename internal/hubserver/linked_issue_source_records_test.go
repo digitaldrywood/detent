@@ -27,10 +27,10 @@ func TestLinkedIssueIntakeRequiresSelectedAccessAuthority(t *testing.T) {
 }
 
 func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	organization := tracker.OrganizationID("org_security")
 	projectID := tracker.ProjectID("prj_security")
-	project := projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native", RequireDependencies: true}, States: append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true})}
+	project := projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native", RequireDependencies: true}, States: append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true, Transitions: []string{"Cancelled"}})}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		now := time.Now().UTC()
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: "example-organization", CreatedAt: now}); err != nil {
@@ -136,7 +136,7 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 		transition.ExpectedRevision = current.Revision
 		requireNativeStatus(t, f.request(t, owner, http.MethodPost, path+"/workflow", transition), http.StatusOK)
 		var key string
-		if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT command_key FROM github_outbound WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", organization, projectID, selected.WorkItemID).Scan(&key); err != nil {
+		if err := admin.QueryRowContext(t.Context(), "SELECT command_key FROM github_outbound WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", organization, projectID, selected.WorkItemID).Scan(&key); err != nil {
 			t.Fatal(err)
 		}
 		var outbound projectstore.GitHubOutbound
@@ -165,7 +165,7 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 		}
 	}
 	var count int
-	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbound WHERE organization_id=$1 AND project_id=$2", organization, projectID).Scan(&count); err != nil || count != 2 {
+	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbound WHERE organization_id=$1 AND project_id=$2", organization, projectID).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("replay/private discussion queued duplicate cancellation writes: %d, %v", count, err)
 	}
 	if backend.effects != 2 {

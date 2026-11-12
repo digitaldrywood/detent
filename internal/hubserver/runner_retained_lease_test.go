@@ -30,8 +30,10 @@ func TestRunnerRetainedLeaseClaimEligibility(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 			owner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			owner.enroll(t)
+			owner.reportCapacity(t)
 			other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			other.enroll(t)
+			other.reportCapacity(t)
 			descriptor := hubTestPolicy()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			item := f.create(t, "Restart ownership")
@@ -48,7 +50,7 @@ func TestRunnerRetainedLeaseClaimEligibility(t *testing.T) {
 			}
 			if test.expire {
 				now = now.Add(600 * time.Second)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(other.binding.MachineID)+"/heartbeat", other.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "backend_isolation": other.redemption.BackendIsolation}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(other.binding.MachineID)+"/heartbeat", other.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": other.redemption.BackendIsolation}), http.StatusOK)
 			}
 			if test.reclaim {
 				token := lease.FencingToken

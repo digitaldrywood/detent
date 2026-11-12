@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"regexp"
 	"testing"
 	"time"
 
@@ -27,7 +27,7 @@ type postgresAuthorityFaultTrace struct {
 }
 
 func (f *postgresAuthorityFaultTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, query pgx.TraceQueryStartData) context.Context {
-	if f.table != "" && strings.Contains(query.SQL, "FROM "+f.table+" WHERE") && len(query.Args) > 1 && query.Args[1] == f.id {
+	if f.table != "" && regexp.MustCompile(`\bFROM `+regexp.QuoteMeta(f.table)+`( [a-z]+)? WHERE`).MatchString(query.SQL) && len(query.Args) > 1 && query.Args[1] == f.id {
 		f.hits++
 		failed, cancel := context.WithCancel(ctx)
 		cancel()

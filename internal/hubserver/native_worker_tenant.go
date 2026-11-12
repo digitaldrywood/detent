@@ -211,7 +211,11 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 		if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(c.Request().Context(), reader, &authority); err != nil {
 			return err
 		}
-		lease, err = w.RenewWithLandingCapacity(c.Request().Context(), leasestore.Fence{LeaseID: c.Param("lease"), FencingToken: int64(request.FencingToken)}, ttl, int64(request.LandingCapacity))
+		landingCapacity := int64(request.LandingCapacity)
+		if current.LandingCapacity > 0 && (landingCapacity == 0 || landingCapacity > current.LandingCapacity) {
+			landingCapacity = current.LandingCapacity
+		}
+		lease, err = w.RenewWithLandingCapacity(c.Request().Context(), leasestore.Fence{LeaseID: c.Param("lease"), FencingToken: int64(request.FencingToken)}, ttl, landingCapacity)
 		if err != nil {
 			return err
 		}

@@ -66,7 +66,7 @@ func TestRunnerRepositoryReports(t *testing.T) {
 			t.Fatal("refresh replay changed request")
 		}
 		var snapshot runnerauth.RoutingSnapshot
-		response := performHubAPIRequest(t, f.service, http.MethodPost, test.base+"/machines/"+test.machine+"/heartbeat", test.credential, map[string]any{"capacity": 2, "version": "test"})
+		response := performHubAPIRequest(t, f.service, http.MethodPost, test.base+"/machines/"+test.machine+"/heartbeat", test.credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test"})
 		requireNativeStatus(t, response, http.StatusOK)
 		decodeHubResponse(t, response, &snapshot)
 		if snapshot.RepositoryListRequest != requestID {

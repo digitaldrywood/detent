@@ -64,16 +64,6 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 	if err := validateChangeVersionEvidence(scope, item, request); err != nil {
 		return nil, err
 	}
-	if request.Source != nil {
-		if err := request.Source.Validate(request.BaseSHA, request.HeadSHA, request.SourceBundle); err != nil {
-			return nil, nativeRejection(nativeInvalid(err.Error()), "version_validation", "source")
-		}
-		if err := s.verifyChangeSource(ctx, *request.Source, request.SourceBundle); err != nil {
-			return nil, err
-		}
-	} else if len(request.SourceBundle) > 0 {
-		return nil, nativePublicInvalid("Source bundle requires immutable source metadata")
-	}
 	change, err := s.readChangeRecord(ctx, scope, item, changeID)
 	if err != nil {
 		return nil, err
@@ -90,6 +80,16 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 	}
 	if err != nil {
 		return nil, err
+	}
+	if request.Source != nil {
+		if err := request.Source.Validate(request.BaseSHA, request.HeadSHA, request.SourceBundle); err != nil {
+			return nil, nativeRejection(nativeInvalid(err.Error()), "version_validation", "source")
+		}
+		if err := s.verifyChangeSource(ctx, *request.Source, request.SourceBundle); err != nil {
+			return nil, err
+		}
+	} else if len(request.SourceBundle) > 0 {
+		return nil, nativePublicInvalid("Source bundle requires immutable source metadata")
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Artifacts, "artifacts", false)

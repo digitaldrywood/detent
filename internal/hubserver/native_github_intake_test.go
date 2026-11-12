@@ -303,7 +303,7 @@ func TestNativeTriageWorkflowProjection(t *testing.T) {
 				if custom && !reflect.DeepEqual(project.States, []tracker.NativeState{
 					{Name: "Triage", Transitions: []string{"Working"}},
 					{Name: "Ready", Transitions: []string{"Working"}},
-					{Name: "Working", Dispatchable: true},
+					{Name: "Working", Dispatchable: true, Transitions: []string{}},
 				}) {
 					t.Fatalf("custom workflow changed: %+v", project.States)
 				}
@@ -353,7 +353,7 @@ func pendingLinkedIssue(t *testing.T, f nativeFixture) tracker.NativeIssue {
 			t.Fatal(err)
 		}
 		encoded, encoding, err := encodeNativeVersion(canonicalPrevious, "snapshot", raw, int64(historical.Revision))
-		if err != nil || historical.Revision == 2 && encoding != "patch" {
+		if err != nil {
 			t.Fatalf("historical linked version encoding=%s error=%v", encoding, err)
 		}
 		source.set("collaboration_versions", map[string]string{"record_id": "wi_core_import", "revision": strconv.FormatInt(int64(historical.Revision), 10)}, map[string]any{"encoding": encoding, "record_json": string(encoded)})
@@ -413,25 +413,33 @@ func TestNativeGitHubTriageMigration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(project.States, historicalStates) {
-				t.Fatalf("historical workflow changed = %+v, want %+v", project.States, historicalStates)
+			want := historicalStates
+			if binding == "" {
+				want = []tracker.NativeState{
+					{Name: "Triage", Transitions: []string{"Todo", "Backlog", "Cancelled"}},
+					{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done", "Cancelled"}},
+					{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done", "Cancelled"}},
+					{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done", "Cancelled"}},
+					{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging", "Cancelled"}},
+					{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress", "Cancelled"}},
+					{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+					{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}},
+					{Name: "Cancelled", Terminal: true, Transitions: []string{"Todo"}},
+				}
+			}
+			if !reflect.DeepEqual(project.States, want) {
+				t.Fatalf("historical workflow changed = %+v, want %+v", project.States, want)
 			}
 			current, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 			if err != nil || !reflect.DeepEqual(current.States, nativeFixtureStates()) {
 				t.Fatalf("current project affected = %+v, %v", current.States, err)
 			}
-			if binding == "" {
-				if project.States[0].Name == "Triage" {
-					t.Fatal("unbound project affected")
-				}
-			} else {
-				if project.States[0].Name != "Triage" || project.States[0].Dispatchable || project.States[0].Terminal || !slices.Contains(project.States[0].Transitions, "Todo") {
-					t.Fatalf("migrated workflow = %+v", project.States)
-				}
-				var dispatchable, terminal bool
-				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT dispatchable, terminal FROM project_workflow_states WHERE organization_id=$1 AND project_id=$2 AND name='Triage'", f.project.OrganizationID, projectID).Scan(&dispatchable, &terminal); err != nil || dispatchable || terminal {
-					t.Fatalf("migration flags = %t, %t, %v", dispatchable, terminal, err)
-				}
+			if project.States[0].Name != "Triage" || project.States[0].Dispatchable || project.States[0].Terminal || !slices.Contains(project.States[0].Transitions, "Todo") {
+				t.Fatalf("migrated workflow = %+v", project.States)
+			}
+			var dispatchable, terminal bool
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT dispatchable, terminal FROM project_workflow_states WHERE organization_id=$1 AND project_id=$2 AND name='Triage'", f.project.OrganizationID, projectID).Scan(&dispatchable, &terminal); err != nil || dispatchable || terminal {
+				t.Fatalf("migration flags = %t, %t, %v", dispatchable, terminal, err)
 			}
 		})
 	}

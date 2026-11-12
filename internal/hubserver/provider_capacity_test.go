@@ -98,6 +98,7 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: clock.Now}), "", "provider")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
+			r.reportCapacity(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			issue := f.create(t, "work")
 			report := capacityReport(now)
@@ -177,6 +178,7 @@ func TestProviderProjectBackendReservations(t *testing.T) {
 	r := prepareRunnerForScope(t, code, "organization", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.redemption.Capacity = 3
 	r.enroll(t)
+	r.reportCapacity(t)
 	reports := []providercapacity.Report{
 		{Provider: "openai", Backend: "codex-code", AccountAlias: "runner", Models: []string{"sol", "code-model", "astra", "other-code-model", "provider_default"}, Availability: "unknown", ObservedAt: now},
 		{Provider: "anthropic", Backend: "claude-design", AccountAlias: "runner", Models: []string{"opus", "design-model", "provider_default"}, Availability: "unknown", ObservedAt: now},
@@ -233,6 +235,7 @@ func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 			for i := range runners {
 				runners[i] = prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 				runners[i].enroll(t)
+				runners[i].reportCapacity(t)
 				report := capacityReport(now)
 				report.AccountAlias = fmt.Sprintf("local-%d", i)
 				if strings.HasPrefix(sharing, "subscription") {
@@ -336,6 +339,7 @@ func TestProviderStartRevalidation(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
+			r.reportCapacity(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			report := capacityReport(f.service.config.now())
 			publishCapacity(t, f, r, report)
@@ -412,6 +416,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			}
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
+			r.reportCapacity(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			if test.targeted {
 				higher := newNativeFixture(t, f.service, f.project.OrganizationID, "higher-ranked")
@@ -727,6 +732,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			current := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			current.enroll(t)
+			current.reportCapacity(t)
 			otherFixture := f
 			if test.otherOrganization {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_other", corestore.Serving, func(w tenantstore.Writer) error {
@@ -739,6 +745,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 			}
 			otherRunner := prepareRunner(t, otherFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			otherRunner.enroll(t)
+			otherRunner.reportCapacity(t)
 			report := capacityReport(now)
 			report.MaxConcurrent = 4
 			if test.currentLocal {

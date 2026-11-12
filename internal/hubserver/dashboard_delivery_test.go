@@ -428,9 +428,9 @@ func TestHostedEventsActionRunDelivery(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusCreated)
 	decodeHubResponse(t, response, &workspace)
 	before := hostedDeliveryHead(t, f)
-	stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
+	stream := openHostedTestStream(t, f, user, "?workspace="+workspace.ID+"&since="+strconv.FormatInt(before, 10))
 	now := f.service.config.now()
-	var sequence int64
+	var sequence, workspaceSequence int64
 	command, err := f.service.runDetailStore().StoreDetail(t.Context(), "org_security", []byte("true"))
 	if err != nil {
 		t.Fatal(err)
@@ -464,15 +464,19 @@ func TestHostedEventsActionRunDelivery(t *testing.T) {
 			if row.Topic == "action_run" && row.EntityID == "actionrun_events" {
 				sequence = row.Sequence
 			}
+			if row.Topic == "workspace" && row.EntityID == workspace.ID {
+				workspaceSequence = row.Sequence
+			}
 		}
-		if sequence == 0 {
-			return errors.New("action run did not publish a dashboard delta")
+		if sequence == 0 || workspaceSequence == 0 || workspaceSequence >= sequence {
+			return fmt.Errorf("dashboard deltas workspace=%d action run=%d", workspaceSequence, sequence)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	pumpHostedDelivery(t, d)
+	readHostedCursorFrame(t, stream, workspacesession.EventType(workspacesession.StateStarting), workspaceSequence)
 	frame := readHostedCursorFrame(t, stream, "action_run.queued", sequence)
 	var run workspacesession.Run
 	if err := json.Unmarshal([]byte(frame.Data), &run); err != nil || run.ID != "actionrun_events" || run.ActionID != "action_events" || run.WorkspaceID != workspace.ID || run.Status != "queued" {

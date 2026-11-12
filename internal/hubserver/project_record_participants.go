@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -116,11 +117,20 @@ func (p tenantProjectParticipants) RetireProject(ctx context.Context, w tenantst
 	if err := cleaner.DeleteAccessProjectGrants(ctx, record.Core.ID); err != nil {
 		return err
 	}
+	secret, err := w.AccessSecret(ctx, record.Core.ID, flySpritesToken)
+	if err == nil {
+		err = w.RecordAccessSecretAudit(ctx, accessstore.SecretAudit{OrganizationID: record.Core.OrganizationID, ProjectID: record.Core.ID, Actor: actor.CredentialID, Kind: secret.Kind, Event: "remove", KeyVersion: secret.Envelope.Version, RecordedAt: now})
+	} else if errors.Is(err, corestore.ErrNotFound) {
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
 	audit := actor.Audit
 	audit.OrganizationID, audit.ProjectID = record.Core.OrganizationID, record.Core.ID
 	audit.Event, audit.Route, audit.Status = "project_retired", "delete_cloud_project", http.StatusNoContent
 	audit.RecordedAt, audit.RecordedAtNS = now, now.UnixNano()
-	_, err := w.RecordAccessAudit(ctx, audit)
+	_, err = w.RecordAccessAudit(ctx, audit)
 	return err
 }
 

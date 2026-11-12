@@ -579,6 +579,7 @@ func TestRunnerProjectDiagnosticsIsolationPlatform(t *testing.T) {
 				r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}
 			}
 			r.enroll(t)
+			r.reportCapacity(t)
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var page runnerauth.DiagnosticPage

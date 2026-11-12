@@ -80,6 +80,9 @@ func TestNativeSourceTransfer(t *testing.T) {
 			a.redemption.DisplayName, b.redemption.DisplayName = "Source Air", "Destination Mini"
 			a.enroll(t)
 			b.enroll(t)
+			for _, runner := range []runnerFixture{a, b} {
+				reportRunnerCapacity(t, f.service, f.base, runner.redemption.Credential, runner.binding.MachineID, runner.redemption.DisplayName, runner.redemption.BackendIsolation, runner.redemption.Capacity)
+			}
 			if test.sameRunner {
 				b = a
 			}

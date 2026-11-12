@@ -21,6 +21,8 @@ func TestNativeIssuePickerProjection(t *testing.T) {
 		Title: new("Picker needle"), Priority: tracker.SetPriority(new(1)),
 	})
 	requireNativeStatus(t, response, http.StatusOK)
+	drainTestNativeBoard(t, f.service)
+	refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
 
 	read := func(t *testing.T, query string) (int, nativeIssuePickerPage, []byte) {
 		t.Helper()

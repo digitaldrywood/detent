@@ -30,6 +30,10 @@ func TestHotReadQueryPlans(t *testing.T) {
 	f := newUsageHostedFixture(t)
 	admin := hostedPostgresAdmin(t, f.service)
 	installReportsBudgetTrace(t, f.service)
+	seedProductionProject(t, f.service, nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}, productionProjectShape{issues: 594, attempts: 469, usage: 262, leases: 1682, comments: 7000})
+	if _, err := admin.ExecContext(t.Context(), "ANALYZE issues,collaboration_events,native_attempts,change_requests,change_evidence,attempt_usage,report_usage_current,report_escape_facts"); err != nil {
+		t.Fatal(err)
+	}
 	t.Run("rules reject injected unindexed reads", func(t *testing.T) {
 		for _, statement := range []tracedStatement{
 			{"SELECT count(*) FROM collaboration_events WHERE organization_id=$1", []any{"org_browser_preview"}},

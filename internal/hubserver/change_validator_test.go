@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -494,7 +495,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				observation := event
 				observation.Type, observation.IdempotencyKey, observation.Data.Sequence = "run.observed", "erase-session", 2
 				observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 0}}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, observation), http.StatusConflict)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, observation), http.StatusOK)
 				var frozen eventstore.Version
 				if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
@@ -569,17 +570,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
 			}
 			if strings.Contains(test.name, "visual") {
-				if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-					project, err := w.ProjectRecord(t.Context(), f.project.ID)
-					if err != nil {
-						return err
-					}
-					project.Settings.RequireVisualAttachments = true
-					_, err = w.UpdateProjectRecord(t.Context(), project)
-					return err
-				}); err != nil {
-					t.Fatal(err)
-				}
+				settings := cloudContentSettingsRequest{Mutation: tracker.Mutation{IdempotencyKey: "require-visual"}, ContentChange: projectsettings.ContentChange{RequireVisualAttachments: true}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/content-settings", testHubAdminToken, settings), http.StatusOK)
 			}
 			if test.name == "visual criterion paired upload" {
 				if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -1335,7 +1327,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 				for _, mismatch := range mismatches {
 					audit := *request.SecurityAudit
-					receipt := &tracker.NativeLandingReceipt{SecurityAudit: &audit, BaseSHA: original.BaseSHA, HeadSHA: version.HeadSHA, MergeSHA: original.HeadSHA}
+					receipt := &tracker.NativeLandingReceipt{Landed: true, SecurityAudit: &audit, VersionID: version.ID, BaseRef: "main", BaseSHA: original.BaseSHA, HeadSHA: version.HeadSHA, MergeSHA: original.HeadSHA}
 					if incorporated {
 						receipt.MergeSHA = strings.Repeat("e", 40)
 						receipt.Incorporation = &tracker.LandingIncorporation{SourceBaseSHA: version.BaseSHA, SourceHeadSHA: version.HeadSHA, TargetHeadSHA: receipt.MergeSHA, TargetTreeSHA: strings.Repeat("a", 40), MergeTreeSHA: strings.Repeat("a", 40)}

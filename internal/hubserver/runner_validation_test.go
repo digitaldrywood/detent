@@ -163,7 +163,7 @@ func TestRunnerEnrollmentScopeRevocationAndCollisions(t *testing.T) {
 			name, token string
 			status      int
 		}{
-			{"valid credential outside scope", live.redemption.Credential, http.StatusNotFound},
+			{"valid credential outside scope", live.redemption.Credential, http.StatusUnauthorized},
 			{"revoked credential before resource lookup", r.redemption.Credential, http.StatusUnauthorized},
 			{"invalid credential before resource lookup", "invalid", http.StatusUnauthorized},
 		} {

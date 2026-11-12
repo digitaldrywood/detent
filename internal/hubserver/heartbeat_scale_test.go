@@ -499,6 +499,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
 			r.enroll(t)
+			r.reportCapacity(t)
 			issue := f.create(t, "archived checkpoint")
 			worker := r.redemption.Credential
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{
@@ -548,7 +549,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 			store.mu.Unlock()
 			results := make(chan *httptest.ResponseRecorder, concurrent)
 			for range concurrent {
-				request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 1, "version": "test"})
+				request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 1, "version": "test"})
 				go func() {
 					response := httptest.NewRecorder()
 					f.service.Handler().ServeHTTP(response, request)
@@ -627,7 +628,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 			if reads := checkpointReads(); reads != 1 {
 				t.Fatalf("cleanup acknowledgment hydrated checkpoint %d times", reads)
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", worker, map[string]any{"capacity": 1, "version": "test"})
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", worker, map[string]any{"display_name": "Runner", "capacity": 1, "version": "test"})
 			requireNativeStatus(t, response, http.StatusOK)
 			var snapshot runnerauth.RoutingSnapshot
 			decodeHubResponse(t, response, &snapshot)
@@ -659,7 +660,7 @@ func TestHeartbeatClaimSkipsUnknownLegacySource(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanCheckpoint := *nativeTestCheckpoint()
-	cleanCheckpoint.WorktreeState = "clean"
+	cleanCheckpoint.WorktreeState, cleanCheckpoint.Resume = "clean", "fresh_checkout"
 	cleanRef, err := content.PreparePayload(t.Context(), org, historyTestJSON(t, checkpointPayload{Checkpoint: &cleanCheckpoint}))
 	if err != nil {
 		t.Fatal(err)
@@ -790,6 +791,7 @@ func TestHeartbeatClaimSkipsUnknownLegacySource(t *testing.T) {
 	if validClean != 1 || validDirty != 1 || unknownCleanup != 11481 {
 		t.Fatalf("classification clean=%d dirty=%d unknown_cleanup=%d", validClean, validDirty, unknownCleanup)
 	}
+	r.reportCapacity(t)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, tracker.NativeClaim{
 		PolicyID: hubTestPolicy().ID, MachineID: r.binding.MachineID, SessionID: "next-candidate", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
 		ProviderCandidates: append(providerClaim(r, unknown, "").ProviderCandidates, providerClaim(r, known, "").ProviderCandidates...),

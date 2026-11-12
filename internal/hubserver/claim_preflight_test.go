@@ -72,7 +72,7 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runner authentication status=%d: %v", status, err)
 		}
-		return claimRunner{scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, request: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID, TTLSeconds: 60, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}}
+		return claimRunner{scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, request: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID, TTLSeconds: 60, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}}
 	}
 	for _, name := range []string{"a refusal with no candidate never takes the writer", "concurrent claims never oversubscribe one host slot", "a selected candidate taken before commit moves to the next one"} {
 		t.Run(name, func(t *testing.T) {
@@ -234,7 +234,7 @@ func TestClaimRetryAfterCommittedDecisionUsesFreshEventIDs(t *testing.T) {
 	scope := nativeScope{organization: org, project: f.project.ID, credential: credential}
 	first, second, selected := f.create(t, "first decision"), f.create(t, "second decision"), f.create(t, "selected candidate")
 	requestFor := func(issue tracker.NativeIssue) tracker.NativeClaim {
-		return tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "retry-" + string(issue.WorkItemID), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+		return tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "retry-" + string(issue.WorkItemID), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	}
 	var firstLeaseID string
 	for pass, issues := range [][]tracker.NativeIssue{{first}, {first, second}} {

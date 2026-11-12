@@ -21,6 +21,7 @@ func TestRunnerScopeConversion(t *testing.T) {
 			second := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
+			r.reportCapacity(t)
 			ranks := map[tracker.ProjectID]int{f.project.ID: 2, second.project.ID: 1}
 			response := performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{Scope: "projects", DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}, ProjectRanks: ranks}})
 			requireNativeStatus(t, response, http.StatusOK)
@@ -43,7 +44,7 @@ func TestRunnerScopeConversion(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var after runnerauth.Runner
 			decodeHubResponse(t, response, &after)
-			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 			if err != nil {
 				t.Fatalf("scope reader status=%d error=%v", status, err)
 			}
@@ -69,7 +70,7 @@ func TestRunnerScopeConversion(t *testing.T) {
 			} else if response.Code == http.StatusOK {
 				t.Fatal("unconverted runner claimed an ungranted project")
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation})
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation})
 			requireNativeStatus(t, response, http.StatusOK)
 			var snapshot runnerauth.RoutingSnapshot
 			decodeHubResponse(t, response, &snapshot)

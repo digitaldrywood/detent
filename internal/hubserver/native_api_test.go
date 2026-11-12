@@ -120,6 +120,7 @@ func newPostgresNativeService(t *testing.T, cfg Config) *Service {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.normalized().now().UTC())
 		service = openPostgresHubTestService(t, repository, cfg)
 	}
 	for _, organization := range []tracker.OrganizationID{primary + "_second", primary} {
@@ -216,25 +217,26 @@ func TestNativeIssueWebURL(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			var base string
+			var service *Service
 			var request func(string, string, any) *httptest.ResponseRecorder
 			switch test.name {
 			case "local":
 				f := newDefaultNativeFixture(t, Config{})
-				base = f.base
+				base, service = f.base, f.service
 				request = func(method, path string, body any) *httptest.ResponseRecorder {
 					return performHubAPIRequest(t, f.service, method, "https://untrusted.example"+path, f.token, body)
 				}
 			case "hosted":
 				f := newHostedSecurityFixture(t)
 				owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
-				base = f.base
+				base, service = f.base, f.service
 				request = func(method, path string, body any) *httptest.ResponseRecorder {
 					return f.request(t, owner, method, "https://untrusted.example"+path, body)
 				}
 			case "shared":
 				f := newHostedSharedFixture(t)
 				owner := f.member(t, "owner", "owner", "write")
-				base = f.base
+				base, service = f.base, f.service
 				request = func(method, path string, body any) *httptest.ResponseRecorder {
 					var encoded []byte
 					if body != nil {
@@ -291,6 +293,9 @@ func TestNativeIssueWebURL(t *testing.T) {
 				{"version", http.MethodGet, path + "/versions/1", nil, false},
 			} {
 				t.Run(endpoint.name, func(t *testing.T) {
+					if endpoint.list {
+						drainTestNativeBoard(t, service)
+					}
 					response := request(endpoint.method, endpoint.path, endpoint.body)
 					requireNativeStatus(t, response, http.StatusOK)
 					if endpoint.list {
@@ -992,6 +997,7 @@ func TestNativeTenantIsolationAndCursorBinding(t *testing.T) {
 	decodeHubResponse(t, response, &organization)
 	otherTenant := newNativeFixture(t, f.service, organization.ID, "tenant-two")
 	foreign := otherTenant.create(t, "foreign")
+	drainTestNativeBoard(t, f.service)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=1", f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var page tracker.Page[tracker.NativeIssue]
@@ -1011,7 +1017,7 @@ func TestNativeTenantIsolationAndCursorBinding(t *testing.T) {
 		{"guessed tenant", otherTenant.base + "/work-items/" + string(foreign.WorkItemID), f.token, http.StatusNotFound},
 		{"guessed item", f.base + "/work-items/" + string(foreign.WorkItemID), f.token, http.StatusNotFound},
 		{"guessed comments", f.base + "/work-items/" + string(other.WorkItemID) + "/comments", f.token, http.StatusNotFound},
-		{"v1 downgrade", "/api/v1/work-items", f.token, http.StatusForbidden},
+		{"v1 downgrade", "/api/v1/work-items", f.token, http.StatusNotFound},
 		{"bad cursor", f.base + "/work-items?cursor=modified.invalid", f.token, http.StatusUnprocessableEntity},
 		{"malformed list query", f.base + "/work-items?label=bug%ZZ", f.token, http.StatusUnprocessableEntity},
 		{"malformed comment query", f.base + "/work-items/" + string(one.WorkItemID) + "/comments?cursor=%ZZ", f.token, http.StatusUnprocessableEntity},

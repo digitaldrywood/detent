@@ -63,6 +63,13 @@ func TestRunnerEventSubmissionWireBudget(t *testing.T) {
 				t.Fatalf("authority status=%d error=%v", status, err)
 			}
 			scope := nativeScope{organization: org, project: "prj_runner", credential: credential}
+			warm := fixture.data[index]
+			warm.Sequence++
+			warm.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: time.Now().UTC()}
+			if result, err := fixture.service.appendNativeRunEventTenant(t.Context(), scope, string(fixture.leases[index].WorkItemID), tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("observation_%d_phase", index)}, Type: "run.observed", SchemaVersion: 1, Data: warm}); err != nil || string(result) != `{"accepted":true}` {
+				t.Fatalf("phase observation result=%s error=%v", result, err)
+			}
+			fixture.data[index] = warm
 			history := 0
 			for _, size := range []int{2, 50} {
 				for ; history < size; history++ {

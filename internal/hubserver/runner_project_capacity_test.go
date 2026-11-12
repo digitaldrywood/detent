@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,19 +22,22 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 		t.Run(fmt.Sprintf("shared host %t", shared), func(t *testing.T) {
 			now := time.Date(2026, 10, 16, 20, 0, 0, 0, time.UTC)
 			cfg := Config{now: func() time.Time { return now }}
-			first := newNativeFixture(t, openTestService(t, cfg), "", "first-project")
+			first := newNativeFixture(t, newClockedPostgresNativeService(t, cfg), "", "first-project")
 			other := newNativeFixture(t, first.service, first.project.OrganizationID, "other-project")
 			r := prepareRunner(t, first, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.redemption.Capacity = 8
 			r.enroll(t)
+			r.reportCapacity(t)
 			var second runnerFixture
 			if shared {
 				second = sharedRunner(t, r)
-				requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPost, first.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", second.redemption.Credential, map[string]any{"capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPost, first.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", second.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation,
+					"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: now}}), http.StatusOK)
 			} else {
 				second = prepareRunner(t, first, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 				second.redemption.Capacity = 8
 				second.enroll(t)
+				second.reportCapacity(t)
 			}
 			for _, f := range []nativeFixture{first, other} {
 				approveHubTestPolicy(t, first.service, f.base+"/policy", hubTestPolicy())
@@ -258,7 +262,7 @@ func TestRunnerProjectCapacityAdministration(t *testing.T) {
 		{name: "cross organization project", project: foreign.project.ID, limit: 4, want: 422},
 		{name: "missing idempotency", key: " ", limit: 4, want: 422},
 		{name: "worker", token: r.redemption.Credential, limit: 4, want: 403},
-		{name: "cross organization runner", path: "/api/v2/organizations/" + string(foreign.project.OrganizationID) + "/runners/" + r.binding.RunnerID + "/routing", limit: 4, want: 404},
+		{name: "cross organization runner", path: "/api/v2/organizations/" + string(foreign.project.OrganizationID) + "/runners/" + r.binding.RunnerID + "/routing", limit: 4, want: 401},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := maps.Clone(base)
@@ -336,7 +340,7 @@ func TestRunnerProjectCapacityAdministration(t *testing.T) {
 	if capacity.Status != "unknown" || capacity.Effective != nil || zero.Effective == nil || *zero.Effective != 0 || zero.Applied == nil || *zero.Applied != 0 || unknown.Effective != nil {
 		t.Fatalf("project override forged effective total evidence=%+v", capacity)
 	}
-	heartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 2, "version": "test"})
+	heartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test"})
 	requireNativeStatus(t, heartbeat, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, heartbeat, &snapshot)

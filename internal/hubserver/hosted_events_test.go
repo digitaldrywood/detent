@@ -33,13 +33,14 @@ func TestHostedEventsWorkspace(t *testing.T) {
 	})
 	user := f.user(t, "member", "member", "member@example.test", "write", "")
 	item := f.seedIssue(t, 1)
+	before := dashboardPostgresHead(t, f)
 	response := f.request(t, user, http.MethodPost, f.base+"/workspaces", workspaceRequest{
 		Mutation: tracker.Mutation{IdempotencyKey: "stream-workspace"}, WorkItemID: string(item), Requires: []string{"files"},
 	})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var session workspacesession.Session
 	decodeHubResponse(t, response, &session)
-	scanner := openHostedTestStream(t, f, user, "?workspace="+session.ID)
+	scanner := openHostedTestStream(t, f, user, "?workspace="+session.ID+"&since="+strconv.FormatInt(before, 10))
 	for _, state := range []string{"requested", "starting", "ready", "idle", "closed"} {
 		if !t.Run(state, func(t *testing.T) {
 			if state == workspacesession.StateClosed {
@@ -124,7 +125,7 @@ func TestHostedEventsWorkspace(t *testing.T) {
 			return
 		}
 	}
-	reconnect := openHostedTestStream(t, f, user, "?workspace="+session.ID)
+	reconnect := openHostedTestStream(t, f, user, "?workspace="+session.ID+"&since="+strconv.FormatInt(before, 10))
 	var kind, data string
 	for kind != "workspace.closed" {
 		kind, data = readHostedEvent(t, reconnect)
@@ -231,7 +232,7 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 		return previous
 	}
 	previous := write(now, []healthFinding{finding})
-	scanner := openHostedTestStream(t, f, user, "")
+	scanner := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(previous, 10))
 	var findingID string
 	for _, state := range []struct {
 		at     time.Time

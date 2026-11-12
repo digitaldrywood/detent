@@ -120,8 +120,12 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 						return GitHubImportPage{}, errors.New("run verification refused")
 					}
 					if test.stalePolicy {
-						workflow.Definition.Revision = strings.Repeat("b", 40)
-						replacement, err := config.ResolvePolicy(workflow)
+						changed, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte(prompt + "\nReplacement policy text.\n"), Config: []byte(projectConfig), HasConfig: true, ConfigPath: "detent.yaml"})
+						if err != nil {
+							return GitHubImportPage{}, err
+						}
+						changed.Definition.Revision = strings.Repeat("b", 40)
+						replacement, err := config.ResolvePolicy(changed)
 						if err != nil {
 							return GitHubImportPage{}, err
 						}
@@ -260,6 +264,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					issue = seedScheduledImportOccurrenceState(t, f, scope, issue, test.existingState)
 				}
 				if test.duplicate {
+					refreshNativeDuplicateSearchFixture(t, f.service, scope.organization)
 					search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, tracker.CreateIssue{Body: snapshot.Body}, true)
 					if err != nil || !search.available || len(search.matches) != 1 || search.matches[0].WorkItemID != issue.WorkItemID {
 						t.Fatalf("expected an indexed same-project owner, search=%+v error=%v", search, err)
@@ -289,6 +294,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					if !errors.As(err, &conflict) || conflict.status != http.StatusConflict {
 						t.Fatalf("different create input reused the receipt: %v", err)
 					}
+					refreshNativeDuplicateSearchFixture(t, f.service, scope.organization)
 					anotherKey := importReport(fmt.Sprintf("%d-third", number))
 					if !reflect.DeepEqual(sameKey, replay) || anotherKey.WorkItemID != issue.WorkItemID || anotherKey.Revision != issue.Revision {
 						t.Fatalf("repeat changed the verified occurrence owner: same=%+v new=%+v", sameKey, anotherKey)

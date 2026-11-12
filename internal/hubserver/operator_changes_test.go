@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -316,8 +317,11 @@ func TestOperatorMutationRefusalPrecedence(t *testing.T) {
 // Catches discovery bypass reaching foreign nested resources, stale review
 // identities, and replay repeating discussion effects after reconnect.
 func TestOperatorChangeCommands(t *testing.T) {
-	f := newChangeFixture(t, nil)
-	version := f.publish(t, "v1", "")
+	service := newPostgresNativeService(t, Config{})
+	organization := tracker.OrganizationID(artifact.NewID("org"))
+	seedPostgresHubAdmin(t, service.config.TenantRepository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
+	f := newChangeFixture(t, service, organization)
+	version := publishReviewVersion(t, f, "v1", "")
 	bundle := seedReviewBundle(t, f, version, time.Now().Add(time.Hour))
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	executor := hubOperatorExecutor{f.service}
@@ -418,7 +422,9 @@ func TestOperatorChangeCommands(t *testing.T) {
 		{name: "earlier Change is only a candidate", want: "local_pass_scheduled_failure", edit: func(r *tracker.NativeLandingReceipt) { r.MergeSHA = strings.Repeat("9", 40) }},
 	} {
 		t.Run("validation audit "+test.name, func(t *testing.T) {
-			f := newChangeFixture(t, f.service)
+			organization := tracker.OrganizationID(artifact.NewID("org"))
+			seedPostgresHubAdmin(t, f.service.config.TenantRepository, f.service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
+			f := newChangeFixture(t, f.service, organization)
 			version := f.publish(t, "audit-version", "")
 			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 			executor := hubOperatorExecutor{f.service}
@@ -587,7 +593,8 @@ func TestOperatorChangeCommands(t *testing.T) {
 			t.Fatalf("unbounded audit: bytes=%d partial=%v occurrences=%d %v", len(raw), audit.Partial, len(audit.Occurrences), err)
 		}
 	})
-	foreignScope := nativeScope{organization: scope.organization, project: "prj_foreign"}
+	foreignScope := scope
+	foreignScope.project = "prj_foreign"
 	foreignAudit, err := f.service.readValidationAuditTenant(t.Context(), foreignScope, "", "", "", "")
 	if err != nil || len(foreignAudit.Occurrences) != 0 {
 		t.Fatalf("foreign evidence=%+v %v", foreignAudit, err)
@@ -1479,7 +1486,7 @@ func operatorChangeRevokeGrant(t *testing.T, f nativeFixture) {
 
 func operatorChangeSetBody(t *testing.T, f nativeFixture, item tracker.NativeIssue, body string) tracker.NativeIssue {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("body")}, ExpectedRevision: item.Revision, Body: &body})
+	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("body")}, ExpectedRevision: item.Revision, Body: &body})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &item)
 	return item
@@ -1509,6 +1516,9 @@ func operatorChangeLandingAttempt(t *testing.T, f changeFixture, version tracker
 
 	var attempt leasestore.Attempt
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, LeaseID: tracker.LeaseID(leaseID), PolicyID: version.PolicyID, BoundAt: at}); err != nil {
+			return err
+		}
 		var err error
 		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", LocalAttemptID: 168, StartedAt: at, PayloadObjectKey: ref.Key, PayloadReference: ref})
 		if err != nil {

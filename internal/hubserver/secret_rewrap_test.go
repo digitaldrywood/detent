@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -112,7 +113,7 @@ func secretRewrapFixture(t *testing.T) (nativeFixture, []accessstore.Secret, []*
 			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project", Name: "Example secret project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
 				return err
 			}
-			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: "hub_" + string(org), CursorKey: cursor}); err != nil {
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: newNativeID("hub"), CursorKey: cursor}); err != nil {
 				return err
 			}
 			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: 1, RecordedAt: now})
@@ -122,6 +123,8 @@ func secretRewrapFixture(t *testing.T) (nativeFixture, []accessstore.Secret, []*
 		tenantCfg := cfg
 		hosted := *cfg.Hosted
 		hosted.OrganizationID, hosted.WorkOSOrganizationID = string(org), "provider_"+string(org)
+		entry := *cfg.Hosted.SharedEntry
+		hosted.SharedEntry = &entry
 		tenantCfg.Hosted = &hosted
 		service, err := Open(t.Context(), tenantCfg)
 		if err != nil {
@@ -442,8 +445,20 @@ func TestSecretRewrapServingAndShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, service := range opened {
+		id, err := cloudassert.NewID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UTC()
+		assertion, err := cloudassert.Sign(hostedSharedKey(49), cloudassert.Claims{Issuer: "entry", Audience: service.config.Hosted.OrganizationID, Generation: 1, Kind: cloudassert.KindService, Method: http.MethodPost, Path: "/internal/v1/health", BodyDigest: cloudassert.BodyDigest([]byte("{}")), IssuedAt: now, ExpiresAt: now.Add(30 * time.Second), ID: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/internal/v1/health", strings.NewReader("{}"))
+		request.Header.Set(cloudassert.Header, assertion)
+		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
-		service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodGet, "/health", testHubAdminToken, nil))
+		service.Handler().ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("health while rewrap pending: %d %s", response.Code, response.Body.String())
 		}

@@ -720,6 +720,8 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 					worker.enroll(t)
 					reportRunnerCapacity(t, f.service, f.base, worker.redemption.Credential, worker.binding.MachineID, "Example runner", isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, 1)
 					workers[index] = worker
+				}
+				for index, worker := range workers {
 					cursors[index] = dispatchWaitCursor(t, serveDispatchWait(t.Context(), f, worker.redemption.Credential, ""))
 				}
 				requests := make([]tracker.CreateIssue, admissions)

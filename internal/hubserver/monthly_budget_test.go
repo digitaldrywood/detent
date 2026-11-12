@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"os"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -253,7 +252,7 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 		{name: "project Sprite blocks Sprite", sprite: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))})
+			f := newDefaultNativeFixture(t, Config{})
 			f.service.registerCostUsageRoutes(f.service.echo)
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
@@ -297,7 +296,7 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 			}
 			workspaceRequest := providerClaim(r, workspace, "workspace-exposure")
 			workspaceRequest.PolicyID, workspaceRequest.ProviderCandidates = descriptor.ID, nil
-			workspaceRequest.Capabilities = append(workspaceRequest.Capabilities, tracker.NativeWorkspaceCapability)
+			workspaceRequest.Capabilities = []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}
 			workspaceResponse := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, workspaceRequest)
 			requireNativeStatus(t, workspaceResponse, http.StatusOK)
 			var workspaceLease tracker.NativeLease

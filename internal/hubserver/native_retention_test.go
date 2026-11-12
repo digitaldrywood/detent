@@ -609,7 +609,7 @@ func TestProjectArchivePeriods(t *testing.T) {
 			if test.sendCancelled {
 				payload["archive_cancelled_after_days"] = test.cancelled
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, payload)
+			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload)
 			requireNativeStatus(t, response, test.status)
 			current = read()
 			if current.ArchiveCompletedAfterDays == nil || *current.ArchiveCompletedAfterDays != test.wantCompleted {
@@ -625,11 +625,11 @@ func TestProjectArchivePeriods(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES ($1,'machine_periods','example','example',1,'test',$2,$2,$2)`, f.project.OrganizationID, f.now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at) SELECT organization_id,'lease_periods',id,'machine_periods','session_periods',revision,$3,$3,$4 FROM issues WHERE organization_id=$1 AND native_id=$2`, f.project.OrganizationID, issue.WorkItemID, f.now(), f.now().Add(time.Hour)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at) SELECT organization_id,'lease_periods',id,'machine_periods','session_periods',revision,$3,$3,clock_timestamp()+interval '1 hour' FROM issues WHERE organization_id=$1 AND native_id=$2`, f.project.OrganizationID, issue.WorkItemID, f.now()); err != nil {
 		t.Fatal(err)
 	}
 	payload := map[string]any{"idempotency_key": "live-settings", "expected_revision": fmt.Sprint(current.Revision), "intake": current.Intake, "projection": current.Projection, "repository_enabled": current.RepositoryEnabled, "archive_completed_after_days": 60}
-	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, payload)
+	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload)
 	requireNativeStatus(t, response, http.StatusOK)
 	var updated ProjectIntegration
 	decodeHubResponse(t, response, &updated)
@@ -639,7 +639,7 @@ func TestProjectArchivePeriods(t *testing.T) {
 	payload["idempotency_key"] = "live-workflow"
 	payload["expected_revision"] = fmt.Sprint(updated.Revision)
 	payload["states"] = f.project.States
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, payload), http.StatusUnprocessableEntity)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload), http.StatusUnprocessableEntity)
 
 	f.write(t, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project.ID)
@@ -668,7 +668,7 @@ func TestProjectArchivePeriods(t *testing.T) {
 		} else {
 			payload["intake"] = test.intake
 		}
-		response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, payload)
+		response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload)
 		requireNativeStatus(t, response, http.StatusOK)
 		decodeHubResponse(t, response, &checkout)
 		if checkout.Intake != "automatic" || checkout.ArchiveCompletedAfterDays == nil || *checkout.ArchiveCompletedAfterDays != test.days {

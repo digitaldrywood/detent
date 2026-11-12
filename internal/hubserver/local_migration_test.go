@@ -35,6 +35,7 @@ func TestLocalBoardMigrationToLanding(t *testing.T) {
 	}
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 	runner.enroll(t)
+	reportRunnerCapacity(t, f.service, f.base, runner.redemption.Credential, runner.binding.MachineID, runner.redemption.DisplayName, runner.redemption.BackendIsolation, runner.redemption.Capacity)
 	_, records := localBoardFixture(t, "local_sqlite")
 	var imported []tracker.NativeIssue
 	for _, record := range records {

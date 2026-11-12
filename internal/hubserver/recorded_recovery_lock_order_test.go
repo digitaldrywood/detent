@@ -195,7 +195,7 @@ func TestRecordedRecoveryDoesNotHoldGraphWhileWaitingForClaimRunner(t *testing.T
 	var workers sync.WaitGroup
 	var release sync.Once
 	t.Cleanup(func() { release.Do(func() { close(interleave.release) }); cancel(); workers.Wait() })
-	claim := tracker.NativeClaim{PolicyID: f.policy.PolicyID, WorkItemID: other.WorkItemID, MachineID: f.bindings[0].MachineID, SessionID: "competing-claim", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+	claim := tracker.NativeClaim{PolicyID: f.policy.PolicyID, WorkItemID: other.WorkItemID, MachineID: f.bindings[0].MachineID, SessionID: "competing-claim", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	claimRequest := newHubAPIRequest(t, http.MethodPost, base+"/claims", f.tokens[0], claim).WithContext(context.WithValue(ctx, recoveryClaimInterleaveKey{}, true))
 	claimResponse := httptest.NewRecorder()
 	claimDone := make(chan struct{})

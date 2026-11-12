@@ -123,8 +123,12 @@ func TestSlackSettingsPrivacyAndAccess(t *testing.T) {
 	}
 	var rows []accessstore.Secret
 	err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
-		var err error
-		rows, err = r.AccessSecrets(t.Context(), "", "", 10)
+		secrets, err := r.AccessSecrets(t.Context(), "", "", 10)
+		for _, secret := range secrets {
+			if secret.Kind == slackWebhookSecret {
+				rows = append(rows, secret)
+			}
+		}
 		return err
 	})
 	if err != nil {
@@ -325,8 +329,12 @@ func TestSlackSecretRotation(t *testing.T) {
 		t.Helper()
 		var rows []accessstore.Secret
 		if err := s.accessRead(t.Context(), org, func(r tenantstore.Reader) error {
-			var err error
-			rows, err = r.AccessSecrets(t.Context(), "", "", 10)
+			secrets, err := r.AccessSecrets(t.Context(), "", "", 10)
+			for _, secret := range secrets {
+				if secret.Kind == slackWebhookSecret {
+					rows = append(rows, secret)
+				}
+			}
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -362,7 +370,7 @@ func TestSlackSecretRotation(t *testing.T) {
 	}
 	var actor, event string
 	var version int
-	if err := admin.QueryRowContext(t.Context(), "SELECT actor,event,key_version FROM organization_secret_audit WHERE organization_id=$1 AND event='rotate'", org).Scan(&actor, &event, &version); err != nil {
+	if err := admin.QueryRowContext(t.Context(), "SELECT actor,event,key_version FROM organization_secret_audit WHERE organization_id=$1 AND kind=$2 AND event='rotate'", org, slackWebhookSecret).Scan(&actor, &event, &version); err != nil {
 		t.Fatal(err)
 	}
 	if actor != "system:rewrap" || event != "rotate" || version != 2 {

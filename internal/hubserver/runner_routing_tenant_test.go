@@ -39,7 +39,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	asOf := now
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.Default(), now: func() time.Time { return now }, Version: "0.177.4"}}
+	service := &Service{database: &database{}, notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.Default(), now: func() time.Time { return now }, Version: "0.177.4"}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
@@ -53,12 +53,12 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			}
 			for _, id := range []string{"one", "two"} {
 				project := tracker.ProjectID("project_" + id)
-				runner, machine := "runner_"+id, "machine_"+id
+				runner, machine := routingTenantRunnerID(id), routingTenantMachineID(id)
 				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: "Example " + id, Slug: "example-" + id, Profile: "native"}, States: nativeFixtureStates()}); err != nil {
 					return err
 				}
 				expires := now.Add(time.Hour)
-				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: runner, Name: runner, Hash: apikey.HashToken(string(org) + "_" + runner), Scope: "worker", NativeOnly: true, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: runner, Name: runner, Hash: apikey.HashToken(string(org) + "_runner_" + id), Scope: "worker", NativeOnly: true, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 					return err
 				}
 				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: runner, ProjectID: project}); err != nil {
@@ -110,7 +110,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := admin.ExecContext(t.Context(), `UPDATE machines SET routing_revision=CASE WHEN id='machine_one' THEN 7 ELSE 9 END`); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `UPDATE machines SET routing_revision=CASE WHEN id='machine_000000000000000000000000000000a1' THEN 7 ELSE 9 END`); err != nil {
 		t.Fatal(err)
 	}
 	now = asOf.Add(time.Second)
@@ -191,7 +191,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				}
 				for _, org := range []string{"org_first", "org_second"} {
 					for _, id := range []string{"one", "two"} {
-						req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/"+org+"/runners/runner_"+id+"/routing", nil)
+						req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/"+org+"/runners/"+routingTenantRunnerID(id)+"/routing", nil)
 						req.Header.Set(echo.HeaderAuthorization, "Bearer "+org+"_admin")
 						rec := httptest.NewRecorder()
 						e.ServeHTTP(rec, req)
@@ -220,7 +220,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 		for _, org := range []string{"org_first", "org_second"} {
 			t.Run(org, func(t *testing.T) {
 				call := func(method, token, body string) *httptest.ResponseRecorder {
-					req := httptest.NewRequest(method, "/api/v2/organizations/"+org+"/runners/runner_one/capacity?backend=example", strings.NewReader(body))
+					req := httptest.NewRequest(method, "/api/v2/organizations/"+org+"/runners/runner_000000000000000000000000000000a1/capacity?backend=example", strings.NewReader(body))
 					req.Header.Set(echo.HeaderAuthorization, "Bearer "+token)
 					req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 					rec := httptest.NewRecorder()
@@ -284,7 +284,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					t.Fatalf("expired evidence=%d %s", stale.Code, stale.Body)
 				}
 				if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
-					identity, err := r.RunnerIdentity(t.Context(), "runner_one")
+					identity, err := r.RunnerIdentity(t.Context(), "runner_000000000000000000000000000000a1")
 					if err == nil && (identity.Revision != 3 || identity.CapacityRequest == nil || identity.CapacityRequest.Backend != "example" || identity.CapacityLimit != 4) {
 						t.Fatalf("persisted=%+v", identity)
 					}
@@ -292,7 +292,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET revision=2,capacity_limit=3,capacity_request_revision='',capacity_request_limit=0,capacity_request_backend='' WHERE organization_id=$1 AND runner_id='runner_one'`, org); err != nil {
+				if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET revision=2,capacity_limit=3,capacity_request_revision='',capacity_request_limit=0,capacity_request_backend='' WHERE organization_id=$1 AND runner_id='runner_000000000000000000000000000000a1'`, org); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -347,7 +347,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				}
 				for _, got := range runners {
 					project := tracker.ProjectID("project_" + tc.id)
-					if got.RunnerID != "runner_"+tc.id || got.OrganizationID != tracker.OrganizationID(org) || got.Hostname != org+"-"+tc.id || got.CapacityLimit != 3 || got.HostCapacity != 5 || got.HostRevision != map[string]int64{"one": 7, "two": 9}[tc.id] || got.HostUsed != 1 || got.Used != 1 || got.ProjectUsed[project] != 1 || got.ProjectRanks[project] != 7 || got.ProjectCapacityLimits[project] != 2 || got.CapacityConfig == nil {
+					if got.RunnerID != routingTenantRunnerID(tc.id) || got.OrganizationID != tracker.OrganizationID(org) || got.Hostname != org+"-"+tc.id || got.CapacityLimit != 3 || got.HostCapacity != 5 || got.HostRevision != map[string]int64{"one": 7, "two": 9}[tc.id] || got.HostUsed != 1 || got.Used != 1 || got.ProjectUsed[project] != 1 || got.ProjectRanks[project] != 7 || got.ProjectCapacityLimits[project] != 2 || got.CapacityConfig == nil {
 						t.Fatalf("fleet facts=%+v", got)
 					}
 					if len(got.Leases) != 1 || got.Leases[0].ProjectID != project || got.Leases[0].ProviderReservation == nil || len(got.ProviderCapacity) != 1 || got.ProviderCapacity[0].Used != 2 || got.ProviderCapacity[0].MaxConcurrent != 3 {
@@ -366,14 +366,14 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			}
 			if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
 				for index := range 49 {
-					id := fmt.Sprintf("runner_page_%02d", index)
+					id := fmt.Sprintf("runner_%032x", 0xb00+index)
 					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(org), ID: id, Name: id, Hash: apikey.HashToken(org + id), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "all", Kind: "service"}); err != nil {
 						return err
 					}
-					if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: tracker.OrganizationID(org), ID: id, RunnerID: id, MachineID: "machine_one", TokenHash: apikey.HashToken(org + id + "enroll"), Scope: "organization", Operations: []string{runnerauth.Read}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "admin_" + org}); err != nil {
+					if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: tracker.OrganizationID(org), ID: id, RunnerID: id, MachineID: "machine_000000000000000000000000000000a1", TokenHash: apikey.HashToken(org + id + "enroll"), Scope: "organization", Operations: []string{runnerauth.Read}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "admin_" + org}); err != nil {
 						return err
 					}
-					if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: tracker.OrganizationID(org), RunnerID: id, MachineID: "machine_one", TokenID: id, EnrollmentID: id, Scope: "organization", State: "active", Operations: []string{runnerauth.Read}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
+					if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: tracker.OrganizationID(org), RunnerID: id, MachineID: "machine_000000000000000000000000000000a1", TokenID: id, EnrollmentID: id, Scope: "organization", State: "active", Operations: []string{runnerauth.Read}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
 						return err
 					}
 				}
@@ -430,7 +430,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				}
 				seen[runner.RunnerID] = true
 				wantRevision := int64(7)
-				if runner.MachineID == "machine_two" {
+				if runner.MachineID == "machine_000000000000000000000000000000a2" {
 					wantRevision = 9
 				}
 				if runner.HostRevision != wantRevision {
@@ -450,7 +450,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 		for _, id := range []string{"one", "two"} {
 			for _, token := range []string{org + "_runner_" + id, org + "_admin"} {
 				t.Run(org+"/"+id+"/"+token, func(t *testing.T) {
-					rec := request(org, "runner_"+id, token)
+					rec := request(org, routingTenantRunnerID(id), token)
 					if rec.Code != http.StatusOK {
 						t.Fatalf("routing status=%d body=%s", rec.Code, rec.Body.String())
 					}
@@ -462,7 +462,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 						t.Fatal(err)
 					}
 					project := tracker.ProjectID("project_" + id)
-					if got.RunnerID != "runner_"+id || got.OrganizationID != tracker.OrganizationID(org) || got.Hostname != org+"-"+id || got.HostDisplayName != "Example host "+id || got.HostCapacity != 5 || got.OS != "linux" || got.Architecture != "arm64" {
+					if got.RunnerID != routingTenantRunnerID(id) || got.OrganizationID != tracker.OrganizationID(org) || got.Hostname != org+"-"+id || got.HostDisplayName != "Example host "+id || got.HostCapacity != 5 || got.OS != "linux" || got.Architecture != "arm64" {
 						t.Fatalf("identity/machine facts=%+v", got)
 					}
 					if got.CapacityLimit != 3 || got.ReportedCapacity != 3 || got.CapacityConfig == nil || got.CapacityConfig.RuntimeLimit != 3 || got.Used != 1 || got.HostUsed != 1 || got.ProjectUsed[project] != 1 {
@@ -485,8 +485,8 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 		name, org, runner, token string
 		status                   int
 	}{
-		{"cross runner", "org_first", "runner_two", "org_first_runner_one", http.StatusNotFound},
-		{"cross organization", "org_second", "runner_one", "org_first_runner_one", http.StatusUnauthorized},
+		{"cross runner", "org_first", "runner_000000000000000000000000000000a2", "org_first_runner_one", http.StatusNotFound},
+		{"cross organization", "org_second", "runner_000000000000000000000000000000a1", "org_first_runner_one", http.StatusUnauthorized},
 		{"missing runner", "org_first", "missing", "org_first_admin", http.StatusNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -497,10 +497,10 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct{ name, query string }{
-		{"credential revoked", `UPDATE api_tokens SET revoked_at=$1 WHERE organization_id='org_first' AND id='runner_one'`},
-		{"credential expired", `UPDATE api_tokens SET expires_at=$1 WHERE organization_id='org_first' AND id='runner_one'`},
-		{"identity expired", `UPDATE runner_identities SET expires_at=$1 WHERE organization_id='org_first' AND runner_id='runner_one'`},
-		{"identity removed", `UPDATE runner_identities SET removed_at=$1 WHERE organization_id='org_first' AND runner_id='runner_one'`},
+		{"credential revoked", `UPDATE api_tokens SET revoked_at=$1 WHERE organization_id='org_first' AND id='runner_000000000000000000000000000000a1'`},
+		{"credential expired", `UPDATE api_tokens SET expires_at=$1 WHERE organization_id='org_first' AND id='runner_000000000000000000000000000000a1'`},
+		{"identity expired", `UPDATE runner_identities SET expires_at=$1 WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`},
+		{"identity removed", `UPDATE runner_identities SET removed_at=$1 WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tx, err := admin.BeginTx(t.Context(), nil)
@@ -514,14 +514,14 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
-			rec := request("org_first", "runner_one", "org_first_runner_one")
+			rec := request("org_first", "runner_000000000000000000000000000000a1", "org_first_runner_one")
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("invalid authority status=%d body=%s", rec.Code, rec.Body.String())
 			}
-			if _, err := admin.ExecContext(t.Context(), `UPDATE api_tokens SET revoked_at=NULL,expires_at=$1 WHERE organization_id='org_first' AND id='runner_one'`, now.Add(time.Hour)); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `UPDATE api_tokens SET revoked_at=NULL,expires_at=$1 WHERE organization_id='org_first' AND id='runner_000000000000000000000000000000a1'`, now.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET removed_at=NULL,expires_at=$1 WHERE organization_id='org_first' AND runner_id='runner_one'`, now.Add(time.Hour)); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET removed_at=NULL,expires_at=$1 WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`, now.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -548,7 +548,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 		}
 		service.config.Hosted = &HostedConfig{OrganizationID: "org_first", Provider: provider}
 		defer func() { service.config.Hosted = nil }()
-		rec := request("org_first", "runner_one", "example_member_token")
+		rec := request("org_first", "runner_000000000000000000000000000000a1", "example_member_token")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("manageable runner status=%d body=%s", rec.Code, rec.Body.String())
 		}
@@ -583,7 +583,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				}
 				return got
 			}
-			before, other := read("runner_one"), read("runner_two")
+			before, other := read("runner_000000000000000000000000000000a1"), read("runner_000000000000000000000000000000a2")
 			change := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}, IdempotencyKey: "zero_runner_one"}
 			change.ProjectCapacityLimits = map[tracker.ProjectID]int{"project_one": 0}
 			put := func(token string, change runnerRoutingRequest) *httptest.ResponseRecorder {
@@ -592,7 +592,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				req := httptest.NewRequest(http.MethodPut, "/api/v2/organizations/org_first/runners/runner_one/routing", strings.NewReader(string(raw)))
+				req := httptest.NewRequest(http.MethodPut, "/api/v2/organizations/org_first/runners/runner_000000000000000000000000000000a1/routing", strings.NewReader(string(raw)))
 				req.Header.Set(echo.HeaderAuthorization, "Bearer "+token)
 				req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 				rec := httptest.NewRecorder()
@@ -628,7 +628,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					}
 				})
 			}
-			after := read("runner_one")
+			after := read("runner_000000000000000000000000000000a1")
 			if after.Revision != before.Revision+1 || after.ProjectCapacityLimits["project_one"] != 0 || len(after.ProjectCapacityLimits) != 1 {
 				t.Fatalf("updated routing=%+v", after)
 			}
@@ -636,17 +636,17 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			if !reflect.DeepEqual(after.Routing, before.Routing) {
 				t.Fatal("unrequested routing fields changed")
 			}
-			if got := read("runner_two"); !reflect.DeepEqual(got, other) {
+			if got := read("runner_000000000000000000000000000000a2"); !reflect.DeepEqual(got, other) {
 				t.Fatal("unrelated runner changed")
 			}
 			t.Run("capacity increase reaches runner", func(t *testing.T) {
-				current := read("runner_one")
+				current := read("runner_000000000000000000000000000000a1")
 				input := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "raise_capacity"}
 				input.CapacityLimit = 6
 				if rec := put("example_member_token", input); rec.Code != http.StatusOK {
 					t.Fatalf("raise status=%d body=%s", rec.Code, rec.Body.String())
 				}
-				rec := request("org_first", "runner_one", "org_first_runner_one")
+				rec := request("org_first", "runner_000000000000000000000000000000a1", "org_first_runner_one")
 				var received runnerauth.Runner
 				if err := json.Unmarshal(rec.Body.Bytes(), &received); err != nil {
 					t.Fatal(err)
@@ -657,12 +657,12 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			})
 
 			t.Run("receipt and proposed access authority", func(t *testing.T) {
-				initial := read("runner_one")
+				initial := read("runner_000000000000000000000000000000a1")
 				var saved runnerstore.Identity
 				var creator string
 				if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
-					saved, err = r.RunnerIdentity(t.Context(), "runner_one")
+					saved, err = r.RunnerIdentity(t.Context(), "runner_000000000000000000000000000000a1")
 					if err != nil {
 						return err
 					}
@@ -699,7 +699,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 						t.Error(err)
 					}
 					if err := repository.WriteTenant(parentContext, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
-						current, err := w.RunnerIdentity(parentContext, "runner_one")
+						current, err := w.RunnerIdentity(parentContext, "runner_000000000000000000000000000000a1")
 						if err != nil {
 							return err
 						}
@@ -707,10 +707,10 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 						if err := w.UpdateRunnerRouting(parentContext, current.Revision, saved); err != nil {
 							return err
 						}
-						if err := w.DeleteAccessTokenGrant(parentContext, "runner_one", "project_two"); err != nil {
+						if err := w.DeleteAccessTokenGrant(parentContext, "runner_000000000000000000000000000000a1", "project_two"); err != nil {
 							return err
 						}
-						if err := w.SetAccessTokenGrant(parentContext, accessstore.TokenGrant{OrganizationID: "org_first", TokenID: "runner_one", ProjectID: "project_one"}); err != nil {
+						if err := w.SetAccessTokenGrant(parentContext, accessstore.TokenGrant{OrganizationID: "org_first", TokenID: "runner_000000000000000000000000000000a1", ProjectID: "project_one"}); err != nil {
 							return err
 						}
 						if err := w.DeleteAccessTokenGrant(parentContext, "credential_member", "project_two"); err != nil {
@@ -722,14 +722,14 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					}
 				}()
 				t.Run("narrowed runner cannot disclose old B receipt", func(t *testing.T) {
-					current := read("runner_one")
+					current := read("runner_000000000000000000000000000000a1")
 					original := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "receipt_AB"}
 					original.ProjectIDs, original.ProjectRanks = []tracker.ProjectID{"project_one", "project_two"}, nil
 					accepted := put("example_member_token", original)
 					if accepted.Code != http.StatusOK {
 						t.Fatalf("AB status=%d body=%s", accepted.Code, accepted.Body.String())
 					}
-					current = read("runner_one")
+					current = read("runner_000000000000000000000000000000a1")
 					narrow := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "receipt_A"}
 					narrow.ProjectIDs, narrow.ProjectRanks = []tracker.ProjectID{"project_one"}, nil
 					if rec := put("example_member_token", narrow); rec.Code != http.StatusOK {
@@ -748,7 +748,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					priorRepository, priorDetails := service.config.TenantRepository, service.config.RunDetails
 					service.config.TenantRepository, service.config.RunDetails = counter, details
 					defer func() { service.config.TenantRepository, service.config.RunDetails = priorRepository, priorDetails }()
-					before := read("runner_one")
+					before := read("runner_000000000000000000000000000000a1")
 					rec := put("example_member_token", original)
 					if rec.Code != http.StatusNotFound && rec.Code != http.StatusForbidden {
 						t.Errorf("old receipt disclosed after B revocation: status=%d body=%s", rec.Code, rec.Body.String())
@@ -759,12 +759,12 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					if counter.writes != 0 || details.writes != 0 {
 						t.Errorf("denied replay wrote state: transactions=%d objects=%d", counter.writes, details.writes)
 					}
-					if after := read("runner_one"); !reflect.DeepEqual(before, after) {
+					if after := read("runner_000000000000000000000000000000a1"); !reflect.DeepEqual(before, after) {
 						t.Error("denied replay changed routing")
 					}
 				})
 				t.Run("organization grant revoked during receipt storage", func(t *testing.T) {
-					before := read("runner_one")
+					before := read("runner_000000000000000000000000000000a1")
 					input := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}, IdempotencyKey: "org_revoke_at_store"}
 					input.Scope, input.ProjectIDs, input.ProjectRanks = "organization", nil, nil
 					hook := &routingGrantInterleaveDetails{DetailStore: service.runDetailStore(), afterStore: func(ctx context.Context) error {
@@ -789,11 +789,11 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					if strings.Contains(rec.Body.String(), "runner_id") {
 						t.Error("revoked proposal disclosed receipt")
 					}
-					if after := read("runner_one"); !reflect.DeepEqual(before, after) {
+					if after := read("runner_000000000000000000000000000000a1"); !reflect.DeepEqual(before, after) {
 						t.Error("revoked proposal changed routing")
 					}
 					if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
-						_, err := r.Receipt(t.Context(), "credential_member", "runner_routing runner_one", input.IdempotencyKey)
+						_, err := r.Receipt(t.Context(), "credential_member", "runner_routing runner_000000000000000000000000000000a1", input.IdempotencyKey)
 						if !errors.Is(err, corestore.ErrNotFound) {
 							t.Errorf("revoked proposal persisted receipt: %v", err)
 						}
@@ -811,7 +811,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 							return err
 						}
 					}
-					identity, err := w.RunnerIdentity(t.Context(), "runner_one")
+					identity, err := w.RunnerIdentity(t.Context(), "runner_000000000000000000000000000000a1")
 					if err != nil {
 						return err
 					}
@@ -830,14 +830,14 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					if _, err := admin.ExecContext(parentContext, `UPDATE api_tokens SET operator_project_access='selected' WHERE organization_id='org_first' AND id='credential_member'`); err != nil {
 						t.Error(err)
 					}
-					if _, err := admin.ExecContext(parentContext, `INSERT INTO token_grants (organization_id,token_id,project_id) VALUES ('org_first','runner_one','project_one')`); err != nil {
+					if _, err := admin.ExecContext(parentContext, `INSERT INTO token_grants (organization_id,token_id,project_id) VALUES ('org_first','runner_000000000000000000000000000000a1','project_one')`); err != nil {
 						t.Error(err)
 					}
-					if _, err := admin.ExecContext(parentContext, `UPDATE runner_identities SET scope='projects' WHERE organization_id='org_first' AND runner_id='runner_one'`); err != nil {
+					if _, err := admin.ExecContext(parentContext, `UPDATE runner_identities SET scope='projects' WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`); err != nil {
 						t.Error(err)
 					}
 				}()
-				current := read("runner_one")
+				current := read("runner_000000000000000000000000000000a1")
 				input := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "rename_large_organization"}
 				input.ProjectIDs = nil
 				input.DisplayName = "Renamed runner"
@@ -845,7 +845,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				if original.Code != http.StatusOK {
 					t.Fatalf("rename status=%d body=%s", original.Code, original.Body.String())
 				}
-				got := read("runner_one")
+				got := read("runner_000000000000000000000000000000a1")
 				if got.DisplayName != input.DisplayName || got.Revision != current.Revision+1 || !reflect.DeepEqual(got.CapacityRequest, current.CapacityRequest) {
 					t.Fatal("rename lost routing or capacity request")
 				}
@@ -857,7 +857,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				priorRepository, priorDetails := service.config.TenantRepository, service.config.RunDetails
 				service.config.TenantRepository, service.config.RunDetails = counter, objects
 				defer func() { service.config.TenantRepository, service.config.RunDetails = priorRepository, priorDetails }()
-				beforeReplay := read("runner_one")
+				beforeReplay := read("runner_000000000000000000000000000000a1")
 				for _, test := range []struct {
 					name   string
 					alter  bool
@@ -910,7 +910,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				if counter.writes != 0 || objects.writes != 0 {
 					t.Fatalf("replay wrote state: transactions=%d objects=%d", counter.writes, objects.writes)
 				}
-				if after := read("runner_one"); !reflect.DeepEqual(beforeReplay, after) {
+				if after := read("runner_000000000000000000000000000000a1"); !reflect.DeepEqual(beforeReplay, after) {
 					t.Fatal("replay changed current routing")
 				}
 
@@ -929,7 +929,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 		supportRequest := func() *httptest.ResponseRecorder {
-			req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_first/runners/runner_one/routing", nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_first/runners/runner_000000000000000000000000000000a1/routing", nil)
 			req.AddCookie(&http.Cookie{Name: hostedCookie, Value: "example_support_session"})
 			rec := httptest.NewRecorder()
 			e.ServeHTTP(rec, req)
@@ -969,9 +969,9 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			}
 		})
 		for _, test := range []struct{ name, query string }{
-			{"rank override", `INSERT INTO runner_project_ranks (organization_id,runner_id,project_id,rank) VALUES ('org_first','runner_one','project_two',9)`},
-			{"capacity override", `INSERT INTO runner_project_capacity_limits (organization_id,runner_id,project_id,capacity_limit) VALUES ('org_first','runner_one','project_two',1)`},
-			{"project grant", `INSERT INTO token_grants (organization_id,token_id,project_id) VALUES ('org_first','runner_one','project_two')`},
+			{"rank override", `INSERT INTO runner_project_ranks (organization_id,runner_id,project_id,rank) VALUES ('org_first','runner_000000000000000000000000000000a1','project_two',9)`},
+			{"capacity override", `INSERT INTO runner_project_capacity_limits (organization_id,runner_id,project_id,capacity_limit) VALUES ('org_first','runner_000000000000000000000000000000a1','project_two',1)`},
+			{"project grant", `INSERT INTO token_grants (organization_id,token_id,project_id) VALUES ('org_first','runner_000000000000000000000000000000a1','project_two')`},
 		} {
 			t.Run("hidden "+test.name, func(t *testing.T) {
 				if _, err := admin.ExecContext(t.Context(), test.query); err != nil {
@@ -983,12 +983,12 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 						if table == "token_grants" {
 							column = "token_id"
 						}
-						if _, err := admin.ExecContext(parentContext, "DELETE FROM "+table+" WHERE organization_id='org_first' AND "+column+"='runner_one' AND project_id='project_two'"); err != nil {
+						if _, err := admin.ExecContext(parentContext, "DELETE FROM "+table+" WHERE organization_id='org_first' AND "+column+"='runner_000000000000000000000000000000a1' AND project_id='project_two'"); err != nil {
 							t.Fatal(err)
 						}
 					}
 				}()
-				rec := request("org_first", "runner_one", "example_member_token")
+				rec := request("org_first", "runner_000000000000000000000000000000a1", "example_member_token")
 				if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "project_two") {
 					t.Fatalf("hidden routing project leaked: status=%d body=%s", rec.Code, rec.Body.String())
 				}
@@ -1007,16 +1007,16 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				if _, err := admin.ExecContext(parentContext, "UPDATE hosted_members SET role='member' WHERE organization_id='org_first' AND user_id='user_example'"); err != nil {
 					t.Error(err)
 				}
-				if _, err := admin.ExecContext(parentContext, "UPDATE runner_identities SET scope='projects' WHERE organization_id='org_first' AND runner_id='runner_one'"); err != nil {
+				if _, err := admin.ExecContext(parentContext, "UPDATE runner_identities SET scope='projects' WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'"); err != nil {
 					t.Error(err)
 				}
-				if _, err := admin.ExecContext(parentContext, "INSERT INTO token_grants(organization_id,token_id,project_id) VALUES('org_first','runner_one','project_one') ON CONFLICT DO NOTHING"); err != nil {
+				if _, err := admin.ExecContext(parentContext, "INSERT INTO token_grants(organization_id,token_id,project_id) VALUES('org_first','runner_000000000000000000000000000000a1','project_one') ON CONFLICT DO NOTHING"); err != nil {
 					t.Error(err)
 				}
 			}()
 			hostedConfig := service.config.Hosted
 			service.config.Hosted = nil
-			response := request("org_first", "runner_one", "org_first_admin")
+			response := request("org_first", "runner_000000000000000000000000000000a1", "org_first_admin")
 			service.config.Hosted = hostedConfig
 			if response.Code != http.StatusOK {
 				t.Fatalf("routing read status=%d", response.Code)
@@ -1029,7 +1029,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			req := httptest.NewRequest(http.MethodPut, "/api/v2/organizations/org_first/runners/runner_one/routing", strings.NewReader(string(raw)))
+			req := httptest.NewRequest(http.MethodPut, "/api/v2/organizations/org_first/runners/runner_000000000000000000000000000000a1/routing", strings.NewReader(string(raw)))
 			req.Header.Set(echo.HeaderAuthorization, "Bearer example_member_token")
 			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 			rec := httptest.NewRecorder()
@@ -1040,9 +1040,9 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 		})
 	})
 	for _, query := range []string{
-		`EXPLAIN SELECT runner_id FROM runner_identities WHERE organization_id='org_first' AND runner_id='runner_one' AND removed_at IS NULL`,
-		`EXPLAIN SELECT lease_id FROM leases WHERE organization_id='org_first' AND machine_id='machine_one' AND released_at IS NULL AND expires_at>now()`,
-		`EXPLAIN SELECT runner_id FROM runner_provider_reports WHERE organization_id='org_first' AND runner_id='runner_one'`,
+		`EXPLAIN SELECT runner_id FROM runner_identities WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1' AND removed_at IS NULL`,
+		`EXPLAIN SELECT lease_id FROM leases WHERE organization_id='org_first' AND machine_id='machine_000000000000000000000000000000a1' AND released_at IS NULL AND expires_at>now()`,
+		`EXPLAIN SELECT runner_id FROM runner_provider_reports WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`,
 	} {
 		rows, err := admin.QueryContext(t.Context(), query)
 		if err != nil {
@@ -1066,25 +1066,25 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ name, token, query string }{
-		{"current machine", "org_first_runner_one", `UPDATE runner_identities SET machine_id='machine_two' WHERE organization_id='org_first' AND runner_id='runner_one'`},
-		{"current credential revoked", "org_first_runner_one", `UPDATE api_tokens SET revoked_at=now() WHERE organization_id='org_first' AND id='runner_one'`},
-		{"current credential expired", "org_first_runner_one", `UPDATE api_tokens SET expires_at=created_at+interval '1 second' WHERE organization_id='org_first' AND id='runner_one'`},
-		{"current identity expired", "org_first_runner_one", `UPDATE runner_identities SET expires_at=created_at+interval '1 second' WHERE organization_id='org_first' AND runner_id='runner_one'`},
-		{"current identity removed", "org_first_runner_one", `UPDATE runner_identities SET removed_at=now() WHERE organization_id='org_first' AND runner_id='runner_one'`},
-		{"current read operation", "org_first_runner_one", `UPDATE runner_identities SET operations=ARRAY['claim'] WHERE organization_id='org_first' AND runner_id='runner_one'`},
+		{"current machine", "org_first_runner_one", `UPDATE runner_identities SET machine_id='machine_000000000000000000000000000000a2' WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`},
+		{"current credential revoked", "org_first_runner_one", `UPDATE api_tokens SET revoked_at=now() WHERE organization_id='org_first' AND id='runner_000000000000000000000000000000a1'`},
+		{"current credential expired", "org_first_runner_one", `UPDATE api_tokens SET expires_at=created_at+interval '1 second' WHERE organization_id='org_first' AND id='runner_000000000000000000000000000000a1'`},
+		{"current identity expired", "org_first_runner_one", `UPDATE runner_identities SET expires_at=created_at+interval '1 second' WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`},
+		{"current identity removed", "org_first_runner_one", `UPDATE runner_identities SET removed_at=now() WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`},
+		{"current read operation", "org_first_runner_one", `UPDATE runner_identities SET operations=ARRAY['claim'] WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`},
 		{"current admin scope", "org_first_admin", `UPDATE api_tokens SET scope='operator' WHERE organization_id='org_first' AND id='admin_org_first'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service.config.TenantRepository = &routingSnapshotHookRepository{Repository: repository, SnapshotRepository: repository, before: func(ctx context.Context) error { _, err := admin.ExecContext(ctx, tc.query); return err }}
 			defer func() { service.config.TenantRepository = repository }()
-			rec := request("org_first", "runner_one", tc.token)
+			rec := request("org_first", "runner_000000000000000000000000000000a1", tc.token)
 			if rec.Code != http.StatusForbidden && rec.Code != http.StatusNotFound {
 				t.Fatalf("stale authority status=%d body=%s", rec.Code, rec.Body.String())
 			}
-			if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET machine_id='machine_one',removed_at=NULL,expires_at=$1,operations=ARRAY['read','claim'] WHERE organization_id='org_first' AND runner_id='runner_one'`, now.Add(time.Hour)); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET machine_id='machine_000000000000000000000000000000a1',removed_at=NULL,expires_at=$1,operations=ARRAY['read','claim'] WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`, now.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `UPDATE api_tokens SET revoked_at=NULL,expires_at=$1 WHERE organization_id='org_first' AND id='runner_one'`, now.Add(time.Hour)); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `UPDATE api_tokens SET revoked_at=NULL,expires_at=$1 WHERE organization_id='org_first' AND id='runner_000000000000000000000000000000a1'`, now.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := admin.ExecContext(t.Context(), `UPDATE api_tokens SET scope='admin' WHERE organization_id='org_first' AND id='admin_org_first'`); err != nil {
@@ -1136,7 +1136,7 @@ func (w routingAuditFailureWriter) RecordAccessAudit(context.Context, accessstor
 func TestPostgresRunnerHostChangeWithoutLegacyDatabase(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: func() time.Time { return now }}}
+	service := &Service{database: &database{}, notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), config: Config{TenantRepository: repository, AccessRepository: repository, now: func() time.Time { return now }}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
@@ -1236,4 +1236,12 @@ func (s *routingGrantInterleaveDetails) StoreDetail(ctx context.Context, org str
 		err = s.afterStore(ctx)
 	}
 	return ref, err
+}
+
+func routingTenantRunnerID(name string) string {
+	return map[string]string{"one": "runner_000000000000000000000000000000a1", "two": "runner_000000000000000000000000000000a2"}[name]
+}
+
+func routingTenantMachineID(name string) string {
+	return map[string]string{"one": "machine_000000000000000000000000000000a1", "two": "machine_000000000000000000000000000000a2"}[name]
 }

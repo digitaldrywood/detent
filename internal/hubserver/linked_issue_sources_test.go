@@ -124,7 +124,7 @@ func TestLinkedIssueCreation(t *testing.T) {
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
 				{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-				{Name: "Cancelled", Terminal: true},
+				{Name: "Cancelled", Terminal: true, Transitions: []string{}},
 			}
 			if !reflect.DeepEqual(project.States, wantStates) {
 				t.Fatalf("states=%+v want=%+v", project.States, wantStates)
@@ -186,7 +186,7 @@ func TestLinkedIssueCreation(t *testing.T) {
 	}
 	for _, name := range []string{"fetched fields", "invalid source is atomic", "source discussion bound", "repository changed during fetch"} {
 		t.Run(name, func(t *testing.T) {
-			other := newNativeFixture(t, f.service, f.project.OrganizationID, "Example linked project")
+			other := newNativeFixture(t, f.service, f.project.OrganizationID, "Example linked project "+name)
 			snapshot := linkedSnapshot()
 			snapshot.URL = "https://github.com/example-org/example-project/issues/12"
 			configure := func(repository string) {

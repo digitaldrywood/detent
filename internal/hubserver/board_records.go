@@ -117,46 +117,48 @@ func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, pa
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return tracker.NativeIssuePage{}, workItemStorageUnavailable()
 	}
-	var compatible bool
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
-			return err
-		}
-		project, err := r.Project(ctx, scope.project)
-		if err != nil {
-			return err
-		}
-		if project.DeletedAt != nil {
-			return corestore.ErrNotFound
-		}
-		compatible = project.Profile == "github_compatible"
-		return nil
-	}); err != nil {
-		return tracker.NativeIssuePage{}, projectRecordError(err)
-	}
-	if compatible {
-		return s.readQueueWorkItems(ctx, scope, params)
-	}
-	if err := validateNativeIssueQuery(params); err != nil {
-		return tracker.NativeIssuePage{}, err
-	}
 	var page tracker.NativeIssuePage
+	var compatible bool
 	read := func(ctx context.Context) error {
+		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				return err
+			}
+			project, err := r.Project(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			if project.DeletedAt != nil {
+				return corestore.ErrNotFound
+			}
+			compatible = project.Profile == "github_compatible"
+			return nil
+		}); err != nil {
+			return projectRecordError(err)
+		}
+		if compatible {
+			return nil
+		}
+		if err := validateNativeIssueQuery(params); err != nil {
+			return err
+		}
 		var err error
 		page, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy)
 		return err
 	}
+	var err error
 	if repository, ok := s.config.TenantRepository.(interface {
 		ReadBoardRequest(context.Context, tracker.OrganizationID, string, func(context.Context) error) error
 	}); ok {
-		err := repository.ReadBoardRequest(ctx, scope.organization, scope.credential.ID, read)
-		return page, err
+		err = repository.ReadBoardRequest(ctx, scope.organization, scope.credential.ID, read)
+	} else if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
+		err = repository.ReadRequest(ctx, scope.organization, read)
+	} else {
+		err = read(ctx)
 	}
-	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
-		err := repository.ReadRequest(ctx, scope.organization, read)
-		return page, err
+	if err == nil && compatible {
+		return s.readQueueWorkItems(ctx, scope, params)
 	}
-	err := read(ctx)
 	return page, err
 }
 

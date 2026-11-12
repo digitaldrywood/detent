@@ -76,7 +76,7 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 				t.Fatal("invalid cleanup cursor was accepted")
 			}
 		})
-		admin := hostedPostgresAdmin(t, f.service)
+		admin := f.admin
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			current, err := r.Attempt(t.Context(), data.AttemptID)
 			if err == nil && (current.WorkerCleanupRequired == nil || *current.WorkerCleanupRequired != (index == 0) || current.RuntimeSummarySequence != current.Sequence) {

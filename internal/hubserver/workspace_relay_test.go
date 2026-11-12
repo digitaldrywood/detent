@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -2617,7 +2618,7 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 					return err
 				}
 				var count int
-				if err := usagePostgresAdmin(t, fixture.server).QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND archive_id=$2 AND owner_kind='project-action-run-output' AND owner_id=$3`, v.record.OrganizationID, object.ID, actionstore.ArchiveOwnerID(v.record.ProjectID, row.ID)).Scan(&count); err != nil {
+				if err := fixture.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND archive_id=$2 AND owner_kind='project-action-run-output' AND owner_id=$3`, v.record.OrganizationID, object.ID, actionstore.ArchiveOwnerID(v.record.ProjectID, row.ID)).Scan(&count); err != nil {
 					return err
 				}
 				if count != 1 {
@@ -2774,7 +2775,7 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 					t.Fatalf("%s ticket page count=%d want%d", value.record.OrganizationID, len(page), min(tickets, hubmaintenance.ItemLimit))
 				}
 				var count int
-				if err := usagePostgresAdmin(t, fixture.server).QueryRowContext(t.Context(), "SELECT count(*) FROM workspace_relay_tickets WHERE organization_id=$1 AND project_id=$2", value.record.OrganizationID, value.record.ProjectID).Scan(&count); err != nil {
+				if err := fixture.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM workspace_relay_tickets WHERE organization_id=$1 AND project_id=$2", value.record.OrganizationID, value.record.ProjectID).Scan(&count); err != nil {
 					return err
 				}
 				if count != tickets {
@@ -2881,6 +2882,7 @@ type postgresRelayRuntimeTenant struct {
 
 type postgresRelayRuntimeFixture struct {
 	server  *Service
+	admin   *sql.DB
 	service *workspaceService
 	clock   *atomic.Int64
 	tenants []postgresRelayRuntimeTenant
@@ -2930,10 +2932,14 @@ func newPostgresRelayRuntimeFixture(t *testing.T, hosted bool) postgresRelayRunt
 	originalWorkspace := server.workspaces
 	server.workspaces = service
 	t.Cleanup(func() { service.relay.stop(t.Context()); server.workspaces = originalWorkspace })
-	result := postgresRelayRuntimeFixture{server: server, service: service, clock: clock}
+	result := postgresRelayRuntimeFixture{server: server, admin: admin, service: service, clock: clock}
 	for index, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		if hosted {
+			selectPostgresHubTestOrganization(server, organization)
+		}
 		f := newNativeFixture(t, server, organization, "Example relay")
-		runner, machine, worker := "runner_relay", "machine_relay", "worker_relay"
+		binding := runnerauth.NewBinding()
+		runner, machine, worker := binding.RunnerID, string(binding.MachineID), "worker_relay"
 		workerToken := "example-worker-" + string(organization)
 		expires := base.Add(time.Hour)
 		var session postgres.WorkspaceSession
@@ -2995,6 +3001,9 @@ func newPostgresRelayRuntimeFixture(t *testing.T, hosted bool) postgresRelayRunt
 		record := relayWorkspaceRecord(session)
 		connection := &relayConnection{id: "relayrunner_" + string(organization), workspaceID: session.ID, runner: true, scope: scope, owner: record.owner(), principalID: worker, sessionID: lease.LeaseID, out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
 		result.tenants = append(result.tenants, postgresRelayRuntimeTenant{fixture: f, workerScope: scope, record: record, runner: connection, lease: lease})
+	}
+	if hosted {
+		selectPostgresHubTestOrganization(server, "org_first")
 	}
 	return result
 }

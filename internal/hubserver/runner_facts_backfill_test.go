@@ -139,7 +139,9 @@ func TestConfigurationReceiptsExcludeExpiredHistory(t *testing.T) {
 					t.Fatal(err)
 				}
 				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-				view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, ObservedAt: now}
+				approved := hubTestPolicy()
+				approveHubTestPolicy(t, f.service, f.base+"/policy", approved)
+				view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, SelectedPolicy: &approved, EffectivePolicy: &approved, ObservedAt: now}
 				seedHubConfiguration(t, f, runner.binding.RunnerID, view)
 				operation := "drain_local_project " + runner.binding.RunnerID + " " + string(f.project.ID)
 				operations := []string{operation, "resume_local_project " + runner.binding.RunnerID + " " + string(f.project.ID)}

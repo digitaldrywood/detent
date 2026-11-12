@@ -163,6 +163,7 @@ func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
 					}); err != nil {
 						t.Fatal(err)
 					}
+					view.ExpiresAt = formatHubTime(expires)
 				}
 				created = append(created, view)
 			}
@@ -637,7 +638,7 @@ func TestHostedInvitationFailureKeepsHeldSeat(t *testing.T) {
 		pending bool
 		seats   int
 	}{
-		{name: "a new address gives its seat back", seats: 0},
+		{name: "a new address keeps its seat while the provider outcome is uncertain", seats: 1},
 		{name: "a pending address keeps its seat", pending: true, seats: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -732,6 +733,7 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 	}
 	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "shared-host", DisplayName: "Shared runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", issued.Token, redemption), http.StatusCreated)
+	reportRunnerCapacity(t, f.service, base, credential, binding.MachineID, redemption.DisplayName, redemption.BackendIsolation, redemption.Capacity)
 	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-run"}, Title: "Private run", Body: issueContractTestSections, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue

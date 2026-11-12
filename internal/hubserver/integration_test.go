@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
-	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -23,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type importFixtureBackend struct {
@@ -84,7 +81,7 @@ func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHub
 
 func newIntegrationFixture(t *testing.T, backend ImportBackend) nativeFixture {
 	t.Helper()
-	s := newPostgresNativeService(t, Config{ImportBackend: backend, Logger: slog.New(hubfixGithubDebug{})})
+	s := newPostgresNativeService(t, Config{ImportBackend: backend})
 	f := newNativeFixture(t, s, "", "import")
 	f.token = testHubAdminToken
 	if err := s.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -514,7 +511,7 @@ func TestCutoverSourceClosureAndProjectionCoalescing(t *testing.T) {
 			if len(keys) < 2 || !strings.HasSuffix(keys[len(keys)-1], ":newest") || !strings.HasSuffix(keys[len(keys)-2], ":uncertain") {
 				t.Fatalf("summary publication order = %v", keys)
 			}
-			secondID, secondToken := cutoverCredentialFixture(t, f)
+			_, secondToken := cutoverCredentialFixture(t, f)
 			for _, command := range []struct{ token, body string }{{f.token, "First operator summary"}, {secondToken, "Second operator summary"}, {secondToken, "Second operator summary"}} {
 				r = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+job.WorkItemID+"/projection", command.token, map[string]any{"idempotency_key": "shared-key", "body": command.body})
 				requireNativeStatus(t, r, http.StatusOK)
@@ -738,26 +735,4 @@ func TestCutoverRefusesChangedAuthoritySourcesAndRollsBack(t *testing.T) {
 			}
 		})
 	}
-}
-
-type hubfixGithubDebug struct{}
-
-func (hubfixGithubDebug) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelError }
-func (h hubfixGithubDebug) WithAttrs([]slog.Attr) slog.Handler       { return h }
-func (h hubfixGithubDebug) WithGroup(string) slog.Handler            { return h }
-func (hubfixGithubDebug) Handle(_ context.Context, r slog.Record) error {
-	r.Attrs(func(a slog.Attr) bool {
-		if err, ok := a.Value.Any().(error); ok {
-			for e := err; e != nil; e = errors.Unwrap(e) {
-				fmt.Fprintf(os.Stderr, "HUBFIXDEBUG %T %v\n", e, e)
-				var pg *pgconn.PgError
-				if errors.As(e, &pg) {
-					fmt.Fprintf(os.Stderr, "HUBFIXDEBUG pg %s %s pos=%d where=%s q=%s\n", pg.Code, pg.Message, pg.Position, pg.Where, pg.InternalQuery)
-					break
-				}
-			}
-		}
-		return true
-	})
-	return nil
 }

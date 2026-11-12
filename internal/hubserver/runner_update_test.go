@@ -231,7 +231,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			}
 			snapshot := send()
 			if previous != nil {
-				routingCredential0, routingStatus0, routingError0 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+				routingCredential0, routingStatus0, routingError0 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 				if routingError0 != nil {
 					t.Fatalf("routing reader status=%d error=%v", routingStatus0, routingError0)
 				}
@@ -277,7 +277,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			if test.failed {
 				report.Receipt = &runnerauth.UpdateReceipt{Request: *request, Status: "refused", FailureReason: "Update download failed", ObservedAt: now}
 				send()
-				routingCredential1, routingStatus1, routingError1 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+				routingCredential1, routingStatus1, routingError1 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 				if routingError1 != nil {
 					t.Fatalf("routing reader status=%d error=%v", routingStatus1, routingError1)
 				}
@@ -299,7 +299,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			report.Revision = report.BuildRevision()
 			send()
 			observedAt := service.config.now()
-			routingCredential2, routingStatus2, routingError2 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			routingCredential2, routingStatus2, routingError2 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 			if routingError2 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus2, routingError2)
 			}
@@ -324,6 +324,7 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "runner-update")
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	r.enroll(t)
+	r.reportCapacity(t)
 	now := time.Now().UTC()
 	build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "private_patched_source", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 	report := &runnerauth.UpdateObservation{Discovery: "available", Protocol: 1, Service: "detent", Supported: true, AvailableVersion: "1.2.4", AvailableObservedAt: now, Running: build, ObservedAt: now}
@@ -373,7 +374,7 @@ func TestRunnerUpdateApplication(t *testing.T) {
 		{name: "stale build revision", staleBuild: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			routingCredential3, routingStatus3, routingError3 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			routingCredential3, routingStatus3, routingError3 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 			if routingError3 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus3, routingError3)
 			}
@@ -533,7 +534,7 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	request.IdempotencyKey = "absent-owner"
 	request.ExpectedRevision = view.Revision
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, request), http.StatusServiceUnavailable)
-	routingCredential4, routingStatus4, routingError4 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	routingCredential4, routingStatus4, routingError4 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 	if routingError4 != nil {
 		t.Fatalf("routing reader status=%d error=%v", routingStatus4, routingError4)
 	}

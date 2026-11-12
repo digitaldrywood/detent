@@ -44,12 +44,11 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not on PATH")
 	}
-	service := openTestService(t, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
+	f := &workspaceLaneFixture{nativeFixture: newDefaultNativeFixture(t, Config{
 		Workspace: &WorkspaceConfig{Enabled: true, PersonMaxOpen: 10, PlanMaxOpen: 10,
 			Terminal: WorkspaceTerminalConfig{Enabled: true}},
-	})
-	f := &workspaceLaneFixture{nativeFixture: newNativeFixture(t, service, "", "lane")}
+	})}
+	service := f.service
 	policy := hubTestPolicy()
 	approveHubTestPolicy(t, service, f.base+"/policy", policy)
 	f.server = httptest.NewServer(service.echo)
@@ -72,6 +71,7 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	support := workspacerunner.Support{Terminal: true}
 	if err := native.HeartbeatMachine(t.Context(), hubclient.Machine{
 		ID: f.runner.binding.MachineID, Hostname: "runner-host", DisplayName: "runner", Capacity: 4, Version: "test",
+		CapacityConfig:        &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 4, RuntimeLimit: 4, Manageable: true, ObservedAt: service.config.now()},
 		WorkspaceCapabilities: workspacerunner.Capabilities(support), WorkspaceIsolation: workspacesession.IsolationUser,
 	}); err != nil {
 		t.Fatalf("heartbeat machine: %v", err)

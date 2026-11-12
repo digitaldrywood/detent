@@ -237,7 +237,7 @@ func (s *Service) maintainHealthRunner(ctx context.Context, organization tracker
 		for _, project := range projects {
 			runner.Projects = append(runner.Projects, string(project))
 		}
-		leases, err := reader.RunnerActiveLeaseIDs(ctx, identity.RunnerID, now, healthReadLimit)
+		leases, err := reader.RunnerActiveLeaseIDs(ctx, identity.RunnerID, now, corestore.MaxPageSize)
 		if err != nil {
 			return err
 		}

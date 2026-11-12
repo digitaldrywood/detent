@@ -2,11 +2,15 @@ package billingstore
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/usagecost"
 )
+
+var ErrCostOverlap = fmt.Errorf("cost period overlaps another source: %w", mutation.ErrConflict)
 
 type CostObservation struct {
 	OrganizationID tracker.OrganizationID

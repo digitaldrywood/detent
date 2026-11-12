@@ -212,10 +212,11 @@ func moveDispatchGuardFixture(t *testing.T, f dispatchGuardFixture, state string
 	}); err != nil {
 		t.Fatal(err)
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/workflow", testHubAdminToken, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "fixture-dispatch-lane"}, ExpectedRevision: current.Revision, State: state, Reason: "user_requested"})
+	f.claim(t, false)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/workflow", f.worker, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "fixture-dispatch-lane", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ExpectedRevision: current.Revision, State: state, Reason: "worker_progress"})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &f.issue)
-	f.claim(t)
+	f.startAttempt(t, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"})
 }
 
 func rewriteDispatchAttemptFixture(t *testing.T, f dispatchGuardFixture, mutate func(*tracker.NativeRunData)) {
@@ -456,9 +457,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			if test.publication != "" {
 				rules := tracker.ChangeReviewPolicy{PolicyID: f.policy, RequireReview: true}
 				if test.reviewOutcome != "" {
-					principal, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.worker), "", "")
+					principal, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 					if err != nil || status != http.StatusOK {
-						t.Fatalf("fixture worker authority status%d: %v", status, err)
+						t.Fatalf("fixture operator authority status%d: %v", status, err)
 					}
 					rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal.ID, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
 				}
@@ -558,7 +559,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.CompletionBody != test.finalMessage || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != f.worktreeState || attempt.WorkItemRevision != revision || attempt.DispatchGeneration != 0 || test.legacy && test.disposition == nil && attempt.Disposition != nil {
 				t.Fatalf("completion lost successful current-revision evidence: %#v", attempt)
 			}
-			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
 			if test.expiredLease {
 				if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.now.Add(-time.Minute), f.project.OrganizationID, f.lease.ID); err != nil {

@@ -96,6 +96,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			}
 			settings := map[string]any{"expected_revision": 1, "display_name": "Build runner", "tags": test.tags, "state": test.state, "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
+			r.reportCapacity(t)
 			descriptor := hubTestPolicy()
 			descriptor.Requirements = test.requirements
 			descriptor = descriptor.WithID()
@@ -293,8 +294,9 @@ func TestRunnerRoutingClaims(t *testing.T) {
 				if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=$1 AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 4 {
 					t.Fatalf("claim cycle recorded %d decisions: %v", count, err)
 				}
-				other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
+				other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 				other.enroll(t)
+				other.reportCapacity(t)
 				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET state='draining' WHERE runner_id=$1", other.binding.RunnerID); err != nil {
 					t.Fatal(err)
 				}
@@ -603,6 +605,7 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 	second := sharedRunner(t, first)
 	for _, r := range []runnerFixture{first, second} {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Shared runner", "state": "active", "capacity_limit": 8, "project_ids": []tracker.ProjectID{f.project.ID, otherProject.project.ID}}), http.StatusOK)
+		r.reportCapacity(t)
 	}
 	descriptor := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
@@ -652,7 +655,7 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 		t.Fatalf("shared host allocated %d leases, want 2", len(winners))
 	}
 	for _, runner := range []runnerFixture{first, second} {
-		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"capacity": 8, "version": "test"})
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": "Shared runner", "capacity": 8, "version": "test"})
 		requireNativeStatus(t, response, http.StatusOK)
 		var snapshot runnerauth.RoutingSnapshot
 		decodeHubResponse(t, response, &snapshot)
@@ -741,6 +744,7 @@ func TestRunnerRoutingRevocationAndDrain(t *testing.T) {
 					change.ProjectIDs = nil
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
+				r.reportCapacity(t)
 				descriptor := hubTestPolicy()
 				descriptor.Requirements.RequiredTags = []string{"build"}
 				descriptor = descriptor.WithID()
@@ -796,6 +800,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 				f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }}), "", "lease-accounting")
 				r := prepareRunnerForScope(t, f, scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 				r.enroll(t)
+				r.reportCapacity(t)
 				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 				issue := f.create(t, "work")
 				claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "work", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
@@ -839,6 +844,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 					}
 					otherRunner := prepareRunnerForScope(t, other, scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 					otherRunner.enroll(t)
+					otherRunner.reportCapacity(t)
 					approveHubTestPolicy(t, f.service, other.base+"/policy", hubTestPolicy())
 					otherIssue := other.create(t, "other work")
 					otherClaim := claim
@@ -993,6 +999,7 @@ func TestRepositoryRunnerSelectorsCannotStealWork(t *testing.T) {
 		}
 		change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Builder", State: "active", Tags: tags, CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{a.project.ID, b.project.ID}}}
 		requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
+		r.reportCapacity(t)
 	}
 	macPolicy := hubTestPolicy()
 	macPolicy.Requirements.MachineID = string(mac.binding.MachineID)

@@ -91,7 +91,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 				if len(page.Items) != size || page.Items[0].Evidence.Reason != string(org) || page.Items[0].Evidence.Counts["attempts"] != 3 || page.Items[0].Evidence.Values["rate"] != 2.5 || page.Items[0].Evidence.Queues[string(fixture.project.ID)].QueueDepth != 4 || page.Items[0].Evidence.Productivity == nil {
 					t.Fatalf("wrong projected page: %+v", page)
 				}
-				if statements != 18 || exchanges != 15 {
+				if statements != 15 || exchanges != 10 {
 					t.Errorf("live route budget changed: %d statements / %d exchanges", statements, exchanges)
 				}
 				durations := []time.Duration{time.Since(started)}

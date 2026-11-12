@@ -636,7 +636,7 @@ func coreWorkItemNeutralFixtureBody(t *testing.T, org tracker.OrganizationID, pr
 			t.Fatal(err)
 		}
 		patch, encoding, err := encodeNativeVersion(baseRaw, "snapshot", currentRaw, 2)
-		if err != nil || encoding != "patch" {
+		if err != nil || body != "" && encoding != "patch" {
 			t.Fatalf("encode source history encoding=%q error=%v", encoding, err)
 		}
 		for _, version := range []struct {

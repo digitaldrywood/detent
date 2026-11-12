@@ -13,7 +13,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
@@ -61,9 +63,30 @@ func TestHotQueryPlans(t *testing.T) {
 	}
 	r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim)
 	r.enroll(t)
+	receiptContent := eventstore.NewContent(f.service.runDetailStore())
+	receiptHash, err := nativeCommandHash(map[string]string{"effect": "example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		now := f.service.config.now()
+		for n := range 512 {
+			record := eventstore.Receipt{OrganizationID: scope.organization, ActorID: fmt.Sprintf("actor_plan_%d", n%16), Operation: "POST /example", CommandKey: fmt.Sprintf("plan-%d", n), RequestHash: receiptHash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}
+			record, err := receiptContent.PrepareReceipt(t.Context(), record, []byte(fmt.Sprintf(`{"plan":%d}`, n)))
+			if err != nil {
+				return err
+			}
+			if _, err := w.PutReceipt(t.Context(), record); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	installReportsBudgetTrace(t, f.service)
 	admin := hostedPostgresAdmin(t, f.service)
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE runner_identities;ANALYZE api_tokens;ANALYZE token_grants;ANALYZE machines;ANALYZE issues;ANALYZE issue_relationships"); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "ANALYZE runner_identities;ANALYZE api_tokens;ANALYZE token_grants;ANALYZE machines;ANALYZE issues;ANALYZE issue_relationships;ANALYZE native_commands;ANALYZE native_command_states"); err != nil {
 		t.Fatal(err)
 	}
 	var mu sync.Mutex
@@ -143,7 +166,7 @@ func TestHotQueryPlans(t *testing.T) {
 			continue
 		}
 		paths[capture.path]++
-		plan, raw := reportsExplainPostgresPlan(t, admin, scope.organization, statement)
+		plan, raw := reportsExplainPostgresPlan(t, admin, scope.organization, statement, "enable_seqscan=off")
 		sources[capture.path] = sources[capture.path] || slices.Contains(hotQueryPlanRelations(plan), required[capture.path])
 		t.Logf("%s SQL %d: %s\nPLAN: %s", capture.path, i, statement.query, raw)
 		if violations := hotQueryPlanViolations(capture.path, statement.query, plan); len(violations) > 0 {

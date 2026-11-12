@@ -159,6 +159,9 @@ type preparedNativeRunEvent struct {
 
 func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeScope, item string, request tracker.NativeRunEvent) (result json.RawMessage, resultErr error) {
 	defer func() {
+		if errors.Is(resultErr, billingstore.ErrCostOverlap) {
+			resultErr = nativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
+		}
 		if errors.Is(resultErr, leasestore.ErrAttemptConflict) {
 			resultErr = nativeExecutionConflict("Run event sequence conflicts with the persisted attempt")
 		}
@@ -447,7 +450,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	request.PriorEvents = nil
 	events[len(events)-1] = request
 	usageCorrection := false
-	if previousRunEventFound && !termination {
+	if previousRunEventFound && !termination && (hasPriorEvents || request.Data.Sequence != previousAttempt.Sequence) {
 		if hasPriorEvents || request.Type != "run.finished" || request.Data.Outcome != previousAttempt.Status || request.Data.Sequence < previousAttempt.Sequence || request.Data.Sequence > previousAttempt.Sequence+1 {
 			return nil, leasestore.ErrAttemptConflict
 		}
@@ -831,7 +834,12 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				break
 			}
 		}
+		growth, err := s.prepareRunEventGrowth(ctx, w, request.Type == "run.finished" || request.Type == "run.checkpointed")
+		if err != nil {
+			return err
+		}
 		unpublished := map[string]struct{}{}
+		var appended int64
 		for _, event := range prepared {
 			authority := event.authority
 			authority.WorkItem, authority.Lease = workItem, lease
@@ -913,12 +921,16 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			if err != nil {
 				return err
 			}
+			appended++
 			authority.UsageReport.EventSequence = writtenHistory.Sequence
 			if err := s.config.NativeRunEvents.ApplyNativeRunEvent(ctx, w, authority); err != nil {
 				return err
 			}
 		}
 		if _, err := w.PutReceipt(ctx, receipt); err != nil {
+			return err
+		}
+		if err := growth.apply(ctx, w, scope.organization, "run-event/"+actorID+"/"+operation+"/"+request.IdempotencyKey, appended); err != nil {
 			return err
 		}
 		keys := make([]string, 0, len(contentRefs))

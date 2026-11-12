@@ -900,7 +900,6 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 	case string(chat.ActionArchiveItems):
 		assertCoordinatorArchiveEffect(t, f, changed)
 		return
-		return
 	case "set_sprite_pool":
 		actual = coordinatorActionPool(t, f.service).MaxRunners == 0
 	case "scale_up_sprite_pool":

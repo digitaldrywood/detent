@@ -797,6 +797,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	issue := f.create(t, "selected runtime")
 	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	first.enroll(t)
+	reportRunnerCapacity(t, f.service, f.base, first.redemption.Credential, first.binding.MachineID, "runner", first.redemption.BackendIsolation, 8)
 	report := capacityReport(now)
 	report.MaxConcurrent = 8
 	publishCapacity(t, f, first, report)
@@ -1084,6 +1085,7 @@ func TestExplanationProviderCapacityCandidateWindow(t *testing.T) {
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	first.enroll(t)
+	reportRunnerCapacity(t, f.service, f.base, first.redemption.Credential, first.binding.MachineID, "runner", first.redemption.BackendIsolation, 8)
 	publishCapacity(t, f, first, capacityReport(now))
 	issue := f.create(t, "reserved")
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", first.redemption.Credential, providerClaim(first, issue, "reserved"))

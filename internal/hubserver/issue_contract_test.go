@@ -23,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -279,9 +278,6 @@ func TestNativeIssueContract(t *testing.T) {
 				}
 				heldLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: string(machine), RunnerID: credential.Runner.RunnerID, SessionID: "contract-hold", LeaseID: newNativeID("lease"), TTL: time.Hour})
 				if err != nil {
-					return err
-				}
-				if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: scope.organization, LeaseID: heldLease.LeaseID, RunnerID: credential.Runner.RunnerID, AssignedAt: f.service.config.now()}); err != nil {
 					return err
 				}
 				return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: scope.organization, ProjectID: scope.project, LeaseID: tracker.LeaseID(heldLease.LeaseID), PolicyID: descriptor.ID, BoundAt: heldLease.AcquiredAt})

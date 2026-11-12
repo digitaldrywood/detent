@@ -38,6 +38,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -177,10 +178,10 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 					t.Fatal(err)
 				}
 				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+				rules := f.rules
+				rules.PolicyID = descriptor.ID
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "aggregate-rules"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
 				if test.aggregatePressure {
-					rules := f.rules
-					rules.PolicyID = descriptor.ID
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "aggregate-rules"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
 					body := f.issue.Body + strings.Repeat("<", (64<<10)-len(f.issue.Body))
 					if test.fragmentBody {
 						body = f.issue.Body + strings.Repeat("<", 153<<10) + strings.Repeat("b", (256<<10)-len(f.issue.Body)-(153<<10))
@@ -424,7 +425,7 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 				review.ImplementationReview, review.Validator = nil, nil
 				original.ImplementationReview, original.Validator = nil, nil
 				if !reflect.DeepEqual(review, original) {
-					t.Fatal("bounded review changed feedback identity, body or decision")
+					t.Fatalf("bounded review changed feedback identity, body or decision: got id=%s version=%s decision=%s actor=%+v created=%s body=%d bytes, want id=%s version=%s decision=%s actor=%+v created=%s body=%d bytes", review.ID, review.VersionID, review.Decision, review.Actor, review.CreatedAt, len(review.Body), original.ID, original.VersionID, original.Decision, original.Actor, original.CreatedAt, len(original.Body))
 				}
 			}
 			if !test.ordinaryOnly {
@@ -731,6 +732,17 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	wantImported := tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")
 	if migrated.Number == 3410 || !reflect.DeepEqual(migrated.ExternalReferences, []tracker.ExternalReference{wantImported}) {
 		t.Fatalf("migration lost source identity: %+v", migrated)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.Settings.Repository, project.Settings.CheckoutRepository, project.Settings.RepositoryEnabled = "digitaldrywood/detent", "digitaldrywood/detent", true
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "linked-source"}, GitHubIssueURL: snapshot.URL, Title: "linked", State: f.issue.State})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -1819,6 +1831,9 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				}
 				f.path = f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes/" + f.change.ID
 			}
+			if err := service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}, service.config.now()); err != nil {
+				t.Fatal(err)
+			}
 			projected := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
 			if projected.Change == nil || projected.Change.Number != 1 || projected.Change.URL != "https://github.com/example/repo/pull/1" {
 				t.Fatalf("pending=%v external change projection=%+v", pending, projected.Change)
@@ -1978,7 +1993,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 		{name: "direct landing shares project admission", ownerCapacity: 1, contenderCapacity: 1, direct: true},
 		{name: "concurrent direct transitions acquire one slot", ownerCapacity: 1, contenderCapacity: 1, concurrent: true, directRace: true},
 		{name: "integral current second retains fractional future expiry", ownerCapacity: 1, contenderCapacity: 1, boundary: "integral"},
-		{name: "fractional current second retains nanosecond future expiry", ownerCapacity: 1, contenderCapacity: 1, boundary: "fractional"},
+		{name: "fractional current second retains microsecond future expiry", ownerCapacity: 1, contenderCapacity: 1, boundary: "fractional"},
 		{name: "exact expiry frees capacity", ownerCapacity: 1, contenderCapacity: 1, boundary: "exact", expired: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2030,10 +2045,13 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			waiter := prepareRunner(t, secondFixture.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Heartbeat)
-			waiter.enroll(t)
-			reportRunnerCapacity(t, secondFixture.service, secondFixture.base, waiter.redemption.Credential, waiter.binding.MachineID, waiter.redemption.DisplayName, waiter.redemption.BackendIsolation, waiter.redemption.Capacity)
-			if test.overflow {
+			waiter := owner
+			if !test.sameBatch {
+				waiter = prepareRunner(t, secondFixture.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Heartbeat)
+				waiter.enroll(t)
+				reportRunnerCapacity(t, secondFixture.service, secondFixture.base, waiter.redemption.Credential, waiter.binding.MachineID, waiter.redemption.DisplayName, waiter.redemption.BackendIsolation, waiter.redemption.Capacity)
+			}
+			if test.overflow && !test.sameBatch {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), secondFixture.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					identity, err := w.RunnerIdentity(t.Context(), waiter.binding.RunnerID)
 					if err != nil {
@@ -2053,7 +2071,6 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			}
 			if test.sameBatch {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, owner.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Batch runner", "state": "active", "capacity_limit": 1, "project_ids": []tracker.ProjectID{f.project.ID}, "project_capacity_limits": map[tracker.ProjectID]int{f.project.ID: 1}, "idempotency_key": "batch-project-limit"}), http.StatusOK)
-				waiter = owner
 				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET capacity_limit=1, reported_capacity=1 WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, owner.binding.RunnerID); err != nil {
 					t.Fatal(err)
 				}
@@ -2072,7 +2089,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 					var lease tracker.NativeLease
 					decodeHubResponse(t, response, &lease)
-					if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
+					if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
 						t.Fatal(err)
 					}
 					acquire = func() *httptest.ResponseRecorder {
@@ -2242,7 +2259,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 			}
 			if test.expired {
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -2252,9 +2269,9 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				case "integral":
 					expiry = expiry.Add(100 * time.Millisecond)
 				case "fractional":
-					expiry = expiry.Add(time.Nanosecond)
+					expiry = expiry.Add(time.Microsecond)
 				}
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", expiry, f.project.OrganizationID, lease.ID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", expiry, f.project.OrganizationID, lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -2591,6 +2608,9 @@ func TestChangeLanding(t *testing.T) {
 	updated.Gates.LandingMode = "per_landing"
 	updated = updated.WithID()
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: first.PolicyID, Policy: updated}), http.StatusOK)
+	updatedRules := f.rules
+	updatedRules.PolicyID = updated.ID
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "updated-rules"}, ExpectedID: f.rules.ID, Policy: updatedRules}), http.StatusOK)
 	if detail := f.detail(t); len(detail.Versions) != 1 || detail.Versions[0].PolicyID != first.PolicyID || detail.Versions[0].ReviewPolicy.ID != first.ReviewPolicy.ID || len(detail.Checks) != 1 || detail.Checks[0].PolicyID != first.PolicyID || detail.Checks[0].ConfigDigest != first.Policy.ConfigDigest {
 		t.Fatalf("policy approval changed immutable acceptance evidence: %+v", detail)
 	}
@@ -2625,10 +2645,10 @@ func TestChangeLanding(t *testing.T) {
 		t.Fatalf("persistent landing context = %+v", stored)
 	}
 
-	projected, err := f.service.readWorkItem(t.Context(), analyticsTestScope(t, f.nativeFixture), string(f.issue.WorkItemID))
-	if err != nil {
+	if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}, f.service.config.now()); err != nil {
 		t.Fatal(err)
 	}
+	projected := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
 	if projected.ListChange == nil || projected.ListChange.Branch != land.BaseRef || projected.ListChange.HeadSHA != land.MergeSHA {
 		t.Fatalf("list change = %#v", projected.ListChange)
 	}
@@ -2931,7 +2951,8 @@ func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
 					if test.expireDuringPreparation {
 						advanced := false
 						ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-							if !advanced && strings.Contains(query, "FROM change_requests c JOIN issues i") {
+							t.Logf("DEBUGE trace %.70q", query)
+							if !advanced && strings.Contains(query, "name: RecordCurrentChangeReviewSequences") {
 								advanced = true
 								clock.Add(int64(time.Hour))
 							}
@@ -3237,6 +3258,8 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				var version tracker.ChangeVersion
 				decodeHubResponse(t, response, &version)
+				debugResponse := performHubAPIRequest(t, f.service, http.MethodGet, changePath, f.token, nil)
+				t.Logf("DEBUGE version=%s prior=%s change=%s", version.ID, changes[0].CurrentVersion, debugResponse.Body.String()[:min(600, debugResponse.Body.Len())])
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-republished"}, Decision: "approved"}), http.StatusOK)
 			}
 			if got := ready(); got != test.want {

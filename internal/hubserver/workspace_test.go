@@ -627,7 +627,10 @@ func TestWorkspaceWorkerBind(t *testing.T) {
 		session, _ := f.requested(t)
 		// Without this check any runner holding any lease in the project
 		// could bind any workspace.
-		elsewhere := f.claim(t, string(f.issue.WorkItemID))
+		claimed := f.ordinaryClaim(t, string(f.issue.WorkItemID), newNativeID("session"))
+		requireNativeStatus(t, claimed, http.StatusOK)
+		var elsewhere tracker.NativeLease
+		decodeHubResponse(t, claimed, &elsewhere)
 		response := f.workerPost(t, session.ID, "bind", workspaceBindRequest{
 			workspaceWorkerIdentity: workspaceIdentity(elsewhere), Capabilities: workspaceTestCapabilities})
 		requireNativeCode(t, response, http.StatusConflict, "stale_execution")

@@ -34,14 +34,22 @@ func (s *Service) platformTenantUsage(c echo.Context) error {
 		return c.JSON(http.StatusOK, usage)
 	}
 	if s.database.postgres != nil {
-		fleet, err := s.hostedFleetUsageTenant(c.Request().Context())
+		plan, err := s.hostedPlanUsageTenant(c.Request().Context(), "members")
 		if err != nil {
 			return s.internalAPIError(c, "usage_unavailable", "Usage is unavailable", err)
 		}
-		usage.WindowEndsAt, usage.Unavailable = fleet.WindowEndsAt, fleet.Unavailable
-		for name, allowance := range fleet.Allowances {
-			limit := allowance.Limit
-			usage.Allowances[name] = platformTenantAllowance{Used: allowance.Used, Limit: &limit}
+		usage.WindowEndsAt = plan.WindowEndsAt.Format(time.RFC3339)
+		for _, metric := range plan.Unavailable {
+			if _, limited := plan.Allowances[metric]; limited {
+				usage.Unavailable = append(usage.Unavailable, metric)
+			}
+		}
+		for name, used := range plan.Usage {
+			if limit, limited := plan.Allowances[name]; limited {
+				usage.Allowances[name] = platformTenantAllowance{Used: used, Limit: &limit}
+			} else if name == "members" {
+				usage.Allowances[name] = platformTenantAllowance{Used: used}
+			}
 		}
 		return c.JSON(http.StatusOK, usage)
 	}

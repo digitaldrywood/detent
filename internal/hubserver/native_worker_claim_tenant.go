@@ -682,7 +682,8 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				return err
 			}
 		}
-		if replay == nil && (plan.landingRequired || request.LandingCapacity > 0) {
+		var landingCapacity int64
+		if replay == nil && plan.landingRequired {
 			usage, err := w.LandingCapacityUsage(ctx, scope.project, authoritativeNow)
 			if err != nil {
 				return err
@@ -694,6 +695,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			if usage.Unknown || capacity > 0 && usage.Active >= capacity {
 				return ErrNoClaimableWork
 			}
+			landingCapacity = capacity
 		}
 		exposure := budget.CostExposure{RunnerAPI: !workspaceItem && runnerAPI}
 		if replay == nil {
@@ -784,7 +786,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		}
 		leaseID := newNativeID("lease")
 		lease, err = w.Claim(ctx, leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(identity.MachineID),
-			SessionID: request.SessionID, LeaseID: leaseID, TTL: ttl, LandingCapacity: int64(request.LandingCapacity), RunnerID: identity.RunnerID, PreviousAttemptCancellation: cancellation.attemptCancellation()})
+			SessionID: request.SessionID, LeaseID: leaseID, TTL: ttl, LandingCapacity: landingCapacity, RunnerID: identity.RunnerID, PreviousAttemptCancellation: cancellation.attemptCancellation()})
 		if err != nil {
 			return err
 		}

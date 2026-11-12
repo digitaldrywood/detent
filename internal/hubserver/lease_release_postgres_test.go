@@ -10,6 +10,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -82,12 +84,20 @@ func TestPostgresLeaseReleaseOrdersLocksWithProgress(t *testing.T) {
 }
 
 type leaseReleaseErrorRepository struct {
-	tenantstore.Repository
+	*postgres.Repository
 	failures chan error
 }
 
 func (r leaseReleaseErrorRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, run func(tenantstore.Writer) error) error {
 	err := r.Repository.WriteTenant(ctx, organization, workload, run)
+	if err != nil {
+		r.failures <- err
+	}
+	return err
+}
+
+func (r leaseReleaseErrorRepository) WriteRunnerEventCommand(ctx context.Context, organization tracker.OrganizationID, credentialID, runnerID string, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
+	err := r.Repository.WriteRunnerEventCommand(ctx, organization, credentialID, runnerID, command, write)
 	if err != nil {
 		r.failures <- err
 	}
@@ -114,7 +124,7 @@ func TestPostgresLeaseReleaseRetriesAbortedTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	failures := make(chan error, 1)
-	f.service.config.TenantRepository = leaseReleaseErrorRepository{Repository: f.service.config.TenantRepository, failures: failures}
+	f.service.config.TenantRepository = leaseReleaseErrorRepository{Repository: f.service.config.TenantRepository.(*postgres.Repository), failures: failures}
 	path := "/api/v2/organizations/org_startup/projects/prj_runner/leases/" + string(f.leases[0].ID) + "/release"
 	request := tracker.NativeLeaseMutation{FencingToken: f.leases[0].FencingToken, Reason: "cancelled", CancelAttempt: true}
 	result := make(chan *httptest.ResponseRecorder, 1)

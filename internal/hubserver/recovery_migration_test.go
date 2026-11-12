@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -131,18 +132,19 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 				t.Fatalf("interrupted migration did not roll back: probe=%t ledger=%+v", probe, got)
 			}
 			tools := recoveryPostgresTools(t, admin)
-			sourceBefore := recoveryPostgresCanonicalDump(recoveryPostgresTool(t, tools, migration, "pg_dump", "--format=plain", "--no-owner"))
+			sourceAdmin := fixture.Connection(t, admin, "", "")
+			sourceBefore := recoveryPostgresCanonicalDump(recoveryPostgresTool(t, tools, sourceAdmin, "pg_dump", "--format=plain", "--no-owner"))
 			backup := filepath.Join(t.TempDir(), "pre-upgrade.dump")
-			recoveryPostgresTool(t, tools, migration, "pg_dump", "--format=custom", "--file="+backup)
+			recoveryPostgresTool(t, tools, sourceAdmin, "pg_dump", "--format=custom", "--file="+backup)
 			backupBefore, err := os.ReadFile(backup)
 			if err != nil || len(backupBefore) == 0 {
 				t.Fatalf("backup is unavailable: %v", err)
 			}
-			recoveryPostgresTool(t, tools, migration, "pg_restore", "--no-owner", "--file="+os.DevNull, backup)
+			recoveryPostgresTool(t, tools, sourceAdmin, "pg_restore", "--no-owner", "--file="+os.DevNull, backup)
 			if recoveryPostgresVersion(t, admin) != previousVersion {
 				t.Fatal("backup migrated the source")
 			}
-			sourceAfter := recoveryPostgresCanonicalDump(recoveryPostgresTool(t, tools, migration, "pg_dump", "--format=plain", "--no-owner"))
+			sourceAfter := recoveryPostgresCanonicalDump(recoveryPostgresTool(t, tools, sourceAdmin, "pg_dump", "--format=plain", "--no-owner"))
 			if !bytes.Equal(sourceBefore, sourceAfter) {
 				t.Fatal("verify or backup changed legacy source")
 			}
@@ -232,11 +234,12 @@ func recoveryPostgresTools(t *testing.T, admin *sql.DB) string {
 func recoveryPostgresTool(t *testing.T, directory string, connection pgtransport.Connection, tool string, args ...string) []byte {
 	t.Helper()
 	command := exec.CommandContext(t.Context(), filepath.Join(directory, tool), args...)
-	command.Env = append(os.Environ(), "PGHOST="+connection.Host, "PGPORT="+strconv.Itoa(int(connection.Port)), "PGDATABASE="+connection.Database, "PGUSER="+connection.User, "PGPASSWORD="+connection.Password, "PGSSLMODE="+connection.SSLMode, "PGSERVICE=", "PGSERVICEFILE=", "PGPASSFILE=", "PGOPTIONS=")
+	environment := slices.DeleteFunc(os.Environ(), func(entry string) bool { return strings.HasPrefix(entry, "PG") })
+	command.Env = append(environment, "PGHOST="+connection.Host, "PGPORT="+strconv.Itoa(int(connection.Port)), "PGDATABASE="+connection.Database, "PGUSER="+connection.User, "PGPASSWORD="+connection.Password, "PGSSLMODE="+connection.SSLMode)
 	var output, diagnostic bytes.Buffer
 	command.Stdout, command.Stderr = &output, &diagnostic
 	if err := command.Run(); err != nil {
-		t.Fatalf("PostgreSQL fixture tool %s failed: %v", tool, err)
+		t.Fatalf("PostgreSQL fixture tool %s failed: %v: %s", tool, err, diagnostic.String())
 	}
 	return output.Bytes()
 }

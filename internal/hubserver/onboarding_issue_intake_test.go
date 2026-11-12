@@ -315,16 +315,7 @@ func (f *batchFixture) save(t *testing.T) {
 
 func (f *batchFixture) restart(t *testing.T) {
 	t.Helper()
-	cfg := f.service.config
-	cfg.TenantRepository, cfg.AccessRepository, cfg.BillingRepository = nil, nil, nil
-	if err := f.service.Close(); err != nil {
-		t.Fatal(err)
-	}
-	service, err := Open(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { service.Close() })
+	service := tfConvReopenConversationService(t, f.service)
 	f.service = service
 	f.runner.service = service
 	if err := service.stopGitHubWebhookMaintenance(); err != nil {
@@ -767,6 +758,7 @@ func TestGitHubBatchRunnerOperations(t *testing.T) {
 				first := newHostedBatchFixture(t)
 				secondCfg := first.service.config
 				secondCfg.Hosted = &HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://second.example.test", Provider: first.provider}
+				bindBatchTenant(t, first, secondCfg.Hosted)
 				secondService := openPostgresHubTestService(t, first.service.database.postgres, secondCfg)
 				second := newBatchFixtureForProject(t, newNativeFixture(t, secondService, "org_first_second", "Example unaffected intake"))
 				second.clock = first.clock
@@ -1750,6 +1742,7 @@ func TestGitHubBatchMaintenanceReconcilesRunnerProjects(t *testing.T) {
 	repository := first.service.database.postgres
 	cfg := first.service.config
 	cfg.Hosted = &HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://hub.example.test", Provider: first.provider}
+	bindBatchTenant(t, first, cfg.Hosted)
 	secondService := openPostgresHubTestService(t, repository, cfg)
 	if secondService.database.hostedOrganization != "org_first_second" {
 		t.Fatalf("second service selected organization=%s", secondService.database.hostedOrganization)
@@ -2093,6 +2086,14 @@ func newHostedBatchFixture(t *testing.T) *batchFixture {
 	f := newBatchFixtureForProject(t, newNativeFixture(t, service, "org_first", "Example hosted batch"))
 	f.clock, f.provider = clock, provider
 	return f
+}
+
+func bindBatchTenant(t *testing.T, f *batchFixture, hosted *HostedConfig) {
+	t.Helper()
+	deployment, generation := hosted.deployment()
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_tenant SET provider_id=$2,bootstrap_subject=$3,deployment=$4,public_url=$5,allocation_generation=$6 WHERE organization_id=$1", hosted.OrganizationID, hosted.WorkOSOrganizationID, hosted.BootstrapSubject, deployment, hosted.PublicURL, generation); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func seedBatchServiceKey(t *testing.T, f *batchFixture, ttl ...time.Duration) string {

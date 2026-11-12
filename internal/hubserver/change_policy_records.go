@@ -176,7 +176,7 @@ func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracke
 	case s.boardRefresh <- struct{}{}:
 	default:
 	}
-	return c.JSON(http.StatusOK, rules)
+	return c.JSONBlob(http.StatusOK, response)
 }
 
 func (s *Service) validateReviewPolicyPrincipals(ctx context.Context, scope nativeScope, rules tracker.ChangeReviewPolicy, now time.Time) error {

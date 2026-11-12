@@ -28,6 +28,7 @@ func TestRunnerHostSummaries(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
 	r.enroll(t)
+	r.reportCapacity(t)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "active runner host summary")
 	claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "metrics", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
@@ -42,7 +43,7 @@ func TestRunnerHostSummaries(t *testing.T) {
 	path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
 	send := func(raw any) runnerauth.RoutingSnapshot {
 		t.Helper()
-		response := performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "host_metrics": raw})
+		response := performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "host_metrics": raw})
 		requireNativeStatus(t, response, http.StatusOK)
 		var snapshot runnerauth.RoutingSnapshot
 		decodeHubResponse(t, response, &snapshot)
@@ -63,11 +64,11 @@ func TestRunnerHostSummaries(t *testing.T) {
 	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT expires_at FROM leases WHERE organization_id=$1 AND lease_id=$2 AND released_at IS NULL", f.project.OrganizationID, lease.ID).Scan(&expiresAfter); err != nil {
 		t.Fatal(err)
 	}
-	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 	if err != nil {
 		t.Fatalf("host reader status=%d error=%v", status, err)
 	}
-	runner, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: credential}, r.binding.RunnerID)
+	runner, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, r.binding.RunnerID)
 	if err != nil {
 		t.Fatal(err)
 	}

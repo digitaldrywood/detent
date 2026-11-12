@@ -127,7 +127,7 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 					t.Errorf("workflow state flags or ordered transitions changed: %+v", result.States)
 				}
 				t.Logf("tenant=%s size=%d statements=%d exchanges=%d objects=%d", organization, size, statements, exchanges, objects)
-				if statements != 18 || exchanges != 15 {
+				if statements != 15 || exchanges != 10 {
 					t.Errorf("wire budget: statements=%d exchanges=%d", statements, exchanges)
 				}
 				if objects != 0 {

@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -97,6 +100,7 @@ func (s *Service) accessInvitationView(ctx context.Context, r accessstore.Reader
 
 func (s *Service) accessPendingInvitations(ctx context.Context) ([]hostedInvitationView, error) {
 	result := []hostedInvitationView{}
+	var created []time.Time
 	var after string
 	for {
 		var page []accessstore.Invitation
@@ -115,6 +119,7 @@ func (s *Service) accessPendingInvitations(ctx context.Context) ([]hostedInvitat
 					return err
 				}
 				result = append(result, view)
+				created = append(created, row.CreatedAt)
 			}
 			return nil
 		})
@@ -122,7 +127,21 @@ func (s *Service) accessPendingInvitations(ctx context.Context) ([]hostedInvitat
 			return nil, err
 		}
 		if len(page) < 200 {
-			return result, nil
+			order := make([]int, len(result))
+			for i := range order {
+				order[i] = i
+			}
+			slices.SortStableFunc(order, func(a, b int) int {
+				if c := created[b].Compare(created[a]); c != 0 {
+					return c
+				}
+				return strings.Compare(result[b].ID, result[a].ID)
+			})
+			newest := make([]hostedInvitationView, 0, len(result))
+			for _, i := range order {
+				newest = append(newest, result[i])
+			}
+			return newest, nil
 		}
 		after = page[len(page)-1].ID
 	}
@@ -164,10 +183,14 @@ func (s *Service) changeAccessGrant(ctx context.Context, credential apiCredentia
 func (s *Service) accessLocalMember(ctx context.Context, user string) (bool, string, error) {
 	var member accessstore.Member
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error { var err error; member, err = r.AccessMember(ctx, user); return err })
-	if errors.Is(err, corestore.ErrNotFound) && errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+	if accessMemberMissing(err) {
 		return false, "", sql.ErrNoRows
 	}
 	return member.Active, member.Role, err
+}
+
+func accessMemberMissing(err error) bool {
+	return errors.Is(err, corestore.ErrNotFound) && errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied)
 }
 
 func (s *Service) changeAccessRole(ctx context.Context, credential apiCredential, membership auth.Membership, role string) (hostedMemberView, error) {
@@ -175,30 +198,31 @@ func (s *Service) changeAccessRole(ctx context.Context, credential apiCredential
 		return hostedMemberView{}, workItemStorageUnavailable()
 	}
 	scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
-	currentMember := func(ctx context.Context, r tenantstore.Reader) (accessstore.Member, error) {
+	currentMember := func(ctx context.Context, r tenantstore.Reader) (accessstore.Member, bool, error) {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
-			return accessstore.Member{}, err
+			return accessstore.Member{}, false, err
 		}
 		target, err := r.AccessMember(ctx, membership.UserID)
-		if err != nil {
-			return target, err
+		local := !accessMemberMissing(err)
+		if err != nil && local {
+			return target, false, err
 		}
-		if !target.Active || target.MembershipID != membership.ID {
-			return target, auth.ErrHostedIdentity
+		if local && (!target.Active || target.MembershipID != membership.ID) {
+			return target, false, auth.ErrHostedIdentity
 		}
-		if role == "owner" || target.Role == "owner" {
+		if role == "owner" || target.Role == "owner" || membership.Role.Slug == "owner" {
 			actor, err := r.AccessMember(ctx, credential.Hosted.Subject)
 			if err != nil {
-				return target, operatorAuthorizationError(err)
+				return target, false, operatorAuthorizationError(err)
 			}
 			if !actor.Active || lesserHostedRole(actor.Role, credential.HostedRole) != "owner" {
-				return target, auth.ErrHostedIdentity
+				return target, false, auth.ErrHostedIdentity
 			}
 		}
-		return target, nil
+		return target, local, nil
 	}
 	if err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
-		_, err := currentMember(ctx, r)
+		_, _, err := currentMember(ctx, r)
 		return err
 	}); err != nil {
 		return hostedMemberView{}, err
@@ -212,8 +236,8 @@ func (s *Service) changeAccessRole(ctx context.Context, credential apiCredential
 		if err := w.LockAccessOrganization(persist); err != nil {
 			return err
 		}
-		target, err := currentMember(persist, w)
-		if err != nil {
+		target, local, err := currentMember(persist, w)
+		if err != nil || !local {
 			return err
 		}
 		target.Role, target.UpdatedAt = role, s.config.now()
@@ -230,18 +254,23 @@ func (s *Service) changeAccessRole(ctx context.Context, credential apiCredential
 
 func (s *Service) accessMemberResponse(ctx context.Context, membership auth.Membership) (hostedMemberView, error) {
 	var member accessstore.Member
-	if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		var err error
 		member, err = r.AccessMember(ctx, membership.UserID)
 		return err
-	}); err != nil {
+	})
+	emails := map[string]string{}
+	switch {
+	case accessMemberMissing(err):
+	case err != nil:
 		return hostedMemberView{}, err
-	}
-	if !member.Active || member.MembershipID != membership.ID {
+	case !member.Active || member.MembershipID != membership.ID:
 		return hostedMemberView{}, auth.ErrHostedIdentity
+	default:
+		membership.Role.Slug = lesserHostedRole(membership.Role.Slug, member.Role)
+		emails[member.UserID] = member.Email
 	}
-	membership.Role.Slug = lesserHostedRole(membership.Role.Slug, member.Role)
-	view, err := s.hostedMemberIdentity(ctx, membership, map[string]string{member.UserID: member.Email})
+	view, err := s.hostedMemberIdentity(ctx, membership, emails)
 	if err != nil {
 		return view, err
 	}
@@ -250,7 +279,7 @@ func (s *Service) accessMemberResponse(ctx context.Context, membership auth.Memb
 		var page []accessstore.ProjectGrant
 		if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 			var err error
-			page, err = r.AccessProjectGrants(ctx, member.UserID, after, 200)
+			page, err = r.AccessProjectGrants(ctx, membership.UserID, after, 200)
 			return err
 		}); err != nil {
 			return view, err

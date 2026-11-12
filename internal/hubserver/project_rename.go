@@ -21,7 +21,7 @@ func (s *Service) renameProject(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
-	if scope.credential.Hosted != nil && scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
+	if scope.credential.Hosted != nil && scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" || scope.credential.Hosted == nil && scope.credential.Scope != apiScopeAdmin {
 		return s.nativeAPIError(c, &nativeError{Code: "forbidden", Message: "Project administration is required", status: http.StatusForbidden, publicMessage: true})
 	}
 	scope.requireHostedAdmin = true

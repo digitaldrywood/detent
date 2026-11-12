@@ -163,10 +163,10 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 	for _, mode := range []string{"startup", "startup unpublished", "startup unbound", "reload", "publication", "audit refusal"} {
 		t.Run(mode, func(t *testing.T) {
 			plans := pilotHostedPlans()
-			plans.Plans[0].ID = "free"
+			plans.Plans[0].ID = "configured_free"
 			plans.Base = plans.Plans[0].PlanReference
 			plans.Plans[0].Allowances["api_mutations"] = 0
-			plans.Plans[1].ID = "starter"
+			plans.Plans[1].ID = "configured_grant"
 			plans.Plans[1].Features = []string{"collaboration"}
 			plans.Plans[1].Allowances["api_mutations"] = 0
 			repo, admin := projectRecordPostgresWithAdmin(t, 4)

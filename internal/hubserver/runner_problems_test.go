@@ -500,6 +500,7 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 			r.enroll(t)
 			other := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
 			other.enroll(t)
+			r.reportCapacity(t)
 			publishCapacity(t, f, r, capacityReport(now))
 			issue := f.create(t, "Example work")
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "example-session"))
@@ -509,11 +510,11 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 			event := nativeStartedEvent(lease)
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age)}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
-			expires := now.Add(90 * time.Second)
+			renewed, expires := now, now.Add(90*time.Second)
 			if test.expired {
-				expires = now
+				renewed, expires = now.Add(-90*time.Second), now
 			}
-			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET renewed_at=$1, expires_at=$2 WHERE organization_id=$3 AND lease_id=$4", now, expires, f.project.OrganizationID, lease.ID); err != nil {
+			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1), renewed_at=$1, expires_at=$2 WHERE organization_id=$3 AND lease_id=$4", renewed, expires, f.project.OrganizationID, lease.ID); err != nil {
 				t.Fatal(err)
 			}
 			if test.released {
@@ -550,7 +551,7 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 				t.Fatal("runtime capacity snapshot truncated fixture facts")
 			}
 			admissions := runtimeRunnersFromSnapshot(snapshot, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, now)
-			if len(admissions) != 1 || admissions[0].RunnerID != r.binding.RunnerID {
+			if len(admissions) != 2 || admissions[0].RunnerID != r.binding.RunnerID || admissions[1].RunnerID != other.binding.RunnerID {
 				t.Fatalf("dispatch runner target = %+v", admissions)
 			}
 			admission := admissions[0]
@@ -608,7 +609,7 @@ func configurePolicyCapacityRunner(t *testing.T, f nativeFixture, runner runnerF
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE runner_identities SET created_at=$1 WHERE organization_id=$2 AND id=$3", created, f.project.OrganizationID, runner.binding.RunnerID); err != nil {
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE runner_identities SET created_at=$1 WHERE organization_id=$2 AND runner_id=$3", created, f.project.OrganizationID, runner.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -497,7 +497,7 @@ func (s *session) EnsureRevokedAccessSession(ctx context.Context, hash string, a
 }
 
 func (s *session) ConsumeAccessTransaction(ctx context.Context, hash, state string, at time.Time) (accessstore.LoginTransaction, error) {
-	result, err := s.db.Exec(ctx, `UPDATE hosted_transactions SET consumed_at=$4 WHERE organization_id=$1 AND token_hash=$2 AND state=$3 AND consumed_at IS NULL AND expires_at>$4`, s.organization, hash, state, at)
+	result, err := s.db.Exec(ctx, `UPDATE hosted_transactions SET consumed_at=$4 WHERE organization_id=$1 AND token_hash=$2 AND (state=$3 OR support_actor<>'') AND consumed_at IS NULL AND expires_at>$4`, s.organization, hash, state, at)
 	if err != nil {
 		return accessstore.LoginTransaction{}, mapError(ctx, err)
 	}

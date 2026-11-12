@@ -1490,8 +1490,22 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 			requireNativeStatus(t, response, http.StatusOK)
 			var current tracker.NativeIssue
 			decodeHubResponse(t, response, &current)
-			if current.State != item.State || current.Terminal || len(current.Dependencies) != len(detail.Reviews[0].RepairDependencies) {
-				t.Fatalf("independent audit bypassed ordinary worker workflow: %+v", current)
+			var blockedBy []tracker.NativeWorkItemID
+			if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.Relationships(t.Context(), projectID, item.WorkItemID, corestore.RelationshipCursor{}, corestore.MaxPageSize)
+				for _, edge := range page.Items {
+					if edge.Type == "dependency" && edge.Direction == "blocked_by" {
+						blockedBy = append(blockedBy, edge.RelatedWorkItemID)
+					}
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			slices.Sort(blockedBy)
+			wantBlockedBy := slices.Sorted(slices.Values(detail.Reviews[0].RepairDependencies))
+			if current.State != item.State || current.Terminal || !slices.Equal(blockedBy, wantBlockedBy) {
+				t.Fatalf("independent audit bypassed ordinary worker workflow: dependencies=%v want=%v issue=%+v", blockedBy, wantBlockedBy, current)
 			}
 		} else if err != nil || len(detail.Reviews) != 1 || detail.Summary.Status != "reviewed" {
 			t.Fatalf("audit publication or replay lost its evidence: reviews=%d status=%s error=%v", len(detail.Reviews), detail.Summary.Status, err)

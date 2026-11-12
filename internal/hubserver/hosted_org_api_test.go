@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -498,7 +501,8 @@ func TestHostedFleetVisibility(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		if _, err := f.service.hostedFleetUsage(t.Context()); err == nil || !strings.Contains(err.Error(), "hosted_usage_counters") {
+		var denied *pgconn.PgError
+		if _, err := f.service.hostedFleetUsage(t.Context()); !errors.As(err, &denied) || denied.Code != "42501" || !strings.Contains(denied.Message, "hosted_usage_counters") {
 			t.Fatalf("full fleet quota read = %v, want unavailable collaboration accounting", err)
 		}
 		f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusInternalServerError)

@@ -64,13 +64,13 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: first.ID, ID: "runner-first", Name: "Runner", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return fmt.Errorf("create access credential: %w", err)
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: first.ID, ID: "enrollment_example", RunnerID: "runner_example", MachineID: "machine_example", TokenHash: apikey.HashToken("enrollment_secret"), Scope: "projects", Operations: []string{"read", "claim"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "tenant-admin"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: first.ID, ID: "enrollment_example", RunnerID: "runner_0000000000000000000000000000e001", MachineID: "machine_0000000000000000000000000000e001", TokenHash: apikey.HashToken("enrollment_secret"), Scope: "projects", Operations: []string{"read", "claim"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "tenant-admin"}); err != nil {
 			return fmt.Errorf("create runner enrollment: %w", err)
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: first.ID, ID: "machine_example", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: first.ID, ID: "machine_0000000000000000000000000000e001", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
 			return fmt.Errorf("register machine: %w", err)
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: first.ID, RunnerID: "runner_example", MachineID: "machine_example", TokenID: "runner-first", EnrollmentID: "enrollment_example", Scope: "projects", Operations: []string{"read", "claim"}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, OS: "darwin", Architecture: "arm64", CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: first.ID, RunnerID: "runner_0000000000000000000000000000e001", MachineID: "machine_0000000000000000000000000000e001", TokenID: "runner-first", EnrollmentID: "enrollment_example", Scope: "projects", Operations: []string{"read", "claim"}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, OS: "darwin", Architecture: "arm64", CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
 			return fmt.Errorf("create runner identity: %w", err)
 		}
 		return nil
@@ -102,7 +102,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 		return service.authenticateAPIRequestContext(req.Context(), c)
 	}
 	got, status, err := request("/api/v2/capabilities", string(first.ID))
-	if err != nil || status != http.StatusOK || got.Runner.RunnerID != "runner_example" || got.Runner.OrganizationID != first.ID {
+	if err != nil || status != http.StatusOK || got.Runner.RunnerID != "runner_0000000000000000000000000000e001" || got.Runner.OrganizationID != first.ID {
 		t.Fatalf("capabilities authentication=(%+v,%d,%v)", got, status, err)
 	}
 	rotated, err := service.changeRunnerCredentialTenant(t.Context(), got, "tenant_scoped_runner_replacement")
@@ -315,22 +315,22 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "credential_example_two", Name: "Example runner two", Hash: secondHash, Fingerprint: tokenFingerprint(secondHash), Scope: "worker", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_example", RunnerID: "runner_example", MachineID: "machine_example", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_example", RunnerID: "runner_0000000000000000000000000000e001", MachineID: "machine_0000000000000000000000000000e001", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine_example", Hostname: "example-host", DisplayName: "Before heartbeat", Capacity: 1, Version: "before"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine_0000000000000000000000000000e001", Hostname: "example-host", DisplayName: "Before heartbeat", Capacity: 1, Version: "before"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: "runner_example", MachineID: "machine_example", TokenID: "credential_example", EnrollmentID: "enrollment_example", Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, DisplayName: "Example runner", CapacityLimit: 4, ReportedCapacity: 1, OS: "darwin", Architecture: "arm64", CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: "runner_0000000000000000000000000000e001", MachineID: "machine_0000000000000000000000000000e001", TokenID: "credential_example", EnrollmentID: "enrollment_example", Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, DisplayName: "Example runner", CapacityLimit: 4, ReportedCapacity: 1, OS: "darwin", Architecture: "arm64", CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_example_two", RunnerID: "runner_example_two", MachineID: "machine_example_two", TokenHash: apikey.HashToken("example_enrollment_secret_two"), Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_example_two", RunnerID: "runner_0000000000000000000000000000e002", MachineID: "machine_0000000000000000000000000000e002", TokenHash: apikey.HashToken("example_enrollment_secret_two"), Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine_example_two", Hostname: "example-host-two", DisplayName: "Before heartbeat", Capacity: 1, Version: "before"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine_0000000000000000000000000000e002", Hostname: "example-host-two", DisplayName: "Before heartbeat", Capacity: 1, Version: "before"}); err != nil {
 			return err
 		}
-		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: "runner_example_two", MachineID: "machine_example_two", TokenID: "credential_example_two", EnrollmentID: "enrollment_example_two", Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, DisplayName: "Example runner two", CapacityLimit: 4, ReportedCapacity: 1, OS: "darwin", Architecture: "arm64", CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
+		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: "runner_0000000000000000000000000000e002", MachineID: "machine_0000000000000000000000000000e002", TokenID: "credential_example_two", EnrollmentID: "enrollment_example_two", Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, DisplayName: "Example runner two", CapacityLimit: 4, ReportedCapacity: 1, OS: "darwin", Architecture: "arm64", CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
 	}); err != nil {
 		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) {
@@ -453,7 +453,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	path := "/api/v2/organizations/" + string(organization.ID) + "/projects/" + string(project.ID) + "/machines/machine_example/heartbeat"
+	path := "/api/v2/organizations/" + string(organization.ID) + "/projects/" + string(project.ID) + "/machines/machine_0000000000000000000000000000e001/heartbeat"
 	clock.value = now.Add(time.Minute)
 	providerReport := providercapacity.Report{Provider: "openai", Backend: "native/codex", AccountAlias: "example", Models: []string{"model-a"}, ModelDetails: []providercapacity.ModelDetail{{ID: "model-a", Label: "Model A", Provider: "openai", Default: true, ReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: "high"}}, Availability: "available", ObservedAt: clock.value, UsageWindows: []providercapacity.UsageWindow{{Kind: "primary", ResetAt: clock.value.Add(time.Hour), ObservedAt: clock.value}}}
 	capacityConfiguration := &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 3, RuntimeLimit: 3, Manageable: true, ObservedAt: clock.value}
@@ -474,7 +474,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, response, &snapshot)
-	if snapshot.RunnerID != "runner_example" || snapshot.Revision != 1 || snapshot.Routing.DisplayName != "Example runner" || snapshot.Routing.State != "active" || snapshot.Routing.Validate() != nil || len(snapshot.HostMetricsAcknowledged) != 2 || !snapshot.HostMetricsAcknowledged[0].Hour.Equal(hostSummary.Hour) || !snapshot.HostMetricsAcknowledged[0].SegmentID.Equal(hostSummary.SegmentID) || !snapshot.HostMetricsAcknowledged[1].SegmentID.Equal(secondHostSummary.SegmentID) {
+	if snapshot.RunnerID != "runner_0000000000000000000000000000e001" || snapshot.Revision != 1 || snapshot.Routing.DisplayName != "Example runner" || snapshot.Routing.State != "active" || snapshot.Routing.Validate() != nil || len(snapshot.HostMetricsAcknowledged) != 2 || !snapshot.HostMetricsAcknowledged[0].Hour.Equal(hostSummary.Hour) || !snapshot.HostMetricsAcknowledged[0].SegmentID.Equal(hostSummary.SegmentID) || !snapshot.HostMetricsAcknowledged[1].SegmentID.Equal(secondHostSummary.SegmentID) {
 		t.Fatalf("heartbeat routing snapshot = %+v", snapshot)
 	}
 	var persisted runnerstore.Identity
@@ -490,42 +490,42 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	var checkoutVerified bool
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
+		persisted, err = r.RunnerIdentity(t.Context(), "runner_0000000000000000000000000000e001")
 		if err != nil {
 			return err
 		}
-		machine, err = r.Machine(t.Context(), "machine_example")
+		machine, err = r.Machine(t.Context(), "machine_0000000000000000000000000000e001")
 		if err != nil {
 			return err
 		}
-		isolationReport, err = r.RunnerBackendIsolation(t.Context(), "runner_example")
+		isolationReport, err = r.RunnerBackendIsolation(t.Context(), "runner_0000000000000000000000000000e001")
 		if err != nil {
 			return err
 		}
-		hostSegments, err = r.RunnerHostMetrics(t.Context(), "runner_example", clock.value.Add(-time.Hour), clock.value.Add(time.Hour))
+		hostSegments, err = r.RunnerHostMetrics(t.Context(), "runner_0000000000000000000000000000e001", clock.value.Add(-time.Hour), clock.value.Add(time.Hour))
 		if err != nil {
 			return err
 		}
-		storedAdmission, err = r.RunnerAdmissionObservation(t.Context(), "runner_example", project.ID)
+		storedAdmission, err = r.RunnerAdmissionObservation(t.Context(), "runner_0000000000000000000000000000e001", project.ID)
 		if err != nil {
 			return err
 		}
-		storedProblems, err = r.RunnerProblems(t.Context(), "runner_example")
+		storedProblems, err = r.RunnerProblems(t.Context(), "runner_0000000000000000000000000000e001")
 		if err != nil {
 			return err
 		}
-		storedLocalChecks, err = r.RunnerLocalChecks(t.Context(), "runner_example", project.ID)
+		storedLocalChecks, err = r.RunnerLocalChecks(t.Context(), "runner_0000000000000000000000000000e001", project.ID)
 		if err != nil {
 			return err
 		}
-		if _, err := r.RunnerLocalChecks(t.Context(), "runner_example_two", project.ID); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := r.RunnerLocalChecks(t.Context(), "runner_0000000000000000000000000000e002", project.ID); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("second runner local checks = %v, want not found", err)
 		}
-		storedWorkspaceCapabilities, storedWorkspaceIsolation, err = r.RunnerWorkspaceReport(t.Context(), "runner_example")
+		storedWorkspaceCapabilities, storedWorkspaceIsolation, err = r.RunnerWorkspaceReport(t.Context(), "runner_0000000000000000000000000000e001")
 		if err != nil {
 			return err
 		}
-		storedSkills, err = r.RunnerProjectSkills(t.Context(), project.ID, "runner_example", clock.value, runnerstore.MaxProjectSkills)
+		storedSkills, err = r.RunnerProjectSkills(t.Context(), project.ID, "runner_0000000000000000000000000000e001", clock.value, runnerstore.MaxProjectSkills)
 		if err != nil {
 			return err
 		}
@@ -533,7 +533,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if _, _, err := r.RunnerWorkspaceReport(t.Context(), "runner_example_two"); !errors.Is(err, corestore.ErrNotFound) {
+		if _, _, err := r.RunnerWorkspaceReport(t.Context(), "runner_0000000000000000000000000000e002"); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("second runner workspace report = %v, want not found", err)
 		}
 		return nil
@@ -543,7 +543,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	if persisted.ReportedCapacity != 3 || persisted.OS != "darwin" || persisted.Architecture != "arm64" || !persisted.LastHeartbeatAt.Equal(clock.value) || persisted.CapacityConfig == nil || persisted.CapacityConfig.LocalLimit != 4 || !persisted.CapacityConfig.ObservedAt.Equal(clock.value) {
 		t.Fatalf("persisted heartbeat identity = %+v", persisted)
 	}
-	if machine.DisplayName != "Example host" || machine.Capacity != 3 || machine.Version != "0.174.1" || machine.SpriteName != "example-host" {
+	if machine.DisplayName != "Before heartbeat" || machine.Capacity != 1 || machine.Version != "0.174.1" || machine.SpriteName != "example-host" {
 		t.Fatalf("persisted heartbeat machine = %+v", machine)
 	}
 	if len(isolationReport) != 1 || !slices.Contains(isolationReport["example-project/codex"], isolation.NativeTrusted) {
@@ -561,10 +561,10 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	if storedWorkspaceCapabilities != workspaceCapabilities || storedWorkspaceIsolation != "sandbox" {
 		t.Fatalf("persisted runner workspace report = %+v / %q", storedWorkspaceCapabilities, storedWorkspaceIsolation)
 	}
-	if len(storedSkills) != 1 || storedSkills[0].RunnerID != "runner_example" || storedSkills[0].Skill != reportedSkills[0] || !storedSkills[0].ReportedAt.Equal(clock.value) || !checkoutVerified {
+	if len(storedSkills) != 1 || storedSkills[0].RunnerID != "runner_0000000000000000000000000000e001" || storedSkills[0].Skill != reportedSkills[0] || !storedSkills[0].ReportedAt.Equal(clock.value) || !checkoutVerified {
 		t.Fatalf("persisted runner skills = %+v, checkout verified=%v", storedSkills, checkoutVerified)
 	}
-	hostHistory, err := service.readRunnerHostHistory(t.Context(), organization.ID, "runner_example", hostSummary.Hour, hostSummary.Hour.Add(time.Hour))
+	hostHistory, err := service.readRunnerHostHistory(t.Context(), organization.ID, "runner_0000000000000000000000000000e001", hostSummary.Hour, hostSummary.Hour.Add(time.Hour))
 	if err != nil || len(hostHistory) != 1 || hostHistory[0].SampleCount != hostSummary.SampleCount+secondHostSummary.SampleCount || hostHistory[0].CPUBusyAveragePercent == nil || *hostHistory[0].CPUBusyAveragePercent != hostSummary.CPUBusySumPercent/float64(hostSummary.CPUSampleCount) {
 		t.Fatalf("typed runner host history = %+v, error=%v", hostHistory, err)
 	}
@@ -572,17 +572,17 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	recommendationSegment.Hour = hostSummary.Hour.Add(-time.Hour)
 	recommendationSegment.SegmentID = recommendationSegment.Hour.Add(time.Minute)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.AppendRunnerHostMetricSegments(t.Context(), "runner_example", []hostmetrics.Summary{recommendationSegment}, clock.value)
+		_, err := w.AppendRunnerHostMetricSegments(t.Context(), "runner_0000000000000000000000000000e001", []hostmetrics.Summary{recommendationSegment}, clock.value)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
 	recommendationScope := nativeScope{organization: organization.ID, credential: apiCredential{ID: "admin", Hash: adminHash, Scope: apiScopeAdmin}}
-	recommendationRunner, err := service.readRunnerRouting(t.Context(), recommendationScope, "runner_example")
+	recommendationRunner, err := service.readRunnerRouting(t.Context(), recommendationScope, "runner_0000000000000000000000000000e001")
 	if err != nil {
 		t.Fatal(err)
 	}
-	capacity, err := service.readRunnerCapacity(t.Context(), recommendationScope, "runner_example", "")
+	capacity, err := service.readRunnerCapacity(t.Context(), recommendationScope, "runner_0000000000000000000000000000e001", "")
 	if err != nil {
 		t.Fatalf("read typed host metrics for recommendation: %v", err)
 	}
@@ -609,7 +609,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	unsupportedProtocol := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 3})
 	requireNativeStatus(t, unsupportedProtocol, http.StatusOK)
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		problems, err := r.RunnerProblems(t.Context(), "runner_example")
+		problems, err := r.RunnerProblems(t.Context(), "runner_0000000000000000000000000000e001")
 		if err != nil {
 			return err
 		}
@@ -621,7 +621,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_example", clock.value, runnerstore.MaxProjectSkills)
+		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_0000000000000000000000000000e001", clock.value, runnerstore.MaxProjectSkills)
 		if err != nil {
 			return err
 		}
@@ -629,7 +629,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		providers, err := r.RunnerProviderReports(t.Context(), "runner_example")
+		providers, err := r.RunnerProviderReports(t.Context(), "runner_0000000000000000000000000000e001")
 		if err != nil {
 			return err
 		}
@@ -647,7 +647,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	cleared := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "skills": []skills.ProviderSkill{}, "checkout_repository": ""})
 	requireNativeStatus(t, cleared, http.StatusOK)
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_example", clock.value, runnerstore.MaxProjectSkills)
+		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_0000000000000000000000000000e001", clock.value, runnerstore.MaxProjectSkills)
 		if err != nil {
 			return err
 		}
@@ -696,7 +696,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 			lease, err = w.Claim(t.Context(), leasestore.Claim{
 				IssueID:          item.ID,
 				ExpectedRevision: item.Revision,
-				MachineID:        "machine_example",
+				MachineID:        "machine_0000000000000000000000000000e001",
 				SessionID:        fmt.Sprintf("heartbeat_session_%d", index+1),
 				LeaseID:          fmt.Sprintf("lease_heartbeat_%d", index+1),
 				TTL:              time.Hour,
@@ -706,7 +706,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, LeaseID: lease.LeaseID, RunnerID: "runner_example", AssignedAt: lease.AcquiredAt})
+			return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, LeaseID: lease.LeaseID, RunnerID: "runner_0000000000000000000000000000e001", AssignedAt: lease.AcquiredAt})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -716,8 +716,8 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		machineID string
 		secret    string
 	}{
-		{runnerID: "runner_example", machineID: "machine_example", secret: secret},
-		{runnerID: "runner_example_two", machineID: "machine_example_two", secret: secondSecret},
+		{runnerID: "runner_0000000000000000000000000000e001", machineID: "machine_0000000000000000000000000000e001", secret: secret},
+		{runnerID: "runner_0000000000000000000000000000e002", machineID: "machine_0000000000000000000000000000e002", secret: secondSecret},
 	} {
 		adminRequest := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/onboarding/repositories", testHubAdminToken, map[string]any{"runner_id": runner.runnerID, "idempotency_key": "repositories-" + runner.runnerID})
 		requireNativeStatus(t, adminRequest, http.StatusOK)
@@ -737,7 +737,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		heartbeatPayload := map[string]any{"display_name": "Example host", "capacity": 2, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2}
 		var updateReport *runnerauth.UpdateObservation
 		updateClock := clock.value
-		if runner.runnerID == "runner_example" {
+		if runner.runnerID == "runner_0000000000000000000000000000e001" {
 			clock.value = updateClock.Add(123456100 * time.Nanosecond)
 			heartbeatPayload["provider_reports"] = []providercapacity.Report{providerReport}
 			service.config.Version = "v0.174.2"
@@ -754,11 +754,11 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		if routing.RepositoryListRequest != requestResult.RequestID {
 			t.Fatalf("runner %s heartbeat repository request=%q want=%q", runner.runnerID, routing.RepositoryListRequest, requestResult.RequestID)
 		}
-		if runner.runnerID == "runner_example" {
+		if runner.runnerID == "runner_0000000000000000000000000000e001" {
 			if routing.TargetRunnerVersion != "0.174.2" || routing.Routing.UpdateRequest == nil || !routing.Routing.UpdateRequest.FollowHub {
 				t.Fatalf("published Hub update was not delivered: %+v", routing)
 			}
-			runnerUpdatePath := "/api/v2/organizations/" + string(organization.ID) + "/runners/runner_example/update"
+			runnerUpdatePath := "/api/v2/organizations/" + string(organization.ID) + "/runners/runner_0000000000000000000000000000e001/update"
 			readUpdate := func() runnerauth.UpdateView {
 				t.Helper()
 				response := performHubAPIRequest(t, service, http.MethodGet, runnerUpdatePath, testHubAdminToken, nil)
@@ -913,7 +913,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	var providers []providercapacity.Report
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		providers, err = r.RunnerProviderReports(t.Context(), "runner_example")
+		providers, err = r.RunnerProviderReports(t.Context(), "runner_0000000000000000000000000000e001")
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -925,7 +925,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	var currentIdentity runnerstore.Identity
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		currentIdentity, err = r.RunnerIdentity(t.Context(), "runner_example")
+		currentIdentity, err = r.RunnerIdentity(t.Context(), "runner_0000000000000000000000000000e001")
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -979,7 +979,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	observed := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "project_configuration": projectConfiguration})
 	requireNativeStatus(t, observed, http.StatusOK)
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		observation, attempts, err := r.RunnerProjectObservation(t.Context(), "runner_example", project.ID, "wi_example")
+		observation, attempts, err := r.RunnerProjectObservation(t.Context(), "runner_0000000000000000000000000000e001", project.ID, "wi_example")
 		if err != nil {
 			return err
 		}
@@ -1078,7 +1078,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	requireNativeStatus(t, checkoutHeartbeat, http.StatusOK)
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
+		persisted, err = r.RunnerIdentity(t.Context(), "runner_0000000000000000000000000000e001")
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -1114,7 +1114,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		t.Fatalf("postgres checkout binding=%+v repository_id=%d enabled=%t error=%v", connector, repositoryID, enabled, err)
 	}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		identity, err := w.RunnerIdentity(t.Context(), "runner_example")
+		identity, err := w.RunnerIdentity(t.Context(), "runner_0000000000000000000000000000e001")
 		if err != nil {
 			return err
 		}

@@ -16,10 +16,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -38,11 +40,31 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 		return nil, nativePublicInvalid("review decision is invalid")
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || len(request.Body) > 64<<10 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes and a review body up to 64 KiB are required")
+		refusal := nativePublicInvalid("An idempotency key of at most 128 bytes and a review body up to 64 KiB are required")
+		if len(request.Body) > 64<<10 && scope.credential.Scope == apiScopeWorker && request.Validator != nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
+			return nil, nativeRejection(refusal, "acceptance_validation", "body")
+		}
+		return nil, refusal
 	}
 	hash, err := nativeCommandHash(request)
 	if err != nil {
 		return nil, err
+	}
+	submittedContent := changeReviewContentFields(request)
+	for _, result := range []**gate.ValidatorResult{&request.Validator, &request.ImplementationReview} {
+		if *result != nil {
+			normalized := **result
+			normalized.Findings = slices.Clone(normalized.Findings)
+			normalized.Commands = slices.Clone(normalized.Commands)
+			gate.NormalizeAttribution(&normalized)
+			*result = &normalized
+		}
+	}
+	if request.SecurityAudit != nil {
+		normalized := *request.SecurityAudit
+		normalized.Run.Findings = slices.Clone(normalized.Run.Findings)
+		securityaudit.NormalizeAttribution(&normalized.Run)
+		request.SecurityAudit = &normalized
 	}
 prepareReview:
 	if err := ctx.Err(); err != nil {
@@ -129,7 +151,7 @@ prepareReview:
 		}
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		_, err := validateChangeRecordContent(ctx, r, scope, changeReviewContentFields(request), nil, "", false)
+		_, err := validateChangeRecordContent(ctx, r, scope, submittedContent, nil, "", false)
 		return err
 	}); err != nil {
 		return nil, projectRecordError(err)

@@ -1634,9 +1634,7 @@ func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
 				t.Helper()
 				runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 				runner.enroll(t)
-				path := f.base + "/machines/" + string(runner.binding.MachineID) + "/heartbeat"
-				body := map[string]any{"capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, body), http.StatusOK)
+				reportRunnerCapacity(t, f.service, f.base, runner.redemption.Credential, runner.binding.MachineID, "Example runner", runner.redemption.BackendIsolation, 2)
 				return runner
 			}
 			owner := enroll()

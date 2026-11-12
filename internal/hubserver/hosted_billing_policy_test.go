@@ -140,7 +140,6 @@ func TestHostedBillingPreservesRunningLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	work := newNativeFixture(t, f.service, f.service.accessOrganization(), "billing-lease-work")
-	approveHubTestPolicy(t, f.service, work.base+"/policy", hubTestPolicy())
 	requests := make([]tracker.NativeClaim, 2)
 	tokens := make([]string, 2)
 	for i := range 2 {

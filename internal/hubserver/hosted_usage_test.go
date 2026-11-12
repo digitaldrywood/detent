@@ -1467,6 +1467,7 @@ func TestRecordAttemptUsageAttributesIncrementsToTheirHour(t *testing.T) {
 				clock.Advance(report.at.Sub(clock.Now()))
 				event := nativeStartedEvent(f.lease)
 				event.Type, event.IdempotencyKey, event.OccurredAt = "run.checkpointed", fmt.Sprintf("usage-hour-%d", i), report.at
+				event.Data.Identity.Model = "gpt-6-astra"
 				event.Data.AttemptID, event.Data.RunID, event.Data.Sequence = f.attempt, f.run, int64(i+2)
 				event.Data.Handoff = nativeTestCheckpoint()
 				event.Data.Usage = []tracker.NativeUsage{report.total}
@@ -1605,6 +1606,7 @@ func TestRecordAttemptUsageKeepsCurrenciesApart(t *testing.T) {
 				service.config.Usage = &report.prices
 				event := nativeStartedEvent(f.lease)
 				event.Type, event.IdempotencyKey, event.OccurredAt = "run.checkpointed", fmt.Sprintf("usage-currency-%d", i), report.at
+				event.Data.Identity.Model = "gpt-6-astra"
 				event.Data.AttemptID, event.Data.RunID, event.Data.Sequence = f.attempt, f.run, int64(i+2)
 				event.Data.Handoff = nativeTestCheckpoint()
 				event.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "gpt-6-astra", Input: report.input}}

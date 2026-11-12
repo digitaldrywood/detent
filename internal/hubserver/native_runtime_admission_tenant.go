@@ -245,6 +245,12 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			entry.Unavailable = append(entry.Unavailable, "capacity_projection_truncated")
 		case !contract.Allowed:
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", contract.ReasonCode, contract.Reason
+		case landingRequired && !nativeChangeLandingClaimable("Merging", evidence.Change) && slices.Contains(evidence.Unavailable, "change_gate_history_truncated"):
+			entry.Unavailable = append(entry.Unavailable, "current_change_landing_readiness")
+		case landingRequired && !nativeChangeLandingClaimable("Merging", evidence.Change):
+			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current Change version is not ready for native landing"
+		case landingRequired && !landingReady && landingLimit != nativeLandingCapacityUnknown:
+			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "landing_capacity", "Project landing capacity is full"
 		case !found:
 			entry.Unavailable = append(entry.Unavailable, "runner_specific_candidate_selection")
 		case len(candidates.Items) == 0:
@@ -262,16 +268,21 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current claim selectors do not select this item"
 		case workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered:
 			entry.Unavailable = append(entry.Unavailable, "monthly_budget_admission")
-		case landingRequired && !landingReady && landingLimit == nativeLandingCapacityUnknown:
-			entry.Unavailable = append(entry.Unavailable, "project_landing_capacity")
 		case landingRequired && !landingReady:
-			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "landing_capacity", "Project landing capacity is full"
-		case stringsEqualFold(issue.State, "Merging"):
-			entry.Unavailable = append(entry.Unavailable, "current_change_landing_readiness")
+			entry.Unavailable = append(entry.Unavailable, "project_landing_capacity")
 		default:
 			entry.Outcome, entry.Reason = "ready", "Current runner admission facts select this item"
 		}
 		evidence.Admission = append(evidence.Admission, entry)
+	}
+	if evidence.CurrentLease == nil && evidence.Scheduling.Outcome != "skipped" && len(evidence.Admission) > 0 {
+		evidence.Scheduling.Source = "native_claim_candidate_snapshot"
+		switch {
+		case slices.ContainsFunc(evidence.Admission, func(a tracker.NativeRuntimeAdmission) bool { return a.Outcome == "ready" }):
+			evidence.Scheduling.Outcome, evidence.Scheduling.Reason = "ready", "A current registered runner permits this native candidate; this snapshot is not a lease grant or dispatch decision"
+		case !truncated && !slices.ContainsFunc(evidence.Admission, func(a tracker.NativeRuntimeAdmission) bool { return a.Outcome == "unknown" }):
+			evidence.Scheduling.Outcome, evidence.Scheduling.Reason = "skipped", "Current enrolled runners refuse this native candidate"
+		}
 	}
 	return nil
 }

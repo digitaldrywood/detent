@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -547,7 +548,7 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 		{name: "staff fleet", path: "/api/v2/organizations/org_security/fleet", user: staff, want: http.StatusForbidden},
 		{name: "bootstrap native content", path: f.base + "/work-items", bearer: testHubAdminToken, want: http.StatusNotFound},
 		{name: "staff legacy content", path: "/api/v1/work-items", user: staff, want: http.StatusNotFound},
-		{name: "legacy health", path: "/health", bearer: testHubAdminToken, want: http.StatusNotFound},
+		{name: "health", path: "/health", bearer: testHubAdminToken, want: http.StatusOK},
 		{name: "staff global tokens", path: "/api/v2/organizations", user: staff, want: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -989,7 +990,13 @@ func TestHostedSecuritySSEAudit(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			f.seedIssue(t, 1)
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", actor)
-			reader := openHostedTestStream(t, f, user, "")
+			before := dashboardPostgresHead(t, f)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+				return dashboardPostgresLane(t.Context(), w, f.project)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			reader := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
 			kind, _ := readHostedEvent(t, reader)
 			if kind != "lane" {
 				t.Fatalf("initial event = %q", kind)
@@ -1030,14 +1037,15 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 				cfg.now = clock.Now
 			})
 			owner := f.user(t, "member", "member", "member@example.test", "write", "")
+			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 			item := f.seedIssue(t, 1)
+			before := dashboardPostgresHead(t, f)
 			created := f.request(t, owner, http.MethodPost, f.base+"/workspaces", workspaceRequest{
 				Mutation: tracker.Mutation{IdempotencyKey: "revocation-workspace"}, WorkItemID: string(item), Requires: []string{"files"},
 			})
 			requireNativeStatus(t, created, http.StatusCreated)
 			var workspace workspacesession.Session
 			decodeHubResponse(t, created, &workspace)
-			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 			if revocation == "shutdown" {
 				delivery.start()
 				ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
@@ -1060,7 +1068,7 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 				}
 				return
 			}
-			reader := openHostedTestStream(t, f, user, "?workspace="+workspace.ID)
+			reader := openHostedTestStream(t, f, user, "?workspace="+workspace.ID+"&since="+strconv.FormatInt(before, 10))
 			pumpHostedDelivery(t, delivery)
 			kind := ""
 			for kind != "workspace.requested" {

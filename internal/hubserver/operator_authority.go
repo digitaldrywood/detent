@@ -54,15 +54,15 @@ func operatorAuthorizationError(err error) error {
 	if errors.As(err, &failure) {
 		return failure
 	}
+	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || errors.Is(err, operatortool.ErrProviderUnavailable) {
+		return &operatorAuthorizationFailure{cause: err, kind: operatortool.ErrProviderUnavailable}
+	}
 	if errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
 		return &operatorAuthorizationFailure{cause: err, kind: operatortool.ErrServiceUnavailable}
 	}
 	var denied *operatortool.AuthorizationError
 	if errors.As(err, &denied) && denied.Cause != nil {
 		return operatorAuthorizationError(denied.Cause)
-	}
-	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || errors.Is(err, operatortool.ErrProviderUnavailable) {
-		return &operatorAuthorizationFailure{cause: err, kind: operatortool.ErrProviderUnavailable}
 	}
 	var refusal *apikey.Refusal
 	var native *nativeError

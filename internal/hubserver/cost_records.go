@@ -135,6 +135,9 @@ func (s *Service) importSpriteUsageRecords(ctx context.Context, scope nativeScop
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
 			continue
 		}
+		if errors.Is(err, billingstore.ErrCostOverlap) {
+			return nil, nativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
+		}
 		if errors.Is(err, mutation.ErrConflict) {
 			return nil, nativeConflict(0)
 		}

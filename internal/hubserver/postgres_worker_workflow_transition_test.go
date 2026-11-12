@@ -68,8 +68,8 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, issueResponse, &issue)
 	startedAt := clock.Now().UTC()
-	const runnerID = "runner_workflow"
-	const machineID = "machine_workflow"
+	const runnerID = "runner_5f0e2c1a9b8d4e7f6a3b2c1d0e9f8a7b"
+	const machineID = "machine_5f0e2c1a9b8d4e7f6a3b2c1d0e9f8a7b"
 	const credentialID = "credential_workflow"
 	const enrollmentID = "enrollment_workflow"
 	const secret = "example_runner_workflow_secret"

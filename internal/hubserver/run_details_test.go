@@ -155,6 +155,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	issue := f.create(t, "work")
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events)
 	runner.enroll(t)
+	reportRunnerCapacity(t, f.service, f.base, runner.redemption.Credential, runner.binding.MachineID, "runner", runner.redemption.BackendIsolation, 2)
 	worker := runner.redemption.Credential
 	claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{
 		PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "session",
@@ -776,6 +777,7 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusCreated)
 	var organization nativeOrganization
 	decodeHubResponse(t, response, &organization)
+	seedPostgresHubAdmin(t, f.service.config.TenantRepository, f.service, organization)
 	other := newNativeFixture(t, f.service, organization.ID, "other-project")
 	refs := map[string]bool{}
 	attempts := map[string]bool{}

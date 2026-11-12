@@ -262,7 +262,7 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(clipped.Running) != 1 || len(clipped.Finished) != 1 || !clipped.Partial {
+	if len(clipped.Running) != 2 || len(clipped.Finished) != 1 || !clipped.Partial {
 		t.Fatalf("bounded activity slice omitted partial: %+v", clipped)
 	}
 	request.Limit = 100

@@ -160,7 +160,7 @@ func TestHostedAnalyticsReads(t *testing.T) {
 					for _, filter := range []struct {
 						kind string
 						want int
-					}{{"bug", 1}, {"change_request", 0}} {
+					}{{"bug", 1}, {"feature", 0}} {
 						filteredResponse, filteredRaw := call(user, name, map[string]any{"project_id": string(f.project), "types": []string{filter.kind}})
 						var filtered nativeAnalyticsReport
 						if err := json.Unmarshal(filteredRaw, &filtered); err != nil || filteredResponse.Code != http.StatusOK || len(filtered.Projects) != 1 {

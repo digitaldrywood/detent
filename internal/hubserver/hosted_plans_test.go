@@ -1176,6 +1176,10 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if state := d.runtimeState(); state == nil || retained.RuntimeID != state.Revision {
+		t.Fatalf("capacity seeding did not bind the retained legacy plan to its runtime: %+v", retained)
+	}
+	original.RuntimeID = retained.RuntimeID
 	if !reflect.DeepEqual(retained, original) {
 		t.Fatalf("capacity seeding rewrote the legacy plan: before=%+v after=%+v", original, retained)
 	}

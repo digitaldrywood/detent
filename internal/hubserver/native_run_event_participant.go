@@ -139,7 +139,7 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 		if attempt.ID != event.Data.AttemptID || attempt.IssueID != item.ID || attempt.LeaseID != lease.LeaseID || attempt.FencingToken != lease.FencingToken || attempt.RunID != event.Data.RunID || attempt.Sequence != event.Data.Sequence && attempt.Sequence+1 != event.Data.Sequence {
 			return leasestore.ErrAttemptConflict
 		}
-		if attempt.Status != "running" {
+		if attempt.Status != "running" && attempt.Sequence != event.Data.Sequence {
 			reconnecting := attempt.Status == "interrupted" && event.Type == "run.observed" && event.Data.Outcome == "" && event.Data.Runtime != nil && event.Data.Runtime.LocalAttemptID == 0 && event.Data.Runtime.Generation == 0
 			terminating := authority.Termination && event.Type == "run.finished" && event.Data.Outcome == "cancelled" && (attempt.Status == "interrupted" || attempt.Status == "cancelled")
 			if !terminating && !reconnecting && (!authority.UsageCorrection || event.Type != "run.finished" || attempt.Status != event.Data.Outcome) {

@@ -38,7 +38,9 @@ func TestNativeReleaseStabilizationOccurrences(t *testing.T) {
 			return err
 		}
 		states := append(record.States, tracker.NativeState{Name: "Backlog"})
-		_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.project.OrganizationID, ID: selected, Name: "release-reporting", Profile: record.Core.Profile}, States: states, Settings: record.Settings})
+		settings := record.Settings
+		settings.ProjectID = selected
+		_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.project.OrganizationID, ID: selected, Name: "release-reporting", Profile: record.Core.Profile}, States: states, Settings: settings})
 		return err
 	}); err != nil {
 		t.Fatal(err)

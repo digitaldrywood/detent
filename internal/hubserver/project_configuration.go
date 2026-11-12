@@ -392,9 +392,11 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope native
 		return plan, err
 	}
 	unsettled := plan.View.UnsettledAttempts
-	if err := s.readConfigurationPayload(ctx, scope.organization, eventstore.Reference(plan.Record.PayloadObjectKey, plan.Record.PayloadSHA256, plan.Record.PayloadBytes, plan.Record.PayloadContentBytes), &plan.View); err != nil {
+	var stored runnerauth.ProjectConfiguration
+	if err := s.readConfigurationPayload(ctx, scope.organization, eventstore.Reference(plan.Record.PayloadObjectKey, plan.Record.PayloadSHA256, plan.Record.PayloadBytes, plan.Record.PayloadContentBytes), &stored); err != nil {
 		return plan, err
 	}
+	plan.View = stored
 	if plan.Command.Status == "pending" {
 		var intent configurationIntent
 		if err := s.readConfigurationPayload(ctx, scope.organization, plan.Command.Intent, &intent); err != nil {

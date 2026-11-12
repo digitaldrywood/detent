@@ -70,12 +70,14 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 
 			r := prepareRunner(t, preferred, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
+			r.reportCapacity(t)
 			routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Provider runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{preferred.project.ID, general.project.ID}}}
 			requireNativeStatus(t, performHubAPIRequest(t, preferred.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
 			if scenario.landing != "" {
 				approveHubTestPolicy(t, preferred.service, general.base+"/policy", hubTestPolicy())
-				owner := prepareRunner(t, preferred, runnerauth.Read, runnerauth.Claim)
+				owner := prepareRunner(t, preferred, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 				owner.enroll(t)
+				owner.reportCapacity(t)
 				first, next := landing.ready(t, "legacy owner"), landing.ready(t, "next landing")
 				if scenario.landing != "unoccupied" {
 					ownerCapacity := 0
@@ -321,6 +323,7 @@ func TestRunnerAllowedWorkflowFilter(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
+	r.reportCapacity(t)
 	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
@@ -396,6 +399,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 			}
 			r := prepareRunner(t, first, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
+			r.reportCapacity(t)
 			allowed := []tracker.ProjectID{first.project.ID, second.project.ID}
 			if scenario.allowed == "second" {
 				allowed = []tracker.ProjectID{second.project.ID}
@@ -646,6 +650,7 @@ func TestRunnerFutureProjectAdmission(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunnerForScope(t, f, scenario.scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
+			r.reportCapacity(t)
 			later := newNativeFixture(t, f.service, f.project.OrganizationID, "future")
 
 			descriptor := hubTestPolicy()
@@ -699,6 +704,7 @@ func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
 			r := prepareRunnerForScope(t, f, "organization", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.redemption.Capacity = 4
 			r.enroll(t)
+			r.reportCapacity(t)
 			second := newNativeFixture(t, f.service, f.project.OrganizationID, "second cursor")
 			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(r.redemption.Credential), "", "")
 			if err != nil {

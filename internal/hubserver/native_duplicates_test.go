@@ -440,13 +440,18 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 				r.NotDuplicateOf = []int{first.Number, first.Number}
 			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items", token, r)
-			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			if test == "unlisted" || test == "duplicate numbers" {
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				return
+			}
+			requireNativeCode(t, response, http.StatusGone, "idempotency_expired")
 		})
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 	requireNativeStatus(t, response, http.StatusOK)
 	request.IdempotencyKey = "reuse"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request), http.StatusUnprocessableEntity)
+	requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request), http.StatusGone, "idempotency_expired")
+	refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
 	request.IdempotencyKey = "second-challenge"
 	request.ChallengeToken, request.NotDuplicateOf = "", nil
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)

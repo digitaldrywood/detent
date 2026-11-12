@@ -396,9 +396,6 @@ func (s *Service) readChangeVersionRecord(ctx context.Context, organization trac
 func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.SubmitChangeCheck) error {
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := nativeRequestScope(c)
-	if scope.credential.Scope == apiScopeWorker {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
-	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
 	}

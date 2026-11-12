@@ -111,7 +111,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		for index, item := range []string{"wi_own", "wi_foreign"} {
+		for index, item := range []string{"wi_0000000000000000000000000000a0a1", "wi_0000000000000000000000000000b0b2"} {
 			actor := "credential_first"
 			if index == 1 {
 				actor = "credential_second"
@@ -173,13 +173,13 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 
 	for _, org := range []tracker.OrganizationID{"org_startup", "org_other"} {
 		if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: tracker.ProjectID("project_" + string(org)), WorkItemID: "wi_foreign", ChangeID: "change_wi_own_1", CreatedAt: now})
+			return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: tracker.ProjectID("project_" + string(org)), WorkItemID: "wi_0000000000000000000000000000b0b2", ChangeID: "change_wi_0000000000000000000000000000a0a1_1", CreatedAt: now})
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, org := range []tracker.OrganizationID{"org_startup", "org_other"} {
-		for _, item := range []string{"wi_own", "wi_foreign"} {
+		for _, item := range []string{"wi_0000000000000000000000000000a0a1", "wi_0000000000000000000000000000b0b2"} {
 			for _, id := range []string{item, "c_" + item + "_1", "c_" + item + "_2", "c_" + item + "_3"} {
 				kind := "comment"
 				if id == item {
@@ -258,7 +258,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 		var rows []any
 		for _, org := range []tracker.OrganizationID{"org_startup", "org_other"} {
 			if err := service.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-				for _, id := range []tracker.NativeWorkItemID{"wi_own", "wi_foreign"} {
+				for _, id := range []tracker.NativeWorkItemID{"wi_0000000000000000000000000000a0a1", "wi_0000000000000000000000000000b0b2"} {
 					project := tracker.ProjectID("project_" + string(org))
 					work, err := r.WorkItem(t.Context(), project, id)
 					if err != nil {
@@ -302,7 +302,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 			t.Run(target.org+"/"+name, func(t *testing.T) {
 				args := map[string]any{"project_id": "project_" + currentOrganization}
 				if name != operatortool.HealthFindings && name != operatortool.WorkConfig && name != operatortool.WorkBulkExport {
-					args["reference"] = "wi_own"
+					args["reference"] = "wi_0000000000000000000000000000a0a1"
 				}
 				if name == operatortool.WorkVersion {
 					args["revision"] = 1
@@ -395,7 +395,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 				if name == operatortool.ListChanges {
 					field = "work_item_id"
 				}
-				args[field] = "wi_own"
+				args[field] = "wi_0000000000000000000000000000a0a1"
 				response := call(name, args, nil)
 				if response.Code != http.StatusOK {
 					t.Fatalf("call status=%d body=%s", response.Code, response.Body.String())
@@ -453,11 +453,11 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 						seen = append(seen, result.Data.Items[0].ID)
 						if n == 1 {
 							args["cursor"] = result.Data.NextCursor
-							args[field] = "wi_foreign"
+							args[field] = "wi_0000000000000000000000000000b0b2"
 							if response := call(name, args, nil); response.Code == http.StatusOK {
 								t.Fatal("cursor crossed resource boundary")
 							}
-							args[field] = "wi_own"
+							args[field] = "wi_0000000000000000000000000000a0a1"
 						}
 						if (result.Data.NextCursor != "") != (n < 3) {
 							t.Fatal("comment continuation incorrect")
@@ -485,7 +485,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 							}
 							continue
 						}
-						if len(result.Changes) != 1 || result.Changes[0].ID != fmt.Sprintf("change_wi_own_%d", offset+1) || result.Changes[0].Body != currentOrganization+" preserved Change" {
+						if len(result.Changes) != 1 || result.Changes[0].ID != fmt.Sprintf("change_wi_0000000000000000000000000000a0a1_%d", offset+1) || result.Changes[0].Body != currentOrganization+" preserved Change" {
 							t.Fatalf("Change page %d = %+v", offset, result)
 						}
 						if (result.NextOffset != nil) != (offset < 2) || result.NextOffset != nil && *result.NextOffset != offset+1 {
@@ -525,12 +525,12 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 					}
 				}
 				currentRole = "reporter"
-				args[field] = "wi_foreign"
+				args[field] = "wi_0000000000000000000000000000b0b2"
 				if response := call(name, args, nil); response.Code == http.StatusOK {
 					t.Fatal("reporter read another author's item")
 				}
 				currentRole = "owner"
-				args[field] = "wi_own"
+				args[field] = "wi_0000000000000000000000000000a0a1"
 				args["project_id"] = "project_org_other"
 				if currentOrganization == "org_other" {
 					args["project_id"] = "project_org_startup"
@@ -565,7 +565,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 			var key string
 			if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 				if name == operatortool.ListComments {
-					row, err := r.Comment(t.Context(), "project_org_startup", "wi_own", "c_wi_own_1")
+					row, err := r.Comment(t.Context(), "project_org_startup", "wi_0000000000000000000000000000a0a1", "c_wi_0000000000000000000000000000a0a1_1")
 					if err != nil {
 						return err
 					}
@@ -573,7 +573,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 					key = version.PayloadObjectKey
 					return err
 				}
-				row, err := r.Change(t.Context(), "change_wi_own_1")
+				row, err := r.Change(t.Context(), "change_wi_0000000000000000000000000000a0a1_1")
 				key = row.PayloadObjectKey
 				return err
 			}); err != nil {
@@ -585,10 +585,10 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 			details.data[key] = []byte("corrupt payload")
 			details.mu.Unlock()
 			defer func() { details.mu.Lock(); details.data[key] = original; details.mu.Unlock() }()
-			args := map[string]any{"project_id": "project_org_startup", "identifier": "wi_own", "limit": 1}
+			args := map[string]any{"project_id": "project_org_startup", "identifier": "wi_0000000000000000000000000000a0a1", "limit": 1}
 			if name == operatortool.ListChanges {
 				delete(args, "identifier")
-				args["work_item_id"] = "wi_own"
+				args["work_item_id"] = "wi_0000000000000000000000000000a0a1"
 			}
 			response := call(name, args, nil)
 			if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"native_operation_failed"`) || strings.Contains(response.Body.String(), "corrupt payload") || strings.Contains(response.Body.String(), "preserved Change") {
@@ -607,7 +607,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 		currentPermission = apikey.ScopeWrite
 		for _, name := range []string{operatortool.AddComment, operatortool.EditItem, operatortool.EditComment, operatortool.RestoreItem} {
 			t.Run(target.org+"/"+name, func(t *testing.T) {
-				args := map[string]any{"project_id": "project_" + currentOrganization, "identifier": "wi_own", "request_id": name, "expected_revision": "1"}
+				args := map[string]any{"project_id": "project_" + currentOrganization, "identifier": "wi_0000000000000000000000000000a0a1", "request_id": name, "expected_revision": "1"}
 				switch name {
 				case operatortool.AddComment:
 					delete(args, "expected_revision")
@@ -615,9 +615,9 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 				case operatortool.EditItem:
 					args["title"] = currentOrganization + " updated title"
 				case operatortool.EditComment:
-					args["comment_id"], args["body"] = "c_wi_own_1", currentOrganization+" edited comment"
+					args["comment_id"], args["body"] = "c_wi_0000000000000000000000000000a0a1_1", currentOrganization+" edited comment"
 				case operatortool.RestoreItem:
-					args["identifier"] = "wi_foreign"
+					args["identifier"] = "wi_0000000000000000000000000000b0b2"
 				}
 				catalog := request("/internal/v1/keys/catalog", "first", "", map[string]any{}, nil)
 				requireNativeStatus(t, catalog, http.StatusOK)
@@ -649,10 +649,10 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 	for _, scenario := range []string{"grant", "membership", "credential"} {
 		t.Run("revoke_"+scenario, func(t *testing.T) {
 			for _, name := range []string{operatortool.ListComments, operatortool.ListChanges} {
-				args := map[string]any{"project_id": "project_org_startup", "identifier": "wi_own"}
+				args := map[string]any{"project_id": "project_org_startup", "identifier": "wi_0000000000000000000000000000a0a1"}
 				if name == operatortool.ListChanges {
 					delete(args, "identifier")
-					args["work_item_id"] = "wi_own"
+					args["work_item_id"] = "wi_0000000000000000000000000000a0a1"
 				}
 				requireNativeStatus(t, call(name, args, nil), http.StatusOK)
 			}
@@ -669,10 +669,10 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, name := range []string{operatortool.ListComments, operatortool.ListChanges} {
-				args := map[string]any{"project_id": "project_org_startup", "identifier": "wi_own"}
+				args := map[string]any{"project_id": "project_org_startup", "identifier": "wi_0000000000000000000000000000a0a1"}
 				if name == operatortool.ListChanges {
 					delete(args, "identifier")
-					args["work_item_id"] = "wi_own"
+					args["work_item_id"] = "wi_0000000000000000000000000000a0a1"
 				}
 				if response := call(name, args, nil); response.Code == http.StatusOK {
 					t.Fatalf("%s survived %s revocation", name, scenario)

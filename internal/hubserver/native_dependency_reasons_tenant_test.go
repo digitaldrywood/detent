@@ -31,6 +31,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}
+	const runnerID, machineID = "runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "machine_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &HostedConfig{OrganizationID: "org_first"}}}
 	service.registerNativeRoutes(service.echo)
 	leases := map[tracker.OrganizationID]leasestore.Lease{}
@@ -77,14 +78,14 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: "runner", ProjectID: "project"}); err != nil {
 				return err
 			}
-			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: "machine", Hostname: "example", Capacity: 2, Version: "example"}); err != nil {
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: machineID, Hostname: "example", Capacity: 2, Version: "example"}); err != nil {
 				return err
 			}
 			operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Collaborate}
-			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "enrollment", RunnerID: "runner", MachineID: "machine", TokenHash: apikey.HashToken(string(org) + "_enrollment"), Scope: "projects", Operations: operations, ProjectIDs: []tracker.ProjectID{"project"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "example-owner"}); err != nil {
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "enrollment", RunnerID: runnerID, MachineID: machineID, TokenHash: apikey.HashToken(string(org) + "_enrollment"), Scope: "projects", Operations: operations, ProjectIDs: []tracker.ProjectID{"project"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "example-owner"}); err != nil {
 				return err
 			}
-			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: "runner", MachineID: "machine", TokenID: "runner", EnrollmentID: "enrollment", Scope: "projects", State: "active", Tags: []string{"example-tag"}, Operations: operations, CapacityLimit: 2, ReportedCapacity: 2, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
+			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: runnerID, MachineID: machineID, TokenID: "runner", EnrollmentID: "enrollment", Scope: "projects", State: "active", Tags: []string{"example-tag"}, Operations: operations, CapacityLimit: 2, ReportedCapacity: 2, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
 				return err
 			}
 			var anchor corestore.WorkItem
@@ -105,12 +106,12 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 			if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "project", WorkItemID: "item_1", RelatedProjectID: "project", RelatedWorkItemID: "item_2", Type: "dependency"}, "add", now); err != nil {
 				return err
 			}
-			lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: anchor.ID, ExpectedRevision: 1, MachineID: "machine", SessionID: "session", LeaseID: "lease_" + string(org), TTL: time.Hour})
+			lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: anchor.ID, ExpectedRevision: 1, MachineID: machineID, SessionID: "session", LeaseID: "lease_" + string(org), TTL: time.Hour})
 			if err != nil {
 				return err
 			}
 			leases[org] = lease
-			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: org, LeaseID: lease.LeaseID, RunnerID: "runner", AssignedAt: now}); err != nil {
+			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: org, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
 				return err
 			}
 			return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: org, ProjectID: "project", LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: descriptor.ID, BoundAt: now})
@@ -129,7 +130,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 	setTags := func(tags []string) {
 		t.Helper()
 		if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
-			identity, err := w.RunnerIdentity(t.Context(), "runner")
+			identity, err := w.RunnerIdentity(t.Context(), runnerID)
 			if err != nil {
 				return err
 			}

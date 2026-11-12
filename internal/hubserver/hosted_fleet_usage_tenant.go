@@ -7,7 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-func (s *Service) hostedPlanUsageTenant(ctx context.Context) (HostedEntitlement, error) {
+func (s *Service) hostedPlanUsageTenant(ctx context.Context, unlimited ...string) (HostedEntitlement, error) {
 	now := s.config.now().UTC()
 	var result HostedEntitlement
 	err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
@@ -16,7 +16,7 @@ func (s *Service) hostedPlanUsageTenant(ctx context.Context) (HostedEntitlement,
 		if err != nil {
 			return err
 		}
-		metrics := []string{"usage_windows", "artifact_retained_bytes", "artifact_reserved_bytes"}
+		metrics := append([]string{"usage_windows", "artifact_retained_bytes", "artifact_reserved_bytes"}, unlimited...)
 		for _, metric := range hostedAllowanceNames() {
 			if _, limited := result.Allowances[metric]; limited && metric != "artifact_retained_bytes" && metric != "artifact_reserved_bytes" {
 				metrics = append(metrics, metric)

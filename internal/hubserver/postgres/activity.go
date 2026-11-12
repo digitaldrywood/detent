@@ -67,7 +67,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	out.IssuesPartial = out.IssuesPartial || population > activitystore.PopulationLimit
 	rows, err = s.db.Query(ctx, `WITH recent AS MATERIALIZED(SELECT * FROM issues WHERE organization_id=$1 AND native_updated_at>=$3 ORDER BY native_updated_at DESC,id DESC LIMIT $4)
  SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(i.workflow_state_name,''),i.native_created_at FROM recent i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
- WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND w.terminal AND ($5='' OR i.actor_principal_id=$5) ORDER BY i.native_updated_at DESC,i.id DESC LIMIT $6`, s.organization, projects, filter.From, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
+ WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND w.terminal AND ($5='' OR i.actor_principal_id=$5) ORDER BY i.native_updated_at DESC,i.native_id LIMIT $6`, s.organization, projects, filter.From, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}

@@ -448,7 +448,17 @@ func TestReportsShippedPopulation(t *testing.T) {
 					t.Fatalf("24h report=%+v", dayReport.Completion)
 				}
 				scope := nativeScope{organization: org, project: project, credential: credential}
-				refreshNativeDuplicateSearchFixture(t, service, org)
+				var refreshed []tracker.NativeWorkItemID
+				for cursor := tracker.NativeWorkItemID(""); ; {
+					next, processed, err := service.maintainBoardRecord(ctx, org, cursor, refreshed...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !processed {
+						break
+					}
+					cursor, refreshed = next, append(refreshed, next)
+				}
 				board, err := service.readWorkBoardProject(ctx, scope, savedWorkState{View: "board", Lanes: []string{"Todo"}, CompletedWindow: "24h"})
 				if err != nil {
 					t.Fatal(err)

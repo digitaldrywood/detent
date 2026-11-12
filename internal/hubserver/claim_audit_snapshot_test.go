@@ -316,12 +316,15 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 							if query == "" {
 								t.Fatal("version observation query was not captured")
 							}
+							if _, err := admin.ExecContext(t.Context(), "ANALYZE issues"); err != nil {
+								t.Fatal(err)
+							}
 							tx, err := admin.BeginTx(t.Context(), nil)
 							if err != nil {
 								t.Fatal(err)
 							}
 							defer tx.Rollback()
-							for _, statement := range []string{"SET LOCAL ROLE detent_runtime_v2", "SET LOCAL plan_cache_mode=force_generic_plan", "SELECT set_config('detent.organization_id'," + literal(string(org)) + ",true)", "PREPARE claim_observations(" + test.types + ") AS " + query} {
+							for _, statement := range []string{"SET LOCAL ROLE detent_runtime_v2", "SET LOCAL plan_cache_mode=force_generic_plan", "SET LOCAL enable_seqscan=off", "SELECT set_config('detent.organization_id'," + literal(string(org)) + ",true)", "PREPARE claim_observations(" + test.types + ") AS " + query} {
 								if _, err := tx.ExecContext(t.Context(), statement); err != nil {
 									t.Fatal(err)
 								}

@@ -128,6 +128,7 @@ func openLocalPostgresHubTestService(t *testing.T, repository *postgres.Reposito
 	service.config.Hosted = nil
 	service.echo = echo.New()
 	service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
+	service.echo.POST("/api/v1/webhooks/github", service.githubWebhook)
 	service.registerNativeRoutes(service.echo)
 	service.registerRunnerRoutes(service.echo)
 	service.registerOperatorTools(service.echo)
@@ -149,7 +150,11 @@ func seedPostgresHubAdmin(t *testing.T, repository tenantstore.Repository, servi
 		} else if existing.Name != organization.Name || existing.Slug != organization.Slug {
 			return errors.New("PostgreSQL fixture organization differs from existing row")
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization.ID, ProviderID: "provider_" + string(organization.ID)}); err != nil {
+		if _, err := w.AccessTenant(t.Context()); errors.Is(err, corestore.ErrNotFound) {
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization.ID, ProviderID: "provider_" + string(organization.ID)}); err != nil {
+				return err
+			}
+		} else if err != nil {
 			return err
 		}
 		credential := accessstore.Credential{
@@ -601,6 +606,14 @@ type countedProjectReader struct {
 func (r countedProjectReader) ProjectRecord(ctx context.Context, project tracker.ProjectID) (projectstore.Record, error) {
 	r.owner.projects++
 	return r.Reader.ProjectRecord(ctx, project)
+}
+
+func (r countedProjectReader) IntegrationPage(ctx context.Context, project tracker.ProjectID) (projectstore.Integration, error) {
+	reader, ok := r.Reader.(projectstore.IntegrationPageReader)
+	if !ok {
+		return projectstore.Integration{}, errors.New("integration page reader unavailable")
+	}
+	return reader.IntegrationPage(ctx, project)
 }
 
 func (r countedProjectReader) OrganizationModels(ctx context.Context) (policystore.OrganizationModels, error) {

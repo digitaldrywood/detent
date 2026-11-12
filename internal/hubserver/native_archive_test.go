@@ -393,7 +393,7 @@ func TestNativeArchiveSelfHostedNoQuota(t *testing.T) {
 func TestHostedIssueImportAllocation(t *testing.T) {
 	t.Parallel()
 	backend := &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "example-org", Name: "example-project", UpdatedAt: time.Now().UTC()}}}}}
-	service := openTestService(t, Config{ReconcileBackend: backend, ImportBackend: &importFixtureBackend{}})
+	service := newPostgresNativeService(t, Config{ReconcileBackend: backend, ImportBackend: &importFixtureBackend{}})
 	f := newNativeFixture(t, service, "", "import-quota")
 	d := service.database
 	d.hostedOrganization = f.project.OrganizationID

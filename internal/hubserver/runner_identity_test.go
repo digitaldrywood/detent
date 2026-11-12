@@ -592,7 +592,7 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	now = time.Date(2026, 9, 30, 12, 34, 0, 0, time.UTC)
 	clock.Advance(now.Sub(clock.Now()))
 	heartbeatPath := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
-	heartbeat := map[string]any{"capacity": 2, "version": "test"}
+	heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeatPath, r.redemption.Credential, heartbeat), http.StatusUnauthorized)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/renew", r.redemption.Credential, struct{}{})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -643,8 +643,10 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 	f := newPostgresDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	r.enroll(t)
+	r.reportCapacity(t)
 	other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	other.enroll(t)
+	other.reportCapacity(t)
 	for _, test := range []struct {
 		name    string
 		status  int

@@ -170,7 +170,7 @@ func (s *Service) removeProjectSecret(c echo.Context) error {
 	if err := s.removeAccessProjectSecret(c.Request().Context(), nativeRequestScope(c)); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.NoContent(http.StatusNoContent)
+	return c.JSON(http.StatusOK, projectSecretStatus{Kind: flySpritesToken})
 }
 
 func removeProjectSecretInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {

@@ -31,7 +31,7 @@ func TestRenameProject(t *testing.T) {
 		{name: "invalid revision encoding", value: "invalid-revision-sentinel", revision: "invalid", status: 422},
 		{name: "operator", value: "denied-sentinel", revision: "1", operator: true, status: 403},
 		{name: "unknown", value: "unknown-sentinel", revision: "1", target: "unknown", status: 404},
-		{name: "other organization", value: "foreign-sentinel", revision: "1", target: "foreign", status: 404},
+		{name: "other organization", value: "foreign-sentinel", revision: "1", target: "foreign", status: 401},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "original")

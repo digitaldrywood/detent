@@ -34,11 +34,19 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 	sessions := api.NewRunnerSessions(native)
 	session := func(role string) int64 {
 		t.Helper()
-		id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: time.Now().UTC(), AgentRole: role, Model: "example-model"})
+		started := time.Now().UTC()
+		id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: started, AgentRole: role, Model: "example-model"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: time.Now().UTC(), FinalState: "completed"}); err != nil {
+		finished := started.Add(time.Second)
+		if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: finished, FinalState: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sessions.RecordUsageEvent(ctx, store.UsageEvent{IssueID: string(f.leases[0].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: finished, Outcome: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sessions.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{IssueID: string(f.leases[0].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: finished, PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: "completed"}); err != nil {
 			t.Fatal(err)
 		}
 		return id
