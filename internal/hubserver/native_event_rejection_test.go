@@ -23,7 +23,7 @@ import (
 
 func TestNativeRunEventRejectionsLogged(t *testing.T) {
 	var logs bytes.Buffer
-	f := newChangeFixture(t, openTestService(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}))
+	f := newChangeFixture(t, newPostgresNativeService(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}))
 	runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	runner.enroll(t)
 	publishCapacity(t, f.nativeFixture, runner, capacityReport(time.Now().UTC()))
