@@ -136,6 +136,9 @@ func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, pa
 				return corestore.ErrNotFound
 			}
 			compatible = project.Profile == "github_compatible"
+			if !compatible && project.Profile != "native" {
+				return corestore.ErrNotFound
+			}
 			return nil
 		}); err != nil {
 			return projectRecordError(err)
@@ -246,13 +249,6 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
-		}
-		project, err := reader.Project(ctx, scope.project)
-		if err != nil {
-			return err
-		}
-		if project.DeletedAt != nil || project.Profile != "native" {
-			return corestore.ErrNotFound
 		}
 		if includeBoard {
 			page.GrantVersion, err = s.boardAccessVersion(ctx, reader, scope)
