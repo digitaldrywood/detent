@@ -2,12 +2,16 @@ package hubserver
 
 import (
 	"context"
-	"strings"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/threads"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -33,46 +37,24 @@ func (s *Service) threadsService() *threads.Service {
 }
 
 func (s *Service) threadCaller(scope nativeScope) threads.Caller {
-	credential := scope.credential
 	bind := func(project tracker.ProjectID, item string) nativeScope {
 		bound := scope
 		bound.project, bound.actionItem = project, item
 		return bound
 	}
-	caller := threads.Caller{
-		Organization:   scope.organization,
-		Project:        scope.project,
-		Item:           scope.actionItem,
-		Principal:      operatorIdentity(credential, string(scope.organization)).PrincipalID,
-		ActorPrincipal: scope.actor().PrincipalID,
-		CredentialID:   credential.ID,
-		Name:           credential.Name,
-		Agent:          credential.Agent,
-		HostedRole:     credential.HostedRole,
-		Hosted:         credential.Hosted != nil,
-		EntryKey:       credential.EntryKey != nil,
-		Personal:       credential.HostedKeyKind == "personal" || credential.EntryKey != nil && credential.EntryKey.Kind == "personal",
-		AllProjects:    credential.Hosted == nil && credential.Scope == apiScopeAdmin && !credential.NativeOnly,
-		ProjectFilter:  projectAccessFilter(credential, "", "", 0),
-		Authority: func(project tracker.ProjectID, item string) accessstore.Authority {
-			return s.accessAuthority(bind(project, item), false)
-		},
+	actor := scope.actor()
+	return threads.NewCaller(s.requestAuth(), s.authInput(scope), threads.CallerDeps{Item: scope.actionItem, Actor: &actor,
 		Authorize: func(ctx context.Context, reader accessstore.Reader, project tracker.ProjectID, item string, write bool) error {
 			return s.authorizeAccessScope(ctx, reader, bind(project, item), write)
 		},
-		RequireItem: func(ctx context.Context, reader tenantstore.Reader, project tracker.ProjectID, item string, id string) error {
+		RequireItem: func(ctx context.Context, reader tenantstore.Reader, project tracker.ProjectID, item, id string) error {
 			return requireDashboardRecordItem(ctx, reader, bind(project, item), id)
 		},
-		ReadAttachment: func(ctx context.Context, reader tenantstore.Reader, project tracker.ProjectID, item string, id string) error {
+		ReadAttachment: func(ctx context.Context, reader tenantstore.Reader, project tracker.ProjectID, item, id string) error {
 			var metadata attachment.Metadata
 			return s.readAttachmentRecordWith(ctx, reader, bind(project, item), id, &metadata)
 		},
-	}
-	if credential.Hosted != nil {
-		caller.HostedName = strings.TrimSpace(credential.Hosted.FirstName + " " + credential.Hosted.LastName)
-		caller.HostedSubject = credential.Hosted.Subject
-	}
-	return caller
+	})
 }
 
 func (s *Service) teamThreadRecordOperation(ctx context.Context, scope nativeScope, name string, in teamThreadInput) (any, error) {
@@ -100,4 +82,29 @@ func (s *Service) advanceTeamUnread(ctx context.Context) (bool, int, error) {
 
 func (s *Service) advanceTeamUnreadRecord(ctx context.Context) (bool, int, error) {
 	return s.threadsService().AdvanceUnreadRecord(ctx)
+}
+
+func (s *Service) threadHTTPDeps() threads.HTTPDeps {
+	return threads.HTTPDeps{Service: s.threadsService, Auth: s.requestAuth, Operator: s.operatorAuthority,
+		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		Resolve: func(ctx context.Context) (hubauth.Input, error) {
+			resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+			if !ok {
+				return hubauth.Input{}, operatortool.ErrAccessDenied
+			}
+			scope, err := resolve(ctx)
+			return s.authInput(scope), err
+		},
+		Caller: func(input hubauth.Input) threads.Caller { return s.threadCaller(nativeAuthInput(input)) },
+		NotifyUnread: func() {
+			select {
+			case s.boardRefresh <- struct{}{}:
+			default:
+			}
+		},
+	}
+}
+func (s *Service) resolveThreadAuthority(ctx context.Context, name string, required apikey.Scope) (context.Context, nativeScope, error) {
+	ctx, input, err := threads.NewHTTP(s.threadHTTPDeps()).Authority(ctx, name, required)
+	return ctx, nativeAuthInput(input), fromFeatureError(err)
 }

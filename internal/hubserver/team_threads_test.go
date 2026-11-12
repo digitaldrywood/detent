@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -21,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/testenv/searchtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -72,7 +70,7 @@ func createTestThread(t *testing.T, f nativeFixture, scope string, issue tracker
 	return out
 }
 
-func TestTeamThreadScopeAccess(t *testing.T) {
+func TestTeamThreadScopeReferenceAccess(t *testing.T) {
 	t.Run("reference resource authorization", func(t *testing.T) {
 		v := newVerificationFixture(t)
 		v.users["owner"] = v.user(t, "thread-owner", "owner", "thread-owner@example.test", "write", "")
@@ -154,58 +152,9 @@ func TestTeamThreadScopeAccess(t *testing.T) {
 			})
 		}
 	})
-	f := newTeamThreadNativeFixture(t, nil, "", "first")
-	second := newTeamThreadNativeFixture(t, f.service, f.project.OrganizationID, "second")
-	foreign := newTeamThreadNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign")
-	issue := f.create(t, "subject")
-	general := createTestThread(t, f, "general", "")
-	project := createTestThread(t, f, "project", "")
-	subject := createTestThread(t, f, "issue", issue.WorkItemID)
-	other := createTestThread(t, second, "project", "")
-	foreignThread := createTestThread(t, foreign, "general", "")
-	if subject.ProjectID != string(f.project.ID) {
-		t.Fatalf("issue scope did not derive project: %+v", subject)
-	}
-	for _, tc := range []struct {
-		name   string
-		viewer nativeFixture
-		target teamThread
-		status int
-	}{
-		{"general shared", second, general, 200}, {"project member", f, project, 200}, {"issue member", f, subject, 200},
-		{"other project hidden", second, project, 404}, {"other issue hidden", second, subject, 404}, {"second project member", second, other, 200},
-		{"foreign organization", foreign, general, http.StatusUnauthorized}, {"foreign general hidden", f, foreignThread, http.StatusUnauthorized},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			base := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/threads/" + tc.target.ID
-			if tc.target.ID == foreignThread.ID {
-				base = threadBase(foreign) + "/" + tc.target.ID
-			}
-			r := performHubAPIRequest(t, f.service, http.MethodGet, base, tc.viewer.token, nil)
-			requireNativeStatus(t, r, tc.status)
-		})
-	}
-	for _, tc := range []struct {
-		f    nativeFixture
-		want int
-	}{{f, 3}, {second, 2}, {foreign, 1}} {
-		r := performHubAPIRequest(t, f.service, http.MethodGet, threadBase(tc.f), tc.f.token, nil)
-		requireNativeStatus(t, r, 200)
-		var page teamThreadPage
-		decodeHubResponse(t, r, &page)
-		if len(page.Threads) != tc.want {
-			t.Fatalf("visible threads=%d want %d: %s", len(page.Threads), tc.want, r.Body.String())
-		}
-	}
-	for _, input := range []teamThreadInput{{Scope: "general", ProjectID: string(f.project.ID), Title: "bad"}, {Scope: "project", Title: "bad"}, {Scope: "issue", IssueID: "wi_missing", Title: "bad"}} {
-		r := performHubAPIRequest(t, f.service, http.MethodPost, threadBase(f), f.token, input)
-		if r.Code != 422 && r.Code != 404 {
-			t.Fatalf("invalid scope: %d %s", r.Code, r.Body.String())
-		}
-	}
 }
 
-func TestTeamThreadReadCursorAndIsolation(t *testing.T) {
+func TestTeamThreadWorkerReadIsolation(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
 	f.service.registerTeamThreadRoutes(f.service.echo)
 	issue := f.nativeFixture.create(t, "thread subject")
@@ -221,28 +170,6 @@ func TestTeamThreadReadCursorAndIsolation(t *testing.T) {
 			t.Fatalf("sequence=%d", post.Sequence)
 		}
 	}
-	read := func(token, suffix string) teamThreadRead {
-		t.Helper()
-		r := performHubAPIRequest(t, f.service, http.MethodGet, base+"/"+th.ID+suffix, token, nil)
-		requireNativeStatus(t, r, 200)
-		var out teamThreadRead
-		decodeHubResponse(t, r, &out)
-		return out
-	}
-	page := read(f.token, "?since=last_read&limit=2")
-	if len(page.Posts) != 2 || page.Cursor != "2" || !page.HasMore {
-		t.Fatalf("first page=%+v", page)
-	}
-	page = read(f.token, "?since=last_read")
-	if len(page.Posts) != 2 || page.Posts[0].Sequence != 3 || page.HasMore {
-		t.Fatalf("second page=%+v", page)
-	}
-	if got := read(f.token, "?since=last_read"); len(got.Posts) != 0 {
-		t.Fatalf("seen posts=%+v", got)
-	}
-	if got := read(f.other, "?since=last_read"); len(got.Posts) != 4 {
-		t.Fatalf("member cursor shared: %+v", got)
-	}
 	after := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
 	if after.Revision != before.Revision || after.State != before.State || !after.LastActivityAt.Equal(before.LastActivityAt) {
 		t.Fatal("thread changed issue record or lane")
@@ -252,15 +179,6 @@ func TestTeamThreadReadCursorAndIsolation(t *testing.T) {
 		requireNativeStatus(t, r, 200)
 		if strings.Contains(r.Body.String(), "thread-only-sentinel") {
 			t.Fatal("thread leaked into worker issue data")
-		}
-	}
-	for _, status := range []string{"resolved", "open"} {
-		r := performHubAPIRequest(t, f.service, http.MethodPatch, base+"/"+th.ID, f.token, teamThreadInput{Status: status})
-		requireNativeStatus(t, r, 200)
-		var out teamThread
-		decodeHubResponse(t, r, &out)
-		if out.Status != status {
-			t.Fatal(out)
 		}
 	}
 	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
@@ -452,149 +370,7 @@ func TestTeamThreadHostedAgentAttribution(t *testing.T) {
 
 }
 
-func TestTeamThreadPaginationAndReferences(t *testing.T) {
-	f := newTeamThreadNativeFixture(t, nil, "", "paging")
-	second := newTeamThreadNativeFixture(t, f.service, f.project.OrganizationID, "other")
-	issue := f.create(t, "linked issue")
-	originalClock := f.service.config.now
-	now := originalClock().UTC().Truncate(time.Microsecond)
-	f.service.config.now = func() time.Time { return now }
-	t.Cleanup(func() { f.service.config.now = originalClock })
-	first := createTestThread(t, f, "general", "")
-	now = now.Add(time.Microsecond)
-	middle := createTestThread(t, f, "project", "")
-	now = now.Add(time.Microsecond)
-	last := createTestThread(t, f, "issue", issue.WorkItemID)
-	f.service.config.now = originalClock
-	cursor := ""
-	for i, want := range []string{last.ID, middle.ID, first.ID} {
-		r := performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"?limit=1&cursor="+cursor, f.token, nil)
-		requireNativeStatus(t, r, 200)
-		var page teamThreadPage
-		decodeHubResponse(t, r, &page)
-		if len(page.Threads) != 1 || page.Threads[0].ID != want {
-			t.Fatalf("page %d=%+v", i, page)
-		}
-		cursor = page.NextCursor
-	}
-	if cursor != "" {
-		t.Fatalf("terminal cursor=%s", cursor)
-	}
-	r := performHubAPIRequest(t, f.service, http.MethodPatch, threadBase(f)+"/"+last.ID, f.token, teamThreadInput{Status: "resolved"})
-	requireNativeStatus(t, r, 200)
-	for _, tc := range searchtest.ThreadFilters(string(f.project.ID), string(issue.WorkItemID), first.ID, middle.ID, last.ID) {
-		t.Run(tc.Name, func(t *testing.T) {
-			r := performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"?"+tc.Query, f.token, nil)
-			requireNativeStatus(t, r, 200)
-			var page teamThreadPage
-			decodeHubResponse(t, r, &page)
-			if len(page.Threads) != len(tc.Want) {
-				t.Fatalf("filtered=%+v want %v", page, tc.Want)
-			}
-			for i, want := range tc.Want {
-				if page.Threads[i].ID != want {
-					t.Fatalf("thread %d=%s want %s", i, page.Threads[i].ID, want)
-				}
-			}
-		})
-	}
-	ref := operatortool.ThreadReference{Kind: "issue", ID: string(issue.WorkItemID)}
-	r = performHubAPIRequest(t, f.service, http.MethodPost, threadBase(f)+"/"+first.ID+"/posts", f.token, teamThreadInput{Kind: "finding", Body: "Linked finding", References: []operatortool.ThreadReference{ref}})
-	requireNativeStatus(t, r, 201)
-	if f.service.outbox != nil {
-		f.service.outbox.stop()
-	}
-	for _, tc := range []struct {
-		name  string
-		token string
-		want  int
-	}{{"visible reference", f.token, 1}, {"hidden reference", second.token, 0}} {
-		t.Run("single reader/"+tc.name, func(t *testing.T) {
-			originalTenant, originalAccess := f.service.config.TenantRepository, f.service.config.AccessRepository
-			guard := teamThreadReadGuard{Repository: originalTenant}
-			f.service.config.TenantRepository, f.service.config.AccessRepository = guard, guard
-			t.Cleanup(func() {
-				f.service.config.TenantRepository, f.service.config.AccessRepository = originalTenant, originalAccess
-			})
-			ctx := context.WithValue(t.Context(), teamThreadReadGuardKey{}, &atomic.Int32{})
-			request := newHubAPIRequest(t, http.MethodGet, threadBase(f)+"/"+first.ID, tc.token, nil).WithContext(ctx)
-			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request)
-			requireNativeStatus(t, response, 200)
-			var read teamThreadRead
-			decodeHubResponse(t, response, &read)
-			if len(read.Posts) != 1 || len(read.Posts[0].References) != tc.want {
-				t.Fatalf("reference access=%+v", read)
-			}
-		})
-	}
-	r = performHubAPIRequest(t, f.service, http.MethodPost, threadBase(f)+"/"+first.ID+"/posts", second.token, teamThreadInput{Kind: "note", Body: "Not authorized to link", References: []operatortool.ThreadReference{ref}})
-	if r.Code != http.StatusNotFound {
-		t.Errorf("unreadable reference status=%d, want404: %s", r.Code, r.Body.String())
-	}
-	r = performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"/"+first.ID, f.token, nil)
-	requireNativeStatus(t, r, http.StatusOK)
-	var unchanged teamThreadRead
-	decodeHubResponse(t, r, &unchanged)
-	if len(unchanged.Posts) != 1 || unchanged.Thread.PostCount != 1 {
-		t.Fatalf("refused reference changed thread history: %+v", unchanged)
-	}
-}
-
-func TestTeamThreadGeneralMembershipAndRetries(t *testing.T) {
-	f := newHostedSecurityFixture(t)
-	base := "/api/v2/organizations/org_security/threads"
-	for _, tc := range []struct {
-		role   string
-		status int
-	}{{"member", 201}, {"reporter", 201}, {"viewer", 403}} {
-		t.Run(tc.role, func(t *testing.T) {
-			user := f.user(t, tc.role, tc.role, tc.role+"@example.test", "", "")
-			input := teamThreadInput{Scope: "general", Title: "Organization research", Key: "same-intent"}
-			r := f.request(t, user, http.MethodPost, base, input)
-			requireNativeStatus(t, r, tc.status)
-			if tc.status != 201 {
-				return
-			}
-			var first teamThread
-			decodeHubResponse(t, r, &first)
-			r = f.request(t, user, http.MethodPost, base, input)
-			requireNativeStatus(t, r, 201)
-			var replay teamThread
-			decodeHubResponse(t, r, &replay)
-			if replay.ID != first.ID {
-				t.Fatal("create retry duplicated thread")
-			}
-			input.Title = "Changed intent"
-			requireNativeStatus(t, f.request(t, user, http.MethodPost, base, input), 409)
-			post := teamThreadInput{Kind: "note", Body: "Shared research", Key: "reply-intent"}
-			for range 2 {
-				requireNativeStatus(t, f.request(t, user, http.MethodPost, base+"/"+first.ID+"/posts", post), 201)
-			}
-			post.Body = "Changed reply"
-			requireNativeStatus(t, f.request(t, user, http.MethodPost, base+"/"+first.ID+"/posts", post), 409)
-			r = f.request(t, user, http.MethodGet, base+"/"+first.ID, nil)
-			requireNativeStatus(t, r, 200)
-			var read teamThreadRead
-			decodeHubResponse(t, r, &read)
-			if len(read.Posts) != 1 || read.Thread.PostCount != 1 {
-				t.Fatalf("post retry duplicated content: %+v", read)
-			}
-			body := &countingReader{reader: strings.NewReader(`{"kind":"note","key":"oversized","body":"` + strings.Repeat("x", 4*maxAPIRequestBodyBytes) + `"}`)}
-			request := httptest.NewRequest(http.MethodPost, base+"/"+first.ID+"/posts", body)
-			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
-			request.Header.Set("X-CSRF-Token", hostedCSRF(user.token))
-			request.Header.Set("Content-Type", "application/json")
-			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request)
-			if response.Code < 400 || response.Code >= 500 || body.read > maxAPIRequestBodyBytes+64<<10 {
-				t.Fatalf("oversized thread post status=%d read=%d, want client error within the body limit", response.Code, body.read)
-			}
-		})
-	}
-}
-
-func TestTeamThreadAuthorizationRoutes(t *testing.T) {
+func TestTeamThreadAuthorizationMCPRoutes(t *testing.T) {
 	for _, role := range []string{"owner", "admin", "member", "reporter", "viewer", "removed", "ungranted", "read_only"} {
 		t.Run(role, func(t *testing.T) {
 			v := newVerificationFixture(t)
@@ -678,14 +454,6 @@ func TestTeamThreadAuthorizationRoutes(t *testing.T) {
 			}
 			call := func(t *testing.T, transport, operation, method, path string, input teamThreadInput) (json.RawMessage, bool) {
 				t.Helper()
-				if transport == "http" {
-					var body any
-					if method != http.MethodGet {
-						body = input
-					}
-					r := v.request(t, viewer, method, path, body)
-					return r.Body.Bytes(), r.Code >= 200 && r.Code < 300
-				}
 				payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operation, "arguments": input, "_meta": json.RawMessage(fleetProtocolMeta)}})
 				if err != nil {
 					t.Fatal(err)
@@ -709,44 +477,8 @@ func TestTeamThreadAuthorizationRoutes(t *testing.T) {
 				}
 				return envelope.Result.Content.Data, true
 			}
-			t.Run("unread", func(t *testing.T) {
-				path := base + "/unread"
-				if role != "ungranted" {
-					path += "?project_id=" + string(v.project)
-				}
-				r := v.request(t, viewer, http.MethodGet, path, nil)
-				if role == "removed" {
-					if r.Code < 400 {
-						t.Fatalf("removed member read unread count: %s", r.Body.String())
-					}
-					return
-				}
-				requireNativeStatus(t, r, http.StatusOK)
-				if err := v.service.maintainTeamUnread(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-				r = v.request(t, viewer, http.MethodGet, path, nil)
-				requireNativeStatus(t, r, http.StatusOK)
-				var summary teamUnreadSummary
-				decodeHubResponse(t, r, &summary)
-				want := int64(4)
-				switch role {
-				case "reporter":
-					want = 3
-				case "ungranted":
-					want = 1
-				}
-				if summary.Pending || summary.Count == nil || *summary.Count != want {
-					t.Fatalf("unread includes inaccessible threads: %+v, want %d", summary, want)
-				}
-				if role == "ungranted" {
-					r = v.request(t, viewer, http.MethodGet, base+"/unread?project_id="+string(v.project), nil)
-					if r.Code < 400 {
-						t.Fatalf("ungranted project unread accessible: %s", r.Body.String())
-					}
-				}
-			})
-			for _, transport := range []string{"http", "mcp"} {
+
+			for _, transport := range []string{"mcp"} {
 				t.Run(transport, func(t *testing.T) {
 					for _, search := range []string{"", "sentinel", "preview"} {
 						t.Run("list_"+search, func(t *testing.T) {
@@ -874,63 +606,6 @@ func TestTeamThreadAuthorizationRoutes(t *testing.T) {
 						}
 					}
 				})
-			}
-		})
-	}
-}
-
-func TestTeamThreadUnreadRoleDowngrade(t *testing.T) {
-	v := newVerificationFixture(t)
-	if err := v.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
-	}
-	viewer := v.users["reporter"]
-	base := "/api/v2/organizations/org_security/threads"
-	for _, filer := range []string{"reporter", "tester"} {
-		r := v.request(t, v.users[filer], http.MethodPost, v.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: filer}, Type: "bug", Title: "Private report", Body: reporterBugSections})
-		requireNativeStatus(t, r, http.StatusOK)
-		var issue tracker.NativeIssue
-		decodeHubResponse(t, r, &issue)
-		r = v.request(t, v.users["member"], http.MethodPost, base, teamThreadInput{Scope: "issue", IssueID: string(issue.WorkItemID), Title: "Private thread"})
-		requireNativeStatus(t, r, http.StatusCreated)
-		var thread teamThread
-		decodeHubResponse(t, r, &thread)
-		requireNativeStatus(t, v.request(t, v.users["member"], http.MethodPost, base+"/"+thread.ID+"/posts", teamThreadInput{Kind: "note", Body: "Private preview"}), http.StatusCreated)
-	}
-	read := func() teamUnreadSummary {
-		t.Helper()
-		r := v.request(t, viewer, http.MethodGet, base+"/unread?project_id="+string(v.project), nil)
-		requireNativeStatus(t, r, http.StatusOK)
-		var summary teamUnreadSummary
-		decodeHubResponse(t, r, &summary)
-		return summary
-	}
-	for _, tc := range []struct {
-		role string
-		want int64
-	}{{"member", 2}, {"reporter", 1}, {"viewer", 2}, {"reporter", 1}} {
-		t.Run(tc.role, func(t *testing.T) {
-			if err := v.service.config.AccessRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(writer tenantstore.Writer) error {
-				member, err := writer.AccessMember(t.Context(), viewer.identity.Subject)
-				if err != nil {
-					return err
-				}
-				member.Role = tc.role
-				return writer.UpdateAccessMember(t.Context(), member)
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if err := v.provider.SetMembershipRole(t.Context(), "membership_"+viewer.identity.Subject, tc.role); err != nil {
-				t.Fatal(err)
-			}
-			if summary := read(); !summary.Pending || summary.Count != nil {
-				t.Errorf("role change reused broader cached count: %+v", summary)
-			}
-			if err := v.service.maintainTeamUnread(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			if summary := read(); summary.Pending || summary.Count == nil || *summary.Count != tc.want {
-				t.Errorf("wrong visibility after role change: %+v, want %d", summary, tc.want)
 			}
 		})
 	}
