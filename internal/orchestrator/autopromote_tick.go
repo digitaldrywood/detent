@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/orchestrator/dispatchplan"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -36,10 +37,10 @@ const (
 	mergeBaseRefreshRequiredChecksPending = "required_checks_pending"
 	mergeBaseRefreshLaneUnavailable       = "merge_lane_capacity_unavailable"
 	mergeBaseRefreshGlobalUnavailable     = "global_capacity_unavailable"
-	mergeSelectionReasonStickyAged        = "sticky_aged_head"
-	mergeSelectionReasonAged              = "aged_head"
-	mergeSelectionReasonClean             = "clean_head"
-	mergeSelectionReasonQueue             = "queue_order"
+	mergeSelectionReasonStickyAged        = dispatchplan.SelectionReasonStickyAged
+	mergeSelectionReasonAged              = dispatchplan.SelectionReasonAged
+	mergeSelectionReasonClean             = dispatchplan.SelectionReasonClean
+	mergeSelectionReasonQueue             = dispatchplan.SelectionReasonQueue
 )
 
 type completionGateWaitRecord struct {
@@ -1514,7 +1515,7 @@ func mergeWorkerSlotDecisionAttrs(
 }
 
 func mergeWorkerIssue(issue connector.Issue) bool {
-	return normalizeState(issue.State) == normalizeState(autoPromoteMergingState) || issue.NativeLandingHeadSHA != ""
+	return dispatchplan.MergeWorkerIssue(issue, autoPromoteMergingState)
 }
 
 func mergeWorkerLogAttrs(issue connector.Issue, attrs ...any) []any {
@@ -1769,85 +1770,7 @@ func mergeWorkerLaneOccupant(state *State) (Running, int) {
 }
 
 func prioritizeReadyMergingIssues(issues []connector.Issue, state *State, now time.Time, cfg Config) mergingIssuePriority {
-	fairnessAge := cfg.MergeFairnessAge
-	priority := mergingIssuePriority{
-		reasons:       map[string]string{},
-		stickyIssueID: stickyMergingIssueID(state, issues, now, fairnessAge),
-	}
-	ordered := make([]connector.Issue, 0, len(issues))
-	appended := make([]bool, len(issues))
-	repositoryHeads := make(map[string]int)
-	for index, issue := range issues {
-		if !mergeWorkerIssue(issue) {
-			continue
-		}
-		repository := mergeWorkerRepositoryKey(issue)
-		if repository == "" {
-			continue
-		}
-		if _, seen := repositoryHeads[repository]; !seen {
-			repositoryHeads[repository] = index
-		}
-	}
-	appendMatching := func(reason string, matches func(int, connector.Issue) bool) {
-		for index, issue := range issues {
-			if appended[index] || !mergeWorkerIssue(issue) || !matches(index, issue) {
-				continue
-			}
-			appended[index] = true
-			ordered = append(ordered, issue)
-			if issueID := strings.TrimSpace(issue.ID); issueID != "" {
-				priority.reasons[issueID] = reason
-			}
-		}
-	}
-	appendMatching(mergeSelectionReasonStickyAged, func(_ int, issue connector.Issue) bool {
-		return strings.TrimSpace(issue.ID) == priority.stickyIssueID
-	})
-	agedIssues := make([]connector.Issue, 0, len(issues))
-	for index, issue := range issues {
-		if !appended[index] && mergeWorkerIssueAged(issue, now, fairnessAge) {
-			appended[index] = true
-			agedIssues = append(agedIssues, issue)
-		}
-	}
-	slices.SortStableFunc(agedIssues, func(leftIssue connector.Issue, rightIssue connector.Issue) int {
-		left := mergeQueueEnteredAt(leftIssue, time.Time{})
-		right := mergeQueueEnteredAt(rightIssue, time.Time{})
-		if left.Before(right) {
-			return -1
-		}
-		if left.After(right) {
-			return 1
-		}
-		return 0
-	})
-	for _, issue := range agedIssues {
-		ordered = append(ordered, issue)
-		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
-			priority.reasons[issueID] = mergeSelectionReasonAged
-		}
-	}
-	appendMatching(mergeSelectionReasonClean, func(index int, issue connector.Issue) bool {
-		repository := mergeWorkerRepositoryKey(issue)
-		if repository != "" && repositoryHeads[repository] != index {
-			return false
-		}
-		return mergeWorkerHeadReady(issue, cfg)
-	})
-	appendMatching(mergeSelectionReasonQueue, func(_ int, _ connector.Issue) bool { return true })
-	if len(ordered) == 0 {
-		return priority
-	}
-	next := 0
-	for index := range issues {
-		if !mergeWorkerIssue(issues[index]) {
-			continue
-		}
-		issues[index] = ordered[next]
-		next++
-	}
-	return priority
+	return dispatchMergePriority(dispatchplan.PrioritizeReadyMergingIssues(issues, dispatchMergeOrder(state, issues, now, cfg)))
 }
 
 func stickyMergingIssueID(state *State, issues []connector.Issue, now time.Time, fairnessAge time.Duration) string {

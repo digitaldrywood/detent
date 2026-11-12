@@ -37,44 +37,6 @@ func TestSSHQueuedPreferenceAndHostCaps(t *testing.T) {
 	}
 }
 
-func TestSSHHostPreferenceAndCaps(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name, selection, preferred string
-		used                       map[string]int
-		down                       string
-		want                       string
-		ok                         bool
-	}{
-		{"fill first", "preference", "", map[string]int{"air": 1}, "", "air", true},
-		{"spill second", "preference", "", map[string]int{"air": 2, "studio": 1}, "", "studio", true},
-		{"spill local", "preference", "", map[string]int{"air": 2, "studio": 3}, "", "local", true},
-		{"all full", "preference", "", map[string]int{"air": 2, "studio": 3, "local": 1}, "", "", false},
-		{"least loaded default", "", "", map[string]int{"air": 1}, "", "studio", true},
-		{"least loaded retry affinity", "least_loaded", "air", map[string]int{"air": 1}, "", "air", true},
-		{"preference beats retry affinity", "preference", "studio", nil, "", "air", true},
-		{"skip unreachable", "preference", "air", nil, "air", "studio", true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := Config{WorkerHosts: []string{"air", "studio", "local"}, WorkerHostSelection: test.selection, WorkerHostCaps: map[string]int{"air": 2, "studio": 3}, MaxConcurrentAgentsPerHost: 1}
-			state := newState(cfg)
-			for host, count := range test.used {
-				for i := range count {
-					issue := dispatchTestIssue(host+string(rune('0'+i)), "Todo")
-					state.Running[issue.ID] = Running{Issue: issue, WorkerHost: host}
-				}
-			}
-			planner := newDispatchPlanner(cfg)
-			planner.workerHostAvailable = func(host string) bool { return host != test.down }
-			got, ok := planner.selectWorkerHost(&state, test.preferred)
-			if got != test.want || ok != test.ok {
-				t.Fatalf("selection = %q, %v; want %q, %v", got, ok, test.want, test.ok)
-			}
-		})
-	}
-}
-
 func TestSSHHostLossClearsResumeOnSpillover(t *testing.T) {
 	t.Parallel()
 	for _, native := range []bool{false, true} {

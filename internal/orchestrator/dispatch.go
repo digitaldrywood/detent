@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/orchestrator/dispatchplan"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -127,16 +128,7 @@ func (o *Orchestrator) selectWorkerHost(state *State, preferredWorkerHost string
 }
 
 func leastLoadedWorkerHost(state *State, hosts []string) string {
-	selected := hosts[0]
-	selectedCount := runningWorkerHostCount(state, selected)
-	for _, host := range hosts[1:] {
-		count := runningWorkerHostCount(state, host)
-		if count < selectedCount {
-			selected = host
-			selectedCount = count
-		}
-	}
-	return selected
+	return dispatchplan.LeastLoadedHost(hosts, workerHostCounts{state}.count)
 }
 
 func runningWorkerHostCount(state *State, workerHost string) int {
@@ -1468,12 +1460,7 @@ func activityUpdateTitle(update runpkg.AgentActivityUpdate) string {
 }
 
 func validCandidate(issue connector.Issue) bool {
-	return issue.ID != "" &&
-		issue.Identifier != "" &&
-		issue.Title != "" &&
-		issue.State != "" &&
-		!issue.Closed &&
-		issue.AssignedToWorker
+	return dispatchplan.ValidCandidate(issue)
 }
 
 func (p dispatchPlanner) duplicatePullRequestWork(issue connector.Issue) bool {

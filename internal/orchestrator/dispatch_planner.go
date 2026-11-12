@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"slices"
 	"strings"
 	"time"
 
@@ -9,6 +8,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/orchestrator/dispatchplan"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -100,22 +100,14 @@ func (p dispatchPlanner) plan(
 		p.cfg.PrioritizeUnblockers,
 	)
 	clearBlockedUnblockerCounts(plannedCandidates, state.Blocked)
-	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState, p.cfg.DispatchPriorityByLabel, p.cfg.PrioritizeUnblockers)
-	if p.nativeWorkflow && !p.cfg.Policy.Gates.GitHubPullRequest {
-		slices.SortStableFunc(plannedCandidates, func(a, b connector.Issue) int {
-			am, bm := mergeWorkerIssue(a), mergeWorkerIssue(b)
-			if am && bm {
-				return mergeQueueEnteredAt(a, now).Compare(mergeQueueEnteredAt(b, now))
-			}
-			if am {
-				return -1
-			}
-			if bm {
-				return 1
-			}
-			return 0
-		})
-	}
+	dispatchplan.OrderCandidates(plannedCandidates, dispatchCandidateOrder{
+		StatePriority:        p.cfg.DispatchPriorityByState,
+		LabelPriority:        p.cfg.DispatchPriorityByLabel,
+		PrioritizeUnblockers: p.cfg.PrioritizeUnblockers,
+		NativeMergeOrder:     p.nativeWorkflow && !p.cfg.Policy.Gates.GitHubPullRequest,
+		MergeState:           autoPromoteMergingState,
+	}, now)
+
 	dueRetries := dueRetriesByIssue(state, now)
 	retryIssues := plannedCandidates
 	if p.boundedAdmission {
@@ -128,16 +120,7 @@ func (p dispatchPlanner) plan(
 	for _, issue := range plannedCandidates {
 		knownWaits[issue.ID] = knownDispatchWait(issue, state, dueRetries, p.cfg.TerminalStates)
 	}
-	slices.SortStableFunc(plannedCandidates, func(a, b connector.Issue) int {
-		waitingA, waitingB := knownWaits[a.ID], knownWaits[b.ID]
-		if waitingA == waitingB {
-			return 0
-		}
-		if waitingA {
-			return 1
-		}
-		return -1
-	})
+	dispatchplan.DeferKnownWaits(plannedCandidates, knownWaits)
 	logDecision := func(decision dispatchPlanDecision) {
 		decision.SelectionReason = mergePriority.reasons[strings.TrimSpace(decision.Issue.ID)]
 		p.logDecision(hooks, decision)
@@ -310,33 +293,11 @@ func knownDispatchWait(issue connector.Issue, state *State, dueRetries map[strin
 }
 
 func knownDispatchWaitReason(issue connector.Issue, state *State, dueRetries map[string]Retry, terminalStates []string) string {
-	if _, retryDue := dueRetries[issue.ID]; retryDue {
-		return ""
-	}
-	if _, running := state.Running[issue.ID]; running {
-		return dispatchSkipAlreadyRunning
-	}
-	if _, retry := state.Retry[issue.ID]; retry {
-		return dispatchSkipRetryPending
-	}
-	if _, claimed := state.Claimed[issue.ID]; claimed {
-		return dispatchSkipAlreadyClaimed
-	}
-	if blocked, parked := state.Blocked[issue.ID]; parked && !blockedFromDependency(blocked) {
-		return dispatchSkipBlocked
-	}
-	if issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, terminalStates) {
-		return dispatchSkipBlockedByDependency
-	}
-	return ""
+	return dispatchplan.KnownWaitReason(issue, dispatchWaitStateForIssue(issue.ID, state, dueRetries), terminalStates, issueBlockedByNonTerminal)
 }
 
 func clearBlockedUnblockerCounts(issues []connector.Issue, blocked map[string]Blocked) {
-	for index := range issues {
-		if _, ok := blocked[issues[index].ID]; ok {
-			issues[index].UnblockerCount = 0
-		}
-	}
+	dispatchplan.ClearBlockedUnblockerCounts(issues, blocked)
 }
 
 func (p dispatchPlanner) logDecision(hooks dispatchPlanHooks, decision dispatchPlanDecision) {
@@ -917,92 +878,39 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 }
 
 func pullRequestHydrationBlocksDispatch(issue connector.Issue) bool {
-	pullRequest := issue.PullRequest
-	if !pullRequestHydrationBlocksProgress(pullRequest) {
-		return false
-	}
-	if normalizeState(issue.State) != "todo" {
-		return true
-	}
-	return pullRequest.Number > 0 ||
-		strings.TrimSpace(pullRequest.URL) != "" ||
-		strings.TrimSpace(pullRequest.BranchName) != "" ||
-		normalizePullRequestState(pullRequest.State) != ""
+	return dispatchplan.PullRequestHydrationBlocksDispatch(issue, pullRequestHydrationBlocksProgress(issue.PullRequest))
 }
 
 func artifactGateWaitStatusBlocksDispatch(issue connector.Issue, cfg gate.Config) bool {
-	cfg = gate.Effective(cfg)
-	if cfg.Kind != gate.KindArtifact {
-		return false
-	}
-	status := normalizeArtifactGateStatus(artifactStatusFromIssue(issue, cfg.Artifact.StatusField))
-	if status == "" {
-		return false
-	}
-	for _, waitStatus := range cfg.Artifact.WaitStatuses {
-		if status == normalizeArtifactGateStatus(waitStatus) {
-			return artifactGateWaitStatusIsCurrent(issue, cfg.Artifact.StatusField)
-		}
-	}
-	return false
+	return dispatchplan.ArtifactGateWaitStatusBlocksDispatch(issue, cfg, artifactStatusFromIssue(issue, gate.Effective(cfg).Artifact.StatusField))
 }
 
 func artifactGateWaitStatusIsCurrent(issue connector.Issue, statusField string) bool {
-	for field, updatedAt := range issue.FieldUpdatedAt {
-		if strings.EqualFold(strings.TrimSpace(field), strings.TrimSpace(statusField)) &&
-			issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() && !updatedAt.IsZero() {
-			return updatedAt.After(*issue.StageUpdatedAt)
-		}
-	}
-	if issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() || issue.UpdatedAt == nil || issue.UpdatedAt.IsZero() {
-		return true
-	}
-	return !issue.StageUpdatedAt.Equal(*issue.UpdatedAt)
+	return dispatchplan.ArtifactGateWaitStatusIsCurrent(issue, statusField)
 }
 
 func normalizeArtifactGateStatus(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	return dispatchplan.NormalizeArtifactGateStatus(value)
 }
 
 func (p dispatchPlanner) authorized(issue connector.Issue) bool {
-	if !p.cfg.Authorization.Configured() {
-		return true
-	}
-	return selector.Match(issue, p.cfg.Authorization, p.cfg.SelectorContext)
+	return p.eligibility().Authorized(issue)
 }
 
 func (p dispatchPlanner) authorizationDecision(issue connector.Issue) selector.Decision {
-	return selector.Decide(issue, p.cfg.Authorization, p.cfg.SelectorContext)
+	return p.eligibility().AuthorizationDecision(issue)
 }
 
 func (p dispatchPlanner) needsAssignee(issue connector.Issue) bool {
-	return p.cfg.Claiming.AssigneeRequired && p.assigneeEligibilityApplies(issue)
+	return p.eligibility().NeedsAssignee(issue)
 }
 
 func (p dispatchPlanner) assigneeEligibilityApplies(issue connector.Issue) bool {
-	if !p.cfg.Claiming.OwnershipSet || p.cfg.Claiming.OwnershipMode != workflowconfig.IdentityOwnershipAssignee {
-		return false
-	}
-	if strings.TrimSpace(issue.AssigneeID) != "" {
-		return false
-	}
-	for _, assignee := range issue.Assignees {
-		if strings.TrimSpace(assignee) != "" {
-			return false
-		}
-	}
-	return true
+	return p.eligibility().AssigneeEligibilityApplies(issue)
 }
 
 func (p dispatchPlanner) assigneeEligibilityCandidates(issues []connector.Issue) []connector.Issue {
-	candidates := make([]connector.Issue, 0)
-	for _, issue := range issues {
-		if strings.TrimSpace(issue.ID) == "" || !validCandidate(issue) || !stateIn(issue.State, p.cfg.ActiveStates) || stateIn(issue.State, p.cfg.TerminalStates) || !p.authorized(issue) || !p.assigneeEligibilityApplies(issue) {
-			continue
-		}
-		candidates = append(candidates, cloneIssue(issue))
-	}
-	return candidates
+	return p.eligibility().AssigneeEligibilityCandidates(issues)
 }
 
 func (p dispatchPlanner) trackOwnershipAttentionCandidates(state *State, issues []connector.Issue, now time.Time) {
@@ -1207,47 +1115,15 @@ func (p dispatchPlanner) workerSlotsAvailable(state *State, preferredWorkerHost 
 }
 
 func (p dispatchPlanner) selectWorkerHost(state *State, preferredWorkerHost string) (string, bool) {
-	if len(p.cfg.WorkerHosts) == 0 {
-		return "", true
-	}
-
-	availableHosts := make([]string, 0, len(p.cfg.WorkerHosts))
-	for _, host := range p.cfg.WorkerHosts {
-		if p.workerHostSlotsAvailable(state, host) && (p.workerHostAvailable == nil || p.workerHostAvailable(host)) {
-			availableHosts = append(availableHosts, host)
-		}
-	}
-	if len(availableHosts) == 0 {
-		return "", false
-	}
-
-	preferredWorkerHost = strings.TrimSpace(preferredWorkerHost)
-	if p.cfg.WorkerHostSelection == "preference" {
-		return availableHosts[0], true
-	}
-	if preferredWorkerHost != "" {
-		if slices.Contains(availableHosts, preferredWorkerHost) {
-			return preferredWorkerHost, true
-		}
-	}
-
-	return leastLoadedWorkerHost(state, availableHosts), true
+	return dispatchplan.NewHostSelector(dispatchHostConfig(p.cfg), p.workerHostAvailable).Select(workerHostCounts{state}.count, preferredWorkerHost)
 }
 
 func (p dispatchPlanner) workerHostSlotsAvailable(state *State, workerHost string) bool {
-	capacity := p.cfg.workerHostCapacity(workerHost)
-	if capacity <= 0 {
-		return true
-	}
-
-	return runningWorkerHostCount(state, workerHost) < capacity
+	return dispatchHostConfig(p.cfg).SlotsAvailable(workerHost, workerHostCounts{state}.count)
 }
 
 func (c Config) workerHostCapacity(host string) int {
-	if capacity := c.WorkerHostCaps[host]; capacity > 0 {
-		return capacity
-	}
-	return c.MaxConcurrentAgentsPerHost
+	return dispatchHostConfig(c).Capacity(host)
 }
 
 func (p dispatchPlanner) scheduleRetry(
@@ -1357,16 +1233,6 @@ func (p dispatchPlanner) githubRESTDependent(issue connector.Issue) bool {
 	return !p.nativeWorkflow || normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && p.cfg.Policy.Gates.GitHubPullRequest
 }
 
-// dispatchLabelSelector projects authorization onto labels. Other predicates
-// remain unknown until hydration; an OR branch without labels therefore matches
-// here and leaves the full decision to dispatch eligibility.
 func dispatchLabelSelector(auth selector.Selector) selector.Selector {
-	labels := selector.Selector{Labels: auth.Labels}
-	for _, child := range auth.And {
-		labels.And = append(labels.And, dispatchLabelSelector(child))
-	}
-	for _, child := range auth.Or {
-		labels.Or = append(labels.Or, dispatchLabelSelector(child))
-	}
-	return labels
+	return dispatchplan.LabelSelector(auth)
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/orchestrator/dispatchplan"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -340,12 +341,7 @@ func mergeBaseRefreshPending(state *State, issue connector.Issue) bool {
 }
 
 func mergeQueueEnteredAt(issue connector.Issue, fallback time.Time) time.Time {
-	for _, candidate := range []*time.Time{issue.StageUpdatedAt, issue.UpdatedAt, issue.CreatedAt} {
-		if candidate != nil && !candidate.IsZero() {
-			return candidate.UTC()
-		}
-	}
-	return fallback.UTC()
+	return dispatchplan.MergeQueueEnteredAt(issue, fallback)
 }
 
 func (t MergeTiming) withDurations(now time.Time) MergeTiming {
