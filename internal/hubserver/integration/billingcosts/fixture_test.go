@@ -431,7 +431,7 @@ func newClockedPostgresNativeService(t *testing.T, cfg Config) *testHub {
 	if _, err := admin.ExecContext(t.Context(), "UPDATE organizations SET local=true WHERE organization_id=$1", "org_first"); err != nil {
 		t.Fatal(err)
 	}
-	return openHub(t, &testHub{admin: admin, owner: t}, cfg, repo)
+	return openHub(t, &testHub{admin: admin, owner: t, costRoutes: true}, cfg, repo)
 }
 func openHub(t *testing.T, h *testHub, cfg Config, repo *postgres.Repository) *testHub {
 	t.Helper()
