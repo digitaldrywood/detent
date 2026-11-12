@@ -164,7 +164,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 		next.Action.UpdatedAt = now
 	default:
 		if previous.Action.ID == "" {
-			return json.RawMessage(`{"deleted":true}`), nil
+			return nil, nativeNotFound()
 		}
 	}
 	raw := json.RawMessage(`{"deleted":true}`)

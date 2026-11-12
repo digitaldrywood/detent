@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -72,8 +73,64 @@ func (s *session) UpdateProjectAction(ctx context.Context, r actionstore.Record,
 }
 
 func (s *session) DeleteProjectAction(ctx context.Context, project tracker.ProjectID, id string) error {
+	if err := s.deleteProjectActionRuns(ctx, project, id); err != nil {
+		return err
+	}
 	result, err := s.db.Exec(ctx, `DELETE FROM project_actions WHERE organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id)
 	return projectActionWriteResult(ctx, result, err)
+}
+
+func (s *session) deleteProjectActionRuns(ctx context.Context, project tracker.ProjectID, action string) error {
+	rows, err := s.db.Query(ctx, `SELECT id,revision FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND action_id=$3 ORDER BY id`, s.organization, project, action)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	type run struct {
+		id       string
+		revision int64
+	}
+	var runs []run
+	for rows.Next() {
+		var r run
+		if err := rows.Scan(&r.id, &r.revision); err != nil {
+			rows.Close()
+			return mapError(ctx, err)
+		}
+		runs = append(runs, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return mapError(ctx, err)
+	}
+	for _, r := range runs {
+		owner := actionstore.ArchiveOwnerID(project, r.id)
+		var archives []string
+		archiveRows, err := s.db.Query(ctx, `SELECT archive_id FROM archive_object_owners WHERE organization_id=$1 AND owner_kind='project-action-run-output' AND owner_id=$2 ORDER BY archive_id`, s.organization, owner)
+		if err != nil {
+			return mapError(ctx, err)
+		}
+		for archiveRows.Next() {
+			var archive string
+			if err := archiveRows.Scan(&archive); err != nil {
+				archiveRows.Close()
+				return mapError(ctx, err)
+			}
+			archives = append(archives, archive)
+		}
+		archiveRows.Close()
+		if err := archiveRows.Err(); err != nil {
+			return mapError(ctx, err)
+		}
+		for _, archive := range archives {
+			if err := s.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: s.organization, ArchiveID: archive, Kind: "project-action-run-output", ID: owner}); err != nil {
+				return err
+			}
+		}
+		if err := s.DeleteActionRun(ctx, project, r.id, r.revision); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func projectActionWriteResult(ctx context.Context, result pgconn.CommandTag, err error) error {
