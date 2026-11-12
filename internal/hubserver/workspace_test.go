@@ -62,7 +62,11 @@ func newWorkspaceFixture(t *testing.T, cfg *WorkspaceConfig, clocks ...func() ti
 	if len(clocks) != 0 {
 		config.now = clocks[0]
 	}
-	f := newDefaultNativeFixture(t, config)
+	return workspaceFixtureOn(t, newDefaultNativeFixture(t, config))
+}
+
+func workspaceFixtureOn(t *testing.T, f nativeFixture) workspaceFixture {
+	t.Helper()
 	service := f.service
 	credential, _, err := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
@@ -527,7 +531,11 @@ func newWorkspaceRunnerFixture(t *testing.T) *workspaceRunnerFixture {
 	// The caps are lifted well clear of the subtests: these tests are about
 	// the owner tuple, and a refusal from the workspace session contract's limits would only
 	// hide it.
-	f := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50})
+	return workspaceRunnerFixtureOn(t, newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50}))
+}
+
+func workspaceRunnerFixtureOn(t *testing.T, f workspaceFixture) *workspaceRunnerFixture {
+	t.Helper()
 	r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	// The capacity is generous so that one fixture can hold several
 	// workspaces at once; the claim gate, not the host, is what these tests
@@ -658,7 +666,8 @@ func TestWorkspaceWorkerBind(t *testing.T) {
 // also stop renewing, and the workspace would die of the argument.
 func TestWorkspaceWorkerSharesClaimLockOrder(t *testing.T) {
 	t.Parallel()
-	f := newWorkspaceRunnerFixture(t)
+	service := newPostgresNativeService(t, Config{Workspace: &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50}})
+	f := workspaceRunnerFixtureOn(t, workspaceFixtureOn(t, newNativeFixture(t, service, "", "Example project")))
 	bound, lease := f.bound(t)
 	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.runner.redemption.Credential), "", "")
 	if err != nil {
