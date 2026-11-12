@@ -152,7 +152,7 @@ func applyPostgresReportUsage(out *hostedReportsReport, work []reportstore.Overv
 			priorCost += row.Cost
 		}
 	}
-	if compare {
+	if compare && out.PriorRecorded {
 		out.PriorCost = &priorCost
 	}
 	shipped, priorShipped := map[string]bool{}, map[string]bool{}

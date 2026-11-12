@@ -400,7 +400,7 @@ func (s *session) HasPriorData(ctx context.Context, projects []tracker.ProjectID
 		err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issues WHERE organization_id=$1 AND project_id=ANY($2::text[]) AND actor_principal_id=$3 AND created_at<$4)`, s.organization, projectIDs, principal, before.UTC()).Scan(&recorded)
 		return recorded, mapError(ctx, err)
 	}
-	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=$1 AND id=ANY($2::text[]) AND deleted_at IS NULL AND created_at<$3)`, s.organization, projectIDs, before.UTC()).Scan(&recorded)
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=$1 AND id=ANY($2::text[]) AND deleted_at IS NULL AND created_at<$3) OR EXISTS(SELECT 1 FROM issues WHERE organization_id=$1 AND project_id=ANY($2::text[]) AND created_at<$3)`, s.organization, projectIDs, before.UTC()).Scan(&recorded)
 	return recorded, mapError(ctx, err)
 }
 

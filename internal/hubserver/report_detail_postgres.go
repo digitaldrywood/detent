@@ -267,7 +267,7 @@ func summarizePostgresHostedReport(facts []reportstore.OverviewFact, attempts []
 		Stages: []reportsStage{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Titles: map[string]string{}, Coverage: []diagnosticsCoverage{},
 		Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Unavailable: unavailable, PriorRecorded: priorRecorded,
 	}
-	if costAvailable && compare {
+	if costAvailable && compare && priorRecorded {
 		out.PriorCost = new(float64)
 	}
 	cycleByBucket := make([][]float64, len(spans))
@@ -289,7 +289,7 @@ func summarizePostgresHostedReport(facts []reportstore.OverviewFact, attempts []
 		currentCost, previousCost := costs[currentKey], costs[previousKey]
 		if costAvailable {
 			out.Cost += currentCost
-			if compare {
+			if out.PriorCost != nil {
 				*out.PriorCost += previousCost
 			}
 		}
