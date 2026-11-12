@@ -120,7 +120,6 @@ func startScratchEnvironmentDescendant(t *testing.T, scratch string, legacy bool
 	}
 	var drained <-chan struct{}
 	t.Cleanup(func() {
-		_ = child.Kill()
 		_ = child.Release()
 		_ = reader.Close()
 		if drained != nil {
@@ -139,6 +138,11 @@ func startScratchEnvironmentDescendant(t *testing.T, scratch string, legacy bool
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if _, err := procgroup.Terminate(context.Background(), identity, 5*time.Second); err != nil {
+			t.Errorf("terminate descendant %d: %v", identity.PID, err)
+		}
+	})
 	exited := make(chan struct{})
 	drained = exited
 	go func() {
