@@ -2,36 +2,15 @@ package hubserver
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type nativeCursor struct {
-	Version    int                    `json:"v"`
-	Scope      string                 `json:"scope"`
-	After      string                 `json:"after"`
-	Expires    int64                  `json:"expires"`
-	Issues     *nativeIssuePageCursor `json:"issues,omitempty"`
-	Compaction int64                  `json:"compaction,omitempty"`
-}
 
 func (s *Service) nativePage(c echo.Context) (int, nativeCursor, []byte, error) {
 	params, err := nativeReadQuery(c)
@@ -51,129 +30,6 @@ func nativeReadQuery(c echo.Context) (url.Values, error) {
 
 func (s *Service) readNativePage(ctx context.Context, scope nativeScope, path string, params url.Values) (int, nativeCursor, []byte, error) {
 	return s.readNativePageLimit(ctx, scope, path, params, maxAPIPageLimit, defaultAPIPageLimit)
-}
-
-func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, path string, params url.Values, maximum, defaultLimit int) (int, nativeCursor, []byte, error) {
-	ctx = s.runDetailContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	limit := defaultLimit
-	var err error
-	if value := strings.TrimSpace(params.Get("limit")); value != "" {
-		limit, err = strconv.Atoi(value)
-	}
-	if limit < 1 || limit > maximum {
-		err = nativePublicInvalid("Page limit is invalid")
-	}
-	if err != nil {
-		return 0, nativeCursor{}, nil, nativePublicInvalid("Page limit is invalid")
-	}
-	requestedCursor := params.Get("cursor")
-	cloned := url.Values{}
-	for k, v := range params {
-		cloned[k] = v
-	}
-	params = cloned
-	params.Del("cursor")
-	params.Del("limit")
-	params.Del("archive_url")
-
-	fingerprint := scope.credential.ID + " " + path + "?" + params.Encode()
-	if scope.credential.HostedRole != "" {
-		fingerprint += " " + scope.credential.HostedRole + " " + scope.actor().PrincipalID
-	}
-	if scope.credential.Hosted != nil {
-		fingerprint += " " + scope.credential.Hosted.SessionID
-	}
-	cursor := nativeCursor{Version: 2, Scope: fingerprint, Expires: s.config.now().Add(time.Hour).Unix()}
-	key, err := s.readNativeCursorKey(ctx, scope.organization)
-	if err != nil {
-		return 0, cursor, nil, err
-	}
-	value := requestedCursor
-	if value == "" {
-		return limit, cursor, key, nil
-	}
-	parts := strings.Split(value, ".")
-	if len(parts) != 2 || len(value) > 4096 {
-		return 0, cursor, nil, nativePublicInvalid("Cursor is invalid")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return 0, cursor, nil, nativePublicInvalid("Cursor is invalid")
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return 0, cursor, nil, nativePublicInvalid("Cursor is invalid")
-	}
-	mac := hmac.New(sha256.New, key)
-	mac.Write(payload)
-	if !hmac.Equal(signature, mac.Sum(nil)) {
-		return 0, cursor, nil, nativePublicInvalid("Cursor signature is invalid")
-	}
-	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.Version != 2 || cursor.Scope != fingerprint || cursor.Expires <= s.config.now().Unix() {
-		return 0, cursor, nil, nativePublicInvalid("Cursor scope changed or expired; restart the query")
-	}
-	return limit, cursor, key, nil
-}
-
-func (s *Service) readNativeCursorKey(ctx context.Context, organization tracker.OrganizationID) ([]byte, error) {
-	if s.config.AccessRepository == nil {
-		return nil, nativeRunEventStorageUnavailable()
-	}
-	var secret accessstore.Secret
-	err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
-		var err error
-		secret, err = r.AccessSecret(ctx, "", accessstore.NativeCursorKeyKind)
-		return err
-	})
-	if errors.Is(err, corestore.ErrNotFound) {
-		repository, ok := s.config.AccessRepository.(accessstore.OrganizationSecretRepository)
-		if !ok {
-			return nil, nativeRunEventStorageUnavailable()
-		}
-		candidate, audit, createErr := newNativeCursorSecret(s.config, organization)
-		if createErr != nil {
-			return nil, createErr
-		}
-		secret, err = repository.EnsureOrganizationSecret(ctx, candidate, audit)
-	}
-	if err != nil {
-		return nil, err
-	}
-	key, err := accessstore.OpenSecret(s.config.SecretKeys, secret)
-	if err != nil {
-		return nil, err
-	}
-	if len(key) != sha256.Size {
-		return nil, errors.New("native cursor key has invalid length")
-	}
-	return key, nil
-}
-
-func newNativeCursorSecret(cfg Config, organization tracker.OrganizationID) (accessstore.Secret, accessstore.SecretAudit, error) {
-	key := make([]byte, sha256.Size)
-	defer clear(key)
-	if _, err := rand.Read(key); err != nil {
-		return accessstore.Secret{}, accessstore.SecretAudit{}, fmt.Errorf("generate native cursor key: %w", err)
-	}
-	envelope, err := cfg.SecretKeys.Seal(key, accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
-	if err != nil {
-		return accessstore.Secret{}, accessstore.SecretAudit{}, fmt.Errorf("seal native cursor key: %w", err)
-	}
-	now := cfg.now().UTC()
-	return accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now},
-		accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "system:native-cursor-key", Event: "create", KeyVersion: envelope.Version, RecordedAt: now}, nil
-}
-
-func encodeNativeCursor(cursor nativeCursor, key []byte) (string, error) {
-	payload, err := json.Marshal(cursor)
-	if err != nil {
-		return "", err
-	}
-	mac := hmac.New(sha256.New, key)
-	mac.Write(payload)
-	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 
 func validateNativeQuery(params url.Values, fields ...string) error {

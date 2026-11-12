@@ -60,20 +60,6 @@ func (c *nativeIssuePageCache) load(id, scope string, expires int64, now time.Ti
 	return page.items, true
 }
 
-type nativeIssuePageCursor struct {
-	Snapshot        string  `json:"snapshot"`
-	Sequence        *int64  `json:"sequence,omitempty"`
-	Score           float64 `json:"score,omitempty"`
-	Lane            int     `json:"lane"`
-	State           string  `json:"state"`
-	Priority        int     `json:"priority"`
-	ActivityMissing int     `json:"activity_missing"`
-	Activity        string  `json:"activity"`
-	Identifier      string  `json:"identifier"`
-	SearchExact     bool    `json:"search_exact,omitempty"`
-	SearchNumber    int64   `json:"search_number,omitempty"`
-}
-
 type nativeIssuePageItem struct {
 	ID       string
 	Snippet  string
