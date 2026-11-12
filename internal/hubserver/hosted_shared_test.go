@@ -618,8 +618,10 @@ func TestHostedSharedOwnerBootstrap(t *testing.T) {
 	if _, err := f.provider.CreateMembership(t.Context(), "user_member", "org_provider", "member"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.provider.CreateMembership(t.Context(), "user_creator", "org_provider", "owner"); err != nil {
-		t.Fatal(err)
+	for _, subject := range []string{"user_creator", "user_second_owner"} {
+		if _, err := f.provider.CreateMembership(t.Context(), subject, "org_provider", "owner"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	body := `{"organization_name":"Created organization"}`
 	for _, test := range []struct {
@@ -633,7 +635,7 @@ func TestHostedSharedOwnerBootstrap(t *testing.T) {
 		{"missing name", "user_creator", `{"organization_name":""}`, http.StatusUnprocessableEntity},
 		{"verified owner", "user_creator", body, http.StatusNoContent},
 		{"repeat", "user_creator", body, http.StatusNoContent},
-		{"second owner claim", "user_member", body, http.StatusConflict},
+		{"second owner claim", "user_second_owner", body, http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := f.serve(t, hostedSharedRequest{user: identity(test.subject), kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/owner/bootstrap", body: test.body})
