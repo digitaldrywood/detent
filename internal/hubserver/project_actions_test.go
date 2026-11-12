@@ -88,6 +88,7 @@ func (f actionFixture) requireRefusedAction(t *testing.T, method, actionID strin
 	t.Helper()
 	var logs bytes.Buffer
 	config := f.service.config
+	config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 	config.Logger = slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)})
 	service := &Service{database: f.service.database, config: config, localOrganization: f.service.localOrganization}
 	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
