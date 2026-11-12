@@ -277,8 +277,8 @@ func TestPostgresValidationAuditReadsIssueCommentsAndAttemptLandingWithoutLegacy
 						t.Fatal(err)
 					}
 					audit := value.Data.ValidationAudit
-					if audit == nil || !audit.Partial || !slices.Contains(audit.Unavailable, "project_wide_scheduled_sources") || len(audit.Occurrences) != 2 {
-						t.Fatalf("missing real issue/comment audit or honest partial coverage")
+					if audit == nil || !audit.Partial || !slices.Contains(audit.Unavailable, "historical_repository_identity") || slices.Contains(audit.Unavailable, "project_wide_scheduled_sources") || slices.Contains(audit.Unavailable, "incomplete_scheduled_sources") || len(audit.Occurrences) != 2 {
+						t.Fatalf("missing real issue/comment audit or honest partial coverage: %+v", audit)
 					}
 					for _, occurrence := range audit.Occurrences {
 						if occurrence.Source.WorkItemID != id || occurrence.Source.Actor.PrincipalID != actor || len(occurrence.Comparisons) != 1 {
