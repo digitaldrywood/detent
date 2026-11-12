@@ -1758,7 +1758,7 @@ func TestConversationPostgresScopeUsesTenantRecords(t *testing.T) {
 	requireNativeStatus(t, itemConversation, http.StatusOK)
 
 	foreignProject := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/projects/prj_hidden/conversations", f.token, nil)
-	requireNativeStatus(t, foreignProject, http.StatusForbidden)
+	requireNativeStatus(t, foreignProject, http.StatusNotFound)
 	foreignOrganization := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/org_hidden/projects/prj_hidden/conversations", f.token, nil)
 	requireNativeStatus(t, foreignOrganization, http.StatusUnauthorized)
 

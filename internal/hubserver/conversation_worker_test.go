@@ -792,7 +792,7 @@ func TestConversationWorkerBind(t *testing.T) {
 	t.Run("foreign project worker", func(t *testing.T) {
 		foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-project")
 		token := conversationWorkerRunner(t, foreign).redemption.Credential
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/conversation/bind", token, f.bindBody()), http.StatusForbidden)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/conversation/bind", token, f.bindBody()), http.StatusNotFound)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreign.base+"/work-items/"+string(f.issue.WorkItemID)+"/conversation/bind", token, f.bindBody()), http.StatusNotFound)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreign.base+"/conversations/"+f.record.ID+"/turn-events", token, map[string]any{"lease_id": f.lease.ID, "fencing_token": f.lease.FencingToken, "attempt_id": f.attempt, "events": []map[string]any{}}), http.StatusNotFound)
 	})
@@ -1203,7 +1203,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-registered")
 		foreignRunner := prepareRunner(t, foreign, runnerauth.Read, runnerauth.Collaborate, runnerauth.Events)
 		foreignRunner.enroll(t)
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreign.base+"/conversations/"+f.record.ID+"/turn-events", f.worker, map[string]any{"lease_id": f.lease.ID, "fencing_token": f.lease.FencingToken, "attempt_id": f.attempt, "events": []map[string]any{}}), http.StatusForbidden)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreign.base+"/conversations/"+f.record.ID+"/turn-events", f.worker, map[string]any{"lease_id": f.lease.ID, "fencing_token": f.lease.FencingToken, "attempt_id": f.attempt, "events": []map[string]any{}}), http.StatusNotFound)
 		other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Collaborate, runnerauth.Events)
 		other.enroll(t)
 		unpermitted := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Collaborate)
