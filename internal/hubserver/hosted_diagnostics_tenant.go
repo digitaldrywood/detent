@@ -308,7 +308,7 @@ func (s *Service) readDiagnosticsTenant(ctx context.Context, credential apiCrede
 }
 
 func projectTenantDiagnostics(snapshot diagnosticstore.Snapshot, w operatortool.AnalyticsWindow) diagnosticsReport {
-	out := diagnosticsReport{From: w.From, To: w.To, Partial: snapshot.Partial, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}, Refused: []diagnosticsRefusal{}}
+	out := diagnosticsReport{From: w.From, To: w.To, Partial: snapshot.Partial, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}}
 	transitions := 0
 	waits := []float64{}
 	for _, event := range snapshot.Events {
