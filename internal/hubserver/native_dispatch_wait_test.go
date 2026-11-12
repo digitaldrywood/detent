@@ -869,6 +869,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			if test.unpublished {
 				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 				worker = prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+				worker.redemption.Capacity = test.size
 				worker.enroll(t)
 				admin, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 				if err != nil || status != http.StatusOK {
