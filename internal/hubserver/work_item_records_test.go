@@ -1115,29 +1115,12 @@ func TestWorkItemCreationReplansAfterProjectWorkflowChanges(t *testing.T) {
 }
 
 func TestWorkItemRecordReplayRechecksAccessInTenantWrite(t *testing.T) {
-	repository := projectRecordPostgres(t)
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.TenantRepository = repository
 		cfg.RunDetails = &memoryRunDetails{}
 	})
-	if err := repository.WriteTenant(t.Context(), tracker.OrganizationID("org_security"), corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", CreatedAt: f.service.config.now()}); err != nil {
-			return err
-		}
-		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_security", ProviderID: "org_provider"})
-	}); err != nil {
-		t.Fatal(err)
-	}
+	repository := f.service.config.TenantRepository
 	member := f.user(t, "writer", "member", "writer@example.test", "", "")
 	scope := nativeScope{organization: tracker.OrganizationID("org_security"), project: f.project}
-	project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: scope.project, Name: "Example project", Slug: "example-project", Profile: "native", RequireDependencies: true}, States: nativeFixtureStates()}
-	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.CreateProjectRecord(t.Context(), project)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
 	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		member, err := w.AccessMember(t.Context(), member.identity.Subject)
 		if err != nil {
@@ -1180,22 +1163,11 @@ func TestWorkItemRecordReplayRechecksAccessInTenantWrite(t *testing.T) {
 }
 
 func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
-	repository := projectRecordPostgres(t)
 	scope := nativeScope{organization: tracker.OrganizationID("org_security"), project: tracker.ProjectID("prj_security")}
-	fixtureNow := time.Now().UTC()
-	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: scope.organization, Name: "Example organization", CreatedAt: fixtureNow}); err != nil {
-			return err
-		}
-		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: scope.organization, ProviderID: "org_provider"})
-	}); err != nil {
-		t.Fatal(err)
-	}
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.TenantRepository = repository
 		cfg.RunDetails = &memoryRunDetails{}
 	})
+	repository := f.service.config.TenantRepository
 	states := append(nativeFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}})
 	project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: scope.project, Name: "Example project", Slug: "example-project", Profile: "native", RequireDependencies: true}, States: states}
 	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
