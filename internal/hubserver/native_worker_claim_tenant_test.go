@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -348,6 +349,9 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			return err
 		}
 		if err := w.UpdateRunnerCapacityConfig(t.Context(), binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: now}); err != nil {
+			return err
+		}
+		if err := w.ReplaceRunnerBackendIsolation(t.Context(), binding.RunnerID, isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}, "example-backend": {isolation.NativeTrusted, isolation.Sandbox}}); err != nil {
 			return err
 		}
 		return w.ReplaceRunnerProviderReports(t.Context(), binding.RunnerID, []providercapacity.Report{report})
@@ -1333,6 +1337,9 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 					return err
 				}
 				if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runnerID, MachineID: machineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: startedAt, ExpiresAt: expires, LastHeartbeatAt: startedAt}); err != nil {
+					return err
+				}
+				if err := w.ReplaceRunnerBackendIsolation(t.Context(), runnerID, isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}); err != nil {
 					return err
 				}
 				return w.UpdateRunnerCapacityConfig(t.Context(), runnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: startedAt})
