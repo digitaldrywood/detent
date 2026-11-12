@@ -47,6 +47,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 				admin := postgresStartupTemplate.Database(t)
 				cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 				cfg.Hosted = nil
+				cfg.SecretKeys = secretTestKeys(t, "1", "1")
 				if mode != "imported" {
 					database := pgx.Identifier{cfg.Postgres.Connection.Database}.Sanitize()
 					connectionLimit := 3*cfg.Postgres.Pool.MaxConnections + 2

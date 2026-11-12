@@ -109,6 +109,7 @@ func TestStandaloneStartupHealthRequiresReadCredential(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Hosted = nil
+	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.InitialAdminToken = []byte(testHubAdminToken)
 	progress := openPostgresStartupHealth(t, cfg)
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
