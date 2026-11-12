@@ -585,7 +585,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	pagedClaim := request
 	pagedClaim.WorkItemID = ""
 	pagedClaim.ProviderCandidates = nil
-	pagedClaim.Capabilities = []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}
+	pagedClaim.Capabilities = []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}
 	pagedRequest := tracker.NativeCapacityPreview{NativeClaim: pagedClaim, Limit: 1}
 	firstPageResponse := performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, pagedRequest)
 	requireNativeStatus(t, firstPageResponse, http.StatusOK)
@@ -1347,7 +1347,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 				t.Fatal(err)
 			}
 			scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
-			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "contract-scan-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "contract-scan-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 
 			targeted := request
 			_, err = service.claimNativeIssueTenant(t.Context(), scope, targeted, 5*time.Minute)
