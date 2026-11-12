@@ -244,7 +244,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						}
 						keys := []string{attempt.PayloadObjectKey}
 						for _, row := range history {
-							if row.PayloadFormatVersion != 1 {
+							if row.PayloadFormatVersion != 2 {
 								inline++
 							}
 							keys = append(keys, row.PayloadObjectKey)
