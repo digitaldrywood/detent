@@ -51,7 +51,7 @@ func (c *Content) PreparePayload(ctx context.Context, organization tracker.Organ
 	}
 	verified, err := c.store.ReadDetail(ctx, string(organization), ref)
 	if err != nil {
-		return attachment.ArchiveReference{}, fmt.Errorf("verify history payload: %w", errors.Join(artifact.ErrIntegrity, err))
+		return attachment.ArchiveReference{}, fmt.Errorf("verify history payload: %w", err)
 	}
 	if !bytes.Equal(verified, raw) {
 		return attachment.ArchiveReference{}, artifact.ErrIntegrity
@@ -132,7 +132,7 @@ func (c *Content) read(ctx context.Context, organization tracker.OrganizationID,
 	}
 	raw, err := c.store.ReadDetail(ctx, string(organization), ref)
 	if err != nil {
-		return fmt.Errorf("read history payload: %w", errors.Join(artifact.ErrIntegrity, err))
+		return fmt.Errorf("read history payload: %w", err)
 	}
 	if int64(len(raw)) != ref.UncompressedSize {
 		return fmt.Errorf("validate history content length: %w", artifact.ErrIntegrity)
