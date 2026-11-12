@@ -188,7 +188,7 @@ func TestSpriteWakeSecret(t *testing.T) {
 func newSpriteWakeFixture(t *testing.T, client *http.Client, storeToken bool, heartbeatAgo time.Duration, names ...string) (nativeFixture, nativeScope, []runnerFixture) {
 	t.Helper()
 	f := newDefaultNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), SpritesHTTPClient: client})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: "test"}}
+	scope := placementFixtureScope(t, f)
 	runners := enrollSpriteWakeRunners(t, f, heartbeatAgo, names...)
 	if storeToken {
 		storeSpriteWakeSecret(t, f, spritesSecretSentinel)

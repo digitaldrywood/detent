@@ -309,7 +309,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 	if failure == "installer" {
 		provider.manual = enrollSpriteWakeRunners(t, f, time.Hour, "existing-one", "existing-two")
 	}
-	f.service.config.Hosted = &HostedConfig{PublicURL: "https://hub.example.test"}
+	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://hub.example.test"}
 	f.service.config.Version = "v0.117.99"
 	f.service.config.generateToken = func() (string, error) {
 		token, err := apikey.GenerateToken()
