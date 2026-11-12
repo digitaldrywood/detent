@@ -350,7 +350,7 @@ func (s *Service) grantedAccessProjects(ctx context.Context, r accessstore.Reade
 	granted := make([]accessstore.ProjectAccess, 0, len(projects))
 	for _, project := range projects {
 		err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, project: project.ProjectID, credential: credential}, false)
-		if errors.Is(err, accessstore.ErrDenied) {
+		if errors.Is(err, accessstore.ErrDenied) || isNativeNotFound(err) {
 			continue
 		}
 		if err != nil {

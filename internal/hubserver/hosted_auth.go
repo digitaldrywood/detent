@@ -138,6 +138,9 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 	if err == nil {
 		c.Set("hub_api_credential", credential)
 	}
+	if status == http.StatusForbidden && c.Path() == "/api/v2/organizations" && c.Request().Method == http.MethodGet && session.Identity != nil && session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+		return apiCredential{}, http.StatusNotFound, nativeNotFound()
+	}
 	return credential, status, err
 }
 

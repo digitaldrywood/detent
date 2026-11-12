@@ -545,9 +545,6 @@ func (s *Service) resolveNativeRequestScope(readCtx context.Context, c echo.Cont
 			case "POST " + attachmentMetadataBase + "/:attachment/reference":
 				scope.action = operatortool.ReferenceAttachment
 			}
-			if !hostedRoleAllows(credential.HostedRole, apikey.ScopeWrite, scope.action) {
-				return operatortool.ErrAccessDenied
-			}
 		}
 		if runnerLeaseMutationRoute(c.Path()) {
 			if err := s.authorizeRunnerLeaseProject(readCtx, scope); err != nil {

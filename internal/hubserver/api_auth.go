@@ -99,6 +99,9 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			credential, status, err := s.authenticateAPIRequest(c)
 			if err != nil {
+				if isNativeNotFound(err) {
+					return s.nativeAPIError(c, err)
+				}
 				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 					return s.nativeAPIError(c, operatorAuthorizationError(err))
 				}

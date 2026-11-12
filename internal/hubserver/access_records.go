@@ -113,11 +113,11 @@ func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader
 		}
 	}
 	if s.config.Hosted != nil && scope.organization != s.accessOrganization() {
-		return auth.ErrHostedIdentity
+		return nativeNotFound()
 	}
 	if scope.credential.EntryKey != nil {
 		if scope.project != "" && !scope.credential.EntryKey.Allows(string(scope.project)) {
-			return auth.ErrHostedIdentity
+			return nativeNotFound()
 		}
 		required := apikey.ScopeRead
 		if write {
@@ -127,12 +127,12 @@ func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader
 			required = apikey.ScopeAdmin
 		}
 		if !hostedKeyAllows(scope.credential.HostedKeyScope, required) || !hostedRoleAllows(scope.credential.HostedRole, required, scope.action) {
-			return auth.ErrHostedIdentity
+			return s.hiddenAccessDenial(ctx, r, scope, write, auth.ErrHostedIdentity)
 		}
 	}
 	member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, write), s.config.now())
 	if err != nil {
-		return err
+		return s.hiddenAccessDenial(ctx, r, scope, write, err)
 	}
 	if scope.credential.Hosted != nil && member.UserID != "" {
 		role := lesserHostedRole(member.Role, scope.credential.HostedRole)
@@ -141,6 +141,26 @@ func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader
 		}
 	}
 	return nil
+}
+
+func (s *Service) hiddenAccessDenial(ctx context.Context, r accessstore.Reader, scope nativeScope, write bool, denial error) error {
+	if scope.project == "" || !errors.Is(denial, accessstore.ErrDenied) && !errors.Is(denial, auth.ErrHostedIdentity) || errors.Is(denial, tenantauth.ErrUnavailable) {
+		return denial
+	}
+	visibility := s.accessAuthority(scope, false)
+	visibility.Admin, visibility.Action = false, ""
+	if write || scope.requireHostedAdmin {
+		if _, err := r.AuthorizeAccess(ctx, visibility, s.config.now()); err == nil {
+			return denial
+		} else if !errors.Is(err, accessstore.ErrDenied) || errors.Is(err, tenantauth.ErrUnavailable) {
+			return err
+		}
+	}
+	visibility.ProjectID = ""
+	if _, err := r.AuthorizeAccess(ctx, visibility, s.config.now()); err != nil {
+		return err
+	}
+	return nativeNotFound()
 }
 
 func (s *Service) accessWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {

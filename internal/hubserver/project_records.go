@@ -21,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
-	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -144,17 +143,6 @@ type authorizedProjectRecord struct {
 	organizationModels *policystore.OrganizationModels
 }
 
-func (s *Service) hiddenProjectDenial(ctx context.Context, r accessstore.Reader, scope nativeScope, denial error) error {
-	if scope.project == "" || scope.credential.Hosted == nil || scope.integrationRepository != "" || !errors.Is(denial, accessstore.ErrDenied) || errors.Is(denial, tenantauth.ErrUnavailable) {
-		return denial
-	}
-	scope.project, scope.action, scope.requireHostedAdmin = "", "", false
-	if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
-		return denial
-	}
-	return nativeNotFound()
-}
-
 func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeScope, write bool, includeModels bool) (authorizedProjectRecord, error) {
 	if s.config.AccessRepository == nil {
 		return authorizedProjectRecord{}, nativeNotFound()
@@ -162,7 +150,7 @@ func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeS
 	var result authorizedProjectRecord
 	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, write); err != nil {
-			return s.hiddenProjectDenial(ctx, r, scope, err)
+			return err
 		}
 		var err error
 		result.Record, err = r.ProjectRecord(ctx, scope.project)

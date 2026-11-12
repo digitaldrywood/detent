@@ -52,7 +52,7 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 			}
 			if credential.EntryKey == nil && credential.HostedKeyKind == "service" {
 				err := s.authorizeAccessScope(ctx, r, nativeScope{organization: tracker.OrganizationID(out.OrganizationID), project: project.ProjectID, credential: credential}, false)
-				if errors.Is(err, accessstore.ErrDenied) {
+				if errors.Is(err, accessstore.ErrDenied) || isNativeNotFound(err) {
 					continue
 				}
 				if err != nil {

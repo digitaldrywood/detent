@@ -149,7 +149,7 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 					relatedScope := scope
 					relatedScope.project = row.ProjectID
 					if err := s.authorizeAccessScope(ctx, r, relatedScope, false); err != nil {
-						if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, auth.ErrHostedIdentity) {
+						if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, auth.ErrHostedIdentity) || isNativeNotFound(err) {
 							continue
 						}
 						return err

@@ -701,7 +701,7 @@ func (s *Service) coordinatorAllowedProjects(ctx context.Context, r tenantstore.
 	for _, id := range ids {
 		scope.project = id
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
-			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
+			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || isNativeNotFound(err) {
 				continue
 			}
 			return nil, err

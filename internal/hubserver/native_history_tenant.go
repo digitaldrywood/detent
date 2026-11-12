@@ -198,7 +198,7 @@ func (s *Service) hydrateTenantHistoryRelatedIssues(ctx context.Context, scope n
 			targetScope := scope
 			targetScope.project = item.ProjectID
 			if err := s.authorizeAccessScope(ctx, r, targetScope, false); err != nil {
-				if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, accessstore.ErrDenied) {
+				if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, accessstore.ErrDenied) || isNativeNotFound(err) {
 					clearTenantHistoryRelation(events, positions)
 					continue
 				}
