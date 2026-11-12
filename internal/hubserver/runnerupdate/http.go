@@ -1,10 +1,12 @@
 package runnerupdate
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerenroll"
@@ -39,7 +41,13 @@ func RegisterRoutes(e *echo.Group, deps HTTPDeps) {
 }
 
 func (s *httpRoutes) scope(c echo.Context, credential hubauth.Credential) hubapi.Scope {
-	return s.deps.Auth().Scope(hubauth.Input{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential})
+	scope := s.deps.Auth().Scope(hubauth.Input{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential})
+	if credential.HostedKeyScope != "" && credential.HostedProjectAccess != "all" || credential.EntryKey != nil && (credential.EntryKey.Access != "all" || len(credential.EntryKey.BlockedProjects) > 0) {
+		return hubapi.NewScope(scope.Facts, func(context.Context, accessstore.Reader, bool) error {
+			return &hubapi.Error{Code: "insufficient_scope", Message: "Runner updates require access to all projects", Status: http.StatusForbidden, Public: true}
+		})
+	}
+	return scope
 }
 
 func (s *httpRoutes) getRunnerUpdate(c echo.Context) error {

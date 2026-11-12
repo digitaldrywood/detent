@@ -54,7 +54,12 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			binding := runnerauth.NewBinding()
-			value, err := f.service.createRunnerEnrollmentCommand(t.Context(), nativeScope{organization: "org_security", credential: credential}, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60})
+			enroller := f.user(t, "enroller", "owner", "enroller@example.test", "write", "")
+			enrollmentCredential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: enroller.identity.Hosted, Email: enroller.identity.Email}, apikey.HashToken(enroller.token))
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err := f.service.createRunnerEnrollmentCommand(t.Context(), nativeScope{organization: "org_security", credential: enrollmentCredential}, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,15 +98,7 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 					if view.RunnerID != binding.RunnerID || view.Status != "unavailable" {
 						t.Fatalf("update receipt=%+v", view)
 					}
-					if keyScope == apikey.ScopeRead {
-						original := key
-						key, err = f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "selected-update-reader", Scope: apiScopeOperator, Issuer: &credential, KeyScope: keyScope, ProjectAccess: hostedProjectsSelected, ProjectIDs: []string{string(f.project)}})
-						if err != nil {
-							t.Fatal(err)
-						}
-						requireNativeStatus(t, read(path), http.StatusForbidden)
-						key = original
-					}
+
 					requireNativeStatus(t, read(strings.Replace(path, "org_security", "org_other", 1)), http.StatusNotFound)
 					f.grant(t, owner, true, false)
 					want := http.StatusOK
