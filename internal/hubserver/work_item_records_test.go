@@ -1014,7 +1014,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, finalMethod, finalPath, f.token, finalInput), http.StatusForbidden)
+			requireNativeStatus(t, performHubAPIRequest(t, service, finalMethod, finalPath, f.token, finalInput), http.StatusNotFound)
 		})
 	}
 }

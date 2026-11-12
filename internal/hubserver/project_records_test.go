@@ -746,7 +746,7 @@ func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 				t.Fatal("integration route read organization models")
 			}
 
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+"hidden_"+string(project), token, nil), http.StatusForbidden)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+"hidden_"+string(project), token, nil), http.StatusNotFound)
 			if counted.models+accessCounted.models != 0 {
 				t.Fatal("denied project read organization models")
 			}

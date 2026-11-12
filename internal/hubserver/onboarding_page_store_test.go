@@ -208,7 +208,7 @@ func TestOnboardingPageKeepsViewerVisibilityAndRevocation(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/onboarding", fixture.token, nil), http.StatusForbidden)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/onboarding", fixture.token, nil), http.StatusNotFound)
 		})
 	}
 }
