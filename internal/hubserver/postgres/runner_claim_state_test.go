@@ -130,7 +130,7 @@ func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
 				t.Fatalf("expired slots = %+v", expired.State.Slots)
 			}
 			other, err := reader.RunnerClaimState(t.Context(), "runner", "prj_2", "", 1, second.AcquiredAt.Add(time.Microsecond))
-			if err == nil && (len(other.Candidates) != 0 || other.Next != "attempt_lease_1") {
+			if err == nil && (len(other.Candidates) != 0 || len(other.Unclassified) != 0 || other.Next != "") {
 				t.Fatalf("other project page = %+v", other)
 			}
 			return err
