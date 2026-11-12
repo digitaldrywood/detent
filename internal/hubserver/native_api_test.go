@@ -904,9 +904,11 @@ func TestNativeImportsAndAdministrationBoundaries(t *testing.T) {
 		})
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "tenant-admin", "scope": "admin"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var token tokenResponse
-	decodeHubResponse(t, response, &token)
+	requireNativeStatus(t, response, http.StatusNotFound)
+	token, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "tenant-admin", Scope: apiScopeAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID}), http.StatusNoContent)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations", token.Token, nil), http.StatusForbidden)
 	worker := f.worker(t, "import-denied-worker")
