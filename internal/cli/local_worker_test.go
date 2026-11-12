@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"io"
 	"log/slog"
 	"net/http"
@@ -314,7 +315,7 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 		t.Fatal(err)
 	}
 	scheduler, err := hubclient.NewScheduler(workerClient, hubclient.SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"local": project.ID},
-		Machine: hubclient.Machine{ID: clihangBinding(organization).MachineID, Hostname: "fixture-host", Capacity: 2, Version: "1.0.0"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+		Machine: hubclient.Machine{ID: clihangBinding(organization).MachineID, Hostname: "fixture-host", Capacity: 2, Version: "1.0.0", BackendIsolation: isolation.Report{"codex": {string(isolation.NativeTrusted), string(isolation.Sandbox)}}}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

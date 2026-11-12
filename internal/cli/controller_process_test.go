@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"io"
 	"log/slog"
 	"net"
@@ -575,7 +576,7 @@ func TestControllerAdoptionProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: fixture.Organization, NativeProjects: map[string]tracker.ProjectID{"local": fixture.Project}, Machine: hubclient.Machine{ID: clihangBinding(fixture.Organization).MachineID, Hostname: "fixture-host", Capacity: 2, Version: version}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+	source, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: fixture.Organization, NativeProjects: map[string]tracker.ProjectID{"local": fixture.Project}, Machine: hubclient.Machine{BackendIsolation: isolation.Report{"codex": {string(isolation.NativeTrusted), string(isolation.Sandbox)}}, ID: clihangBinding(fixture.Organization).MachineID, Hostname: "fixture-host", Capacity: 2, Version: version}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

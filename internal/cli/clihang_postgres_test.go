@@ -203,6 +203,9 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: workerID, EnrollmentID: enrollmentID, DisplayName: "Example runner", Scope: "projects", State: "active", IsolationTier: string(isolation.NativeTrusted), Operations: operations, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 				return err
 			}
+			if err := w.ReplaceRunnerBackendIsolation(t.Context(), binding.RunnerID, isolation.Report{"codex": {string(isolation.NativeTrusted), string(isolation.Sandbox)}}); err != nil {
+				return err
+			}
 			return w.UpdateRunnerCapacityConfig(t.Context(), binding.RunnerID, runnerauth.CapacityConfig{Revision: artifact.Digest([]byte(organization)), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, ObservedAt: now})
 		}); err != nil {
 			t.Fatal(err)
