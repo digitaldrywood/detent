@@ -226,7 +226,7 @@ func archivedImportRow(table attachment.ArchiveTable, values []json.RawMessage) 
 		raw := values[i+1]
 		cell := storagecatalog.Cell{Encoding: "utf8"}
 		if bytes.Equal(raw, []byte("null")) {
-			cell.Null = true
+			cell = storagecatalog.Cell{Null: true}
 		} else {
 			var text string
 			if json.Unmarshal(raw, &text) == nil {
